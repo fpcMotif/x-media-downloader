@@ -194,3 +194,34 @@ tasks:
 
 Parallelizable after 002-impl: the {003+004+009}, {005+007}, {006}, {008} chains
 are independent until they converge at 010/011/012.
+
+## Success Criteria (loopable)
+
+The implementer can loop on these without further input:
+
+1. Scaffold → `bun run typecheck` exit 0; `bun run build` emits
+   `.output/chrome-mv3/manifest.json` with required `{downloads, storage,
+   x.com, twitter.com}` + optional `{offscreen, pbs/video.twimg}`.
+2. Schema → `bun test src/core/schema` green: `MediaItem`/`Settings`(defaults)/
+   `Message` decode via `decodeUnknownResult`; invalid input → `SchemaError`.
+3. Resolver → `bun test src/core/resolver` green: `name=orig` upgrade + fallback
+   chain; max-bitrate mp4 variant; dedupe by id.
+4. XAdapter → `bun test src/core/adapters` green: detect from teed JSON + DOM fallback.
+5. Filename → `bun test src/core/download/filename` green: tokens render; relative-
+   only guard rejects absolute/empty/`..`.
+6. Settings → `bun test src/core/settings` green: defaults on first-run/corrupt;
+   round-trip persist in `local`.
+7. DownloadQueue → `bun test src/core/download/queue` green: Semaphore concurrency
+   cap; retry/backoff; `QueueUpdate` counts; rehydrate after simulated SW restart.
+8. Messaging → `bun test src/core/messaging` green: typed round-trip; `SchemaError`
+   rejection; no-receiver treated retryable.
+9. Tee → `bun test src/entrypoints/inject` green: `isGraphqlMediaUrl` predicate;
+   payload builder; original response left intact.
+10. DownloadStrategy → `bun test src/core/download` green: Direct default;
+    Fetched requests optional perms + uses offscreen.
+11. Overlays + Popup → component tests green; manual load-unpacked: hover glyph +
+    grab-all pill; popup queue reflects progress; settings persist across reopen.
+12. E2E (manual) → a tweet with 4 photos + 1 video → "grab all" → 5 files saved
+    with templated names → popup reaches 5/5; auth-fallback off by default issues
+    no extra request.
+13. Ship → full `bun test` green; `bun run build` + `wxt zip` clean.
