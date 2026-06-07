@@ -34,3 +34,12 @@ export const SettingsServiceLive = Layer.succeed(SettingsService, {
       return next
     }),
 })
+
+const provide = <A, E>(eff: Effect.Effect<A, E, SettingsService>): Promise<A> =>
+  Effect.runPromise(Effect.provide(eff, SettingsServiceLive))
+
+/** Promise helpers for UI contexts (popup) — thin wrappers over the service. */
+export const getSettings = (): Promise<Settings> =>
+  provide(Effect.flatMap(SettingsService, (s) => s.get))
+export const setSettings = (patch: Partial<Settings>): Promise<Settings> =>
+  provide(Effect.flatMap(SettingsService, (s) => s.set(patch)))
