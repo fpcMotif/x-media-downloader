@@ -134,6 +134,11 @@ tasks:
     slug: "cws-deploy"
     type: "config"
     depends-on: ["012-wire-e2e-impl"]
+  - id: "014"
+    subject: "Download Strategy seam + Fetched (offscreen) path"
+    slug: "download-strategy-impl"
+    type: "impl"
+    depends-on: ["007-download-queue-impl"]
 ```
 
 ## Task File References
@@ -151,6 +156,7 @@ tasks:
 - [Task 011: Popup](./task-011-popup-impl.md)
 - [Task 012: Wire e2e](./task-012-wire-e2e-impl.md)
 - [Task 013: CWS deploy](./task-013-cws-deploy.md)
+- [Task 014: Download Strategy](./task-014-download-strategy-impl.md)
 
 ## BDD Coverage
 
@@ -168,6 +174,7 @@ tasks:
 | In-page overlays + grab-all (swift UX) | 010 |
 | Popup queue manager + settings (manager UX) | 011 |
 | End-to-end download of a tweet/thread | 012 |
+| Download Strategy: Direct default + Fetched opt-in | 014 |
 
 ## Dependency Chain
 

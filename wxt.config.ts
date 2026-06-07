@@ -10,12 +10,10 @@ export default defineConfig({
     description:
       'Download X (Twitter) tweet/thread media at original quality. Minimalist, local-only, no scraping.',
     permissions: ['downloads', 'storage'],
-    host_permissions: [
-      'https://x.com/*',
-      'https://twitter.com/*',
-      'https://pbs.twimg.com/*',
-      'https://video.twimg.com/*',
-    ],
+    host_permissions: ['https://x.com/*', 'https://twitter.com/*'],
+    // Requested at runtime only when Download Strategy = Fetched (ADR-0003):
+    optional_permissions: ['offscreen'],
+    optional_host_permissions: ['https://pbs.twimg.com/*', 'https://video.twimg.com/*'],
   },
   vite: () => ({
     plugins: [preact(), tailwindcss()],

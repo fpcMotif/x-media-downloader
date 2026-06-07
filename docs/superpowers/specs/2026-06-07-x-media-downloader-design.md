@@ -103,7 +103,10 @@ layer. All boundary data validated with **Effect Schema**; errors are
 
 ## 5. Download mechanism & filename templating
 
-- `chrome.downloads.download` per file, `conflictAction: 'uniquify'`.
+- **Download Strategy** (ADR-0003): *Direct* (default) hands the Original-quality
+  URL to `chrome.downloads.download` (`conflictAction: 'uniquify'`); *Fetched*
+  (opt-in) fetches bytes in the SW and saves via an offscreen document. Both sit
+  behind a seam in `core/download`.
 - Default template: `{handle}/{tweetId}_{index}.{ext}` — editable in settings.
   Tokens: `{handle} {tweetId} {index} {ext} {type} {date}`. Rendered by a small
   pure token engine (unit-tested).
@@ -121,9 +124,13 @@ layer. All boundary data validated with **Effect Schema**; errors are
 
 ## 7. Permissions (intentionally minimal)
 
-`downloads`, `storage`; host perms `x.com`, `twitter.com`, `pbs.twimg.com`,
-`video.twimg.com`. **No `<all_urls>`, no `cookies`, no `webRequest`** — the
-MAIN-world tee needs none of these. (Media Harvest requires `cookies`; we don't.)
+**Required:** `downloads`, `storage`; host perms `x.com`, `twitter.com` (content
+script + tee). **No `<all_urls>`, no `cookies`, no `webRequest`, no `scripting`** —
+the MAIN-world tee needs none of these. (Media Harvest requires `cookies`; we don't.)
+
+**Optional (requested at runtime only when Download Strategy = Fetched, ADR-0003):**
+`offscreen` + host perms `pbs.twimg.com`, `video.twimg.com`. The Direct default
+needs none of these.
 
 ## 8. TDD strategy
 
