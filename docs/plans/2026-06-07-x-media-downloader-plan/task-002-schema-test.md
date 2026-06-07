@@ -14,7 +14,7 @@ Scenario: Decode a valid MediaItem
 Scenario: Reject an invalid MediaItem
   Given a raw object whose type is "audio" (not photo|video|gif)
   When it is decoded with the MediaItem schema
-  Then decoding fails with a ParseError naming the type field
+  Then decoding fails with a SchemaError whose issue points at the type field
 
 Scenario: Settings provides defaults
   Given an empty stored-settings object
@@ -28,8 +28,10 @@ Scenario: Settings provides defaults
 
 ## Steps
 
-1. Write failing tests asserting `Schema.decodeUnknownEither` success/failure for
-   `MediaItem`, `Settings` (with defaults), and the `Message` tagged union.
+1. Write failing tests asserting `Schema.decodeUnknownResult` (+ `Result.isFailure`)
+   / `decodeUnknownSync` success/failure for `MediaItem`, `Settings` (defaults
+   filled on decode), and the `Message` tagged union. (v4: no `decodeUnknownEither`;
+   failure type is `SchemaError`, not `ParseError`.)
 2. Assert `authFallbackEnabled` default is `false` and template default is
    `{handle}/{tweetId}_{index}.{ext}`.
 

@@ -4,6 +4,13 @@
 - **Date:** 2026-06-07
 - **Approach:** Test-first (red→green→refactor) per task. Effect-TS core is framework/chrome-agnostic and unit-tested with test layers; chrome APIs faked via WXT `fakeBrowser`.
 
+> ⚠️ **Authoritative API grounding:** [../../research/2026-06-07-grounding.md](../../research/2026-06-07-grounding.md)
+> supersedes any Effect-v3 idioms in these task files. The installed stack is
+> **Effect 4.0.0-beta.78** (no `Effect.Service` / `optionalWith` /
+> `decodeUnknownEither`; use `Context.Service` + `Layer`, `withDecodingDefaultKey`,
+> `decodeUnknownResult`/`SchemaError`) + **WXT 0.20.26**. Follow the grounding doc
+> for all API specifics.
+
 ## Context
 
 Greenfield MV3 Chrome extension to download X (Twitter) tweet/thread media in
@@ -122,6 +129,11 @@ tasks:
     slug: "wire-e2e-impl"
     type: "impl"
     depends-on: ["010-content-overlays-impl", "011-popup-impl"]
+  - id: "013"
+    subject: "Chrome Web Store deploy prerequisites"
+    slug: "cws-deploy"
+    type: "config"
+    depends-on: ["012-wire-e2e-impl"]
 ```
 
 ## Task File References
@@ -138,6 +150,7 @@ tasks:
 - [Task 010: Content overlays](./task-010-content-overlays-impl.md)
 - [Task 011: Popup](./task-011-popup-impl.md)
 - [Task 012: Wire e2e](./task-012-wire-e2e-impl.md)
+- [Task 013: CWS deploy](./task-013-cws-deploy.md)
 
 ## BDD Coverage
 

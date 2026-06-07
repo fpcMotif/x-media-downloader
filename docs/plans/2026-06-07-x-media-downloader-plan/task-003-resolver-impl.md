@@ -6,12 +6,15 @@
 ## Contract
 
 ```ts
-export class MediaResolver extends Effect.Service<MediaResolver>()("MediaResolver", {
-  // resolveFromJson: (json: unknown) => Effect<MediaItem[], DetectError>
-  // upgradePhotoUrl: (url: string) => string
-  // pickVideoVariant: (variants: Variant[]) => Variant | null
-}) {}
+import { Context, Effect, Layer } from 'effect'
+class MediaResolver extends Context.Service<MediaResolver, {
+  readonly resolveFromJson: (json: unknown) => Effect.Effect<MediaItem[], DetectError>
+  readonly upgradePhotoUrl: (url: string) => string
+  readonly pickVideoVariant: (variants: Variant[]) => Variant | null
+}>()('app/MediaResolver') {}
+export const MediaResolverLive = Layer.succeed(MediaResolver, { /* impl */ })
 ```
+(Effect v4: no `Effect.Service` — use `Context.Service` + an explicit `Layer`.)
 
 ## Files
 

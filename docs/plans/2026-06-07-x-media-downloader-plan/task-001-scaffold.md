@@ -18,8 +18,9 @@ strict TypeScript and the repo layout from design §9. No feature logic.
 
 ## Steps
 
-1. `bun add -D wxt vitest @webext-core/fake-browser typescript` and runtime deps
-   `effect @effect/schema preact`; Tailwind v4 + `@wxt-dev` preact/vite preset.
+1. `bun add -D wxt vitest typescript happy-dom @preact/preset-vite tailwindcss @tailwindcss/vite`
+   and runtime deps `effect preact`. (No `@effect/schema` — Schema is in `effect`
+   core in v4. No `@webext-core/fake-browser` — `fakeBrowser` ships with WXT.)
 2. Configure `wxt.config.ts`: MV3, permissions `downloads`/`storage`, host perms
    `x.com`/`twitter.com`/`pbs.twimg.com`/`video.twimg.com`, Preact vite preset.
 3. `tsconfig.json`: `"strict": true`, `"noUncheckedIndexedAccess": true`,

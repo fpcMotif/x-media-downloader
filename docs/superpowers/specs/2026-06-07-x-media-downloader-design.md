@@ -61,9 +61,10 @@ MAIN-world hook ──teed responses──► Content script ──typed RPC─�
                                                 (queue manager, settings)
 ```
 
-- **MAIN-world hook** (`world: "MAIN"` script via WXT `injectScript`): patches
-  `fetch`/`XHR`, posts captured JSON to the content script via `window.postMessage`
-  (origin-checked). Pure, no extension APIs.
+- **MAIN-world hook** (declarative `world: "MAIN"` content script at
+  `runAt: 'document_start'` — no `injectScript`, no `web_accessible_resources`):
+  patches `XHR` (and `fetch` as hardening), bridges captured JSON to the ISOLATED
+  content script via a document `CustomEvent`. Pure, no extension APIs.
 - **Content script** (isolated world): runs `XAdapter` over teed JSON + DOM,
   renders Preact hover overlays, sends download requests to the background.
 - **Background service worker**: owns `DownloadQueue`, `SettingsService`,
@@ -76,7 +77,8 @@ preset · Tailwind v4 · Vitest + WXT `fakeBrowser`.
 
 ## 4. Core — Effect-TS services
 
-Framework-free (`src/core/`), each an isolated `Effect.Service` with a test
+Framework-free (`src/core/`), each an isolated `Context.Service` + explicit
+`Layer` (Effect v4 — there is no `Effect.Service`/auto-`.Default`) with a test
 layer. All boundary data validated with **Effect Schema**; errors are
 `Data.TaggedError`.
 
@@ -174,6 +176,8 @@ Core stays UI/chrome-agnostic → pure-unit-testable and reusable behind the ada
 - UI: both in-page overlays and popup manager; Preact + Tailwind v4.
 - Default filename: `{handle}/{tweetId}_{index}.{ext}`.
 - ZIP + profile-tab enumeration: out of scope this version.
+- Deployment: CWS requires a privacy-policy URL + Privacy Practices tab +
+  Limited-Use certification even though we're local-only / no-telemetry (task 013).
 
 ## 12. Milestones (detailed plan to follow via writing-plans)
 

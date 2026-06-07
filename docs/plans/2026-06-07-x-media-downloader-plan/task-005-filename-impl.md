@@ -16,9 +16,12 @@ export const renderFilename: (template: string, item: MediaItem, date?: string) 
 ## Steps
 
 1. Pure token replacement for `{handle} {tweetId} {index} {ext} {type} {date}`.
-2. Sanitize each segment: strip `..`, illegal chars `:*?"<>|`, collapse slashes;
-   keep intentional `/` from the template as directory separators only.
+2. Sanitize each segment: strip illegal chars `:*?"<>|` + control chars; keep
+   intentional `/` from the template as directory separators only.
 3. Unknown tokens → empty string.
+4. **Hard post-render guard (`chrome.downloads.download` throws otherwise):** emit
+   a RELATIVE path only — strip leading `/`, reject/strip every `..` segment,
+   never emit an absolute or empty path. Forward-slash subdirs are allowed.
 
 ## Verification
 

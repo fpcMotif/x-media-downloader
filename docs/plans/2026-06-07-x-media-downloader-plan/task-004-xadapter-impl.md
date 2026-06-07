@@ -6,10 +6,18 @@
 ## Contract
 
 ```ts
+import { Context, Effect, Layer } from 'effect'
 export interface SourceAdapter {
   readonly detectMedia: (ctx: DetectContext) => Effect.Effect<MediaItem[], DetectError>
 }
-export class XAdapter extends Effect.Service<XAdapter>()("XAdapter", { /* deps: MediaResolver */ }) {}
+class XAdapter extends Context.Service<XAdapter, SourceAdapter>()('app/XAdapter') {}
+export const XAdapterLive = Layer.effect(
+  XAdapter,
+  Effect.gen(function* () {
+    const resolver = yield* MediaResolver           // inject dep
+    return { detectMedia: (ctx) => /* ... */ }
+  }),
+).pipe(Layer.provide(MediaResolverLive))
 ```
 
 ## Files

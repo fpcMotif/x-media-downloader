@@ -20,6 +20,11 @@ Scenario: Emit progress updates
   Given items are enqueued
   When each completes
   Then a QueueUpdate event is emitted with completed/total counts
+
+Scenario: Survive a service-worker restart
+  Given items were enqueued and their state was persisted to storage
+  When the SW is terminated, restarts, and rehydrates
+  Then it reconciles against chrome.downloads.search and resumes/recounts correctly
 ```
 
 ## Files
@@ -28,7 +33,8 @@ Scenario: Emit progress updates
 
 ## Steps
 
-1. Fake `chrome.downloads` via `fakeBrowser`; control time with Effect `TestClock`.
+1. Fake `chrome.downloads` via WXT `fakeBrowser`; control time with `TestClock`
+   from the `effect/testing` subpath.
 2. Failing tests for concurrency cap (Semaphore), retry/backoff (`Schedule`),
    and progress events.
 

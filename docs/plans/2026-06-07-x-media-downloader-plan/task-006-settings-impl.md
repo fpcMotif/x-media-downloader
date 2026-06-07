@@ -6,10 +6,12 @@
 ## Contract
 
 ```ts
-export class SettingsService extends Effect.Service<SettingsService>()("SettingsService", {
-  // get: Effect<Settings>
-  // set: (patch: Partial<Settings>) => Effect<Settings>
-}) {}
+import { Context, Effect, Layer } from 'effect'
+class SettingsService extends Context.Service<SettingsService, {
+  readonly get: Effect.Effect<Settings>
+  readonly set: (patch: Partial<Settings>) => Effect.Effect<Settings>
+}>()('app/SettingsService') {}
+export const SettingsServiceLive = Layer.effect(SettingsService, /* ... */)
 ```
 
 ## Files
@@ -18,9 +20,12 @@ export class SettingsService extends Effect.Service<SettingsService>()("Settings
 
 ## Steps
 
-1. Read `chrome.storage.local` key `settings`; decode with the `Settings` schema;
-   on `ParseError` return defaults.
+1. Read via WXT `storage.defineItem<Settings>('local:settings', { fallback, version: 1 })`;
+   decode with the `Settings` schema; on `SchemaError` return defaults.
 2. `set` merges a patch, validates, writes, returns the new settings.
+   **Single-writer:** storage read-modify-write is non-atomic, so all writes go
+   through the background SW; popup/content observe via `item.watch` /
+   `storage.onChanged`.
 
 ## Verification
 

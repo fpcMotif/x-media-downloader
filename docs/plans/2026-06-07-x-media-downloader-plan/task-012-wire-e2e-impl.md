@@ -23,10 +23,16 @@ Scenario: Auth fallback stays off by default
 
 ## Steps
 
-1. Background registers message handlers → enqueues into `DownloadQueue`,
-   streams `QueueUpdate` back.
-2. Implement the opt-in auth-fallback path (single replay, gated on setting).
-3. `bun run build`, load unpacked, run both scenarios manually.
+1. In the **non-async** `defineBackground.main()`, register `onMessage` /
+   `downloads.onChanged` / `onInstalled` / `onStartup` **synchronously at the top**
+   (before any await); `onMessage` returns literal `true` for async replies. Then
+   build the Effect runtime fire-and-forget. Handlers enqueue into `DownloadQueue`.
+2. Add a SW-restart **resume** step: rehydrate persisted queue + reconcile via
+   `downloads.search`.
+3. Implement the opt-in auth-fallback path (single replay, gated on setting,
+   **time-bounded** by a timeout + retry off the awaited path — respects the 30s
+   fetch / 5-min request caps).
+4. `bun run build`, load unpacked, run both scenarios manually.
 
 ## Verification
 

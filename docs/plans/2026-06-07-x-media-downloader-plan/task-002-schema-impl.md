@@ -6,13 +6,14 @@
 ## Contract (signatures only)
 
 ```ts
-export const MediaType: Schema.Schema<"photo" | "video" | "gif">
-export const MediaItem: Schema.Schema<MediaItem>
-export const Settings: Schema.Schema<Settings>   // with defaults
-export const Message: Schema.Schema<Message>      // tagged union
-export type MediaItem = Schema.Schema.Type<typeof MediaItem>
-export type Settings = Schema.Schema.Type<typeof Settings>
-export type Message = Schema.Schema.Type<typeof Message>
+import { Schema, Effect } from 'effect'
+export const MediaType = Schema.Literals(['photo', 'video', 'gif'])   // array form
+export const MediaItem = Schema.Struct({ /* …; optional via Schema.optional */ })
+export const Settings  = Schema.Struct({ /* defaults via withDecodingDefaultKey(Effect.succeed(v)) */ })
+export const Message   = Schema.Union([/* TaggedStruct members */])   // array form
+export type MediaItem = typeof MediaItem.Type
+export type Settings  = typeof Settings.Type
+export type Message   = typeof Message.Type
 ```
 
 ## Files
@@ -21,10 +22,14 @@ export type Message = Schema.Schema.Type<typeof Message>
 
 ## Steps
 
-1. Define `MediaItem` (`id, tweetId, handle, type, url, ext, index, width?, height?, bitrate?`).
-2. Define `Settings` with `Schema.optionalWith(..., { default })` for each field.
-3. Define `Message` as a `Schema.Union` of tagged structs (`DetectRequest`,
-   `MediaDetected`, `DownloadRequest`, `QueueUpdate`, `SettingsGet`, `SettingsSet`).
+1. Define `MediaItem` with `Schema.Struct`; optional fields via `Schema.optional`.
+2. Define `Settings` defaults via
+   `Schema.<T>.pipe(Schema.withDecodingDefaultKey(Effect.succeed(<value>)))`
+   (v4 defaults take an `Effect`, not a value). Defaults: template
+   `{handle}/{tweetId}_{index}.{ext}`, concurrency 3, authFallbackEnabled false.
+3. Define `Message` as `Schema.Union([...])` of `Schema.TaggedStruct` members
+   (`DetectRequest`, `MediaDetected`, `DownloadRequest`, `QueueUpdate`,
+   `SettingsGet`, `SettingsSet`).
 
 ## Verification
 
