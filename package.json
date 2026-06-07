@@ -1,0 +1,18 @@
+{
+  "name": "x-media-downloader",
+  "description": "Minimalist, extensible Chrome extension to download X (Twitter) tweet/thread media at original quality.",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "prepare": "wxt prepare",
+    "typecheck": "wxt prepare && tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "effect": "^4.0.0-beta.78"
+  }
+}
