@@ -40,7 +40,7 @@ function extFromUrl(url: string, fallback: string): string {
 export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
   const out: MediaItem[] = []
   const seen = new Set<string>()
-  tweet.media.forEach((m, index) => {
+  tweet.media.forEach((m) => {
     const id = m.id_str ?? basenameId(m.media_url_https)
     if (seen.has(id)) return
     if (m.type === 'photo') {
@@ -52,7 +52,7 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
         type: 'photo',
         url: upgradePhotoUrl(m.media_url_https),
         ext: extFromUrl(m.media_url_https, 'jpg'),
-        index,
+        index: out.length,
       })
       return
     }
@@ -66,7 +66,7 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
       type: m.type === 'animated_gif' ? 'gif' : 'video',
       url: variant.url,
       ext: extFromUrl(variant.url, 'mp4'),
-      index,
+      index: out.length,
       ...(variant.bitrate !== undefined ? { bitrate: variant.bitrate } : {}),
     })
   })

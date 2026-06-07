@@ -33,7 +33,9 @@ export const Settings = Schema.Struct({
 export type Settings = typeof Settings.Type
 
 export const DetectRequest = Schema.TaggedStruct('DetectRequest', { tweetId: Schema.String })
-export const MediaDetected = Schema.TaggedStruct('MediaDetected', { items: Schema.Array(MediaItem) })
+export const MediaDetected = Schema.TaggedStruct('MediaDetected', {
+  items: Schema.Array(MediaItem),
+})
 export const DownloadRequest = Schema.TaggedStruct('DownloadRequest', {
   items: Schema.Array(MediaItem),
 })

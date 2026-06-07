@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react", "jsx-a11y", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn",
+    "pedantic": "off",
+    "style": "off",
+    "restriction": "off",
+    "nursery": "off"
+  },
+  "env": {
+    "browser": true,
+    "webextensions": true,
+    "serviceworker": true,
+    "es2024": true
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
+    "import/no-unassigned-import": ["warn", { "allow": ["**/*.css"] }]
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"],
+      "rules": {
+        "no-magic-numbers": "off"
+      }
+    },
+    {
+      "files": ["**/inject.content.ts"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off",
+        "promise/always-return": "off",
+        "promise/prefer-await-to-then": "off",
+        "promise/no-nesting": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [".output", ".wxt", "study"]
+}

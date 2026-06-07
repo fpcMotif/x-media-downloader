@@ -28,7 +28,7 @@ describe('DownloadQueue core', () => {
     const queue = makeDownloadQueueCore({ strategy, concurrency: 3 })
     const res = await Effect.runPromise(queue.enqueue([mk('a'), mk('b')], (i) => `${i.id}.jpg`))
     expect(res).toEqual({ completed: 2, total: 2, failed: 0 })
-    expect(saved.sort()).toEqual(['a.jpg', 'b.jpg'])
+    expect(saved.toSorted()).toEqual(['a.jpg', 'b.jpg'])
   })
 
   it('never exceeds the configured concurrency', async () => {

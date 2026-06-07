@@ -6,7 +6,16 @@
     "exactOptionalPropertyTypes": true,
     "jsx": "react-jsx",
     "jsxImportSource": "preact",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnostics": true,
+        "refactors": true,
+        "completions": true,
+        "quickinfo": true
+      }
+    ]
   },
   "exclude": ["node_modules", "study", ".output"]
 }

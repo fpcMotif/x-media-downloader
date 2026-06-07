@@ -8,11 +8,31 @@
     "dev": "wxt",
     "build": "wxt build",
     "prepare": "wxt prepare",
-    "typecheck": "wxt prepare && tsc --noEmit",
+    "typecheck": "wxt prepare && tsgo --noEmit",
+    "typecheck:tsc": "wxt prepare && tsc --noEmit",
+    "lint": "oxlint",
+    "lint:ci": "oxlint --deny-warnings",
+    "fmt": "oxfmt --write src",
+    "fmt:check": "oxfmt --check src",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check": "oxfmt --check src && oxlint && wxt prepare && tsgo --noEmit && vitest run"
   },
   "dependencies": {
-    "effect": "^4.0.0-beta.78"
+    "effect": "^4.0.0-beta.78",
+    "preact": "^10.29.2"
+  },
+  "devDependencies": {
+    "@effect/language-service": "^0.86.2",
+    "@preact/preset-vite": "^2.10.5",
+    "@tailwindcss/vite": "^4.3.0",
+    "@typescript/native-preview": "^7.0.0-dev.20260607.1",
+    "happy-dom": "^20.10.2",
+    "oxfmt": "^0.53.0",
+    "oxlint": "^1.68.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8",
+    "wxt": "^0.20.26"
   }
 }

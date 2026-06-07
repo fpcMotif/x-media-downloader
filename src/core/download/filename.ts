@@ -1,6 +1,7 @@
 import type { MediaItem } from '../schema'
 
-// eslint-disable-next-line no-control-regex
+// Intentional: strip control chars + filesystem-illegal chars from path segments.
+// oxlint-disable-next-line no-control-regex
 const ILLEGAL = /[\x00-\x1f:*?"<>|\\]/g
 
 /** Sanitize one path segment: drop illegal chars and any `..` back-reference. */

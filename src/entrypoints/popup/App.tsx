@@ -31,8 +31,11 @@ export function App() {
         <Field label="Filename template">
           <input
             class="w-full rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            aria-label="Filename template"
             value={settings.filenameTemplate}
-            onChange={(e) => void update({ filenameTemplate: (e.target as HTMLInputElement).value })}
+            onChange={(e) =>
+              void update({ filenameTemplate: (e.target as HTMLInputElement).value })
+            }
           />
           <p class="mt-1 text-xs text-zinc-500">
             {'{handle} {tweetId} {index} {ext} {type} {date}'}
@@ -45,9 +48,12 @@ export function App() {
             min={1}
             max={10}
             class="w-20 rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            aria-label="Concurrent downloads"
             value={settings.downloadConcurrency}
             onChange={(e) =>
-              void update({ downloadConcurrency: Number((e.target as HTMLInputElement).value) || 1 })
+              void update({
+                downloadConcurrency: Number((e.target as HTMLInputElement).value) || 1,
+              })
             }
           />
         </Field>
@@ -55,10 +61,12 @@ export function App() {
         <Field label="Download mode">
           <select
             class="w-full rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            aria-label="Download mode"
             value={settings.downloadStrategy}
             onChange={(e) =>
               void update({
-                downloadStrategy: (e.target as HTMLSelectElement).value as Settings['downloadStrategy'],
+                downloadStrategy: (e.target as HTMLSelectElement)
+                  .value as Settings['downloadStrategy'],
               })
             }
           >
@@ -70,6 +78,7 @@ export function App() {
         <label class="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
+            aria-label="Authenticated fallback"
             checked={settings.authFallbackEnabled}
             onChange={(e) =>
               void update({ authFallbackEnabled: (e.target as HTMLInputElement).checked })

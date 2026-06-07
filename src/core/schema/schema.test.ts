@@ -59,9 +59,8 @@ describe('Message schema', () => {
     const raw = { _tag: 'DownloadRequest', items: [validMediaRaw] }
     const msg = Schema.decodeUnknownSync(Message)(raw)
     expect(msg._tag).toBe('DownloadRequest')
-    if (msg._tag === 'DownloadRequest') {
-      expect(msg.items).toHaveLength(1)
-      expect(msg.items[0]!.handle).toBe('alice')
-    }
+    const items = msg._tag === 'DownloadRequest' ? msg.items : []
+    expect(items).toHaveLength(1)
+    expect(items[0]!.handle).toBe('alice')
   })
 })
