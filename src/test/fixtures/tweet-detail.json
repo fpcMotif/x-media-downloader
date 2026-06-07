@@ -1,0 +1,35 @@
+{
+  "data": {
+    "tweetResult": {
+      "result": {
+        "__typename": "Tweet",
+        "rest_id": "1790",
+        "core": {
+          "user_results": {
+            "result": {
+              "__typename": "User",
+              "legacy": { "screen_name": "alice" }
+            }
+          }
+        },
+        "legacy": {
+          "full_text": "two pics",
+          "extended_entities": {
+            "media": [
+              {
+                "type": "photo",
+                "id_str": "p1",
+                "media_url_https": "https://pbs.twimg.com/media/AAA.jpg"
+              },
+              {
+                "type": "photo",
+                "id_str": "p2",
+                "media_url_https": "https://pbs.twimg.com/media/BBB.jpg"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
