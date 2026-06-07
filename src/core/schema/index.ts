@@ -3,7 +3,7 @@ import { Schema, Effect } from 'effect'
 export const MediaType = Schema.Literals(['photo', 'video', 'gif'])
 
 export const MediaItem = Schema.Struct({
-  id: Schema.String.pipe(Schema.brand('MediaId')),
+  id: Schema.String,
   tweetId: Schema.String,
   handle: Schema.String,
   type: MediaType,
