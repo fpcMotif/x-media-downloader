@@ -1,20 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { Effect, Exit } from 'effect'
-import type { MediaItem } from '../schema'
-import { makeDirectStrategy, type DownloadsPort } from './strategy'
+import { makeDirectStrategy, type DownloadsPort, type SaveRequest } from './strategy'
 
-const item: MediaItem = {
+const req: SaveRequest = {
   id: 'm1',
-  tweetId: '1',
-  handle: 'alice',
-  type: 'photo',
   url: 'https://pbs.twimg.com/media/AAA.jpg?name=orig',
-  ext: 'jpg',
-  index: 0,
+  filename: 'alice/1_0.jpg',
 }
 
 describe('DirectStrategy', () => {
-  it('fires a download with url + filename + uniquify and returns the id', async () => {
+  it('fires a download with url + filename + uniquify and returns a browser handle', async () => {
     const calls: Array<{ url: string; filename: string; conflictAction: string }> = []
     const downloads: DownloadsPort = {
       download: async (opts) => {
@@ -22,10 +17,10 @@ describe('DirectStrategy', () => {
         return 7
       },
     }
-    const id = await Effect.runPromise(makeDirectStrategy(downloads).save(item, 'alice/1_0.jpg'))
-    expect(id).toBe(7)
+    const handle = await Effect.runPromise(makeDirectStrategy(downloads).save(req))
+    expect(handle).toEqual({ kind: 'browser', id: 7 })
     expect(calls[0]).toEqual({
-      url: item.url,
+      url: req.url,
       filename: 'alice/1_0.jpg',
       conflictAction: 'uniquify',
     })
@@ -37,7 +32,7 @@ describe('DirectStrategy', () => {
         throw new Error('boom')
       },
     }
-    const exit = await Effect.runPromiseExit(makeDirectStrategy(downloads).save(item, 'f.jpg'))
+    const exit = await Effect.runPromiseExit(makeDirectStrategy(downloads).save(req))
     expect(Exit.isFailure(exit)).toBe(true)
   })
 })

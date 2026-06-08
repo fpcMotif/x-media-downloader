@@ -1,6 +1,22 @@
 import { Effect } from 'effect'
-import type { MediaItem } from '../schema'
 import { DownloadError } from '../errors'
+
+/**
+ * One unit of work for a strategy: a URL to fetch + a relative filename to write.
+ * Decoupled from `MediaItem` so non-media artifacts (e.g. sidecar metadata as a
+ * `data:` URL) flow through the same seam (ADR-0003: a strategy is *how bytes
+ * reach disk*, independent of the media domain object).
+ */
+export interface SaveRequest {
+  readonly id: string
+  readonly url: string
+  readonly filename: string
+}
+
+/** The opaque receipt a strategy returns once a transfer has started. */
+export type DownloadHandle =
+  | { readonly kind: 'browser'; readonly id: number }
+  | { readonly kind: 'aria2'; readonly gid: string }
 
 /** Minimal port over `chrome.downloads.download` so strategies stay unit-testable. */
 export interface DownloadsPort {
@@ -11,9 +27,9 @@ export interface DownloadsPort {
   }) => Promise<number>
 }
 
-/** How bytes reach disk (ADR-0003). Returns the browser download id. */
+/** How bytes reach disk (ADR-0003). Returns the started transfer's handle. */
 export interface DownloadStrategy {
-  readonly save: (item: MediaItem, filename: string) => Effect.Effect<number, DownloadError>
+  readonly save: (req: SaveRequest) => Effect.Effect<DownloadHandle, DownloadError>
 }
 
 /**
@@ -22,10 +38,11 @@ export interface DownloadStrategy {
  */
 export function makeDirectStrategy(downloads: DownloadsPort): DownloadStrategy {
   return {
-    save: (item, filename) =>
+    save: (req) =>
       Effect.tryPromise({
-        try: () => downloads.download({ url: item.url, filename, conflictAction: 'uniquify' }),
-        catch: (cause) => new DownloadError({ id: item.id, reason: String(cause) }),
-      }),
+        try: () =>
+          downloads.download({ url: req.url, filename: req.filename, conflictAction: 'uniquify' }),
+        catch: (cause) => new DownloadError({ id: req.id, reason: String(cause) }),
+      }).pipe(Effect.map((id) => ({ kind: 'browser' as const, id }))),
   }
 }

@@ -16,7 +16,7 @@ export const MediaItem = Schema.Struct({
 })
 export type MediaItem = typeof MediaItem.Type
 
-export const DownloadStrategyName = Schema.Literals(['direct', 'fetched'])
+export const DownloadStrategyName = Schema.Literals(['direct', 'fetched', 'aria2'])
 export const Theme = Schema.Literals(['light', 'dark', 'system'])
 
 export const Settings = Schema.Struct({
@@ -29,8 +29,37 @@ export const Settings = Schema.Struct({
     Schema.withDecodingDefaultKey(Effect.succeed('direct' as const)),
   ),
   theme: Theme.pipe(Schema.withDecodingDefaultKey(Effect.succeed('system' as const))),
+  // Write a per-item `.json` sidecar (author/url/tweetId/type) next to each file (D).
+  sidecarMetadata: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  // aria2 opt-in backend (C). Requests `http://localhost/*` via optional permissions.
+  aria2RpcUrl: Schema.String.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed('http://localhost:6800/jsonrpc')),
+  ),
+  aria2Secret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  aria2Dir: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  aria2Split: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(8))),
 })
 export type Settings = typeof Settings.Type
+
+/**
+ * Download-efficiency snapshot (B). A pure projection of timestamped byte
+ * samples + state transitions; `core/download/metrics.ts` produces it and the
+ * background SW persists the latest to `storage.session` for the popup to poll.
+ */
+export const MetricsSnapshot = Schema.Struct({
+  total: Schema.Number,
+  completed: Schema.Number,
+  failed: Schema.Number,
+  active: Schema.Number,
+  retries: Schema.Number,
+  concurrencyCap: Schema.Number,
+  bytesReceived: Schema.Number,
+  bytesTotal: Schema.Number,
+  throughputBps: Schema.Number,
+  etaSeconds: Schema.optional(Schema.Number),
+  elapsedMs: Schema.Number,
+})
+export type MetricsSnapshot = typeof MetricsSnapshot.Type
 
 export const DetectRequest = Schema.TaggedStruct('DetectRequest', { tweetId: Schema.String })
 export const MediaDetected = Schema.TaggedStruct('MediaDetected', {
@@ -43,6 +72,17 @@ export const QueueUpdate = Schema.TaggedStruct('QueueUpdate', {
   completed: Schema.Number,
   total: Schema.Number,
 })
+export const MetricsRequest = Schema.TaggedStruct('MetricsRequest', {})
+export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {
+  snapshot: MetricsSnapshot,
+})
 
-export const Message = Schema.Union([DetectRequest, MediaDetected, DownloadRequest, QueueUpdate])
+export const Message = Schema.Union([
+  DetectRequest,
+  MediaDetected,
+  DownloadRequest,
+  QueueUpdate,
+  MetricsRequest,
+  MetricsUpdate,
+])
 export type Message = typeof Message.Type

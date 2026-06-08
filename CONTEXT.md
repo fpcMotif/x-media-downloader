@@ -37,12 +37,27 @@ use these words, they mean exactly this.
   (photo upgrade, Variant selection, de-duplication).
 - **Download Queue** — saves Media Items to disk: rate-limited, resilient to
   interruption and to the browser pausing background work.
-- **Download Strategy** — *how* bytes reach disk. **Direct** = hand the URL to the
-  browser's downloader. **Fetched** = retrieve the bytes first to verify or
-  repackage them. Direct is the default; Fetched is opt-in.
+- **Download Strategy** — *how* bytes reach disk, independent of the Media Item.
+  **Direct** = hand the URL to the browser's downloader. **Fetched** = retrieve the
+  bytes first to verify or repackage them. **aria2** = hand the URL to a user-run
+  aria2c daemon over JSON-RPC for fast/resumable transfers to an arbitrary dir.
+  Direct is the default; Fetched and aria2 are opt-in. A strategy consumes a
+  **Save Request** (`id` + `url` + relative `filename`) and returns a **Download
+  Handle** (a browser download id, or an aria2 gid).
+- **Sidecar** — an optional `.json` file saved next to a Media Item recording its
+  provenance (author, url, tweetId, type). Opt-in; rides the same download path as
+  a `data:` URL (no extra permissions).
+- **Selection** — the user's current pick of Media Items, built by grabbing a
+  single item, a whole Tweet, or a whole Thread. Resolving a Selection re-indexes
+  each Tweet's chosen items contiguously from 0 (so naming stays gap-free).
+- **Metrics / Snapshot** — download-efficiency monitoring. **Metrics** is a pure
+  reducer over timestamped byte samples + state transitions; a **Snapshot** is its
+  projection (throughput, ETA, completed/failed/retry counts, concurrency
+  utilization) that the Popup polls.
 - **Overlay** — the in-page controls that appear on hover over a media element
   (the fast path).
-- **Popup** — the toolbar panel: Download Queue manager + Settings (the manager path).
+- **Popup** — the toolbar panel: Download Queue manager + Settings + Monitor (the
+  manager path).
 
 ## Boundaries (what these are NOT)
 

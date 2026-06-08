@@ -13,7 +13,12 @@ export default defineConfig({
     host_permissions: ['https://x.com/*', 'https://twitter.com/*'],
     // Requested at runtime only when Download Strategy = Fetched (ADR-0003):
     optional_permissions: ['offscreen'],
-    optional_host_permissions: ['https://pbs.twimg.com/*', 'https://video.twimg.com/*'],
+    // twimg CDN = Fetched (ADR-0003); localhost = aria2 JSON-RPC opt-in (ADR-0006).
+    optional_host_permissions: [
+      'https://pbs.twimg.com/*',
+      'https://video.twimg.com/*',
+      'http://localhost/*',
+    ],
   },
   vite: () => ({
     plugins: [preact(), tailwindcss()],
