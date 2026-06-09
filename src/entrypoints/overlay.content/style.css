@@ -1,0 +1,36 @@
+.xmd-hover {
+  position: fixed;
+  z-index: 2147483647;
+  display: flex;
+  gap: 4px;
+}
+
+.xmd-btn {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 9999px;
+  background: #0f1419;
+  color: #fff;
+  font:
+    600 12px system-ui,
+    sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.xmd-launcher {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 9999px;
+  background: #0f1419;
+  color: #fff;
+  font:
+    600 13px system-ui,
+    sans-serif;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
