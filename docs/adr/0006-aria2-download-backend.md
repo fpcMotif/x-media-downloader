@@ -42,6 +42,9 @@ Keep **Direct** as the zero-setup default. Add **aria2** as an **opt-in**
 - Power users get fast/resumable large-video downloads to any directory.
 - aria2 health/availability is the user's responsibility; a failed RPC maps to a
   `DownloadError` and the queue's retry/fail accounting handles it.
+- Selecting aria2 in the popup requests the `http://localhost/*` optional host
+  permission via a user gesture (`aria2OriginPattern` → `permissions.request`),
+  surfacing a "Grant localhost access" prompt rather than failing silently.
 - **Unverified claim:** the large-video speedup is asserted from aria2's segmented
   model, **not yet measured**. A Direct-vs-aria2(`split=8`) benchmark on a known
   large video remains before the speed claim ships in user-facing copy.

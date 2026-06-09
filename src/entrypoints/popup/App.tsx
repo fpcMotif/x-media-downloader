@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '../../core/settings'
+import { aria2OriginPattern } from '../../core/download/aria2'
 import type { MetricsSnapshot, Settings } from '../../core/schema'
 
 function fmtRate(bps: number): string {
@@ -13,10 +14,24 @@ export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
+  const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
 
   useEffect(() => {
     void getSettings().then(setSettingsState)
   }, [])
+
+  // Reflect whether the localhost host permission for aria2's RPC is granted.
+  const strategy = settings?.downloadStrategy
+  const rpcUrl = settings?.aria2RpcUrl
+  useEffect(() => {
+    if (strategy !== 'aria2' || rpcUrl === undefined) return
+    const pattern = aria2OriginPattern(rpcUrl)
+    if (pattern === null) {
+      setAria2Granted(null)
+      return
+    }
+    void browser.permissions.contains({ origins: [pattern] }).then(setAria2Granted)
+  }, [strategy, rpcUrl])
 
   useEffect(() => {
     const poll = (): void => {
@@ -38,6 +53,12 @@ export function App() {
     setSettingsState(await setSettings(patch))
     setSaved(true)
     setTimeout(() => setSaved(false), 1200)
+  }
+
+  const requestAria2Access = async (): Promise<void> => {
+    const pattern = aria2OriginPattern(settings.aria2RpcUrl)
+    if (pattern === null) return
+    setAria2Granted(await browser.permissions.request({ origins: [pattern] }))
   }
 
   return (
@@ -136,6 +157,20 @@ export function App() {
                 }
               />
             </Field>
+            {aria2Granted === false && (
+              <button
+                type="button"
+                class="w-full rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+                onClick={() => void requestAria2Access()}
+              >
+                Grant localhost access
+              </button>
+            )}
+            {aria2Granted === true && (
+              <p class="text-xs text-emerald-600 dark:text-emerald-400">
+                localhost access granted ✓
+              </p>
+            )}
           </div>
         )}
 

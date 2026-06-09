@@ -14,6 +14,21 @@ export interface Aria2Options {
 }
 
 /**
+ * Chrome match-pattern for an aria2 RPC URL's origin, suitable for a runtime
+ * `permissions.request({ origins })` call. Host-only — match patterns omit the
+ * port (`http://localhost:6800/jsonrpc` → `http://localhost/*`). Null if the URL
+ * is unparseable.
+ */
+export function aria2OriginPattern(rpcUrl: string): string | null {
+  try {
+    const u = new URL(rpcUrl)
+    return `${u.protocol}//${u.hostname}/*`
+  } catch {
+    return null
+  }
+}
+
+/**
  * Translate a SaveRequest into aria2 options. `out` is the path relative to
  * `dir`, so subfolders in `req.filename` are preserved. `dir` is omitted when
  * empty so aria2 falls back to its configured default download directory.

@@ -5,6 +5,7 @@ import {
   buildJsonRpcBody,
   makeAria2Strategy,
   makeAria2RpcPort,
+  aria2OriginPattern,
   type Aria2RpcPort,
 } from './aria2'
 import type { SaveRequest } from './strategy'
@@ -26,6 +27,17 @@ describe('buildAria2Options', () => {
     const opts = buildAria2Options(req, { dir: '', split: 4 })
     expect(opts.dir).toBeUndefined()
     expect(opts).toEqual({ out: 'alice/v.mp4', split: '4', 'max-connection-per-server': '4' })
+  })
+})
+
+describe('aria2OriginPattern', () => {
+  it('derives a host-only match pattern (drops the port)', () => {
+    expect(aria2OriginPattern('http://localhost:6800/jsonrpc')).toBe('http://localhost/*')
+    expect(aria2OriginPattern('https://aria.example.com/rpc')).toBe('https://aria.example.com/*')
+  })
+
+  it('returns null for an unparseable url', () => {
+    expect(aria2OriginPattern('not a url')).toBe(null)
   })
 })
 
