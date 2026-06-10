@@ -18,6 +18,7 @@ export type MediaItem = typeof MediaItem.Type
 
 export const DownloadStrategyName = Schema.Literals(['direct', 'fetched', 'aria2'])
 export const Theme = Schema.Literals(['light', 'dark', 'system'])
+export const QuickGrabModifier = Schema.Literals(['alt', 'shift', 'ctrl', 'meta'])
 
 export const Settings = Schema.Struct({
   filenameTemplate: Schema.String.pipe(
@@ -29,6 +30,12 @@ export const Settings = Schema.Struct({
     Schema.withDecodingDefaultKey(Effect.succeed('direct' as const)),
   ),
   theme: Theme.pipe(Schema.withDecodingDefaultKey(Effect.succeed('system' as const))),
+  // Quick Grab (Overlay fast path): hold the modifier and hover one photo to
+  // download just that Media Item at Original quality. Default on, Option/Alt.
+  quickGrabEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  quickGrabModifier: QuickGrabModifier.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed('alt' as const)),
+  ),
   // Write a per-item `.json` sidecar (author/url/tweetId/type) next to each file (D).
   sidecarMetadata: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   // aria2 opt-in backend (C). Requests `http://localhost/*` via optional permissions.

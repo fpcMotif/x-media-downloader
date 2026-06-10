@@ -51,6 +51,13 @@ describe('Settings schema', () => {
     expect(s.authFallbackEnabled).toBe(false)
     expect(s.downloadStrategy).toBe('direct')
     expect(s.theme).toBe('system')
+    expect(s.quickGrabEnabled).toBe(true)
+    expect(s.quickGrabModifier).toBe('alt')
+  })
+
+  it('rejects an unknown quick-grab modifier', () => {
+    const result = Schema.decodeUnknownResult(Settings)({ quickGrabModifier: 'space' })
+    expect(Result.isFailure(result)).toBe(true)
   })
 })
 

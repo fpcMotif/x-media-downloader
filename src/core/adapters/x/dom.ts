@@ -14,11 +14,53 @@ export function mediaKeyFromUrl(url: string): string | null {
   } catch {
     return null
   }
-  if (!u.hostname.endsWith('twimg.com')) return null
+  // Exact host or a real `.twimg.com` subdomain — `endsWith('twimg.com')` alone
+  // would also accept a spoofed `evil-twimg.com`.
+  if (u.hostname !== 'pbs.twimg.com' && !u.hostname.endsWith('.twimg.com')) return null
   const base = u.pathname.slice(u.pathname.lastIndexOf('/') + 1)
   const dot = base.lastIndexOf('.')
   const key = dot >= 0 ? base.slice(0, dot) : base
   return key.length > 0 ? key : null
+}
+
+/**
+ * Whether a URL is a grabbable original-quality X *photo*: a `pbs.twimg.com`-style
+ * twimg host under the `/media/` path only. This deliberately excludes avatars
+ * (`/profile_images/`), link-card thumbnails (`/card_img/`), emoji, and video
+ * poster frames (`/*_video_thumb/`) — none of which live under `/media/`. Quick
+ * Grab needs this because hovering surfaces *any* `<img>`, not just media ones.
+ */
+export function isGrabbablePhotoUrl(url: string): boolean {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return false
+  }
+  // Photos are served only from `pbs.twimg.com`; pin the host exactly so neither a
+  // spoofed `evil-twimg.com` nor `video.twimg.com/media/*` slips through.
+  if (u.hostname !== 'pbs.twimg.com') return false
+  return u.pathname.startsWith('/media/')
+}
+
+/**
+ * The file extension for a *live* `<img>` photo. X serves the rendition format as
+ * a `?format=` query param (`jpg|png|webp`) rather than a path extension, so read
+ * that first; fall back to a dotted path segment, then to `jpg`. (The resolver's
+ * own ext logic reads only the path dot — correct for raw `media_url_https`, wrong
+ * for a rendered `<img>.src` whose path has no extension.)
+ */
+export function extFromImgUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    const fmt = u.searchParams.get('format')
+    if (fmt) return fmt
+    const base = u.pathname.slice(u.pathname.lastIndexOf('/') + 1)
+    const dot = base.lastIndexOf('.')
+    return dot >= 0 ? base.slice(dot + 1) : 'jpg'
+  } catch {
+    return 'jpg'
+  }
 }
 
 /**

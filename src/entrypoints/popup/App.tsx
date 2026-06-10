@@ -198,6 +198,39 @@ export function App() {
           Authenticated fallback (opt-in)
         </label>
 
+        <label class="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            aria-label="Quick Grab"
+            checked={settings.quickGrabEnabled}
+            onChange={(e) =>
+              void update({ quickGrabEnabled: (e.target as HTMLInputElement).checked })
+            }
+          />
+          Hover quick grab (hold modifier → grab one photo)
+        </label>
+
+        {settings.quickGrabEnabled && (
+          <Field label="Quick grab modifier">
+            <select
+              class="w-full rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+              aria-label="Quick grab modifier"
+              value={settings.quickGrabModifier}
+              onChange={(e) =>
+                void update({
+                  quickGrabModifier: (e.target as HTMLSelectElement)
+                    .value as Settings['quickGrabModifier'],
+                })
+              }
+            >
+              <option value="alt">Alt / Option</option>
+              <option value="shift">Shift</option>
+              <option value="ctrl">Control</option>
+              <option value="meta">⌘ Cmd / Win</option>
+            </select>
+          </Field>
+        )}
+
         {metrics && metrics.total > 0 && (
           <div class="rounded-md border border-zinc-200 p-3 text-xs dark:border-zinc-800">
             <div class="mb-1 font-medium text-zinc-600 dark:text-zinc-400">Download monitor</div>

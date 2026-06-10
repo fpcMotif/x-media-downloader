@@ -46,3 +46,17 @@ export function makeDirectStrategy(downloads: DownloadsPort): DownloadStrategy {
       }).pipe(Effect.map((id) => ({ kind: 'browser' as const, id }))),
   }
 }
+
+/**
+ * Route `data:` URLs (sidecar metadata) to the browser strategy — an external
+ * daemon like aria2 only speaks network schemes and would fail every sidecar.
+ * Everything else goes to `primary`.
+ */
+export function makeSchemeRoutingStrategy(
+  primary: DownloadStrategy,
+  dataUrls: DownloadStrategy,
+): DownloadStrategy {
+  return {
+    save: (req) => (req.url.startsWith('data:') ? dataUrls.save(req) : primary.save(req)),
+  }
+}

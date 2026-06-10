@@ -20,6 +20,10 @@ use these words, they mean exactly this.
 ## Actions & flows
 
 - **Bulk** — downloading every Media Item in a Tweet or Thread in one user action.
+- **Quick Grab** — the fastest path: hold a modifier (Option/Alt by default) and the
+  single photo under the cursor downloads itself at Original quality after a short
+  dwell. Resolves one hovered `<img>` to one Media Item; fires each photo at most
+  once per modifier press (the guard against a cursor sweep mass-downloading a grid).
 - **Passive capture** — obtaining media references *solely* from data the user's
   own browsing already fetched (X's own responses + the rendered DOM). Issues
   **no** extra network requests. The default, policy-safe path.

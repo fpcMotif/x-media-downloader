@@ -43,3 +43,8 @@ export const getSettings = (): Promise<Settings> =>
   provide(Effect.flatMap(SettingsService, (s) => s.get))
 export const setSettings = (patch: Partial<Settings>): Promise<Settings> =>
   provide(Effect.flatMap(SettingsService, (s) => s.set(patch)))
+
+/** Live subscription for long-lived contexts (content scripts), so popup changes
+ *  reach already-open tabs without a reload. Returns an unwatch function. */
+export const watchSettings = (cb: (s: Settings) => void): (() => void) =>
+  item.watch((raw) => cb(decode(raw)))

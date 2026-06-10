@@ -91,6 +91,9 @@ export function upgradePhotoUrl(url: string): string {
   try {
     const u = new URL(url)
     u.searchParams.set('name', 'orig')
+    // A `format=webp` rendition is a lossy transcode — X serves original bytes
+    // only as jpg/png, so request the jpg original instead.
+    if (u.searchParams.get('format') === 'webp') u.searchParams.set('format', 'jpg')
     return u.toString()
   } catch {
     return url

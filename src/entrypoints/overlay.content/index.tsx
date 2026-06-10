@@ -1,15 +1,91 @@
 import './style.css'
 import { render } from 'preact'
-import { detectFromJson } from '../../core/adapters/x'
-import { mediaKeyFromUrl, groupByTweet } from '../../core/adapters/x/dom'
+import { detectFromJson, resolveImageElement } from '../../core/adapters/x'
+import { mediaKeyFromUrl, groupByTweet, isGrabbablePhotoUrl } from '../../core/adapters/x/dom'
 import { emptySelection, selectTweet, resolveSelection } from '../../core/selection'
-import type { MediaItem } from '../../core/schema'
+import {
+  idleQuickGrab,
+  pressModifier,
+  releaseModifier,
+  canGrab,
+  markGrabbed,
+  isModifierKey,
+  modifierHeld,
+  type GrabModifier,
+  type QuickGrabState,
+} from '../../core/quickgrab'
+import { getSettings, watchSettings } from '../../core/settings'
+import type { MediaItem, Settings } from '../../core/schema'
+
+/** Debounce before a hovered photo grabs — long enough that a cursor sweeping a
+ *  grid can't machine-gun downloads, short enough to still feel like a hover. */
+const DWELL_MS = 220
+
+interface Rect {
+  readonly top: number
+  readonly left: number
+  readonly width: number
+  readonly height: number
+}
+
+const rectOf = (el: Element): Rect => {
+  const r = el.getBoundingClientRect()
+  return { top: r.top, left: r.left, width: r.width, height: r.height }
+}
+
+/** Alpha of a computed `backgroundColor` (`rgb(…)` / `rgba(…)` / keyword). */
+const bgAlpha = (color: string): number => {
+  const m = /^rgba?\(([^)]+)\)$/.exec(color)
+  if (!m) return color === 'transparent' ? 0 : 1
+  const parts = m[1]!.split(',')
+  return parts.length === 4 ? Number(parts[3]) : 1
+}
+
+/**
+ * The topmost `<img>` at a viewport point, unless something visually occludes
+ * it: this extension's own shadow host (launcher pill / toolbar), a modal layer
+ * the image sits outside of (lightbox backdrop, compose scrim), or any opaque
+ * layer. X's transparent hit-target divs over their own photos pass through.
+ */
+const imgAtPoint = (x: number, y: number): HTMLImageElement | null => {
+  const stack = document.elementsFromPoint(x, y)
+  const at = stack.findIndex((el) => el.tagName === 'IMG')
+  if (at < 0) return null
+  const img = stack[at] as HTMLImageElement
+  for (const el of stack.slice(0, at)) {
+    if (el.tagName === 'XMD-OVERLAY') return null
+    if (el.contains(img)) continue
+    const modal = el.closest('[aria-modal="true"], [role="dialog"]')
+    if (modal && !modal.contains(img)) return null
+    if (bgAlpha(getComputedStyle(el).backgroundColor) >= 0.5) return null
+  }
+  return img
+}
+
+const send = (items: ReadonlyArray<MediaItem>): void => {
+  if (items.length > 0) void browser.runtime.sendMessage({ _tag: 'DownloadRequest', items })
+}
+
+/** Send one tracked request; false when the background reports a start failure. */
+const sendTracked = (items: ReadonlyArray<MediaItem>): Promise<boolean> =>
+  browser.runtime
+    .sendMessage({ _tag: 'DownloadRequest', items })
+    .then((reply) => {
+      const r = reply as { completed?: number; total?: number } | undefined
+      return r?.completed !== undefined && r.completed === r.total
+    })
+    .catch(() => false)
 
 /**
  * ISOLATED content script: detects MediaItems from the MAIN-world tee, then
  * renders precise per-media hover overlays ("grab this" / "grab tweet") plus a
  * global launcher, in a style-isolated Shadow Root (grounding §e). Selection is
  * driven by the pure `core/selection` model.
+ *
+ * Quick Grab (the literal hover path): hold the configured modifier and a photo
+ * under the cursor downloads itself at Original quality after a short dwell. A
+ * ring + progress charge shows what's about to happen (and a window to bail); the
+ * pure `core/quickgrab` state machine fires each photo at most once per press.
  *
  * Note: the hover anchor matches rendered `<img>` elements to detected items by
  * twimg media key — robust for photos; video posters and exact placement need a
@@ -24,9 +100,25 @@ export default defineContentScript({
     let hovered: { item: MediaItem; top: number; left: number } | null = null
     let host: HTMLElement | null = null
 
-    const send = (items: ReadonlyArray<MediaItem>): void => {
-      if (items.length > 0) void browser.runtime.sendMessage({ _tag: 'DownloadRequest', items })
-    }
+    // Quick Grab state. `qgEnabled` fails CLOSED: a user who turned the feature
+    // off must never see it fire in the window before stored settings arrive.
+    let qgEnabled = false
+    let qgModifier: GrabModifier = 'alt'
+    let grab: QuickGrabState = idleQuickGrab
+    let hoverImg: HTMLImageElement | null = null
+    let hoverKey: string | null = null
+    // Phases: charging (dwell running / reply pending) → saved | failed; `noted`
+    // re-acknowledges an already-grabbed photo without replaying the save pulse.
+    let grabUi: {
+      key: string
+      rect: Rect
+      phase: 'charging' | 'saved' | 'noted' | 'failed'
+    } | null = null
+    let dwell: ReturnType<typeof setTimeout> | null = null
+    let cursorStyle: HTMLStyleElement | null = null
+    let lastX = 0
+    let lastY = 0
+    let pointerSeen = false
 
     const tweetItems = (tweetId: string): MediaItem[] => {
       const registry = groupByTweet([...byId.values()])
@@ -37,11 +129,135 @@ export default defineContentScript({
       if (host) render(<Overlay />, host)
     }
 
+    const clearDwell = (): void => {
+      if (dwell !== null) {
+        clearTimeout(dwell)
+        dwell = null
+      }
+    }
+
+    /** Toggle a page-level grab cursor on eligible photos while the modifier is held. */
+    const setCursorActive = (on: boolean): void => {
+      if (on && !cursorStyle) {
+        cursorStyle = document.createElement('style')
+        cursorStyle.textContent = `img[src*="pbs.twimg.com/media"]{cursor:copy}`
+        document.head.appendChild(cursorStyle)
+      } else if (!on && cursorStyle) {
+        cursorStyle.remove()
+        cursorStyle = null
+      }
+    }
+
+    const fireGrab = (img: HTMLImageElement, key: string): void => {
+      dwell = null
+      // The node may have been recycled, detached, or scrolled out from under the
+      // pointer during the dwell (X's timeline is virtualized) — bail unless it is
+      // still the same media, attached, and actually at the pointer's position.
+      if (
+        !img.isConnected ||
+        mediaKeyFromUrl(img.currentSrc || img.src) !== key ||
+        !document.elementsFromPoint(lastX, lastY).includes(img)
+      ) {
+        grabUi = null
+        rerender()
+        return
+      }
+      const item = byKey.get(key) ?? resolveImageElement(img, location.pathname)
+      if (!item) {
+        grabUi = null
+        rerender()
+        return
+      }
+      grab = markGrabbed(grab, key)
+      // Honest badge: hold the charged ring until the background's QueueUpdate
+      // reply says the download actually started, then flip to saved/failed.
+      grabUi = { key, rect: rectOf(img), phase: 'charging' }
+      rerender()
+      void (async () => {
+        const ok = await sendTracked([item])
+        if (grabUi === null || grabUi.key !== key) return
+        grabUi = { ...grabUi, phase: ok ? 'saved' : 'failed' }
+        rerender()
+      })()
+    }
+
+    /** Begin (or, if already grabbed this press, just acknowledge) a hovered photo. */
+    const armHover = (img: HTMLImageElement, key: string): void => {
+      if (canGrab(grab, key)) {
+        grabUi = { key, rect: rectOf(img), phase: 'charging' }
+        rerender()
+        dwell = setTimeout(() => fireGrab(img, key), DWELL_MS)
+      } else {
+        grabUi = { key, rect: rectOf(img), phase: 'noted' }
+        rerender()
+      }
+    }
+
+    /** Move the hover focus to `img`/`key` (either may be null), re-arming as needed. */
+    const focusHover = (img: HTMLImageElement | null, key: string | null): void => {
+      if (key === hoverKey && img === hoverImg) return
+      clearDwell()
+      hoverImg = img
+      hoverKey = key
+      if (grab.active && img && key) {
+        armHover(img, key)
+      } else {
+        grabUi = null
+        rerender()
+      }
+    }
+
+    const releaseAll = (): void => {
+      if (!grab.active && grabUi === null) return
+      grab = releaseModifier()
+      clearDwell()
+      setCursorActive(false)
+      grabUi = null
+      rerender()
+    }
+
+    // Settings reach open tabs live (popup writes → storage watch). Any change
+    // disarms an active grab: a swapped modifier would otherwise never see its
+    // keyup, leaving grab mode stuck on.
+    const applySettings = (s: Settings): void => {
+      qgEnabled = s.quickGrabEnabled
+      qgModifier = s.quickGrabModifier
+      releaseAll()
+    }
+    void getSettings().then(applySettings)
+    ctx.onInvalidated(watchSettings(applySettings))
+
     function Overlay() {
       return (
         <>
-          {hovered && (
-            <div class="xmd-hover" style={`top:${hovered.top}px;left:${hovered.left}px`}>
+          {grabUi && (
+            <div
+              key={grabUi.key}
+              class={`xmd-grab xmd-grab--${grabUi.phase}`}
+              style={{
+                top: `${grabUi.rect.top}px`,
+                left: `${grabUi.rect.left}px`,
+                width: `${grabUi.rect.width}px`,
+                height: `${grabUi.rect.height}px`,
+                '--xmd-dwell': `${DWELL_MS}ms`,
+              }}
+            >
+              <span class="xmd-grab__badge">
+                {grabUi.phase === 'charging'
+                  ? 'Grabbing'
+                  : grabUi.phase === 'failed'
+                    ? '⚠ Failed'
+                    : '✓ Saved'}
+              </span>
+              {grabUi.phase === 'charging' && (
+                <span class="xmd-grab__track">
+                  <span key={`${grabUi.key}:charge`} class="xmd-grab__charge" />
+                </span>
+              )}
+            </div>
+          )}
+          {hovered && !grab.active && (
+            <div class="xmd-hover" style={{ top: `${hovered.top}px`, left: `${hovered.left}px` }}>
               <button
                 class="xmd-btn"
                 onClick={() => {
@@ -112,9 +328,92 @@ export default defineContentScript({
       rerender()
     })
 
+    // Quick Grab hover tracking — independent of the toolbar above so the literal
+    // hover path stays isolated from the per-tweet "grab all" controls.
+    ctx.addEventListener(document, 'mousemove', (event) => {
+      const e = event as MouseEvent
+      lastX = e.clientX
+      lastY = e.clientY
+      pointerSeen = true
+      if (!qgEnabled) return
+      // Self-heal a swallowed keyup (native context menu, OS shortcut grabbing
+      // the key): the event's live modifier flags are the ground truth.
+      if (grab.active && !modifierHeld(e, qgModifier)) {
+        releaseAll()
+        return
+      }
+      if (!grab.active) return
+      const target = e.target as Element | null
+      const img =
+        (target?.closest('img') as HTMLImageElement | null) ?? imgAtPoint(e.clientX, e.clientY)
+      const src = img ? img.currentSrc || img.src : ''
+      const key = img && isGrabbablePhotoUrl(src) ? mediaKeyFromUrl(src) : null
+      focusHover(img, key)
+    })
+
+    // Scroll moves content without firing mousemove: re-run the hit-test so the
+    // dwell and ring track what is actually under the pointer, and refresh the
+    // rect when the same photo merely shifted.
+    ctx.addEventListener(
+      document,
+      'scroll',
+      () => {
+        if (!grab.active || !pointerSeen) return
+        const img = imgAtPoint(lastX, lastY)
+        const src = img ? img.currentSrc || img.src : ''
+        const key = img && isGrabbablePhotoUrl(src) ? mediaKeyFromUrl(src) : null
+        if (img === hoverImg && key === hoverKey) {
+          if (grabUi !== null && img !== null) {
+            grabUi = { ...grabUi, rect: rectOf(img) }
+            rerender()
+          }
+          return
+        }
+        focusHover(img, key)
+      },
+      { capture: true, passive: true },
+    )
+
+    ctx.addEventListener(window, 'keydown', (event) => {
+      const e = event as KeyboardEvent
+      if (!qgEnabled || !isModifierKey(e.key, qgModifier)) return
+      const was = grab.active
+      grab = pressModifier(grab)
+      if (grab.active && !was) {
+        setCursorActive(true)
+        // The pre-press toolbar anchor is stale the moment grab mode engages —
+        // without this it would resurface at its old coordinates on release.
+        hovered = null
+        // Arm the photo under the cursor — but only if a real pointer position is
+        // known (no mousemove yet ⇒ lastX/lastY are still 0,0, not a real hover).
+        const img = pointerSeen ? imgAtPoint(lastX, lastY) : null
+        const src = img ? img.currentSrc || img.src : ''
+        const key = img && isGrabbablePhotoUrl(src) ? mediaKeyFromUrl(src) : null
+        hoverImg = img
+        hoverKey = key
+        if (img && key) armHover(img, key)
+        else rerender() // hide the hover toolbar even when the press lands off a photo
+      }
+    })
+
+    ctx.addEventListener(window, 'keyup', (event) => {
+      if (isModifierKey((event as KeyboardEvent).key, qgModifier)) releaseAll()
+    })
+    ctx.addEventListener(window, 'blur', () => releaseAll())
+    ctx.addEventListener(document, 'mouseleave', () => focusHover(null, null))
+
     ctx.addEventListener(window, 'wxt:locationchange', () => {
       hovered = null
+      releaseAll()
+      focusHover(null, null)
       rerender()
+    })
+
+    ctx.onInvalidated(() => {
+      clearDwell()
+      setCursorActive(false)
+      grab = idleQuickGrab
+      grabUi = null
     })
   },
 })

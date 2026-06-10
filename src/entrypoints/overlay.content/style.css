@@ -34,3 +34,162 @@
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
   cursor: pointer;
 }
+
+/* Quick Grab affordance: a ring that tracks the hovered photo while the modifier
+   is held, charges over the dwell, then confirms the save. */
+.xmd-grab {
+  --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --xmd-accent: #1d9bf0;
+  --xmd-success: #00ba7c;
+  --ring: var(--xmd-accent);
+  --glow: rgba(29, 155, 240, 0.45);
+  position: fixed;
+  z-index: 2147483646;
+  box-sizing: border-box;
+  border-radius: clamp(8px, 12%, 16px);
+  pointer-events: none;
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity 150ms var(--xmd-ease),
+    transform 150ms var(--xmd-ease);
+
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+.xmd-grab--saved,
+.xmd-grab--noted {
+  --ring: var(--xmd-success);
+  --glow: rgba(0, 186, 124, 0.5);
+}
+
+.xmd-grab--failed {
+  --ring: #f4212e;
+  --glow: rgba(244, 33, 46, 0.45);
+}
+
+/* The ring itself — layered shadows adapt to any photo, unlike a hard border. */
+.xmd-grab::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 0 2px var(--ring),
+    0 0 0 1px rgba(0, 0, 0, 0.08),
+    0 6px 20px -4px var(--glow);
+  transition: box-shadow 150ms var(--xmd-ease);
+}
+
+/* One-shot success pulse on save — `--noted` (re-hovering an already-grabbed
+   photo) deliberately shows the green ring WITHOUT replaying this. */
+.xmd-grab--saved::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 2px var(--xmd-success);
+  opacity: 0;
+  animation: xmd-grab-pop 360ms var(--xmd-ease) forwards;
+}
+
+.xmd-grab__badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  background: #0f1419;
+  color: #fff;
+  font:
+    600 11px system-ui,
+    sans-serif;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 150ms var(--xmd-ease) 30ms,
+    transform 150ms var(--xmd-ease) 30ms,
+    background 150ms var(--xmd-ease);
+
+  @starting-style {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Keep the dark, high-contrast surface; signal success with green text + the green
+   ring, not a green fill (white-on-green is only 2.5:1, below WCAG AA). */
+.xmd-grab--saved .xmd-grab__badge,
+.xmd-grab--noted .xmd-grab__badge {
+  color: var(--xmd-success);
+}
+
+.xmd-grab--failed .xmd-grab__badge {
+  color: #ff7a85;
+}
+
+/* Charge bar fills over the dwell — the visible "about to grab, move away to
+   cancel" window. The dark track keeps the fill readable on photos whose bottom
+   edge matches the accent (sky, sea, X-blue screenshots); transform: scaleX
+   keeps the fill on the compositor. */
+.xmd-grab__track {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  height: 3px;
+  border-radius: 9999px;
+  background: rgba(15, 20, 25, 0.45);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+.xmd-grab__charge {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--xmd-accent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: xmd-grab-charge var(--xmd-dwell, 220ms) linear forwards;
+}
+
+@keyframes xmd-grab-charge {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes xmd-grab-pop {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1.04);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xmd-grab,
+  .xmd-grab__badge {
+    transition: opacity 120ms ease;
+    transform: none;
+  }
+
+  .xmd-grab--saved::after {
+    animation: none;
+  }
+}

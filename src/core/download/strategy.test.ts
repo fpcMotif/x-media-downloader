@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { Effect, Exit } from 'effect'
-import { makeDirectStrategy, type DownloadsPort, type SaveRequest } from './strategy'
+import {
+  makeDirectStrategy,
+  makeSchemeRoutingStrategy,
+  type DownloadsPort,
+  type DownloadStrategy,
+  type SaveRequest,
+} from './strategy'
 
 const req: SaveRequest = {
   id: 'm1',
@@ -34,5 +40,32 @@ describe('DirectStrategy', () => {
     }
     const exit = await Effect.runPromiseExit(makeDirectStrategy(downloads).save(req))
     expect(Exit.isFailure(exit)).toBe(true)
+  })
+})
+
+const recording = (tag: string, calls: string[]): DownloadStrategy => ({
+  save: (r) =>
+    Effect.sync(() => {
+      calls.push(`${tag}:${r.id}`)
+      return { kind: 'browser' as const, id: 1 }
+    }),
+})
+
+describe('makeSchemeRoutingStrategy', () => {
+  it('routes data: URLs (sidecars) to the browser strategy and the rest to primary', async () => {
+    const calls: string[] = []
+    const strategy = makeSchemeRoutingStrategy(
+      recording('aria2', calls),
+      recording('direct', calls),
+    )
+    await Effect.runPromise(strategy.save(req))
+    await Effect.runPromise(
+      strategy.save({
+        id: 'm1.json',
+        url: 'data:application/json;charset=utf-8,%7B%7D',
+        filename: 'alice/1_0.json',
+      }),
+    )
+    expect(calls).toEqual(['aria2:m1', 'direct:m1.json'])
   })
 })

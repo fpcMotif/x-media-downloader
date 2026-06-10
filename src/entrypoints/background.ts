@@ -2,7 +2,11 @@ import { Effect, Result, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import { Message, type MediaItem, type MetricsSnapshot, type Settings } from '../core/schema'
 import { SettingsService, SettingsServiceLive } from '../core/settings'
-import { makeDirectStrategy, type DownloadStrategy } from '../core/download/strategy'
+import {
+  makeDirectStrategy,
+  makeSchemeRoutingStrategy,
+  type DownloadStrategy,
+} from '../core/download/strategy'
 import { makeAria2Strategy, makeAria2RpcPort } from '../core/download/aria2'
 import { makeDownloadQueueCore } from '../core/download/queue'
 import { planDownloads } from '../core/download/destination'
@@ -42,24 +46,36 @@ const ZERO_SNAPSHOT: MetricsSnapshot = {
 let live: MetricsState | null = null
 const requestIdByDownloadId = new Map<number, string>()
 
+// In-flight request ids. A duplicate id (Quick Grab + '⬇ tweet' overlapping on
+// the same item) would download twice and corrupt the accumulator: extendTotal
+// counts both, the idempotent recordOutcome counts one, and `completed` can
+// never reach `total`. Duplicates are dropped while the original is in flight.
+const inFlight = new Set<string>()
+
 const persistSnapshot = (now: number): Promise<void> =>
   live ? metricsItem.setValue(snapshot(live, now)) : Promise.resolve()
 
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
+  const direct = makeDirectStrategy({ download: (opts) => browser.downloads.download(opts) })
   if (settings.downloadStrategy === 'aria2') {
     const port = makeAria2RpcPort({
       rpcUrl: settings.aria2RpcUrl,
       secret: settings.aria2Secret,
       fetchImpl: fetch,
     })
-    return makeAria2Strategy(port, {
-      split: settings.aria2Split,
-      ...(settings.aria2Dir ? { dir: settings.aria2Dir } : {}),
-    })
+    // Sidecar data: URLs go to the browser even under aria2 (which can't fetch
+    // them); they land in the browser download dir when aria2Dir points elsewhere.
+    return makeSchemeRoutingStrategy(
+      makeAria2Strategy(port, {
+        split: settings.aria2Split,
+        ...(settings.aria2Dir ? { dir: settings.aria2Dir } : {}),
+      }),
+      direct,
+    )
   }
   // 'direct' (default) and 'fetched' (offscreen path not yet built) both go Direct.
-  return makeDirectStrategy({ download: (opts) => browser.downloads.download(opts) })
+  return direct
 }
 
 const handleDownload = (items: ReadonlyArray<MediaItem>) =>
@@ -68,13 +84,18 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     const settings = yield* svc.get
     const strategy = chooseStrategy(settings)
     const queue = makeDownloadQueueCore({ strategy, concurrency: settings.downloadConcurrency })
-    const requests = items.flatMap((item) =>
-      planDownloads({
-        template: settings.filenameTemplate,
-        item,
-        sidecar: settings.sidecarMetadata,
-      }),
-    )
+    const requests = items
+      .flatMap((item) =>
+        planDownloads({
+          template: settings.filenameTemplate,
+          item,
+          sidecar: settings.sidecarMetadata,
+        }),
+      )
+      .filter((r) => !inFlight.has(r.id))
+    // Everything already in flight: report success without re-downloading.
+    if (requests.length === 0) return { _tag: 'QueueUpdate' as const, completed: 0, total: 0 }
+    for (const r of requests) inFlight.add(r.id)
 
     // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
     // accumulator (and keep the downloadId map) so the monitor reflects both;
@@ -100,11 +121,13 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     const now = Date.now()
     for (const o of res.outcomes) {
       if (!o.ok) {
+        inFlight.delete(o.id)
         live = recordOutcome(live, o.id, 'failed', now)
       } else if (o.handle?.kind === 'browser') {
         requestIdByDownloadId.set(o.handle.id, o.id)
         live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })
       } else {
+        inFlight.delete(o.id)
         live = recordOutcome(live, o.id, 'complete', now)
       }
     }
@@ -130,7 +153,10 @@ export default defineBackground(() => {
         /* the record may be gone; ignore */
       }
       const outcome = outcomeFromState(delta.state?.current)
-      if (outcome && live) live = recordOutcome(live, id, outcome, now)
+      if (outcome) {
+        inFlight.delete(id)
+        if (live) live = recordOutcome(live, id, outcome, now)
+      }
       await persistSnapshot(now)
     })()
   })
