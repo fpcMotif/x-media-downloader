@@ -222,6 +222,60 @@ export function App() {
           </label>
         </Section>
 
+        <Section
+          title="Bookmarks & Likes archive"
+          description="The Archive button on /i/bookmarks and your Likes page saves media plus a per-tweet history record. Already-archived tweets are skipped."
+        >
+          <label class="xmd-check-row">
+            <input
+              type="checkbox"
+              aria-label="Archive tweet text"
+              checked={settings.archiveIncludeText}
+              onChange={(e) =>
+                void update({ archiveIncludeText: (e.target as HTMLInputElement).checked })
+              }
+            />
+            <span>
+              <strong>Include tweet text</strong>
+              <small>Save the tweet's text in its history record</small>
+            </span>
+          </label>
+          <Field
+            label="Links to keep"
+            hint="Scholarly: arXiv, DOI, Springer, Cambridge, Oxford & other publishers"
+          >
+            <select
+              class="xmd-popup-control w-full"
+              aria-label="Links to keep"
+              value={settings.archiveLinkScope}
+              onChange={(e) =>
+                void update({
+                  archiveLinkScope: (e.target as HTMLSelectElement)
+                    .value as Settings['archiveLinkScope'],
+                })
+              }
+            >
+              <option value="all">All links</option>
+              <option value="scholarly">Scholarly only</option>
+              <option value="none">None</option>
+            </select>
+          </Field>
+          <label class="xmd-check-row">
+            <input
+              type="checkbox"
+              aria-label="Remove bookmark or like after save"
+              checked={settings.archiveRemoveAfterSave}
+              onChange={(e) =>
+                void update({ archiveRemoveAfterSave: (e.target as HTMLInputElement).checked })
+              }
+            />
+            <span>
+              <strong>Remove bookmark / like after save</strong>
+              <small>Clicks X's own button once saved. Opt-in; off by default</small>
+            </span>
+          </label>
+        </Section>
+
         <Section title="Speed" description="Keep direct mode conservative; raise only when needed.">
           <div class="xmd-inline-fields">
             <Field label="Concurrent downloads">

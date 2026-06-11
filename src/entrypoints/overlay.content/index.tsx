@@ -1,6 +1,14 @@
 import './style.css'
 import { render } from 'preact'
-import { detectFromJson, resolveImageElement } from '../../core/adapters/x'
+import {
+  archiveSourceFromPage,
+  archiveSourceFromPath,
+  detectFromJson,
+  detectTweetCaptures,
+  findRemovalButton,
+  findTweetArticle,
+  resolveImageElement,
+} from '../../core/adapters/x'
 import { mediaKeyFromUrl, isGrabbablePhotoUrl } from '../../core/adapters/x/dom'
 import {
   idleQuickGrab,
@@ -14,7 +22,13 @@ import {
   type QuickGrabState,
 } from '../../core/quickgrab'
 import { getSettings, watchSettings } from '../../core/settings'
-import type { MediaItem, Settings } from '../../core/schema'
+import type {
+  ArchiveSource,
+  ArchiveTweetResult,
+  MediaItem,
+  Settings,
+  TweetCapture,
+} from '../../core/schema'
 
 /** Hold-to-grab dwell: fast, but still intentional enough to avoid accidental saves. */
 const DWELL_MS = 1000
@@ -30,6 +44,8 @@ const rectOf = (el: Element): Rect => {
   const r = el.getBoundingClientRect()
   return { top: r.top, left: r.left, width: r.width, height: r.height }
 }
+
+const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /** Alpha of a computed `backgroundColor` (`rgb(…)` / `rgba(…)` / keyword). */
 const bgAlpha = (color: string): number => {
@@ -94,6 +110,18 @@ export default defineContentScript({
   async main(ctx) {
     const byId = new Map<string, MediaItem>()
     const byKey = new Map<string, MediaItem>()
+    // Saved tweets captured from Bookmarks/Likes responses — the Archive units.
+    const captures: Record<ArchiveSource, Map<string, TweetCapture>> = {
+      bookmarks: new Map(),
+      likes: new Map(),
+    }
+    let removeAfterSave = false
+    // Archive button phases; `removed` is null when removal was not enabled.
+    let archiveUi:
+      | { phase: 'running' }
+      | { phase: 'done'; saved: number; already: number; failed: number; removed: number | null }
+      | { phase: 'failed' }
+      | null = null
     let host: HTMLElement | null = null
 
     // Quick Grab state. `qgEnabled` fails CLOSED: a user who turned the feature
@@ -125,6 +153,78 @@ export default defineContentScript({
         clearTimeout(dwell)
         dwell = null
       }
+    }
+
+    /**
+     * Remove the bookmark/like of each archived tweet by clicking X's OWN
+     * action-bar button — the passive-first path: a user-gesture click that X
+     * turns into its own mutation, no API replay (ADR-0009). Only articles still
+     * rendered in the virtualized timeline can be clicked; the rest stay saved
+     * on X and are picked up (idempotently skipped, then removed) by a later run.
+     * Clicks are staggered so X's backend sees a human-ish pace.
+     */
+    const removeSaved = async (
+      source: ArchiveSource,
+      results: ReadonlyArray<ArchiveTweetResult>,
+    ): Promise<number> => {
+      let removed = 0
+      for (const result of results) {
+        if (!result.ok) continue
+        const article = findTweetArticle(document, result.tweetId)
+        const button = article ? findRemovalButton(article, source) : null
+        if (!button) continue
+        button.click()
+        removed++
+        // Intentionally sequential: each click is a mutation X performs itself.
+        // oxlint-disable-next-line no-await-in-loop
+        await delay(350)
+      }
+      return removed
+    }
+
+    const runArchive = async (source: ArchiveSource): Promise<void> => {
+      if (archiveUi?.phase === 'running') return
+      const tweets = [...captures[source].values()]
+      if (tweets.length === 0) return
+      archiveUi = { phase: 'running' }
+      rerender()
+      const reply = await browser.runtime
+        .sendMessage({ _tag: 'ArchiveRequest', source, tweets })
+        .catch(() => null)
+      const res = reply as { results?: ReadonlyArray<ArchiveTweetResult> } | null
+      if (!res?.results) {
+        archiveUi = { phase: 'failed' }
+      } else {
+        const ok = res.results.filter((r) => r.ok)
+        const removed = removeAfterSave ? await removeSaved(source, ok) : null
+        archiveUi = {
+          phase: 'done',
+          saved: ok.filter((r) => !r.alreadyArchived).length,
+          already: ok.filter((r) => r.alreadyArchived).length,
+          failed: res.results.length - ok.length,
+          removed,
+        }
+      }
+      rerender()
+      setTimeout(() => {
+        if (archiveUi !== null && archiveUi.phase !== 'running') {
+          archiveUi = null
+          rerender()
+        }
+      }, 6000)
+    }
+
+    const archiveLabel = (source: ArchiveSource): string => {
+      if (archiveUi?.phase === 'running') return 'Archiving…'
+      if (archiveUi?.phase === 'failed') return '⚠ Archive failed'
+      if (archiveUi?.phase === 'done') {
+        const parts = [`Saved ${archiveUi.saved}`]
+        if (archiveUi.already > 0) parts.push(`${archiveUi.already} already saved`)
+        if (archiveUi.failed > 0) parts.push(`${archiveUi.failed} failed`)
+        if (archiveUi.removed !== null) parts.push(`removed ${archiveUi.removed}`)
+        return parts.join(' · ')
+      }
+      return source === 'bookmarks' ? 'Archive bookmarks' : 'Archive likes'
     }
 
     /** Toggle a page-level grab cursor on eligible photos while the modifier is held. */
@@ -213,14 +313,31 @@ export default defineContentScript({
     const applySettings = (s: Settings): void => {
       qgEnabled = s.quickGrabEnabled
       qgModifier = s.quickGrabModifier
+      removeAfterSave = s.archiveRemoveAfterSave
       releaseAll()
     }
     void getSettings().then(applySettings)
     ctx.onInvalidated(watchSettings(applySettings))
 
     function Overlay() {
+      const source = archiveSourceFromPage(location.pathname)
+      const tweetCount = source === null ? 0 : captures[source].size
       return (
         <>
+          {source !== null && tweetCount > 0 && (
+            <button
+              type="button"
+              class="xmd-launcher xmd-launcher--archive"
+              disabled={archiveUi?.phase === 'running'}
+              aria-label={`Archive ${tweetCount} saved tweets from ${source}`}
+              onClick={() => void runArchive(source)}
+            >
+              <span class="xmd-launcher__label">{archiveLabel(source)}</span>
+              {(archiveUi === null || archiveUi.phase === 'running') && (
+                <span class="xmd-launcher__count">{tweetCount}</span>
+              )}
+            </button>
+          )}
           {grabUi && (
             <div
               key={grabUi.key}
@@ -289,6 +406,12 @@ export default defineContentScript({
           byId.set(item.id, item)
           const key = mediaKeyFromUrl(item.url)
           if (key) byKey.set(key, item)
+        }
+        const source = archiveSourceFromPath(detail.path)
+        if (source !== null) {
+          for (const capture of detectTweetCaptures(json)) {
+            captures[source].set(capture.tweetId, capture)
+          }
         }
         rerender()
       } catch {
@@ -382,6 +505,9 @@ export default defineContentScript({
       const cleared = byId.size
       byId.clear()
       byKey.clear()
+      captures.bookmarks.clear()
+      captures.likes.clear()
+      if (archiveUi?.phase !== 'running') archiveUi = null
       clearDwell()
       setCursorActive(false)
       grab = idleQuickGrab

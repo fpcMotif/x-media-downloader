@@ -82,6 +82,21 @@
   box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.16);
 }
 
+/* Archive launcher (Bookmarks/Likes pages): stacked above "Download all". */
+.xmd-launcher--archive {
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 58px);
+}
+
+.xmd-launcher--archive .xmd-launcher__count {
+  background: var(--xmd-success);
+}
+
+.xmd-launcher--archive:disabled {
+  cursor: progress;
+  opacity: 0.78;
+  transform: none;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .xmd-launcher:hover {
     background: var(--xmd-surface-dark-hover);

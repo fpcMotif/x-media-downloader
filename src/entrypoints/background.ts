@@ -1,6 +1,13 @@
 import { Effect, Result, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import { Message, type MediaItem, type MetricsSnapshot, type Settings } from '../core/schema'
+import {
+  Message,
+  type ArchiveRequest,
+  type ArchiveTweetResult,
+  type MediaItem,
+  type MetricsSnapshot,
+  type Settings,
+} from '../core/schema'
 import { SettingsService, SettingsServiceLive } from '../core/settings'
 import {
   makeDirectStrategy,
@@ -9,7 +16,14 @@ import {
 } from '../core/download/strategy'
 import { makeAria2Strategy, makeAria2RpcPort } from '../core/download/aria2'
 import { makeDownloadQueueCore } from '../core/download/queue'
-import { planDownloads } from '../core/download/destination'
+import { planDownloads, type PlannedDownload } from '../core/download/destination'
+import { makeSessionId } from '../core/archive/record'
+import {
+  coerceIndex,
+  markArchived,
+  planArchive,
+  sessionManifestDownload,
+} from '../core/archive/plan'
 import {
   emptyMetrics,
   extendTotal,
@@ -78,23 +92,19 @@ function chooseStrategy(settings: Settings): DownloadStrategy {
   return direct
 }
 
-const handleDownload = (items: ReadonlyArray<MediaItem>) =>
+/**
+ * Run planned downloads through the queue with in-flight de-duplication and
+ * monitoring (the core both DownloadRequest and ArchiveRequest share). Returns
+ * the per-request start outcomes of the requests that were NOT already in
+ * flight — callers must treat a missing outcome as "being handled elsewhere".
+ */
+const runRequests = (planned: ReadonlyArray<PlannedDownload>, settings: Settings) =>
   Effect.gen(function* () {
-    const svc = yield* SettingsService
-    const settings = yield* svc.get
     const strategy = chooseStrategy(settings)
     const queue = makeDownloadQueueCore({ strategy, concurrency: settings.downloadConcurrency })
-    const requests = items
-      .flatMap((item) =>
-        planDownloads({
-          template: settings.filenameTemplate,
-          item,
-          sidecar: settings.sidecarMetadata,
-        }),
-      )
-      .filter((r) => !inFlight.has(r.id))
+    const requests = planned.filter((r) => !inFlight.has(r.id))
     // Everything already in flight: report success without re-downloading.
-    if (requests.length === 0) return { _tag: 'QueueUpdate' as const, completed: 0, total: 0 }
+    if (requests.length === 0) return { completed: 0, total: 0, outcomes: [] }
     for (const r of requests) inFlight.add(r.id)
 
     // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
@@ -133,7 +143,97 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     }
     yield* Effect.promise(() => persistSnapshot(now))
 
+    return { completed: res.completed, total: res.total, outcomes: res.outcomes }
+  })
+
+const handleDownload = (items: ReadonlyArray<MediaItem>) =>
+  Effect.gen(function* () {
+    const svc = yield* SettingsService
+    const settings = yield* svc.get
+    const planned = items.flatMap((item) =>
+      planDownloads({
+        template: settings.filenameTemplate,
+        item,
+        sidecar: settings.sidecarMetadata,
+      }),
+    )
+    const res = yield* runRequests(planned, settings)
     return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total }
+  }).pipe(Effect.provide(SettingsServiceLive))
+
+// Durable record of archived tweet ids — the cross-session idempotency cut for
+// the Bookmarks & Likes archive (ADR-0009 revisits ADR-0005's "no history" for
+// this: ids + timestamps only, no captured content). Single-writer: this SW.
+const archiveIndexItem = storage.defineItem<unknown>('local:archiveIndex', { fallback: {} })
+
+/**
+ * One archive run: download every not-yet-archived tweet's media plus its
+ * `.tweet.json` history record, mark the successes in the durable index, and
+ * write a session manifest recording what the run did. `ok` per tweet means
+ * every download STARTED (the same honesty bar as QueueUpdate) — the caller
+ * gates bookmark/like removal on it.
+ */
+const handleArchive = (req: ArchiveRequest) =>
+  Effect.gen(function* () {
+    const svc = yield* SettingsService
+    const settings = yield* svc.get
+    const index = coerceIndex(yield* Effect.promise(() => archiveIndexItem.getValue()))
+    const now = Date.now()
+    const sessionId = makeSessionId(now)
+    const archivedAt = new Date(now).toISOString()
+    const options = {
+      template: settings.filenameTemplate,
+      sidecar: settings.sidecarMetadata,
+      includeText: settings.archiveIncludeText,
+      linkScope: settings.archiveLinkScope,
+    }
+    const plan = planArchive({
+      tweets: req.tweets,
+      source: req.source,
+      sessionId,
+      archivedAt,
+      index,
+      options,
+    })
+
+    const run = yield* runRequests(plan.downloads, settings)
+    const startedById = new Map(run.outcomes.map((o) => [o.id, o.ok]))
+    const results: ArchiveTweetResult[] = plan.tweets.map((t) => {
+      // A request missing from the outcomes was already in flight from another
+      // batch — count it as started rather than failing the tweet for it.
+      const started = t.requestIds.map((id) => startedById.get(id) ?? true)
+      return {
+        tweetId: t.tweetId,
+        ok: started.every(Boolean),
+        completed: started.filter(Boolean).length,
+        total: started.length,
+        alreadyArchived: false,
+      }
+    })
+    const skipped: ArchiveTweetResult[] = plan.skipped.map((tweetId) => ({
+      tweetId,
+      ok: true,
+      completed: 0,
+      total: 0,
+      alreadyArchived: true,
+    }))
+
+    yield* Effect.promise(() =>
+      archiveIndexItem.setValue(markArchived(index, results, sessionId, archivedAt)),
+    )
+    // Mark the session — but only when this run actually processed something.
+    if (results.length > 0) {
+      const manifest = sessionManifestDownload({
+        sessionId,
+        source: req.source,
+        archivedAt,
+        options,
+        results: [...results, ...skipped],
+      })
+      yield* runRequests([manifest], settings)
+    }
+
+    return { _tag: 'ArchiveResponse' as const, sessionId, results: [...results, ...skipped] }
   }).pipe(Effect.provide(SettingsServiceLive))
 
 export default defineBackground(() => {
@@ -168,6 +268,10 @@ export default defineBackground(() => {
     if (msg._tag === 'DownloadRequest') {
       void Effect.runPromise(handleDownload(msg.items)).then(sendResponse)
       return true // keep the channel open for the async reply
+    }
+    if (msg._tag === 'ArchiveRequest') {
+      void Effect.runPromise(handleArchive(msg)).then(sendResponse)
+      return true
     }
     if (msg._tag === 'MetricsRequest') {
       void metricsItem.getValue().then((snap) => sendResponse(snap ?? ZERO_SNAPSHOT))

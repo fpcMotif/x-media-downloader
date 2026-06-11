@@ -1,7 +1,17 @@
 import { describe, it, expect } from 'vitest'
-import { detectFromJson, detectFromDom, resolveImageElement } from './index'
+import {
+  archiveSourceFromPage,
+  archiveSourceFromPath,
+  detectFromJson,
+  detectFromDom,
+  detectTweetCaptures,
+  findRemovalButton,
+  findTweetArticle,
+  resolveImageElement,
+} from './index'
 import { renderFilename } from '../../download/filename'
 import tweetDetail from '../../../test/fixtures/tweet-detail.json'
+import bookmarksTimeline from '../../../test/fixtures/bookmarks-timeline.json'
 
 /** Build a detached subtree and return the nth `<img>` in document order. */
 function imgAt(html: string, n = 0): HTMLImageElement {
@@ -16,6 +26,119 @@ describe('detectFromJson', () => {
     expect(items).toHaveLength(2)
     expect(items[0]).toMatchObject({ handle: 'alice', tweetId: '1790', type: 'photo' })
     expect(items[0]!.url).toContain('name=orig')
+  })
+})
+
+describe('archiveSourceFromPath', () => {
+  it('recognises Bookmarks and Likes GraphQL captures only', () => {
+    expect(archiveSourceFromPath('/i/api/graphql/k3y/Bookmarks')).toBe('bookmarks')
+    expect(archiveSourceFromPath('/i/api/graphql/k3y/Likes')).toBe('likes')
+    expect(archiveSourceFromPath('/i/api/graphql/k3y/HomeTimeline')).toBeNull()
+    expect(archiveSourceFromPath('/some/Bookmarks')).toBeNull()
+  })
+})
+
+describe('archiveSourceFromPage', () => {
+  it('gates the launcher to the bookmarks and likes pages', () => {
+    expect(archiveSourceFromPage('/i/bookmarks')).toBe('bookmarks')
+    expect(archiveSourceFromPage('/i/bookmarks/all')).toBe('bookmarks')
+    expect(archiveSourceFromPage('/alice/likes')).toBe('likes')
+    expect(archiveSourceFromPage('/alice/likes/')).toBe('likes')
+    expect(archiveSourceFromPage('/home')).toBeNull()
+    expect(archiveSourceFromPage('/alice/status/1')).toBeNull()
+    expect(archiveSourceFromPage('/i/web/status/1/likes')).toBeNull()
+  })
+})
+
+describe('detectTweetCaptures', () => {
+  const captures = detectTweetCaptures(bookmarksTimeline)
+  const byId = new Map(captures.map((c) => [c.tweetId, c]))
+
+  it('captures each saved tweet once, with author, text, and created_at', () => {
+    expect(captures.map((c) => c.tweetId)).toEqual(['9001', '9002', '9003', '9004'])
+    expect(byId.get('9001')).toMatchObject({
+      handle: 'alice',
+      text: 'our new paper is out https://t.co/abc and a write-up https://t.co/def',
+      createdAt: 'Wed Jun 10 20:19:24 +0000 2026',
+    })
+  })
+
+  it('expands t.co links from the URL entities', () => {
+    expect(byId.get('9001')!.links).toEqual([
+      'https://arxiv.org/abs/2406.01234',
+      'https://example.com/blog',
+    ])
+    expect(byId.get('9002')!.links).toEqual([
+      'https://link.springer.com/book/10.1007/978-3-031-00000-0',
+    ])
+  })
+
+  it('resolves media at original quality, and tolerates text-only tweets', () => {
+    expect(byId.get('9001')!.media).toHaveLength(1)
+    expect(byId.get('9001')!.media[0]!.url).toContain('name=orig')
+    expect(byId.get('9002')!.media).toEqual([])
+  })
+
+  it('does not surface a quoted tweet as its own capture', () => {
+    expect(byId.has('8001')).toBe(false)
+    const outer = byId.get('9003')!
+    expect(outer.handle).toBe('carol')
+    expect(outer.media.map((m) => m.id)).toEqual(['p9003'])
+    // The quote survives as the outer tweet's link, so nothing is lost.
+    expect(outer.links).toContain('https://x.com/dave/status/8001')
+  })
+
+  it('prefers note_tweet long-form text and its entity links', () => {
+    const note = byId.get('9004')!
+    expect(note.text).toContain('full thoughts here')
+    expect(note.text!.endsWith('…')).toBe(false)
+    expect(note.links).toEqual(['https://academic.oup.com/book/0000'])
+  })
+})
+
+describe('findTweetArticle / findRemovalButton', () => {
+  const TIMELINE = `
+    <main>
+      <article data-testid="tweet">
+        <a href="/alice/status/100"><time>now</time></a>
+        <div role="link">
+          <a href="/bob/status/200"><span>@bob</span></a>
+        </div>
+        <button data-testid="removeBookmark"></button>
+        <button data-testid="unlike"></button>
+      </article>
+      <article data-testid="tweet">
+        <a href="/bob/status/200"><time>now</time></a>
+        <button data-testid="bookmark"></button>
+      </article>
+    </main>`
+
+  const root = (): HTMLElement => {
+    const el = document.createElement('div')
+    el.innerHTML = TIMELINE
+    return el
+  }
+
+  it("matches an article by its OWN permalink, not a quote card's", () => {
+    const r = root()
+    const article = findTweetArticle(r, '200')
+    expect(article).not.toBeNull()
+    expect(article!.querySelector('time')).not.toBeNull()
+    expect(article).toBe(r.querySelectorAll('article')[1])
+    expect(findTweetArticle(r, '999')).toBeNull()
+  })
+
+  it('finds the matching removal control per source', () => {
+    const article = findTweetArticle(root(), '100')!
+    expect(findRemovalButton(article, 'bookmarks')?.getAttribute('data-testid')).toBe(
+      'removeBookmark',
+    )
+    expect(findRemovalButton(article, 'likes')?.getAttribute('data-testid')).toBe('unlike')
+  })
+
+  it('returns null when the tweet is no longer bookmarked (button flipped)', () => {
+    const article = findTweetArticle(root(), '200')!
+    expect(findRemovalButton(article, 'bookmarks')).toBeNull()
   })
 })
 

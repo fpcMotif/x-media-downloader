@@ -1,0 +1,208 @@
+{
+  "data": {
+    "bookmark_timeline_v2": {
+      "timeline": {
+        "instructions": [
+          {
+            "type": "TimelineAddEntries",
+            "entries": [
+              {
+                "entryId": "tweet-9001",
+                "content": {
+                  "itemContent": {
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "rest_id": "9001",
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "__typename": "User",
+                              "legacy": { "screen_name": "alice" }
+                            }
+                          }
+                        },
+                        "legacy": {
+                          "full_text": "our new paper is out https://t.co/abc and a write-up https://t.co/def",
+                          "created_at": "Wed Jun 10 20:19:24 +0000 2026",
+                          "entities": {
+                            "urls": [
+                              {
+                                "url": "https://t.co/abc",
+                                "expanded_url": "https://arxiv.org/abs/2406.01234",
+                                "display_url": "arxiv.org/abs/2406.01234"
+                              },
+                              {
+                                "url": "https://t.co/def",
+                                "expanded_url": "https://example.com/blog",
+                                "display_url": "example.com/blog"
+                              }
+                            ]
+                          },
+                          "extended_entities": {
+                            "media": [
+                              {
+                                "type": "photo",
+                                "id_str": "p9001",
+                                "media_url_https": "https://pbs.twimg.com/media/FIG1.jpg"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "tweet-9002",
+                "content": {
+                  "itemContent": {
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "rest_id": "9002",
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "__typename": "User",
+                              "legacy": { "screen_name": "bob" }
+                            }
+                          }
+                        },
+                        "legacy": {
+                          "full_text": "great springer monograph https://t.co/ghi",
+                          "created_at": "Thu Jun 11 08:00:00 +0000 2026",
+                          "entities": {
+                            "urls": [
+                              {
+                                "url": "https://t.co/ghi",
+                                "expanded_url": "https://link.springer.com/book/10.1007/978-3-031-00000-0",
+                                "display_url": "link.springer.com/book/10.1007/9…"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "tweet-9003",
+                "content": {
+                  "itemContent": {
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "rest_id": "9003",
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "__typename": "User",
+                              "legacy": { "screen_name": "carol" }
+                            }
+                          }
+                        },
+                        "quoted_status_result": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "8001",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "__typename": "User",
+                                  "legacy": { "screen_name": "dave" }
+                                }
+                              }
+                            },
+                            "legacy": {
+                              "full_text": "quoted original",
+                              "extended_entities": {
+                                "media": [
+                                  {
+                                    "type": "photo",
+                                    "id_str": "p8001",
+                                    "media_url_https": "https://pbs.twimg.com/media/QUOTED.jpg"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        "legacy": {
+                          "full_text": "quoting this thread https://t.co/jkl",
+                          "created_at": "Thu Jun 11 09:30:00 +0000 2026",
+                          "entities": {
+                            "urls": [
+                              {
+                                "url": "https://t.co/jkl",
+                                "expanded_url": "https://x.com/dave/status/8001",
+                                "display_url": "x.com/dave/status/8001"
+                              }
+                            ]
+                          },
+                          "extended_entities": {
+                            "media": [
+                              {
+                                "type": "photo",
+                                "id_str": "p9003",
+                                "media_url_https": "https://pbs.twimg.com/media/OWN.jpg"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "entryId": "tweet-9004",
+                "content": {
+                  "itemContent": {
+                    "tweet_results": {
+                      "result": {
+                        "__typename": "Tweet",
+                        "rest_id": "9004",
+                        "core": {
+                          "user_results": {
+                            "result": {
+                              "__typename": "User",
+                              "legacy": { "screen_name": "erin" }
+                            }
+                          }
+                        },
+                        "note_tweet": {
+                          "note_tweet_results": {
+                            "result": {
+                              "text": "long-form review of the OUP volume, full thoughts here https://academic.oup.com/book/0000",
+                              "entity_set": {
+                                "urls": [
+                                  {
+                                    "url": "https://t.co/mno",
+                                    "expanded_url": "https://academic.oup.com/book/0000",
+                                    "display_url": "academic.oup.com/book/0000"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        "legacy": {
+                          "full_text": "long-form review of the OUP volume, full…",
+                          "created_at": "Thu Jun 11 10:00:00 +0000 2026",
+                          "entities": { "urls": [] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { Schema, Result } from 'effect'
-import { MediaItem, Settings, Message, ClearDetectedMediaRequest, ClearDownloadMonitorRequest } from './index'
+import {
+  MediaItem,
+  Settings,
+  Message,
+  ClearDetectedMediaRequest,
+  ClearDownloadMonitorRequest,
+} from './index'
 
 const validMediaRaw = {
   id: 'media-1',
@@ -53,10 +59,18 @@ describe('Settings schema', () => {
     expect(s.theme).toBe('system')
     expect(s.quickGrabEnabled).toBe(true)
     expect(s.quickGrabModifier).toBe('alt')
+    expect(s.archiveIncludeText).toBe(true)
+    expect(s.archiveLinkScope).toBe('all')
+    expect(s.archiveRemoveAfterSave).toBe(false)
   })
 
   it('rejects an unknown quick-grab modifier', () => {
     const result = Schema.decodeUnknownResult(Settings)({ quickGrabModifier: 'space' })
+    expect(Result.isFailure(result)).toBe(true)
+  })
+
+  it('rejects an unknown archive link scope', () => {
+    const result = Schema.decodeUnknownResult(Settings)({ archiveLinkScope: 'some' })
     expect(Result.isFailure(result)).toBe(true)
   })
 })
@@ -80,6 +94,29 @@ describe('Message schema', () => {
       rescanVisible: true,
     })
     expect(req.rescanVisible).toBe(true)
+  })
+
+  it('decodes an ArchiveRequest with optional capture fields absent', () => {
+    const raw = {
+      _tag: 'ArchiveRequest',
+      source: 'bookmarks',
+      tweets: [{ tweetId: '99', handle: 'alice', links: [], media: [validMediaRaw] }],
+    }
+    const msg = Schema.decodeUnknownSync(Message)(raw)
+    expect(msg._tag).toBe('ArchiveRequest')
+    const tweets = msg._tag === 'ArchiveRequest' ? msg.tweets : []
+    expect(msg._tag === 'ArchiveRequest' ? msg.source : '').toBe('bookmarks')
+    expect(tweets[0]!.text).toBeUndefined()
+    expect(tweets[0]!.media[0]!.handle).toBe('alice')
+  })
+
+  it('rejects an ArchiveRequest with an unknown source', () => {
+    const result = Schema.decodeUnknownResult(Message)({
+      _tag: 'ArchiveRequest',
+      source: 'retweets',
+      tweets: [],
+    })
+    expect(Result.isFailure(result)).toBe(true)
   })
 
   it('decodes ClearDownloadMonitorRequest with optional clearStaleLocks', () => {

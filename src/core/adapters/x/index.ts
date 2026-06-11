@@ -1,5 +1,5 @@
 import { resolveTweetMedia, upgradePhotoUrl, type RawMedia } from '../../resolver'
-import type { MediaItem } from '../../schema'
+import type { ArchiveSource, MediaItem, TweetCapture } from '../../schema'
 import { mediaKeyFromUrl, isGrabbablePhotoUrl, extFromImgUrl } from './dom'
 
 type Obj = Record<string, unknown>
@@ -48,6 +48,95 @@ export function detectFromJson(json: unknown): MediaItem[] {
     out.push(...resolveTweetMedia({ tweetId, handle, media: media as ReadonlyArray<RawMedia> }))
   })
   return out
+}
+
+/** The saved-tweets timeline a teed GraphQL response belongs to, if any. */
+export function archiveSourceFromPath(path: string): ArchiveSource | null {
+  if (!path.includes('/i/api/graphql/')) return null
+  if (path.includes('/Bookmarks')) return 'bookmarks'
+  if (path.includes('/Likes')) return 'likes'
+  return null
+}
+
+/** The saved-tweets page the user is ON (`/i/bookmarks`, `/{handle}/likes`) —
+ *  gates where the Archive launcher appears. */
+export function archiveSourceFromPage(pathname: string): ArchiveSource | null {
+  if (pathname === '/i/bookmarks' || pathname.startsWith('/i/bookmarks/')) return 'bookmarks'
+  return /^\/[A-Za-z0-9_]{1,15}\/likes\/?$/.test(pathname) ? 'likes' : null
+}
+
+/** A tweet result node: `legacy.full_text` + an id distinguishes it from users,
+ *  cards, and other `legacy`-bearing nodes. */
+function tweetIdOf(obj: Obj): string {
+  const legacy = obj['legacy']
+  if (!isObj(legacy) || typeof legacy['full_text'] !== 'string') return ''
+  return String(obj['rest_id'] ?? legacy['id_str'] ?? '')
+}
+
+/** `expanded_url`s (fallback `url`) from an `entities`-style `{ urls: [...] }` set. */
+function urlsFromEntitySet(set: unknown, into: string[]): void {
+  const urls = isObj(set) ? set['urls'] : undefined
+  if (!Array.isArray(urls)) return
+  for (const u of urls) {
+    if (!isObj(u)) continue
+    const expanded = u['expanded_url'] ?? u['url']
+    if (typeof expanded === 'string' && expanded !== '') into.push(expanded)
+  }
+}
+
+/**
+ * Extract the saved tweets from a captured Bookmarks/Likes response as
+ * TweetCaptures — the archive unit. Unlike {@link detectFromJson} this prunes
+ * `quoted_status_result` / `retweeted_status_result` subtrees: the bookmark or
+ * like belongs to the OUTER tweet, and a nested quote must not become a
+ * separate archive entry (its permalink survives in the outer tweet's links).
+ * Long-form text and its links come from `note_tweet` when present.
+ */
+export function detectTweetCaptures(json: unknown): TweetCapture[] {
+  const out: TweetCapture[] = []
+  const seen = new Set<string>()
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const v of node) visit(v)
+      return
+    }
+    if (!isObj(node)) return
+    const tweetId = tweetIdOf(node)
+    if (tweetId !== '' && !seen.has(tweetId)) {
+      seen.add(tweetId)
+      out.push(captureTweet(node, tweetId))
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'quoted_status_result' || key === 'retweeted_status_result') continue
+      visit(value)
+    }
+  }
+  visit(json)
+  return out
+}
+
+function captureTweet(obj: Obj, tweetId: string): TweetCapture {
+  const legacy = obj['legacy'] as Obj
+  const handle = findScreenName(obj) ?? ''
+  const noteTweet = obj['note_tweet']
+  const noteResults = isObj(noteTweet) ? noteTweet['note_tweet_results'] : undefined
+  const note = isObj(noteResults) ? noteResults['result'] : undefined
+  const noteText = isObj(note) && typeof note['text'] === 'string' ? note['text'] : undefined
+  const text = noteText ?? (legacy['full_text'] as string)
+  const links: string[] = []
+  if (isObj(note)) urlsFromEntitySet(note['entity_set'], links)
+  urlsFromEntitySet(legacy['entities'], links)
+  const ee = legacy['extended_entities']
+  const rawMedia = isObj(ee) && Array.isArray(ee['media']) ? ee['media'] : []
+  const createdAt = legacy['created_at']
+  return {
+    tweetId,
+    handle,
+    text,
+    ...(typeof createdAt === 'string' ? { createdAt } : {}),
+    links: [...new Set(links)],
+    media: resolveTweetMedia({ tweetId, handle, media: rawMedia as ReadonlyArray<RawMedia> }),
+  }
 }
 
 /** X's internal permalinks `/i/web/status/{id}` and `/i/status/{id}` — no author. */
@@ -143,6 +232,30 @@ export function resolveImageElement(img: HTMLImageElement, pathname = ''): Media
     ext: extFromImgUrl(url),
     index,
   }
+}
+
+/**
+ * The rendered article whose OWN permalink is `tweetId` — not one that merely
+ * quotes it. Matching via {@link contextFromArticle} keeps a remove-bookmark /
+ * unlike click from landing on the wrong tweet's action bar. Returns null when
+ * X's virtualized timeline has recycled the article out of the DOM.
+ */
+export function findTweetArticle(root: ParentNode, tweetId: string): Element | null {
+  for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
+    if (contextFromArticle(article)?.tweetId === tweetId) return article
+  }
+  return null
+}
+
+/** X's own action-bar buttons; clicking them is the passive-first way to remove
+ *  a bookmark or like (the user's gesture, X's own mutation — no API replay). */
+const REMOVAL_TESTID: Record<ArchiveSource, string> = {
+  bookmarks: 'removeBookmark',
+  likes: 'unlike',
+}
+
+export function findRemovalButton(article: Element, source: ArchiveSource): HTMLElement | null {
+  return article.querySelector<HTMLElement>(`[data-testid="${REMOVAL_TESTID[source]}"]`)
 }
 
 /** DOM fallback: photos already rendered as pbs.twimg.com/media images. */

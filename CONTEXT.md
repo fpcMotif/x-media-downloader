@@ -32,6 +32,23 @@ use these words, they mean exactly this.
 - **Auth fallback** — an opt-in, default-**off** escalation that replays exactly
   one authenticated request to reach Media Items not yet loaded. **Not** passive;
   never enumerates a profile.
+- **Archive** — draining the user's Bookmarks or Likes: download each saved
+  tweet's media, write its **Tweet Record**, optionally remove the bookmark/like,
+  and mark the run with a **Session Manifest**. Idempotent via the **Archive
+  Index**.
+- **Tweet Capture** — one saved tweet as extracted from a Bookmarks/Likes
+  response: author, text, expanded links, created-at, and its Media Items. The
+  unit an Archive run consumes.
+- **Tweet Record** — the per-tweet `.tweet.json` history file saved next to the
+  tweet's media: provenance plus (per settings) the tweet text and its links.
+- **Scholarly Link** — an external link whose host is a known publisher or
+  preprint server (arXiv, DOI, Springer, Cambridge, OUP, …). The archive can be
+  scoped to keep all links, scholarly links only, or none.
+- **Session Manifest** — one `.json` file per Archive run recording which tweets
+  it saved, failed, or skipped, and the options in force.
+- **Archive Index** — the durable record (tweet ids + timestamps only) of what
+  has already been archived; the reason re-running an Archive downloads nothing
+  twice.
 
 ## Components (by responsibility, not implementation)
 
