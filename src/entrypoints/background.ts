@@ -59,6 +59,14 @@ const requestIdByDownloadId = new Map<number, string>()
 // never reach `total`. Duplicates are dropped while the original is in flight.
 const inFlight = new Set<string>()
 
+// Maps requestId → jobId so the onChanged listener can report item-level
+// outcomes to the cloud without re-reading settings on every event.
+const requestIdToJobId = new Map<string, string>()
+
+// Last-known Worker URL, cached from settings so the async onChanged listener
+// can call the cloud client without an extra settings read per event.
+let cachedWorkerUrl = ''
+
 const persistSnapshot = (now: number): Promise<void> =>
   live ? metricsItem.setValue(snapshot(live, now)) : Promise.resolve()
 
@@ -180,7 +188,12 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     // Fire cloud job creation before local metrics so history starts even if the
     // SW recycles mid-batch. This is intentionally fire-and-forget.
     const jobId = crypto.randomUUID()
+    cachedWorkerUrl = settings.cloudWorkerUrl
     if (settings.cloudWorkerUrl) {
+      // Register requestId → jobId for the onChanged listener.
+      for (const r of requests) {
+        if (!r.id.endsWith('.json')) requestIdToJobId.set(r.id, jobId)
+      }
       void syncJobStart(settings.cloudWorkerUrl, jobId, items, settings.filenameTemplate, requests.length)
     }
 
@@ -209,13 +222,27 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     for (const o of res.outcomes) {
       if (!o.ok) {
         inFlight.delete(o.id)
+        requestIdToJobId.delete(o.id)
         live = recordOutcome(live, o.id, 'failed', now)
+        // Aria2 failures-to-start: report item outcome immediately.
+        if (cachedWorkerUrl && !o.id.endsWith('.json')) {
+          void makeCloudClient(cachedWorkerUrl)
+            .updateItem(jobId, o.id, { status: 'failed', attemptCount: 1 })
+            .catch(() => {})
+        }
       } else if (o.handle?.kind === 'browser') {
         requestIdByDownloadId.set(o.handle.id, o.id)
         live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })
       } else {
+        // Aria2 hand-off: terminal success from our side.
         inFlight.delete(o.id)
+        requestIdToJobId.delete(o.id)
         live = recordOutcome(live, o.id, 'complete', now)
+        if (cachedWorkerUrl && !o.id.endsWith('.json')) {
+          void makeCloudClient(cachedWorkerUrl)
+            .updateItem(jobId, o.id, { status: 'downloaded', attemptCount: 1 })
+            .catch(() => {})
+        }
       }
     }
     yield* Effect.promise(() => persistSnapshot(now))
@@ -265,6 +292,18 @@ export default defineBackground(() => {
       if (outcome) {
         inFlight.delete(id)
         if (live) live = recordOutcome(live, id, outcome, now)
+
+        // Report individual item outcome to cloud (browser download path).
+        const jobId = requestIdToJobId.get(id)
+        if (jobId && cachedWorkerUrl && !id.endsWith('.json')) {
+          requestIdToJobId.delete(id)
+          void makeCloudClient(cachedWorkerUrl)
+            .updateItem(jobId, id, {
+              status: outcome === 'complete' ? 'downloaded' : 'failed',
+              attemptCount: 1,
+            })
+            .catch(() => {})
+        }
       }
       await persistSnapshot(now)
     })()

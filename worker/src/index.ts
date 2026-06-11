@@ -4,7 +4,7 @@ interface Env {
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 }
 
@@ -100,6 +100,11 @@ async function handleUpdateJob(req: Request, env: Env, jobId: string): Promise<R
   return respond({ id: jobId })
 }
 
+async function handleDeleteJob(env: Env, jobId: string): Promise<Response> {
+  await env.DB.prepare(`DELETE FROM download_jobs WHERE id = ?`).bind(jobId).run()
+  return respond({ id: jobId })
+}
+
 async function handleListJobs(env: Env, userId: string, limit: number): Promise<Response> {
   const { results } = await env.DB.prepare(
     `SELECT id,source_kind,source_url,status,total,completed,failed,
@@ -125,6 +130,37 @@ async function handleGetJob(env: Env, jobId: string): Promise<Response> {
   })
 }
 
+async function handleUpdateItem(
+  req: Request,
+  env: Env,
+  jobId: string,
+  itemId: string,
+): Promise<Response> {
+  const body = (await req.json()) as Record<string, unknown>
+  const now = Date.now()
+  const fieldMap: Record<string, string> = {
+    status: 'status',
+    bytesReceived: 'bytes_received',
+    bytesTotal: 'bytes_total',
+    attemptCount: 'attempt_count',
+    lastError: 'last_error',
+  }
+  const sets: string[] = ['updated_at = ?']
+  const vals: unknown[] = [now]
+  for (const [key, col] of Object.entries(fieldMap)) {
+    if (key in body) {
+      sets.push(`${col} = ?`)
+      vals.push(body[key] ?? null)
+    }
+  }
+  await env.DB.prepare(
+    `UPDATE download_items SET ${sets.join(', ')} WHERE id = ? AND job_id = ?`,
+  )
+    .bind(...vals, itemId, jobId)
+    .run()
+  return respond({ id: itemId })
+}
+
 // ─── main fetch handler ───────────────────────────────────────────────────────
 
 export default {
@@ -146,11 +182,19 @@ export default {
       }
 
       // /jobs/:id routes
-      const m = /^\/jobs\/([^/]+)$/.exec(pathname)
-      if (m) {
-        const id = m[1]!
+      const jobMatch = /^\/jobs\/([^/]+)$/.exec(pathname)
+      if (jobMatch) {
+        const id = jobMatch[1]!
         if (method === 'PATCH') return handleUpdateJob(request, env, id)
         if (method === 'GET') return handleGetJob(env, id)
+        if (method === 'DELETE') return handleDeleteJob(env, id)
+      }
+
+      // /jobs/:jobId/items/:itemId routes
+      const itemMatch = /^\/jobs\/([^/]+)\/items\/([^/]+)$/.exec(pathname)
+      if (itemMatch) {
+        const [, jobId, itemId] = itemMatch
+        if (method === 'PATCH') return handleUpdateItem(request, env, jobId!, itemId!)
       }
 
       return respond({ error: 'not_found' }, 404)

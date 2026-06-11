@@ -28,6 +28,14 @@ export interface CloudJobUpdate {
   readonly etaSeconds?: number | null
 }
 
+export interface CloudItemUpdate {
+  readonly status: 'downloading' | 'downloaded' | 'failed'
+  readonly bytesReceived?: number
+  readonly bytesTotal?: number
+  readonly attemptCount?: number
+  readonly lastError?: string | null
+}
+
 export interface CloudJobRecord {
   readonly id: string
   readonly sourceKind: string
