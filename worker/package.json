@@ -1,0 +1,17 @@
+{
+  "name": "xmd-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute xmd-jobs --file=schema.sql",
+    "db:init:prod": "wrangler d1 execute xmd-jobs --remote --file=schema.sql",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241004.0",
+    "wrangler": "^3.99.0"
+  }
+}

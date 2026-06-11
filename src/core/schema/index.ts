@@ -45,6 +45,9 @@ export const Settings = Schema.Struct({
   aria2Secret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   aria2Dir: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   aria2Split: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(8))),
+  // Optional Cloudflare Worker URL for persistent job history and cloud sync.
+  // Empty string means cloud sync is disabled.
+  cloudWorkerUrl: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
 })
 export type Settings = typeof Settings.Type
 
@@ -83,6 +86,7 @@ export const MetricsRequest = Schema.TaggedStruct('MetricsRequest', {})
 export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {
   snapshot: MetricsSnapshot,
 })
+export const HistoryRequest = Schema.TaggedStruct('HistoryRequest', {})
 
 export const Message = Schema.Union([
   DetectRequest,
@@ -91,5 +95,6 @@ export const Message = Schema.Union([
   QueueUpdate,
   MetricsRequest,
   MetricsUpdate,
+  HistoryRequest,
 ])
 export type Message = typeof Message.Type

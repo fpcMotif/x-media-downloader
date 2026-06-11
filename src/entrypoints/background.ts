@@ -20,10 +20,17 @@ import {
   snapshot,
   type MetricsState,
 } from '../core/download/metrics'
+import { makeCloudClient } from '../core/cloud/client'
+import type { CloudJobRecord } from '../core/cloud/types'
 
 // Ephemeral monitoring snapshot — session storage survives SW recycling but not
 // a browser restart (ADR-0005). The popup polls it via `MetricsRequest`.
 const metricsItem = storage.defineItem<MetricsSnapshot | null>('session:metrics', {
+  fallback: null,
+})
+
+// Stable anonymous user ID persisted across browser restarts for cloud history.
+const cloudUserIdItem = storage.defineItem<string | null>('local:cloudUserId', {
   fallback: null,
 })
 
@@ -54,6 +61,79 @@ const inFlight = new Set<string>()
 
 const persistSnapshot = (now: number): Promise<void> =>
   live ? metricsItem.setValue(snapshot(live, now)) : Promise.resolve()
+
+// ─── cloud user ID ────────────────────────────────────────────────────────────
+
+const getOrCreateCloudUserId = async (): Promise<string> => {
+  const id = await cloudUserIdItem.getValue()
+  if (id !== null) return id
+  const fresh = crypto.randomUUID()
+  await cloudUserIdItem.setValue(fresh)
+  return fresh
+}
+
+// ─── cloud sync helpers (fire-and-forget; never block downloads) ──────────────
+
+const syncJobStart = async (
+  workerUrl: string,
+  jobId: string,
+  items: ReadonlyArray<MediaItem>,
+  template: string,
+  planned: number,
+): Promise<void> => {
+  try {
+    const userId = await getOrCreateCloudUserId()
+    await makeCloudClient(workerUrl).createJob({
+      id: jobId,
+      userId,
+      sourceKind: 'tweet',
+      total: planned,
+      items: items.map((item) => ({
+        id: item.id,
+        mediaId: item.id,
+        tweetId: item.tweetId,
+        handle: item.handle,
+        type: item.type,
+        url: item.url,
+        ext: item.ext,
+        filename: template,
+      })),
+    })
+  } catch {
+    // cloud sync is best-effort; never surface errors to the download path
+  }
+}
+
+const syncJobFinish = async (
+  workerUrl: string,
+  jobId: string,
+  snap: MetricsSnapshot,
+): Promise<void> => {
+  try {
+    const done = snap.completed + snap.failed
+    const status =
+      done >= snap.total
+        ? snap.failed === 0
+          ? ('complete' as const)
+          : snap.completed === 0
+            ? ('failed' as const)
+            : ('partial' as const)
+        : ('running' as const)
+    await makeCloudClient(workerUrl).updateJob(jobId, {
+      status,
+      completed: snap.completed,
+      failed: snap.failed,
+      bytesReceived: snap.bytesReceived,
+      bytesTotal: snap.bytesTotal,
+      throughputBps: snap.throughputBps,
+      etaSeconds: snap.etaSeconds ?? null,
+    })
+  } catch {
+    // best-effort
+  }
+}
+
+// ─── download pipeline ────────────────────────────────────────────────────────
 
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
@@ -97,6 +177,13 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     if (requests.length === 0) return { _tag: 'QueueUpdate' as const, completed: 0, total: 0 }
     for (const r of requests) inFlight.add(r.id)
 
+    // Fire cloud job creation before local metrics so history starts even if the
+    // SW recycles mid-batch. This is intentionally fire-and-forget.
+    const jobId = crypto.randomUUID()
+    if (settings.cloudWorkerUrl) {
+      void syncJobStart(settings.cloudWorkerUrl, jobId, items, settings.filenameTemplate, requests.length)
+    }
+
     // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
     // accumulator (and keep the downloadId map) so the monitor reflects both;
     // only start fresh once everything has settled (D1).
@@ -133,8 +220,30 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     }
     yield* Effect.promise(() => persistSnapshot(now))
 
+    // Push terminal status to cloud after local metrics are settled.
+    if (settings.cloudWorkerUrl && live) {
+      void syncJobFinish(settings.cloudWorkerUrl, jobId, snapshot(live, now))
+    }
+
     return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total }
   }).pipe(Effect.provide(SettingsServiceLive))
+
+// ─── history handler ──────────────────────────────────────────────────────────
+
+const handleHistory = (): Promise<CloudJobRecord[]> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const svc = yield* SettingsService
+      const settings = yield* svc.get
+      if (!settings.cloudWorkerUrl) return [] as CloudJobRecord[]
+      const userId = yield* Effect.promise(getOrCreateCloudUserId)
+      return yield* Effect.promise(() =>
+        makeCloudClient(settings.cloudWorkerUrl).listJobs(userId),
+      )
+    }).pipe(Effect.provide(SettingsServiceLive)),
+  ).catch((): CloudJobRecord[] => [])
+
+// ─── background entry point ───────────────────────────────────────────────────
 
 export default defineBackground(() => {
   // Listeners registered synchronously at the top of main() (grounding §b).
@@ -171,6 +280,10 @@ export default defineBackground(() => {
     }
     if (msg._tag === 'MetricsRequest') {
       void metricsItem.getValue().then((snap) => sendResponse(snap ?? ZERO_SNAPSHOT))
+      return true
+    }
+    if (msg._tag === 'HistoryRequest') {
+      void handleHistory().then(sendResponse)
       return true
     }
     return false

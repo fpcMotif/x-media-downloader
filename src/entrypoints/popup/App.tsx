@@ -3,6 +3,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '../../core/settings'
 import { aria2OriginPattern } from '../../core/download/aria2'
 import type { MetricsSnapshot, Settings } from '../../core/schema'
+import type { CloudJobRecord } from '../../core/cloud/types'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '—'
@@ -10,11 +11,23 @@ function fmtRate(bps: number): string {
   return `${Math.round(bps / 1000)} KB/s`
 }
 
+function fmtDate(ts: number): string {
+  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+const STATUS_DOT: Record<string, string> = {
+  complete: 'bg-emerald-500',
+  partial: 'bg-amber-500',
+  failed: 'bg-red-500',
+  running: 'bg-blue-500 animate-pulse',
+}
+
 export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
   const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
+  const [history, setHistory] = useState<CloudJobRecord[]>([])
 
   useEffect(() => {
     void getSettings().then(setSettingsState)
@@ -44,6 +57,16 @@ export function App() {
     const handle = setInterval(poll, 1000)
     return () => clearInterval(handle)
   }, [])
+
+  // Fetch job history from the cloud Worker when it is configured.
+  const cloudUrl = settings?.cloudWorkerUrl
+  useEffect(() => {
+    if (!cloudUrl) return
+    void browser.runtime
+      .sendMessage({ _tag: 'HistoryRequest' })
+      .then((jobs) => setHistory(Array.isArray(jobs) ? (jobs as CloudJobRecord[]) : []))
+      .catch(() => {})
+  }, [cloudUrl])
 
   if (!settings) {
     return <div class="w-80 p-4 text-sm text-zinc-500">Loading…</div>
@@ -231,6 +254,21 @@ export function App() {
           </Field>
         )}
 
+        <Field label="Cloud sync URL (optional)">
+          <input
+            class="w-full rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            aria-label="Cloud worker URL"
+            placeholder="https://xmd-worker.yourname.workers.dev"
+            value={settings.cloudWorkerUrl}
+            onChange={(e) =>
+              void update({ cloudWorkerUrl: (e.target as HTMLInputElement).value })
+            }
+          />
+          <p class="mt-1 text-xs text-zinc-500">
+            Cloudflare Worker · persists job history across browser restarts
+          </p>
+        </Field>
+
         {metrics && metrics.total > 0 && (
           <div class="rounded-md border border-zinc-200 p-3 text-xs dark:border-zinc-800">
             <div class="mb-1 font-medium text-zinc-600 dark:text-zinc-400">Download monitor</div>
@@ -247,10 +285,34 @@ export function App() {
             </dl>
           </div>
         )}
+
+        {settings.cloudWorkerUrl && history.length > 0 && (
+          <div class="rounded-md border border-zinc-200 p-3 text-xs dark:border-zinc-800">
+            <div class="mb-2 font-medium text-zinc-600 dark:text-zinc-400">Job history</div>
+            <ul class="space-y-1.5">
+              {history.slice(0, 8).map((job) => (
+                <li key={job.id} class="flex items-center gap-2">
+                  <span
+                    class={`size-1.5 shrink-0 rounded-full ${STATUS_DOT[job.status] ?? 'bg-zinc-400'}`}
+                  />
+                  <span class="text-zinc-400">{fmtDate(job.createdAt)}</span>
+                  <span class="flex-1 truncate text-zinc-500">{job.sourceKind}</span>
+                  <span class="tabular-nums">
+                    {job.completed}/{job.total}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <footer class="border-t border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800">
-        {saved ? 'Saved ✓' : 'Local-only · no tracking'}
+        {saved
+          ? 'Saved ✓'
+          : settings.cloudWorkerUrl
+            ? 'Cloud sync enabled'
+            : 'Local-only · no tracking'}
       </footer>
     </div>
   )
