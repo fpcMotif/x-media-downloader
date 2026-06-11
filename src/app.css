@@ -124,10 +124,15 @@ body,
   box-shadow: inset 0 1px 0 var(--xmd-line);
 }
 
-.xmd-quick-actions {
+.xmd-quick-actions,
+.xmd-archive-actions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
   gap: 8px;
+}
+
+.xmd-archive-actions {
+  margin-bottom: 4px;
 }
 
 .xmd-primary-button,
@@ -553,6 +558,7 @@ body,
   }
 
   .xmd-quick-actions,
+  .xmd-archive-actions,
   .xmd-mode-picker {
     grid-template-columns: 1fr;
   }

@@ -63,6 +63,26 @@ use these words, they mean exactly this.
 - **Popup** — the toolbar panel: Download Queue manager + Settings + Monitor (the
   manager path).
 
+## Archive job (Bookmarks/Likes)
+
+- **Archive job** — a save job over the user's **Bookmarks** or **Likes**:
+  download every Media Item of the captured tweets, write a per-tweet **Archive
+  record**, and (opt-in) **clear** the bookmark/like once saved. Idempotent.
+- **Archive record** — a `{tweetId}_tweet.json` sibling of the saved media
+  holding the tweet's provenance: url, author, optional text, and classified
+  outbound **Links**. Rides the sidecar `data:`-URL path (no new permissions).
+- **Link classification** — tagging an outbound url `scholarly` (with a
+  publisher tag — arXiv, DOI, Springer, OUP, …) or `other`, by host suffix.
+- **Ledger** — the durable, capped set of canonical "already saved" keys in
+  `storage.local`. Makes re-runs skip work already done, across restarts. The
+  one intentional exception to ADR-0005's "no persistent history" (it stores
+  provenance-free keys, not history).
+- **Cleanup** — removing a saved bookmark/like via X's own `DeleteBookmark` /
+  `UnfavoriteTweet` mutation, run inside the X tab (same-origin, `ct0` cookie).
+  Opt-in, default off; a failed cleanup keeps the bookmark, never loses data.
+- **Mirror** — optional fire-and-forget copy of saved keys to the user's own
+  Cloudflare Worker or Convex deployment. Never the source of truth, never a gate.
+
 ## Boundaries (what these are NOT)
 
 - **`pbs.twimg.com` / `video.twimg.com`** are X's public **media CDNs**, not X's

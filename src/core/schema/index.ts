@@ -20,6 +20,31 @@ export const DownloadStrategyName = Schema.Literals(['direct', 'fetched', 'aria2
 export const Theme = Schema.Literals(['light', 'dark', 'system'])
 export const QuickGrabModifier = Schema.Literals(['alt', 'shift', 'ctrl', 'meta'])
 
+// Bookmarks/Likes archive job (ADR-0010).
+export const ArchiveSource = Schema.Literals(['bookmarks', 'likes'])
+export type ArchiveSource = typeof ArchiveSource.Type
+export const ArchiveLinkMode = Schema.Literals(['all', 'scholarly', 'none'])
+export const ArchiveSyncKind = Schema.Literals(['off', 'cloudflare', 'convex'])
+
+export const ArchivedLink = Schema.Struct({
+  url: Schema.String,
+  kind: Schema.Literals(['scholarly', 'other']),
+  publisher: Schema.optional(Schema.String),
+})
+export type ArchivedLink = typeof ArchivedLink.Type
+
+/** One bookmarked/liked tweet handed from the content script to the background. */
+export const ArchiveTweet = Schema.Struct({
+  tweetId: Schema.String,
+  handle: Schema.String,
+  source: ArchiveSource,
+  text: Schema.String,
+  createdAt: Schema.optional(Schema.String),
+  links: Schema.Array(ArchivedLink),
+  items: Schema.Array(MediaItem),
+})
+export type ArchiveTweet = typeof ArchiveTweet.Type
+
 export const Settings = Schema.Struct({
   filenameTemplate: Schema.String.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed('{handle}/{tweetId}_{index}.{ext}')),
@@ -45,6 +70,18 @@ export const Settings = Schema.Struct({
   aria2Secret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   aria2Dir: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   aria2Split: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(8))),
+  // Bookmarks/Likes archive job (ADR-0010). Save tweet history + media, then
+  // (opt-in) clear the bookmark/like. Cleanup is a write, so default OFF.
+  archiveIncludeText: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  archiveLinkMode: ArchiveLinkMode.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed('all' as const)),
+  ),
+  archiveRemoveAfterSave: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  archiveSyncKind: ArchiveSyncKind.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed('off' as const)),
+  ),
+  archiveSyncUrl: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  archiveSyncSecret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
 })
 export type Settings = typeof Settings.Type
 
@@ -109,6 +146,60 @@ export const ClearDownloadMonitorResponse = Schema.TaggedStruct('ClearDownloadMo
 })
 export type ClearDownloadMonitorResponse = typeof ClearDownloadMonitorResponse.Type
 
+// --- Bookmarks/Likes archive job messages (ADR-0010) ---
+
+/** popup → content: how many bookmarked/liked tweets are captured on this tab. */
+export const ArchiveStatusRequest = Schema.TaggedStruct('ArchiveStatusRequest', {})
+export const ArchiveStatusResponse = Schema.TaggedStruct('ArchiveStatusResponse', {
+  bookmarks: Schema.Number,
+  likes: Schema.Number,
+})
+export type ArchiveStatusResponse = typeof ArchiveStatusResponse.Type
+
+/** popup → content: start a save job for the given source. */
+export const ArchiveStartRequest = Schema.TaggedStruct('ArchiveStartRequest', {
+  source: ArchiveSource,
+})
+export const ArchiveStartResponse = Schema.TaggedStruct('ArchiveStartResponse', {
+  ok: Schema.Boolean,
+  queued: Schema.Number,
+  reason: Schema.optional(Schema.String),
+})
+export type ArchiveStartResponse = typeof ArchiveStartResponse.Type
+
+/** content → background: save these tweets' media + history records. */
+export const ArchiveSaveRequest = Schema.TaggedStruct('ArchiveSaveRequest', {
+  source: ArchiveSource,
+  tweets: Schema.Array(ArchiveTweet),
+})
+
+/** background → content (tab-targeted): remove these bookmarks/likes. */
+export const ArchiveCleanupRequest = Schema.TaggedStruct('ArchiveCleanupRequest', {
+  requests: Schema.Array(Schema.Struct({ tweetId: Schema.String, source: ArchiveSource })),
+})
+export type ArchiveCleanupRequest = typeof ArchiveCleanupRequest.Type
+
+/** content → background: per-tweet cleanup results. */
+export const ArchiveCleanupReport = Schema.TaggedStruct('ArchiveCleanupReport', {
+  results: Schema.Array(Schema.Struct({ tweetId: Schema.String, ok: Schema.Boolean })),
+})
+
+/** popup → background: the latest job summary, or null when none has run. */
+export const ArchiveSessionRequest = Schema.TaggedStruct('ArchiveSessionRequest', {})
+
+export const ArchiveSessionSummary = Schema.Struct({
+  source: ArchiveSource,
+  startedAt: Schema.Number,
+  tweets: Schema.Number,
+  saved: Schema.Number,
+  failed: Schema.Number,
+  skipped: Schema.Number,
+  removed: Schema.Number,
+  removeFailed: Schema.Number,
+  done: Schema.Boolean,
+})
+export type ArchiveSessionSummary = typeof ArchiveSessionSummary.Type
+
 export const Message = Schema.Union([
   DetectRequest,
   MediaDetected,
@@ -118,5 +209,11 @@ export const Message = Schema.Union([
   MetricsUpdate,
   ClearDetectedMediaRequest,
   ClearDownloadMonitorRequest,
+  ArchiveStatusRequest,
+  ArchiveStartRequest,
+  ArchiveSaveRequest,
+  ArchiveCleanupRequest,
+  ArchiveCleanupReport,
+  ArchiveSessionRequest,
 ])
 export type Message = typeof Message.Type

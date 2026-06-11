@@ -2,7 +2,7 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '../../core/settings'
 import { aria2OriginPattern } from '../../core/download/aria2'
-import type { MetricsSnapshot, Settings } from '../../core/schema'
+import type { ArchiveSessionSummary, MetricsSnapshot, Settings } from '../../core/schema'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
@@ -28,6 +28,11 @@ export function App() {
   const [onXTab, setOnXTab] = useState(false)
   const [activeTabId, setActiveTabId] = useState<number | undefined>(undefined)
   const [clearFeedback, setClearFeedback] = useState<'media' | 'monitor' | null>(null)
+  const [archiveStatus, setArchiveStatus] = useState<{ bookmarks: number; likes: number } | null>(
+    null,
+  )
+  const [archiveSummary, setArchiveSummary] = useState<ArchiveSessionSummary | null>(null)
+  const [archiveNote, setArchiveNote] = useState<string | null>(null)
 
   useEffect(() => {
     void getSettings().then(setSettingsState)
@@ -65,11 +70,30 @@ export function App() {
         .sendMessage({ _tag: 'MetricsRequest' })
         .then((m) => setMetrics(m as MetricsSnapshot))
         .catch(() => {})
+      void browser.runtime
+        .sendMessage({ _tag: 'ArchiveSessionRequest' })
+        .then((s) => setArchiveSummary((s as ArchiveSessionSummary | null) ?? null))
+        .catch(() => {})
     }
     poll()
     const handle = setInterval(poll, 1000)
     return () => clearInterval(handle)
   }, [])
+
+  // Bookmark/like candidate counts come from the content script on the X tab.
+  useEffect(() => {
+    if (!onXTab || activeTabId === undefined) return
+    void browser.tabs
+      .sendMessage(activeTabId, { _tag: 'ArchiveStatusRequest' })
+      .then((r) => {
+        const res = r as { bookmarks?: number; likes?: number } | undefined
+        if (res?.bookmarks !== undefined && res.likes !== undefined) {
+          setArchiveStatus({ bookmarks: res.bookmarks, likes: res.likes })
+        }
+        return undefined
+      })
+      .catch(() => {})
+  }, [onXTab, activeTabId, archiveSummary?.done])
 
   if (!settings) {
     return <div class="xmd-popup xmd-popup--loading">Loading...</div>
@@ -115,10 +139,27 @@ export function App() {
     setAria2Granted(await browser.permissions.request({ origins: [pattern] }))
   }
 
+  const startArchive = async (source: 'bookmarks' | 'likes'): Promise<void> => {
+    if (activeTabId === undefined) return
+    setArchiveNote(null)
+    const res = (await browser.tabs
+      .sendMessage(activeTabId, { _tag: 'ArchiveStartRequest', source })
+      .catch(() => null)) as { ok?: boolean; queued?: number; reason?: string } | null
+    if (res?.ok) {
+      setArchiveNote(`Saving ${res.queued} ${source}…`)
+    } else {
+      setArchiveNote(`Nothing to save — scroll your ${source} to load them first`)
+    }
+  }
+
   const monitor = metrics && metrics.total > 0 ? metrics : null
   const monitorDone = monitor ? monitor.completed + monitor.failed : 0
   const monitorPct = monitor ? Math.min(100, Math.round((monitorDone / monitor.total) * 100)) : 0
   const canClearMonitor = monitor !== null && monitor.active === 0
+
+  const archiveRunning = archiveSummary !== null && !archiveSummary.done
+  const bookmarkCount = archiveStatus?.bookmarks ?? 0
+  const likeCount = archiveStatus?.likes ?? 0
 
   return (
     <div class="xmd-popup">
@@ -194,6 +235,143 @@ export function App() {
             </dl>
           </section>
         )}
+
+        <Section
+          title="Archive bookmarks & likes"
+          description="Save the tweets' media and a history record, then optionally clear them."
+        >
+          <div class="xmd-archive-actions">
+            <button
+              type="button"
+              class="xmd-secondary-button"
+              disabled={!onXTab || archiveRunning || bookmarkCount === 0}
+              title={!onXTab ? 'Requires an X tab' : undefined}
+              onClick={() => void startArchive('bookmarks')}
+            >
+              <span>Save bookmarks</span>
+              <small>{onXTab ? `${bookmarkCount} loaded` : 'Open X to scan'}</small>
+            </button>
+            <button
+              type="button"
+              class="xmd-secondary-button"
+              disabled={!onXTab || archiveRunning || likeCount === 0}
+              title={!onXTab ? 'Requires an X tab' : undefined}
+              onClick={() => void startArchive('likes')}
+            >
+              <span>Save likes</span>
+              <small>{onXTab ? `${likeCount} loaded` : 'Open X to scan'}</small>
+            </button>
+          </div>
+          {archiveNote && <p class="xmd-inline-success">{archiveNote}</p>}
+
+          {archiveSummary && (
+            <dl class="xmd-stat-grid">
+              <Stat label="Saved" value={String(archiveSummary.saved)} />
+              <Stat label="Skipped" value={String(archiveSummary.skipped)} />
+              {archiveSummary.failed > 0 && (
+                <Stat label="Failed" value={String(archiveSummary.failed)} />
+              )}
+              {archiveSummary.removed > 0 && (
+                <Stat label="Removed" value={String(archiveSummary.removed)} />
+              )}
+              {archiveSummary.removeFailed > 0 && (
+                <Stat label="Keep-failed" value={String(archiveSummary.removeFailed)} />
+              )}
+              <Stat label="Status" value={archiveSummary.done ? 'Done' : 'Working'} />
+            </dl>
+          )}
+
+          <label class="xmd-check-row">
+            <input
+              type="checkbox"
+              aria-label="Include tweet text in archive record"
+              checked={settings.archiveIncludeText}
+              onChange={(e) =>
+                void update({ archiveIncludeText: (e.target as HTMLInputElement).checked })
+              }
+            />
+            <span>
+              <strong>Include tweet text</strong>
+              <small>Save full_text in the record</small>
+            </span>
+          </label>
+
+          <Field label="Outbound links" hint="Articles from arXiv, DOI, Springer, OUP… are tagged">
+            <select
+              class="xmd-popup-control w-full"
+              aria-label="Archive link mode"
+              value={settings.archiveLinkMode}
+              onChange={(e) =>
+                void update({
+                  archiveLinkMode: (e.target as HTMLSelectElement)
+                    .value as Settings['archiveLinkMode'],
+                })
+              }
+            >
+              <option value="all">All links</option>
+              <option value="scholarly">Scholarly only</option>
+              <option value="none">No links</option>
+            </select>
+          </Field>
+
+          <label class="xmd-check-row">
+            <input
+              type="checkbox"
+              aria-label="Remove bookmark or like after saving"
+              checked={settings.archiveRemoveAfterSave}
+              onChange={(e) =>
+                void update({ archiveRemoveAfterSave: (e.target as HTMLInputElement).checked })
+              }
+            />
+            <span>
+              <strong>Remove after saving</strong>
+              <small>Unbookmarks / unlikes once saved — writes to your account</small>
+            </span>
+          </label>
+
+          <Field label="Mirror saved index (optional)">
+            <select
+              class="xmd-popup-control w-full"
+              aria-label="Archive sync backend"
+              value={settings.archiveSyncKind}
+              onChange={(e) =>
+                void update({
+                  archiveSyncKind: (e.target as HTMLSelectElement)
+                    .value as Settings['archiveSyncKind'],
+                })
+              }
+            >
+              <option value="off">Local only</option>
+              <option value="cloudflare">Cloudflare Worker</option>
+              <option value="convex">Convex</option>
+            </select>
+          </Field>
+          {settings.archiveSyncKind !== 'off' && (
+            <div class="xmd-mode-details">
+              <Field label="Endpoint URL">
+                <input
+                  class="xmd-popup-control w-full"
+                  aria-label="Archive sync URL"
+                  value={settings.archiveSyncUrl}
+                  onChange={(e) =>
+                    void update({ archiveSyncUrl: (e.target as HTMLInputElement).value })
+                  }
+                />
+              </Field>
+              <Field label="Secret">
+                <input
+                  type="password"
+                  class="xmd-popup-control w-full"
+                  aria-label="Archive sync secret"
+                  value={settings.archiveSyncSecret}
+                  onChange={(e) =>
+                    void update({ archiveSyncSecret: (e.target as HTMLInputElement).value })
+                  }
+                />
+              </Field>
+            </div>
+          )}
+        </Section>
 
         <Section title="Save defaults" description="Names and sidecars for new downloads.">
           <Field label="Filename template" hint="{handle} {tweetId} {index} {ext} {type} {date}">

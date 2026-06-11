@@ -14,6 +14,13 @@ import {
   type QuickGrabState,
 } from '../../core/quickgrab'
 import { getSettings, watchSettings } from '../../core/settings'
+import {
+  detectCandidates,
+  sourceFromPath,
+  type ArchiveSource,
+  type TweetCandidate,
+} from '../../core/archive/capture'
+import { buildCleanupRequest, makeCleanupPort } from '../../core/archive/cleanup'
 import type { MediaItem, Settings } from '../../core/schema'
 
 /** Hold-to-grab dwell: fast, but still intentional enough to avoid accidental saves. */
@@ -94,6 +101,12 @@ export default defineContentScript({
   async main(ctx) {
     const byId = new Map<string, MediaItem>()
     const byKey = new Map<string, MediaItem>()
+    // Bookmarked/liked tweet candidates captured passively from the tee, per
+    // source (ADR-0010). The popup reads counts and starts a save job.
+    const archiveCandidates: Record<ArchiveSource, Map<string, TweetCandidate>> = {
+      bookmarks: new Map(),
+      likes: new Map(),
+    }
     let host: HTMLElement | null = null
 
     // Quick Grab state. `qgEnabled` fails CLOSED: a user who turned the feature
@@ -290,6 +303,12 @@ export default defineContentScript({
           const key = mediaKeyFromUrl(item.url)
           if (key) byKey.set(key, item)
         }
+        // Bookmarks/Likes responses also feed the archive job's candidate set.
+        const source = sourceFromPath(detail.path)
+        if (source) {
+          const target = archiveCandidates[source]
+          for (const c of detectCandidates(json, source)) target.set(c.tweetId, c)
+        }
         rerender()
       } catch {
         /* ignore non-JSON / unexpected shapes */
@@ -373,12 +392,60 @@ export default defineContentScript({
       rerender()
     })
 
+    /** Same-origin bookmark/like removal, run inside the X tab (ADR-0010). */
+    const runCleanup = async (
+      requests: ReadonlyArray<{ tweetId: string; source: ArchiveSource }>,
+    ): Promise<void> => {
+      const port = makeCleanupPort({
+        fetchImpl: window.fetch.bind(window),
+        getCookie: () => document.cookie,
+      })
+      const results: { tweetId: string; ok: boolean }[] = []
+      // Sequential on purpose: these are authenticated writes against the user's
+      // own account — one at a time keeps the request rate gentle and predictable.
+      for (const r of requests) {
+        // oxlint-disable-next-line no-await-in-loop
+        const ok = await port.run(buildCleanupRequest(r.tweetId, r.source))
+        results.push({ tweetId: r.tweetId, ok })
+        if (ok) archiveCandidates[r.source].delete(r.tweetId)
+      }
+      void browser.runtime.sendMessage({ _tag: 'ArchiveCleanupReport', results }).catch(() => {})
+    }
+
     const handleRuntimeMessage = (
       message: unknown,
       _sender: unknown,
       sendResponse: (r: unknown) => void,
     ): void => {
-      if ((message as Record<string, unknown>)?._tag !== 'ClearDetectedMediaRequest') return
+      const tag = (message as Record<string, unknown>)?._tag
+      if (tag === 'ArchiveStatusRequest') {
+        sendResponse({
+          _tag: 'ArchiveStatusResponse',
+          bookmarks: archiveCandidates.bookmarks.size,
+          likes: archiveCandidates.likes.size,
+        })
+        return
+      }
+      if (tag === 'ArchiveStartRequest') {
+        const source = (message as { source: ArchiveSource }).source
+        const tweets = [...archiveCandidates[source].values()]
+        if (tweets.length === 0) {
+          sendResponse({ _tag: 'ArchiveStartResponse', ok: false, queued: 0, reason: 'no-tweets' })
+          return
+        }
+        void browser.runtime
+          .sendMessage({ _tag: 'ArchiveSaveRequest', source, tweets })
+          .catch(() => {})
+        sendResponse({ _tag: 'ArchiveStartResponse', ok: true, queued: tweets.length })
+        return
+      }
+      if (tag === 'ArchiveCleanupRequest') {
+        void runCleanup(
+          (message as { requests: { tweetId: string; source: ArchiveSource }[] }).requests,
+        )
+        return
+      }
+      if (tag !== 'ClearDetectedMediaRequest') return
       const cleared = byId.size
       byId.clear()
       byKey.clear()
