@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '../../core/settings'
 import { aria2OriginPattern } from '../../core/download/aria2'
+import { convexOriginPattern } from '../../core/sync/convex'
 import type { MetricsSnapshot, Settings } from '../../core/schema'
 
 function fmtRate(bps: number): string {
@@ -15,6 +16,7 @@ export function App() {
   const [saved, setSaved] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
   const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
+  const [convexGranted, setConvexGranted] = useState<boolean | null>(null)
 
   useEffect(() => {
     void getSettings().then(setSettingsState)
@@ -32,6 +34,19 @@ export function App() {
     }
     void browser.permissions.contains({ origins: [pattern] }).then(setAria2Granted)
   }, [strategy, rpcUrl])
+
+  // Reflect whether the Convex deployment's origin is granted (Cloud Sync).
+  const cloudOn = settings?.cloudSyncEnabled
+  const convexUrl = settings?.convexUrl
+  useEffect(() => {
+    if (cloudOn !== true || convexUrl === undefined || convexUrl === '') return
+    const pattern = convexOriginPattern(convexUrl)
+    if (pattern === null) {
+      setConvexGranted(null)
+      return
+    }
+    void browser.permissions.contains({ origins: [pattern] }).then(setConvexGranted)
+  }, [cloudOn, convexUrl])
 
   useEffect(() => {
     const poll = (): void => {
@@ -59,6 +74,12 @@ export function App() {
     const pattern = aria2OriginPattern(settings.aria2RpcUrl)
     if (pattern === null) return
     setAria2Granted(await browser.permissions.request({ origins: [pattern] }))
+  }
+
+  const requestConvexAccess = async (): Promise<void> => {
+    const pattern = convexOriginPattern(settings.convexUrl)
+    if (pattern === null) return
+    setConvexGranted(await browser.permissions.request({ origins: [pattern] }))
   }
 
   return (
@@ -231,6 +252,68 @@ export function App() {
           </Field>
         )}
 
+        <label class="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            aria-label="Cloud sync"
+            checked={settings.cloudSyncEnabled}
+            onChange={(e) => {
+              const enabled = (e.target as HTMLInputElement).checked
+              // Mint the per-install device id once, on first enable (ADR-0009).
+              void update({
+                cloudSyncEnabled: enabled,
+                ...(enabled && settings.cloudDeviceId === ''
+                  ? { cloudDeviceId: crypto.randomUUID() }
+                  : {}),
+              })
+            }}
+          />
+          Cloud sync to Convex (opt-in)
+        </label>
+
+        {settings.cloudSyncEnabled && (
+          <div class="space-y-2 rounded-md bg-zinc-50 p-3 dark:bg-zinc-800/50">
+            <Field label="Convex deployment URL">
+              <input
+                class="w-full rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                aria-label="Convex deployment URL"
+                placeholder="https://<deployment>.convex.cloud"
+                value={settings.convexUrl}
+                onChange={(e) => void update({ convexUrl: (e.target as HTMLInputElement).value })}
+              />
+            </Field>
+            <Field label="Sync secret (optional)">
+              <input
+                type="password"
+                class="w-full rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                aria-label="Convex sync secret"
+                value={settings.convexSyncSecret}
+                onChange={(e) =>
+                  void update({ convexSyncSecret: (e.target as HTMLInputElement).value })
+                }
+              />
+            </Field>
+            {convexGranted === false && (
+              <button
+                type="button"
+                class="w-full rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+                onClick={() => void requestConvexAccess()}
+              >
+                Grant access to the deployment
+              </button>
+            )}
+            {convexGranted === true && (
+              <p class="text-xs text-emerald-600 dark:text-emerald-400">
+                deployment access granted ✓
+              </p>
+            )}
+            <p class="text-xs text-zinc-500">
+              Mirrors download metadata only — never file bytes, captures, or credentials
+              (ADR-0009).
+            </p>
+          </div>
+        )}
+
         {metrics && metrics.total > 0 && (
           <div class="rounded-md border border-zinc-200 p-3 text-xs dark:border-zinc-800">
             <div class="mb-1 font-medium text-zinc-600 dark:text-zinc-400">Download monitor</div>
@@ -250,7 +333,11 @@ export function App() {
       </div>
 
       <footer class="border-t border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800">
-        {saved ? 'Saved ✓' : 'Local-only · no tracking'}
+        {saved
+          ? 'Saved ✓'
+          : settings.cloudSyncEnabled
+            ? 'Cloud sync on · metadata only'
+            : 'Local-only · no tracking'}
       </footer>
     </div>
   )

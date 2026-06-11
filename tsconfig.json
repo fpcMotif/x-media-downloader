@@ -17,5 +17,5 @@
       }
     ]
   },
-  "exclude": ["node_modules", "study", ".output"]
+  "exclude": ["node_modules", "study", ".output", "backend"]
 }

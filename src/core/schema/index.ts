@@ -45,6 +45,14 @@ export const Settings = Schema.Struct({
   aria2Secret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   aria2Dir: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   aria2Split: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(8))),
+  // Cloud Sync (ADR-0009): opt-in Convex control plane mirroring download
+  // metadata only — never bytes, captures, or auth. Default off: the
+  // local-only posture holds until the user explicitly enables it.
+  cloudSyncEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  convexUrl: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  convexSyncSecret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  // Stable per-install id tagged onto mirrored events; minted on first enable.
+  cloudDeviceId: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
 })
 export type Settings = typeof Settings.Type
 

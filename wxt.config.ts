@@ -13,11 +13,13 @@ export default defineConfig({
     host_permissions: ['https://x.com/*', 'https://twitter.com/*'],
     // Requested at runtime only when Download Strategy = Fetched (ADR-0003):
     optional_permissions: ['offscreen'],
-    // twimg CDN = Fetched (ADR-0003); localhost = aria2 JSON-RPC opt-in (ADR-0006).
+    // twimg CDN = Fetched (ADR-0003); localhost = aria2 JSON-RPC opt-in
+    // (ADR-0006); convex.cloud = Cloud Sync opt-in (ADR-0009).
     optional_host_permissions: [
       'https://pbs.twimg.com/*',
       'https://video.twimg.com/*',
       'http://localhost/*',
+      'https://*.convex.cloud/*',
     ],
   },
   vite: () => ({

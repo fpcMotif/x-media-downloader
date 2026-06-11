@@ -1,0 +1,20 @@
+{
+  "name": "x-media-downloader-backend",
+  "description": "Convex control plane for X Media Downloader Cloud Sync (ADR-0009). Metadata only — media bytes never transit this deployment.",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "convex dev",
+    "deploy": "convex deploy",
+    "codegen": "convex codegen",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "convex": "^1.41.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^6.0.3"
+  }
+}

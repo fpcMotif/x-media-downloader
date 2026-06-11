@@ -38,5 +38,5 @@
       }
     }
   ],
-  "ignorePatterns": [".output", ".wxt", "study", ".agents", ".claude"]
+  "ignorePatterns": [".output", ".wxt", "study", ".agents", ".claude", "backend"]
 }

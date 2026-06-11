@@ -62,6 +62,15 @@ use these words, they mean exactly this.
   (the fast path).
 - **Popup** — the toolbar panel: Download Queue manager + Settings + Monitor (the
   manager path).
+- **Cloud Sync** — opt-in (default **off**) mirroring of download-state
+  *metadata* into a user-supplied Convex deployment. Never carries media
+  bytes, Captures, or credentials.
+- **Sync Event** — one append-only Cloud Sync state transition
+  (`queued`/`completed`/`failed`) for a Save Request, carrying a deterministic
+  idempotency id and, for `queued`, the Media Item's provenance.
+- **Outbox** — the local queue of not-yet-delivered Sync Events; drains FIFO
+  in small batches with exponential backoff, so downloads never depend on
+  connectivity to the cloud.
 
 ## Boundaries (what these are NOT)
 

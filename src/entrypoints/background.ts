@@ -1,7 +1,17 @@
 import { Effect, Result, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import { Message, type MediaItem, type MetricsSnapshot, type Settings } from '../core/schema'
-import { SettingsService, SettingsServiceLive } from '../core/settings'
+import { SettingsService, SettingsServiceLive, getSettings, watchSettings } from '../core/settings'
+import { queuedEvent, outcomeEvent, type SyncEvent } from '../core/sync/events'
+import {
+  append,
+  decodeOutbox,
+  isReady,
+  markDrained,
+  markFailed,
+  takeBatch,
+} from '../core/sync/outbox'
+import { makeConvexHttpPort } from '../core/sync/convex'
 import {
   makeDirectStrategy,
   makeSchemeRoutingStrategy,
@@ -54,6 +64,55 @@ const inFlight = new Set<string>()
 
 const persistSnapshot = (now: number): Promise<void> =>
   live ? metricsItem.setValue(snapshot(live, now)) : Promise.resolve()
+
+// Cloud Sync outbox (ADR-0009) — metadata-only events, durable until drained.
+const outboxItem = storage.defineItem<unknown>('local:syncOutbox', { fallback: null })
+
+// Outbox read-modify-writes are serialized through this chain: SW event
+// handlers interleave, and a lost update could drop a drained marker. Re-sent
+// batches are harmless regardless — eventIds are idempotent server-side.
+let outboxChain: Promise<void> = Promise.resolve()
+const withOutbox = (step: () => Promise<void>): void => {
+  outboxChain = outboxChain.then(step).catch(() => {})
+}
+
+/** Drain FIFO until empty or the first failure; backoff state gates retries. */
+const drainOutbox = async (settings: Settings): Promise<void> => {
+  const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl, fetchImpl: fetch })
+  // oxlint-disable no-await-in-loop -- FIFO: each batch depends on the previous outcome
+  for (;;) {
+    const state = decodeOutbox(await outboxItem.getValue())
+    if (!isReady(state, Date.now())) return
+    const batch = takeBatch(state)
+    if (batch.length === 0) return
+    try {
+      await port.mutation('sync:recordEvents', {
+        events: batch,
+        ...(settings.convexSyncSecret ? { secret: settings.convexSyncSecret } : {}),
+      })
+      await outboxItem.setValue(
+        markDrained(
+          state,
+          batch.map((e) => e.eventId),
+        ),
+      )
+    } catch {
+      await outboxItem.setValue(markFailed(state, Date.now()))
+      return
+    }
+  }
+  // oxlint-enable no-await-in-loop
+}
+
+/** Mirror state transitions when Cloud Sync is on. Fire-and-forget: downloads
+ *  never block on — or fail because of — the cloud (ADR-0009). */
+const recordSync = (settings: Settings, events: ReadonlyArray<SyncEvent>): void => {
+  if (!settings.cloudSyncEnabled || settings.convexUrl === '' || events.length === 0) return
+  withOutbox(async () => {
+    await outboxItem.setValue(append(decodeOutbox(await outboxItem.getValue()), events))
+    await drainOutbox(settings)
+  })
+}
 
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
@@ -113,30 +172,55 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     }
     yield* Effect.promise(() => persistSnapshot(startedAt))
 
+    // Mirror queued transitions (Cloud Sync). Sidecar data: requests have no
+    // MediaItem (their id is `<media-id>.json`) and are never mirrored.
+    const mediaById = new Map(items.map((i) => [i.id, i]))
+    recordSync(
+      settings,
+      requests.flatMap((r) => {
+        const item = mediaById.get(r.id)
+        return item ? [queuedEvent(item, settings.cloudDeviceId, startedAt)] : []
+      }),
+    )
+
     const res = yield* queue.enqueue(requests)
 
     // Reconcile precise per-request outcomes: browser transfers go in-flight
     // (tracked by downloadId for the onChanged/search loop), aria2 hand-offs are
     // terminal from our side, and failures-to-start are recorded failed.
     const now = Date.now()
+    const syncEvents: SyncEvent[] = []
     for (const o of res.outcomes) {
       if (!o.ok) {
         inFlight.delete(o.id)
         live = recordOutcome(live, o.id, 'failed', now)
+        syncEvents.push(outcomeEvent(o.id, 'failed', settings.cloudDeviceId, now))
       } else if (o.handle?.kind === 'browser') {
         requestIdByDownloadId.set(o.handle.id, o.id)
         live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })
       } else {
         inFlight.delete(o.id)
         live = recordOutcome(live, o.id, 'complete', now)
+        syncEvents.push(outcomeEvent(o.id, 'completed', settings.cloudDeviceId, now))
       }
     }
+    recordSync(settings, syncEvents)
     yield* Effect.promise(() => persistSnapshot(now))
 
     return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total }
   }).pipe(Effect.provide(SettingsServiceLive))
 
 export default defineBackground(() => {
+  // Cloud Sync reconciliation: drain anything left over from a previous SW
+  // life / offline period; clear the outbox whenever the user turns sync off.
+  void (async () => {
+    const s = await getSettings()
+    if (s.cloudSyncEnabled && s.convexUrl !== '') withOutbox(() => drainOutbox(s))
+  })()
+  watchSettings((s) => {
+    if (!s.cloudSyncEnabled) withOutbox(() => outboxItem.setValue(null))
+  })
+
   // Listeners registered synchronously at the top of main() (grounding §b).
   browser.downloads.onChanged.addListener((delta) => {
     const id = requestIdByDownloadId.get(delta.id)
@@ -156,6 +240,15 @@ export default defineBackground(() => {
       if (outcome) {
         inFlight.delete(id)
         if (live) live = recordOutcome(live, id, outcome, now)
+        const settings = await getSettings()
+        recordSync(settings, [
+          outcomeEvent(
+            id,
+            outcome === 'complete' ? 'completed' : 'failed',
+            settings.cloudDeviceId,
+            now,
+          ),
+        ])
       }
       await persistSnapshot(now)
     })()

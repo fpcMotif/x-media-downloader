@@ -39,6 +39,14 @@ describe('SettingsService', () => {
     const s = await run(getSettings)
     expect(s.downloadConcurrency).toBe(3)
   })
+
+  it('defaults cloud sync off — local-only posture (ADR-0009)', async () => {
+    const s = await run(getSettings)
+    expect(s.cloudSyncEnabled).toBe(false)
+    expect(s.convexUrl).toBe('')
+    expect(s.convexSyncSecret).toBe('')
+    expect(s.cloudDeviceId).toBe('')
+  })
 })
 
 describe('watchSettings', () => {
