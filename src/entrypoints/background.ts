@@ -173,6 +173,35 @@ export default defineBackground(() => {
       void metricsItem.getValue().then((snap) => sendResponse(snap ?? ZERO_SNAPSHOT))
       return true
     }
+    if (msg._tag === 'ClearDownloadMonitorRequest') {
+      void (async () => {
+        const snap = (await metricsItem.getValue()) ?? ZERO_SNAPSHOT
+        if (snap.active > 0) {
+          sendResponse({
+            _tag: 'ClearDownloadMonitorResponse',
+            ok: false,
+            active: snap.active,
+            clearedMetrics: false,
+            clearedLocks: 0,
+            reason: 'active-downloads',
+          })
+          return
+        }
+        const clearedLocks = inFlight.size
+        inFlight.clear()
+        requestIdByDownloadId.clear()
+        live = null
+        await metricsItem.setValue(null)
+        sendResponse({
+          _tag: 'ClearDownloadMonitorResponse',
+          ok: true,
+          active: 0,
+          clearedMetrics: true,
+          clearedLocks,
+        })
+      })()
+      return true
+    }
     return false
   })
 })

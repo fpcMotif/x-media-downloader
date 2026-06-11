@@ -1,48 +1,105 @@
-.xmd-hover {
-  position: fixed;
-  z-index: 2147483647;
-  display: flex;
-  gap: 4px;
+:host,
+:root {
+  --xmd-ink: oklch(0.19 0.01 255);
+  --xmd-surface: oklch(0.995 0.002 255);
+  --xmd-surface-dark: oklch(0.18 0.012 255 / 0.96);
+  --xmd-surface-dark-hover: oklch(0.13 0.012 255 / 0.98);
+  --xmd-muted-on-dark: oklch(0.88 0.006 255 / 0.76);
+  --xmd-accent: oklch(0.62 0.18 245);
+  --xmd-accent-hover: oklch(0.56 0.19 248);
+  --xmd-success: oklch(0.7 0.16 160);
+  --xmd-danger: oklch(0.64 0.2 28);
+  --xmd-focus: oklch(0.68 0.17 240 / 0.34);
+  --xmd-line-dark: oklch(1 0 0 / 0.14);
+  --xmd-shadow: 0 1px 2px oklch(0 0 0 / 0.26), 0 10px 18px -14px oklch(0 0 0 / 0.95);
+  --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
 }
 
-.xmd-btn {
-  padding: 4px 8px;
-  border: none;
-  border-radius: 9999px;
-  background: #0f1419;
-  color: #fff;
-  font:
-    600 12px system-ui,
-    sans-serif;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  cursor: pointer;
+.xmd-launcher:active {
+  transform: scale(0.96);
+}
+
+.xmd-launcher:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px var(--xmd-focus),
+    inset 0 0 0 1px oklch(1 0 0 / 0.2);
 }
 
 .xmd-launcher {
   position: fixed;
-  bottom: 16px;
-  right: 16px;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
   z-index: 2147483647;
-  padding: 10px 14px;
-  border: none;
-  border-radius: 9999px;
-  background: #0f1419;
-  color: #fff;
-  font:
-    600 13px system-ui,
-    sans-serif;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+  display: inline-flex;
+  min-height: 46px;
+  max-width: calc(100vw - 32px);
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--xmd-surface-dark);
+  color: oklch(1 0 0);
+  padding: 0 8px 0 14px;
   cursor: pointer;
+  font:
+    740 13px/1 system-ui,
+    sans-serif;
+  letter-spacing: 0;
+  backdrop-filter: blur(10px) saturate(1.08);
+  box-shadow:
+    var(--xmd-shadow),
+    inset 0 0 0 1px var(--xmd-line-dark);
+  transform: scale(1);
+  transition-duration: 150ms;
+  transition-property: background-color, box-shadow, transform;
+  transition-timing-function: var(--xmd-ease);
+}
+
+.xmd-launcher__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xmd-launcher__count {
+  min-width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--xmd-accent);
+  color: oklch(1 0 0);
+  font-variant-numeric: tabular-nums;
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.16);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .xmd-launcher:hover {
+    background: var(--xmd-surface-dark-hover);
+  }
+}
+
+@media (max-width: 420px) {
+  .xmd-launcher {
+    right: 12px;
+    left: 12px;
+  }
 }
 
 /* Quick Grab affordance: a ring that tracks the hovered photo while the modifier
    is held, charges over the dwell, then confirms the save. */
 .xmd-grab {
-  --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
-  --xmd-accent: #1d9bf0;
-  --xmd-success: #00ba7c;
-  --ring: var(--xmd-accent);
-  --glow: rgba(29, 155, 240, 0.45);
+  --ring: oklch(0.72 0.2 238);
+  --glow: oklch(0.68 0.2 238 / 0.58);
   position: fixed;
   z-index: 2147483646;
   box-sizing: border-box;
@@ -63,29 +120,36 @@
 .xmd-grab--saved,
 .xmd-grab--noted {
   --ring: var(--xmd-success);
-  --glow: rgba(0, 186, 124, 0.5);
+  --glow: oklch(0.7 0.16 160 / 0.46);
 }
 
 .xmd-grab--failed {
-  --ring: #f4212e;
-  --glow: rgba(244, 33, 46, 0.45);
+  --ring: var(--xmd-danger);
+  --glow: oklch(0.64 0.2 28 / 0.42);
 }
 
-/* The ring itself — layered shadows adapt to any photo, unlike a hard border. */
 .xmd-grab::before {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
+  background: oklch(0 0 0 / 0.03);
   box-shadow:
-    inset 0 0 0 2px var(--ring),
-    0 0 0 1px rgba(0, 0, 0, 0.08),
-    0 6px 20px -4px var(--glow);
+    inset 0 0 0 1px oklch(1 0 0 / 0.12),
+    0 0 0 1px oklch(0 0 0 / 0.08),
+    0 6px 18px -5px var(--glow);
   transition: box-shadow 150ms var(--xmd-ease);
 }
 
-/* One-shot success pulse on save — `--noted` (re-hovering an already-grabbed
-   photo) deliberately shows the green ring WITHOUT replaying this. */
+.xmd-grab--saved::before,
+.xmd-grab--noted::before,
+.xmd-grab--failed::before {
+  box-shadow:
+    inset 0 0 0 2px var(--ring),
+    0 0 0 1px oklch(0 0 0 / 0.08),
+    0 6px 18px -5px var(--glow);
+}
+
 .xmd-grab--saved::after {
   content: '';
   position: absolute;
@@ -102,23 +166,23 @@
   left: 8px;
   max-width: calc(100% - 16px);
   overflow: hidden;
+  border-radius: 999px;
+  background: oklch(0.16 0.012 255 / 0.96);
+  color: oklch(1 0 0);
   padding: 3px 8px;
-  border-radius: 9999px;
-  background: #0f1419;
-  color: #fff;
   font:
-    600 11px system-ui,
+    650 11px/1.15 system-ui,
     sans-serif;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   white-space: nowrap;
   text-overflow: ellipsis;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.3);
   opacity: 1;
   transform: translateY(0);
   transition:
     opacity 150ms var(--xmd-ease) 30ms,
     transform 150ms var(--xmd-ease) 30ms,
-    background 150ms var(--xmd-ease);
+    color 150ms var(--xmd-ease);
 
   @starting-style {
     opacity: 0;
@@ -126,48 +190,115 @@
   }
 }
 
-/* Keep the dark, high-contrast surface; signal success with green text + the green
-   ring, not a green fill (white-on-green is only 2.5:1, below WCAG AA). */
 .xmd-grab--saved .xmd-grab__badge,
 .xmd-grab--noted .xmd-grab__badge {
   color: var(--xmd-success);
 }
 
 .xmd-grab--failed .xmd-grab__badge {
-  color: #ff7a85;
+  color: oklch(0.82 0.13 28);
 }
 
-/* Charge bar fills over the dwell — the visible "about to grab, move away to
-   cancel" window. The dark track keeps the fill readable on photos whose bottom
-   edge matches the accent (sky, sea, X-blue screenshots); transform: scaleX
-   keeps the fill on the compositor. */
-.xmd-grab__track {
+.xmd-grab__frame {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
-  left: 8px;
-  height: 3px;
-  border-radius: 9999px;
-  background: rgba(15, 20, 25, 0.45);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
-}
-
-.xmd-grab__charge {
-  position: absolute;
-  inset: 0;
+  inset: -2px;
   border-radius: inherit;
-  background: var(--xmd-accent);
-  transform: scaleX(0);
-  transform-origin: left center;
-  animation: xmd-grab-charge var(--xmd-dwell, 220ms) linear forwards;
+  overflow: hidden;
+  filter: drop-shadow(0 0 12px var(--glow)) drop-shadow(0 0 2px oklch(1 0 0 / 0.5));
 }
 
-@keyframes xmd-grab-charge {
-  from {
+.xmd-grab__edge {
+  position: absolute;
+  display: block;
+  background: var(--ring);
+  box-shadow: 0 0 10px var(--glow);
+}
+
+.xmd-grab__edge--top,
+.xmd-grab__edge--bottom {
+  height: 4px;
+  width: 100%;
+  transform: scaleX(0);
+}
+
+.xmd-grab__edge--right,
+.xmd-grab__edge--left {
+  height: 100%;
+  width: 4px;
+  transform: scaleY(0);
+}
+
+.xmd-grab__edge--top {
+  top: 0;
+  left: 0;
+  background: linear-gradient(90deg, var(--ring), var(--ring) 72%, oklch(0.97 0.08 224));
+  transform-origin: left center;
+  animation: xmd-grab-edge-top var(--xmd-dwell, 1000ms) linear forwards;
+}
+
+.xmd-grab__edge--right {
+  top: 0;
+  right: 0;
+  background: linear-gradient(180deg, var(--ring), var(--ring) 72%, oklch(0.97 0.08 224));
+  transform-origin: center top;
+  animation: xmd-grab-edge-right var(--xmd-dwell, 1000ms) linear forwards;
+}
+
+.xmd-grab__edge--bottom {
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, oklch(0.97 0.08 224), var(--ring) 28%, var(--ring));
+  transform-origin: right center;
+  animation: xmd-grab-edge-bottom var(--xmd-dwell, 1000ms) linear forwards;
+}
+
+.xmd-grab__edge--left {
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(180deg, oklch(0.97 0.08 224), var(--ring) 28%, var(--ring));
+  transform-origin: center bottom;
+  animation: xmd-grab-edge-left var(--xmd-dwell, 1000ms) linear forwards;
+}
+
+@keyframes xmd-grab-edge-top {
+  0% {
     transform: scaleX(0);
   }
-  to {
+  25%,
+  100% {
     transform: scaleX(1);
+  }
+}
+
+@keyframes xmd-grab-edge-right {
+  0%,
+  25% {
+    transform: scaleY(0);
+  }
+  50%,
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes xmd-grab-edge-bottom {
+  0%,
+  50% {
+    transform: scaleX(0);
+  }
+  75%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes xmd-grab-edge-left {
+  0%,
+  75% {
+    transform: scaleY(0);
+  }
+  100% {
+    transform: scaleY(1);
   }
 }
 
@@ -183,13 +314,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .xmd-launcher,
   .xmd-grab,
   .xmd-grab__badge {
-    transition: opacity 120ms ease;
+    transition-duration: 0ms;
     transform: none;
   }
 
-  .xmd-grab--saved::after {
+  .xmd-grab--saved::after,
+  .xmd-grab__edge {
     animation: none;
   }
 }

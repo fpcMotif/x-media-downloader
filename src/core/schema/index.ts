@@ -84,6 +84,31 @@ export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {
   snapshot: MetricsSnapshot,
 })
 
+export const ClearDetectedMediaRequest = Schema.TaggedStruct('ClearDetectedMediaRequest', {
+  rescanVisible: Schema.optional(Schema.Boolean),
+})
+export type ClearDetectedMediaRequest = typeof ClearDetectedMediaRequest.Type
+
+export const ClearDetectedMediaResponse = Schema.TaggedStruct('ClearDetectedMediaResponse', {
+  cleared: Schema.Number,
+  rescanned: Schema.Number,
+})
+export type ClearDetectedMediaResponse = typeof ClearDetectedMediaResponse.Type
+
+export const ClearDownloadMonitorRequest = Schema.TaggedStruct('ClearDownloadMonitorRequest', {
+  clearStaleLocks: Schema.optional(Schema.Boolean),
+})
+export type ClearDownloadMonitorRequest = typeof ClearDownloadMonitorRequest.Type
+
+export const ClearDownloadMonitorResponse = Schema.TaggedStruct('ClearDownloadMonitorResponse', {
+  ok: Schema.Boolean,
+  active: Schema.Number,
+  clearedMetrics: Schema.Boolean,
+  clearedLocks: Schema.Number,
+  reason: Schema.optional(Schema.String),
+})
+export type ClearDownloadMonitorResponse = typeof ClearDownloadMonitorResponse.Type
+
 export const Message = Schema.Union([
   DetectRequest,
   MediaDetected,
@@ -91,5 +116,7 @@ export const Message = Schema.Union([
   QueueUpdate,
   MetricsRequest,
   MetricsUpdate,
+  ClearDetectedMediaRequest,
+  ClearDownloadMonitorRequest,
 ])
 export type Message = typeof Message.Type

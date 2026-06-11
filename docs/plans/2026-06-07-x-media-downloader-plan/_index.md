@@ -200,7 +200,7 @@ are independent until they converge at 010/011/012.
 The implementer can loop on these without further input:
 
 1. Scaffold → `bun run typecheck` exit 0; `bun run build` emits
-   `.output/chrome-mv3/manifest.json` with required `{downloads, storage,
+   `.output/manifest.json` with required `{downloads, storage,
    x.com, twitter.com}` + optional `{offscreen, pbs/video.twimg}`.
 2. Schema → `bun test src/core/schema` green: `MediaItem`/`Settings`(defaults)/
    `Message` decode via `decodeUnknownResult`; invalid input → `SchemaError`.

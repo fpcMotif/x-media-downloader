@@ -36,6 +36,10 @@ describe('isGrabbablePhotoUrl', () => {
   it('accepts a pbs.twimg.com /media photo url', () => {
     expect(isGrabbablePhotoUrl('https://pbs.twimg.com/media/AAA?format=jpg&name=small')).toBe(true)
     expect(isGrabbablePhotoUrl('https://pbs.twimg.com/media/AAA.jpg?name=orig')).toBe(true)
+    expect(isGrabbablePhotoUrl('https://pbs.twimg.com/media/AAA?format=png&name=900x900')).toBe(
+      true,
+    )
+    expect(isGrabbablePhotoUrl('https://pbs.twimg.com/media/AAA.webp?name=small')).toBe(true)
   })
 
   it('rejects avatars, card thumbs, emoji, and video poster frames', () => {
@@ -63,6 +67,7 @@ describe('extFromImgUrl', () => {
   it('reads the ?format= query param X serves renditions with', () => {
     expect(extFromImgUrl('https://pbs.twimg.com/media/AAA?format=png&name=small')).toBe('png')
     expect(extFromImgUrl('https://pbs.twimg.com/media/AAA?format=webp&name=orig')).toBe('webp')
+    expect(extFromImgUrl('https://pbs.twimg.com/media/AAA?format=PNG&name=orig')).toBe('png')
   })
 
   it('falls back to a dotted path segment, then jpg', () => {

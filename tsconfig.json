@@ -11,9 +11,9 @@
       {
         "name": "@effect/language-service",
         "diagnostics": true,
-        "refactors": true,
-        "completions": true,
-        "quickinfo": true
+        "completions": false,
+        "refactors": false,
+        "quickinfo": false
       }
     ]
   },

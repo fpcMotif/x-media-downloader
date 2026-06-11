@@ -54,7 +54,7 @@ export function extFromImgUrl(url: string): string {
   try {
     const u = new URL(url)
     const fmt = u.searchParams.get('format')
-    if (fmt) return fmt
+    if (fmt) return fmt.toLowerCase()
     const base = u.pathname.slice(u.pathname.lastIndexOf('/') + 1)
     const dot = base.lastIndexOf('.')
     return dot >= 0 ? base.slice(dot + 1) : 'jpg'
