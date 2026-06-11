@@ -257,6 +257,18 @@ export default defineContentScript({
               aria-label={`Download all detected media (${byId.size})`}
               onClick={() => send([...byId.values()])}
             >
+              <span class="xmd-launcher__icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20" focusable="false">
+                  <path
+                    d="M10 3.75v8.5m0 0 3.25-3.25M10 12.25 6.75 9M5 15.75h10"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.8"
+                  />
+                </svg>
+              </span>
               <span class="xmd-launcher__label">Download all</span>
               <span class="xmd-launcher__count">{byId.size}</span>
             </button>

@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { Schema, Result } from 'effect'
-import { MediaItem, Settings, Message, ClearDetectedMediaRequest, ClearDownloadMonitorRequest } from './index'
+import {
+  MediaItem,
+  Settings,
+  Message,
+  ClearDetectedMediaRequest,
+  ClearDownloadMonitorRequest,
+} from './index'
 
 const validMediaRaw = {
   id: 'media-1',
