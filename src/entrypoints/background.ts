@@ -1,6 +1,12 @@
 import { Effect, Result, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import { Message, type MediaItem, type MetricsSnapshot, type Settings } from '../core/schema'
+import {
+  Message,
+  type DownloadTraceEntry,
+  type MediaItem,
+  type MetricsSnapshot,
+  type Settings,
+} from '../core/schema'
 import { SettingsService, SettingsServiceLive } from '../core/settings'
 import {
   makeDirectStrategy,
@@ -40,11 +46,15 @@ const ZERO_SNAPSHOT: MetricsSnapshot = {
   elapsedMs: 0,
 }
 
+const MAX_TRACE_EVENTS = 12
+
 // Live monitoring accumulator. In-SW memory: best-effort and resets on SW
 // recycle; the persisted snapshot is the popup's source of truth. Rehydrating
 // the full accumulator across a recycle is the remaining work (ADR-0008).
 let live: MetricsState | null = null
 const requestIdByDownloadId = new Map<number, string>()
+const requestStartedAt = new Map<string, number>()
+let traceEvents: DownloadTraceEntry[] = []
 
 // In-flight request ids. A duplicate id (Quick Grab + '⬇ tweet' overlapping on
 // the same item) would download twice and corrupt the accumulator: extendTotal
@@ -52,8 +62,34 @@ const requestIdByDownloadId = new Map<number, string>()
 // never reach `total`. Duplicates are dropped while the original is in flight.
 const inFlight = new Set<string>()
 
-const persistSnapshot = (now: number): Promise<void> =>
-  live ? metricsItem.setValue(snapshot(live, now)) : Promise.resolve()
+const withTraceEvents = (snap: MetricsSnapshot): MetricsSnapshot =>
+  traceEvents.length === 0 ? snap : { ...snap, events: traceEvents }
+
+const currentSnapshot = (now: number): MetricsSnapshot =>
+  withTraceEvents(live ? snapshot(live, now) : ZERO_SNAPSHOT)
+
+const persistSnapshot = (now: number): Promise<void> => metricsItem.setValue(currentSnapshot(now))
+
+function recordTrace(event: DownloadTraceEntry): void {
+  traceEvents = [...traceEvents, event].slice(-MAX_TRACE_EVENTS)
+  const label = [
+    event.stage,
+    event.type,
+    event.itemId,
+    event.elapsedMs === undefined ? null : `${event.elapsedMs}ms`,
+    event.detail,
+  ]
+    .filter(Boolean)
+    .join(' ')
+  console.info(`[XMD] ${event.source} ${label}`)
+}
+
+const traceBackground = (
+  stage: string,
+  opts: Omit<DownloadTraceEntry, 'source' | 'stage' | 't'> = {},
+): void => {
+  recordTrace({ source: 'background', stage, t: Date.now(), ...opts })
+}
 
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
@@ -80,6 +116,8 @@ function chooseStrategy(settings: Settings): DownloadStrategy {
 
 const handleDownload = (items: ReadonlyArray<MediaItem>) =>
   Effect.gen(function* () {
+    const requestReceivedAt = Date.now()
+    traceBackground('request-received', { detail: `${items.length} item(s)` })
     const svc = yield* SettingsService
     const settings = yield* svc.get
     const strategy = chooseStrategy(settings)
@@ -94,13 +132,22 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
       )
       .filter((r) => !inFlight.has(r.id))
     // Everything already in flight: report success without re-downloading.
-    if (requests.length === 0) return { _tag: 'QueueUpdate' as const, completed: 0, total: 0 }
+    if (requests.length === 0) {
+      traceBackground('request-deduped', { detail: 'all items already in flight' })
+      yield* Effect.promise(() => persistSnapshot(Date.now()))
+      return { _tag: 'QueueUpdate' as const, completed: 0, total: 0 }
+    }
     for (const r of requests) inFlight.add(r.id)
 
     // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
     // accumulator (and keep the downloadId map) so the monitor reflects both;
     // only start fresh once everything has settled (D1).
     const startedAt = Date.now()
+    for (const r of requests) requestStartedAt.set(r.id, startedAt)
+    traceBackground('queue-started', {
+      elapsedMs: startedAt - requestReceivedAt,
+      detail: `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
+    })
     if (live === null || snapshot(live, startedAt).active === 0) {
       requestIdByDownloadId.clear()
       live = emptyMetrics({
@@ -123,12 +170,26 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
       if (!o.ok) {
         inFlight.delete(o.id)
         live = recordOutcome(live, o.id, 'failed', now)
+        traceBackground('start-failed', {
+          itemId: o.id,
+          elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
+        })
       } else if (o.handle?.kind === 'browser') {
         requestIdByDownloadId.set(o.handle.id, o.id)
         live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })
+        traceBackground('browser-started', {
+          itemId: o.id,
+          elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
+          detail: `downloadId ${o.handle.id}`,
+        })
       } else {
         inFlight.delete(o.id)
         live = recordOutcome(live, o.id, 'complete', now)
+        traceBackground('external-complete', {
+          itemId: o.id,
+          elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
+          detail: o.handle ? `aria2 ${o.handle.gid}` : undefined,
+        })
       }
     }
     yield* Effect.promise(() => persistSnapshot(now))
@@ -156,6 +217,12 @@ export default defineBackground(() => {
       if (outcome) {
         inFlight.delete(id)
         if (live) live = recordOutcome(live, id, outcome, now)
+        traceBackground(outcome === 'complete' ? 'browser-complete' : 'browser-failed', {
+          itemId: id,
+          elapsedMs: now - (requestStartedAt.get(id) ?? now),
+          detail: `downloadId ${delta.id}`,
+        })
+        requestStartedAt.delete(id)
       }
       await persistSnapshot(now)
     })()
@@ -170,7 +237,21 @@ export default defineBackground(() => {
       return true // keep the channel open for the async reply
     }
     if (msg._tag === 'MetricsRequest') {
-      void metricsItem.getValue().then((snap) => sendResponse(snap ?? ZERO_SNAPSHOT))
+      void metricsItem.getValue().then((snap) => sendResponse(snap ?? currentSnapshot(Date.now())))
+      return true
+    }
+    if (msg._tag === 'DownloadTraceEvent') {
+      recordTrace({
+        source: msg.source,
+        stage: msg.stage,
+        t: msg.t,
+        ...(msg.itemId !== undefined ? { itemId: msg.itemId } : {}),
+        ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
+        ...(msg.type !== undefined ? { type: msg.type } : {}),
+        ...(msg.elapsedMs !== undefined ? { elapsedMs: msg.elapsedMs } : {}),
+        ...(msg.detail !== undefined ? { detail: msg.detail } : {}),
+      })
+      void persistSnapshot(Date.now()).then(() => sendResponse({ ok: true }))
       return true
     }
     if (msg._tag === 'ClearDownloadMonitorRequest') {
@@ -190,6 +271,8 @@ export default defineBackground(() => {
         const clearedLocks = inFlight.size
         inFlight.clear()
         requestIdByDownloadId.clear()
+        requestStartedAt.clear()
+        traceEvents = []
         live = null
         await metricsItem.setValue(null)
         sendResponse({

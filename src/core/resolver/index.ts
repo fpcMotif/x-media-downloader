@@ -51,6 +51,7 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
         handle: tweet.handle,
         type: 'photo',
         url: upgradePhotoUrl(m.media_url_https),
+        previewUrl: m.media_url_https,
         ext: extFromUrl(m.media_url_https, 'jpg'),
         index: out.length,
       })
@@ -65,6 +66,7 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
       handle: tweet.handle,
       type: m.type === 'animated_gif' ? 'gif' : 'video',
       url: variant.url,
+      previewUrl: m.media_url_https,
       ext: extFromUrl(variant.url, 'mp4'),
       index: out.length,
       ...(variant.bitrate !== undefined ? { bitrate: variant.bitrate } : {}),

@@ -5,7 +5,6 @@ import tailwindcss from '@tailwindcss/vite'
 // https://wxt.dev/api/config.html
 export default defineConfig({
   srcDir: 'src',
-  outDirTemplate: '.',
   manifest: {
     name: 'X Media Downloader',
     description:

@@ -11,6 +11,8 @@ const MEDIA_OPS = [
   'HomeTimeline',
   'HomeLatestTimeline',
   'SearchTimeline',
+  'ListLatestTweetsTimeline',
+  'ListTweetsTimeline',
   'Likes',
   'Bookmarks',
 ] as const

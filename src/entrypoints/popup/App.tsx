@@ -2,12 +2,44 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '../../core/settings'
 import { aria2OriginPattern } from '../../core/download/aria2'
-import type { MetricsSnapshot, Settings } from '../../core/schema'
+import type { DownloadTraceEntry, MetricsSnapshot, Settings } from '../../core/schema'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
   if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} MB/s`
   return `${Math.round(bps / 1000)} KB/s`
+}
+
+function fmtBytes(bytes: number): string {
+  if (bytes <= 0) return '-'
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`
+  if (bytes >= 1000) return `${Math.round(bytes / 1000)} KB`
+  return `${bytes} B`
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`
+  const minutes = Math.floor(ms / 60_000)
+  const seconds = Math.round((ms % 60_000) / 1000)
+  return `${minutes}m ${seconds}s`
+}
+
+function fmtStage(stage: string): string {
+  return stage
+    .split('-')
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function traceDetail(event: DownloadTraceEntry): string {
+  const bits = [
+    event.type,
+    event.itemId,
+    event.elapsedMs === undefined ? undefined : fmtDuration(event.elapsedMs),
+    event.detail,
+  ].filter((part): part is string => typeof part === 'string' && part.length > 0)
+  return bits.length === 0 ? event.source : bits.join(' · ')
 }
 
 const modeOptions = [
@@ -115,9 +147,13 @@ export function App() {
     setAria2Granted(await browser.permissions.request({ origins: [pattern] }))
   }
 
-  const monitor = metrics && metrics.total > 0 ? metrics : null
+  const events = metrics?.events ?? []
+  const monitor = metrics && (metrics.total > 0 || events.length > 0) ? metrics : null
   const monitorDone = monitor ? monitor.completed + monitor.failed : 0
-  const monitorPct = monitor ? Math.min(100, Math.round((monitorDone / monitor.total) * 100)) : 0
+  const monitorPct =
+    monitor && monitor.total > 0
+      ? Math.min(100, Math.round((monitorDone / monitor.total) * 100))
+      : 0
   const canClearMonitor = monitor !== null && monitor.active === 0
 
   return (
@@ -171,7 +207,9 @@ export function App() {
               <div>
                 <span class="xmd-section-kicker">Download monitor</span>
                 <strong>
-                  {monitorDone}/{monitor.total} done
+                  {monitor.total > 0
+                    ? `${monitorDone}/${monitor.total} done`
+                    : 'Waiting for download'}
                 </strong>
               </div>
               <span class="xmd-monitor-percent tabular-nums">{monitorPct}%</span>
@@ -185,13 +223,35 @@ export function App() {
             <dl class="xmd-stat-grid">
               <Stat label="Active" value={`${monitor.active}/${monitor.concurrencyCap}`} />
               <Stat label="Speed" value={fmtRate(monitor.throughputBps)} />
+              <Stat label="Elapsed" value={fmtDuration(monitor.elapsedMs)} />
               <Stat
                 label="ETA"
                 value={monitor.etaSeconds === undefined ? '-' : `${Math.ceil(monitor.etaSeconds)}s`}
               />
+              <Stat
+                label="Bytes"
+                value={
+                  monitor.bytesTotal > 0
+                    ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
+                    : fmtBytes(monitor.bytesReceived)
+                }
+              />
               {monitor.failed > 0 && <Stat label="Failed" value={String(monitor.failed)} />}
               {monitor.retries > 0 && <Stat label="Retries" value={String(monitor.retries)} />}
             </dl>
+            {events.length > 0 && (
+              <ol class="xmd-event-log" aria-label="Recent download log">
+                {events.toReversed().map((event) => (
+                  <li
+                    key={`${event.t}:${event.source}:${event.stage}:${event.itemId ?? event.detail ?? ''}`}
+                    class={`xmd-event-log__item xmd-event-log__item--${event.source}`}
+                  >
+                    <span class="xmd-event-log__stage">{fmtStage(event.stage)}</span>
+                    <span class="xmd-event-log__detail">{traceDetail(event)}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
           </section>
         )}
 
@@ -355,7 +415,7 @@ export function App() {
             />
             <span>
               <strong>Hover quick grab</strong>
-              <small>Hold modifier to grab one photo</small>
+              <small>Hold modifier to grab one media item</small>
             </span>
           </label>
 
@@ -382,7 +442,7 @@ export function App() {
         </Section>
       </main>
 
-      <footer class="xmd-popup-footer">No telemetry. No remote downloader.</footer>
+      <footer class="xmd-popup-footer">No remote telemetry. Local download log only.</footer>
     </div>
   )
 }

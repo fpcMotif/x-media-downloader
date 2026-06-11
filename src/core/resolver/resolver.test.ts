@@ -63,6 +63,7 @@ describe('resolveTweetMedia', () => {
     expect(items[0]!.url).toContain('name=orig')
     expect(items[1]).toMatchObject({ type: 'video', index: 1, ext: 'mp4' })
     expect(items[1]!.url).toBe('https://video.twimg.com/high.mp4')
+    expect(items[1]!.previewUrl).toBe('https://pbs.twimg.com/tweet_video_thumb/BBB.jpg')
   })
 
   it('de-duplicates repeated media by id', () => {
@@ -106,6 +107,7 @@ describe('media combinations (1–4, mixed)', () => {
       type: 'gif',
       ext: 'mp4',
       url: 'https://video.twimg.com/g.mp4',
+      previewUrl: 'https://pbs.twimg.com/tweet_video_thumb/g.jpg',
     })
   })
 

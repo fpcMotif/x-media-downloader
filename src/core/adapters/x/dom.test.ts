@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import type { MediaItem } from '../../schema'
-import { mediaKeyFromUrl, groupByTweet, isGrabbablePhotoUrl, extFromImgUrl } from './dom'
+import {
+  mediaKeyFromUrl,
+  groupByTweet,
+  isGrabbablePhotoUrl,
+  isGrabbableMediaPreviewUrl,
+  extFromImgUrl,
+} from './dom'
 
 const media = (id: string, tweetId: string, index: number, url: string): MediaItem => ({
   id,
@@ -60,6 +66,28 @@ describe('isGrabbablePhotoUrl', () => {
   it('rejects spoofed suffix hosts and the video CDN', () => {
     expect(isGrabbablePhotoUrl('https://evil-twimg.com/media/x.jpg?format=jpg')).toBe(false)
     expect(isGrabbablePhotoUrl('https://video.twimg.com/media/x.mp4')).toBe(false)
+  })
+})
+
+describe('isGrabbableMediaPreviewUrl', () => {
+  it('accepts photos plus video/GIF poster frames', () => {
+    expect(isGrabbableMediaPreviewUrl('https://pbs.twimg.com/media/AAA?format=jpg')).toBe(true)
+    expect(isGrabbableMediaPreviewUrl('https://pbs.twimg.com/tweet_video_thumb/VID.jpg')).toBe(true)
+    expect(
+      isGrabbableMediaPreviewUrl('https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/VID.jpg'),
+    ).toBe(true)
+    expect(
+      isGrabbableMediaPreviewUrl('https://pbs.twimg.com/amplify_video_thumb/1/img/VID.jpg'),
+    ).toBe(true)
+  })
+
+  it('still rejects avatars, cards, non-pbs hosts, and the mp4 CDN', () => {
+    expect(isGrabbableMediaPreviewUrl('https://pbs.twimg.com/profile_images/zzz.jpg')).toBe(false)
+    expect(isGrabbableMediaPreviewUrl('https://pbs.twimg.com/card_img/123/abc?format=png')).toBe(
+      false,
+    )
+    expect(isGrabbableMediaPreviewUrl('https://video.twimg.com/media/x.mp4')).toBe(false)
+    expect(isGrabbableMediaPreviewUrl('https://example.com/tweet_video_thumb/VID.jpg')).toBe(false)
   })
 })
 

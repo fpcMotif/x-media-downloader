@@ -2,11 +2,14 @@ import { describe, it, expect } from 'vitest'
 import {
   modifierHeld,
   isModifierKey,
+  quickGrabDwellMs,
+  quickGrabBadgeLabel,
   idleQuickGrab,
   pressModifier,
   releaseModifier,
   canGrab,
   markGrabbed,
+  syncModifierFromFlags,
 } from './quickgrab'
 
 const flags = (over: Partial<Record<'altKey' | 'shiftKey' | 'ctrlKey' | 'metaKey', boolean>>) => ({
@@ -36,6 +39,22 @@ describe('isModifierKey', () => {
   })
 })
 
+describe('Quick Grab dwell threshold', () => {
+  it('triggers after a 0.5s Alt-hover dwell', () => {
+    expect(quickGrabDwellMs).toBe(500)
+  })
+})
+
+describe('Quick Grab badge labels', () => {
+  it('separates dwell, queued, started, repeat, and failed feedback', () => {
+    expect(quickGrabBadgeLabel('charging')).toBe('Grabbing')
+    expect(quickGrabBadgeLabel('queued')).toBe('Queued')
+    expect(quickGrabBadgeLabel('saved')).toBe('Started')
+    expect(quickGrabBadgeLabel('noted')).toBe('Already queued')
+    expect(quickGrabBadgeLabel('failed')).toBe('Failed')
+  })
+})
+
 describe('QuickGrab state machine', () => {
   it('arms on press and clears on release', () => {
     const armed = pressModifier(idleQuickGrab)
@@ -43,12 +62,12 @@ describe('QuickGrab state machine', () => {
     expect(releaseModifier().active).toBe(false)
   })
 
-  it('fires once per photo per press, re-grabbable after release', () => {
+  it('fires once per media item per press, re-grabbable after release', () => {
     let s = pressModifier(idleQuickGrab)
     expect(canGrab(s, 'P1')).toBe(true)
     s = markGrabbed(s, 'P1')
     expect(canGrab(s, 'P1')).toBe(false) // already grabbed this press
-    expect(canGrab(s, 'P2')).toBe(true) // a different photo still fires
+    expect(canGrab(s, 'P2')).toBe(true) // a different item still fires
 
     s = pressModifier(releaseModifier()) // release + fresh press
     expect(canGrab(s, 'P1')).toBe(true) // re-grabbable
@@ -58,7 +77,7 @@ describe('QuickGrab state machine', () => {
     expect(canGrab(idleQuickGrab, 'P1')).toBe(false)
   })
 
-  it('ignores auto-repeat keydowns (does not re-arm grabbed photos)', () => {
+  it('ignores auto-repeat keydowns (does not re-arm grabbed items)', () => {
     const pressed = markGrabbed(pressModifier(idleQuickGrab), 'P1')
     const repeated = pressModifier(pressed) // key-repeat while held
     expect(repeated).toBe(pressed) // same reference: no reset
@@ -68,5 +87,23 @@ describe('QuickGrab state machine', () => {
   it('markGrabbed is idempotent', () => {
     const once = markGrabbed(pressModifier(idleQuickGrab), 'P1')
     expect(markGrabbed(once, 'P1')).toBe(once)
+  })
+
+  it('can arm from live pointer modifier flags when keydown was missed', () => {
+    const synced = syncModifierFromFlags(idleQuickGrab, flags({ altKey: true }), 'alt')
+    expect(synced.active).toBe(true)
+    expect(canGrab(synced, 'V1')).toBe(true)
+  })
+
+  it('preserves grabbed items while the pointer still reports the modifier held', () => {
+    const grabbed = markGrabbed(pressModifier(idleQuickGrab), 'V1')
+    expect(syncModifierFromFlags(grabbed, flags({ altKey: true }), 'alt')).toBe(grabbed)
+  })
+
+  it('releases when the next pointer event no longer has the modifier', () => {
+    const grabbed = markGrabbed(pressModifier(idleQuickGrab), 'V1')
+    const synced = syncModifierFromFlags(grabbed, flags({}), 'alt')
+    expect(synced.active).toBe(false)
+    expect(canGrab(synced, 'V1')).toBe(false)
   })
 })
