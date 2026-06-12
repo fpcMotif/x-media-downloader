@@ -17,6 +17,37 @@ describe('detectFromJson', () => {
     expect(items[0]).toMatchObject({ handle: 'alice', tweetId: '1790', type: 'photo' })
     expect(items[0]!.url).toContain('name=orig')
   })
+
+  it('ignores non-object, duplicate, and id-less tweet-like nodes', () => {
+    const media = [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/media/AA.jpg' }]
+    const items = detectFromJson([
+      null,
+      'noise',
+      { legacy: { id_str: 'missing-entities' } },
+      { legacy: { id_str: 'bad-media', extended_entities: { media: {} } } },
+      { legacy: { extended_entities: { media } } },
+      {
+        rest_id: '10',
+        legacy: { id_str: '10', screen_name: 'fallback', extended_entities: { media } },
+      },
+      {
+        rest_id: '10',
+        legacy: { id_str: '10', screen_name: 'duplicate', extended_entities: { media } },
+      },
+      {
+        rest_id: '11',
+        core: { user_results: { result: { legacy: { screen_name: 'nested' } } } },
+        legacy: { extended_entities: { media } },
+      },
+      {
+        rest_id: '12',
+        legacy: { extended_entities: { media } },
+      },
+    ])
+    expect(items).toHaveLength(3)
+    expect(items.map((item) => item.tweetId)).toEqual(['10', '11', '12'])
+    expect(items.map((item) => item.handle)).toEqual(['fallback', 'nested', ''])
+  })
 })
 
 describe('detectFromDom', () => {
@@ -66,6 +97,33 @@ describe('resolveImageElement', () => {
       resolveImageElement(imgAt('<img src="https://pbs.twimg.com/card_img/9/a?format=jpg" />')),
     ).toBeNull()
     expect(resolveImageElement(imgAt('<img src="https://example.com/x.jpg" />'))).toBeNull()
+  })
+
+  it('returns null for a media path that has no stable key', () => {
+    expect(
+      resolveImageElement(imgAt('<img src="https://pbs.twimg.com/media/?format=jpg" />')),
+    ).toBeNull()
+  })
+
+  it('prefers currentSrc over src when the browser has selected a responsive rendition', () => {
+    const img = imgAt('<img src="https://example.com/not-selected.jpg" />')
+    Object.defineProperty(img, 'currentSrc', {
+      configurable: true,
+      value: 'https://pbs.twimg.com/media/Chosen?format=png&name=small',
+    })
+    const item = resolveImageElement(img, '/alice/status/99')
+    expect(item).toMatchObject({ tweetId: '99', url: expect.stringContaining('/media/Chosen') })
+    expect(item!.ext).toBe('png')
+  })
+
+  it('falls back to src when currentSrc is empty', () => {
+    const img = imgAt('<img src="https://pbs.twimg.com/media/SourceOnly?format=jpg&name=small" />')
+    Object.defineProperty(img, 'currentSrc', { configurable: true, value: '' })
+    const item = resolveImageElement(img, '/alice/status/100')
+    expect(item).toMatchObject({
+      tweetId: '100',
+      url: expect.stringContaining('/media/SourceOnly'),
+    })
   })
 
   it('falls back to the page path for the lightbox /photo/ route (no article)', () => {
@@ -157,6 +215,34 @@ describe('resolveImageElement', () => {
       handle: 'alice',
       tweetId: '1790',
       index: 0,
+    })
+  })
+
+  it('ignores non-media siblings while computing article-order indices', () => {
+    const html = `
+      <article data-testid="tweet">
+        <a href="/alice/status/1790"><time>now</time></a>
+        <img src="https://pbs.twimg.com/profile_images/avatar.jpg" />
+        <img src="https://pbs.twimg.com/media/ArticleBare?format=jpg&name=small" />
+      </article>`
+    const avatar = imgAt(html, 0)
+    const photo = imgAt(html, 1)
+    Object.defineProperty(avatar, 'currentSrc', { configurable: true, value: '' })
+    Object.defineProperty(photo, 'currentSrc', { configurable: true, value: '' })
+    expect(resolveImageElement(photo)).toMatchObject({ tweetId: '1790', index: 0 })
+  })
+
+  it('uses an author-less article fallback when no real author status link is present', () => {
+    const html = `
+      <article data-testid="tweet">
+        <a href="/i/status/1790"><time>now</time></a>
+        <img src="https://pbs.twimg.com/media/InternalOnly?format=jpg&name=small" />
+      </article>`
+    expect(resolveImageElement(imgAt(html))!).toMatchObject({
+      handle: '',
+      tweetId: '1790',
+      index: 0,
+      id: '1790-0',
     })
   })
 

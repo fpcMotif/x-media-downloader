@@ -6,10 +6,19 @@ const defaults: Settings = Schema.decodeUnknownSync(SettingsSchema)({})
 
 const item = storage.defineItem<unknown>('local:settings', { fallback: {} })
 
+const normalizeNumber = (value: number, fallback: number): number =>
+  Number.isFinite(value) && value >= 1 ? value : fallback
+
+const normalize = (s: Settings): Settings => ({
+  ...s,
+  downloadConcurrency: normalizeNumber(s.downloadConcurrency, defaults.downloadConcurrency),
+  aria2Split: normalizeNumber(s.aria2Split, defaults.aria2Split),
+})
+
 /** Decode stored settings; fall back to defaults on a SchemaError (corrupt data). */
 function decode(raw: unknown): Settings {
   try {
-    return Schema.decodeUnknownSync(SettingsSchema)(raw ?? {})
+    return normalize(Schema.decodeUnknownSync(SettingsSchema)(raw))
   } catch {
     return defaults
   }

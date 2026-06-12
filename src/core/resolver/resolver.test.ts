@@ -6,6 +6,10 @@ describe('upgradePhotoUrl', () => {
     const url = 'https://pbs.twimg.com/media/ABC?format=jpg&name=small'
     expect(upgradePhotoUrl(url)).toBe('https://pbs.twimg.com/media/ABC?format=jpg&name=orig')
   })
+
+  it('returns an unparseable URL unchanged', () => {
+    expect(upgradePhotoUrl('not a url')).toBe('not a url')
+  })
 })
 
 describe('pickVideoVariant', () => {
@@ -21,6 +25,21 @@ describe('pickVideoVariant', () => {
 
   it('returns null when there is no mp4 variant', () => {
     expect(pickVideoVariant([{ content_type: 'application/x-mpegURL', url: 'p.m3u8' }])).toBeNull()
+  })
+
+  it('treats missing video bitrates as zero when choosing an mp4 variant', () => {
+    expect(
+      pickVideoVariant([
+        { content_type: 'video/mp4', url: 'unknown.mp4' },
+        { content_type: 'video/mp4', bitrate: 1, url: 'tiny.mp4' },
+      ])?.url,
+    ).toBe('tiny.mp4')
+    expect(
+      pickVideoVariant([
+        { content_type: 'video/mp4', bitrate: 1, url: 'known.mp4' },
+        { content_type: 'video/mp4', url: 'unknown.mp4' },
+      ])?.url,
+    ).toBe('known.mp4')
   })
 })
 
@@ -72,6 +91,28 @@ describe('resolveTweetMedia', () => {
     } as const
     const items = resolveTweetMedia({ tweetId: '1', handle: 'bob', media: [photo, photo] })
     expect(items).toHaveLength(1)
+  })
+
+  it('falls back to basename identity and fallback extensions when URLs lack dotted names', () => {
+    const items = resolveTweetMedia({
+      tweetId: '1',
+      handle: 'bob',
+      media: [
+        { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/NO_DOT' },
+        {
+          type: 'video',
+          media_url_https: 'https://pbs.twimg.com/tweet_video_thumb/VIDEO',
+          video_info: {
+            variants: [{ content_type: 'video/mp4', url: 'https://video.twimg.com/extless' }],
+          },
+        },
+      ],
+    })
+    expect(items).toEqual([
+      expect.objectContaining({ id: 'NO_DOT', ext: 'jpg', type: 'photo' }),
+      expect.objectContaining({ id: 'VIDEO', ext: 'mp4', type: 'video' }),
+    ])
+    expect(items[1]).not.toHaveProperty('bitrate')
   })
 })
 

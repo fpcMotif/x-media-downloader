@@ -23,9 +23,13 @@ describe('sidecarFilename', () => {
 })
 
 describe('buildSidecar', () => {
-  it('includes tweetUrl when ctx provides it', () => {
-    const meta = buildSidecar(item, { tweetUrl: 'https://x.com/alice/status/123' })
+  it('includes optional provenance fields when ctx provides them', () => {
+    const meta = buildSidecar(item, {
+      tweetUrl: 'https://x.com/alice/status/123',
+      capturedAt: '2026-06-12T00:00:00.000Z',
+    })
     expect(meta.tweetUrl).toBe('https://x.com/alice/status/123')
+    expect(meta.capturedAt).toBe('2026-06-12T00:00:00.000Z')
     expect(meta).toMatchObject({ handle: 'alice', tweetId: '123', type: 'photo', index: 0 })
   })
 

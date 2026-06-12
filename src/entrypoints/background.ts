@@ -55,8 +55,10 @@ const inFlight = new Set<string>()
 const persistSnapshot = (now: number): Promise<void> =>
   live ? metricsItem.setValue(snapshot(live, now)) : Promise.resolve()
 
+export const persistSnapshotForTest = persistSnapshot
+
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
-function chooseStrategy(settings: Settings): DownloadStrategy {
+export function chooseStrategy(settings: Settings): DownloadStrategy {
   const direct = makeDirectStrategy({ download: (opts) => browser.downloads.download(opts) })
   if (settings.downloadStrategy === 'aria2') {
     const port = makeAria2RpcPort({
@@ -78,7 +80,7 @@ function chooseStrategy(settings: Settings): DownloadStrategy {
   return direct
 }
 
-const handleDownload = (items: ReadonlyArray<MediaItem>) =>
+export const handleDownload = (items: ReadonlyArray<MediaItem>) =>
   Effect.gen(function* () {
     const svc = yield* SettingsService
     const settings = yield* svc.get
@@ -136,7 +138,13 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total }
   }).pipe(Effect.provide(SettingsServiceLive))
 
-export default defineBackground(() => {
+export function resetBackgroundStateForTest(): void {
+  live = null
+  requestIdByDownloadId.clear()
+  inFlight.clear()
+}
+
+export function registerBackgroundListeners(): void {
   // Listeners registered synchronously at the top of main() (grounding §b).
   browser.downloads.onChanged.addListener((delta) => {
     const id = requestIdByDownloadId.get(delta.id)
@@ -204,4 +212,6 @@ export default defineBackground(() => {
     }
     return false
   })
-})
+}
+
+export default defineBackground(registerBackgroundListeners)

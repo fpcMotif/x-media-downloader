@@ -123,6 +123,13 @@ describe('makeAria2RpcPort', () => {
     await expect(port.addUri(['u'], {})).rejects.toThrow('aria2 error 1')
   })
 
+  it('rejects with an unknown-code fallback for an empty JSON-RPC error', async () => {
+    const fetchImpl = (() =>
+      Promise.resolve({ json: async () => ({ error: {} }) } as Response)) as typeof fetch
+    const port = makeAria2RpcPort({ rpcUrl: 'http://x', secret: '', fetchImpl })
+    await expect(port.addUri(['u'], {})).rejects.toThrow('aria2 error ?')
+  })
+
   it('rejects a malformed body with neither result nor error', async () => {
     const fetchImpl = (() =>
       Promise.resolve({ json: async () => ({}) } as Response)) as typeof fetch

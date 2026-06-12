@@ -20,16 +20,22 @@ export interface RawTweet {
 }
 
 function basenameId(url: string): string {
-  const path = url.split('?')[0] ?? url
+  const path = url.split('?')[0]!
   const base = path.slice(path.lastIndexOf('/') + 1)
   const dot = base.lastIndexOf('.')
   return dot >= 0 ? base.slice(0, dot) : base
 }
 
 function extFromUrl(url: string, fallback: string): string {
-  const path = url.split('?')[0] ?? url
-  const dot = path.lastIndexOf('.')
-  return dot >= 0 ? path.slice(dot + 1) : fallback
+  let path: string
+  try {
+    path = new URL(url).pathname
+  } catch {
+    path = url.split('?')[0]!
+  }
+  const base = path.slice(path.lastIndexOf('/') + 1)
+  const dot = base.lastIndexOf('.')
+  return dot >= 0 ? base.slice(dot + 1) : fallback
 }
 
 /**

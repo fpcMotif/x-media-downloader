@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Effect } from 'effect'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
-import { SettingsService, SettingsServiceLive, setSettings, watchSettings } from './index'
+import {
+  SettingsService,
+  SettingsServiceLive,
+  getSettings as getSettingsPromise,
+  setSettings,
+  watchSettings,
+} from './index'
 
 const run = <A, E>(eff: Effect.Effect<A, E, SettingsService>) =>
   Effect.runPromise(Effect.provide(eff, SettingsServiceLive))
@@ -38,6 +44,19 @@ describe('SettingsService', () => {
     await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 'not-a-number' } })
     const s = await run(getSettings)
     expect(s.downloadConcurrency).toBe(3)
+  })
+
+  it('promise helper decodes null stored data as defaults', async () => {
+    await fakeBrowser.storage.local.set({ settings: null })
+    const s = await getSettingsPromise()
+    expect(s.filenameTemplate).toContain('{tweetId}')
+    expect(s.downloadConcurrency).toBe(3)
+  })
+
+  it('sanitizes invalid promise-helper patches before persisting', async () => {
+    const s = await setSettings({ downloadConcurrency: Number.NaN })
+    expect(s.downloadConcurrency).toBe(3)
+    expect((await getSettingsPromise()).downloadConcurrency).toBe(3)
   })
 })
 

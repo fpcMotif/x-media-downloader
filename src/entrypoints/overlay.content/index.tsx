@@ -17,22 +17,22 @@ import { getSettings, watchSettings } from '../../core/settings'
 import type { MediaItem, Settings } from '../../core/schema'
 
 /** Hold-to-grab dwell: fast, but still intentional enough to avoid accidental saves. */
-const DWELL_MS = 1000
+export const DWELL_MS = 1000
 
-interface Rect {
+export interface Rect {
   readonly top: number
   readonly left: number
   readonly width: number
   readonly height: number
 }
 
-const rectOf = (el: Element): Rect => {
+export const rectOf = (el: Element): Rect => {
   const r = el.getBoundingClientRect()
   return { top: r.top, left: r.left, width: r.width, height: r.height }
 }
 
 /** Alpha of a computed `backgroundColor` (`rgb(…)` / `rgba(…)` / keyword). */
-const bgAlpha = (color: string): number => {
+export const bgAlpha = (color: string): number => {
   const m = /^rgba?\(([^)]+)\)$/.exec(color)
   if (!m) return color === 'transparent' ? 0 : 1
   const parts = m[1]!.split(',')
@@ -45,7 +45,7 @@ const bgAlpha = (color: string): number => {
  * the image sits outside of (lightbox backdrop, compose scrim), or any opaque
  * layer. X's transparent hit-target divs over their own photos pass through.
  */
-const imgAtPoint = (x: number, y: number): HTMLImageElement | null => {
+export const imgAtPoint = (x: number, y: number): HTMLImageElement | null => {
   const stack = document.elementsFromPoint(x, y)
   const at = stack.findIndex((el) => el.tagName === 'IMG')
   if (at < 0) return null
@@ -60,12 +60,12 @@ const imgAtPoint = (x: number, y: number): HTMLImageElement | null => {
   return img
 }
 
-const send = (items: ReadonlyArray<MediaItem>): void => {
+export const send = (items: ReadonlyArray<MediaItem>): void => {
   if (items.length > 0) void browser.runtime.sendMessage({ _tag: 'DownloadRequest', items })
 }
 
 /** Send one tracked request; false when the background reports a start failure. */
-const sendTracked = (items: ReadonlyArray<MediaItem>): Promise<boolean> =>
+export const sendTracked = (items: ReadonlyArray<MediaItem>): Promise<boolean> =>
   browser.runtime
     .sendMessage({ _tag: 'DownloadRequest', items })
     .then((reply) => {

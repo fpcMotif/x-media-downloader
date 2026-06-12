@@ -37,11 +37,12 @@ export function detectFromJson(json: unknown): MediaItem[] {
   const seen = new Set<string>()
   walk(json, (obj) => {
     const legacy = obj['legacy']
-    const ee = isObj(legacy) ? legacy['extended_entities'] : undefined
-    const media = isObj(ee) ? ee['media'] : undefined
+    if (!isObj(legacy)) return
+    const ee = legacy['extended_entities']
+    if (!isObj(ee)) return
+    const media = ee['media']
     if (!Array.isArray(media)) return
-    const idStr = isObj(legacy) ? legacy['id_str'] : undefined
-    const tweetId = String(obj['rest_id'] ?? idStr ?? '')
+    const tweetId = String(obj['rest_id'] ?? legacy['id_str'] ?? '')
     if (tweetId === '' || seen.has(tweetId)) return
     seen.add(tweetId)
     const handle = findScreenName(obj) ?? ''
@@ -76,13 +77,13 @@ function contextFromPath(path: string): TweetContext | null {
 }
 
 const linkContext = (a: Element | null): TweetContext | null =>
-  a ? contextFromPath(a.getAttribute('href') ?? '') : null
+  a ? contextFromPath(String(a.getAttribute('href'))) : null
 
 /** First status link with a real author, else the first author-less (`/i/`) link. */
 function contextFromArticle(article: Element): TweetContext | null {
   let fallback: TweetContext | null = null
   for (const a of article.querySelectorAll('a[href*="/status/"]')) {
-    const ctx = contextFromPath(a.getAttribute('href') ?? '')
+    const ctx = contextFromPath(String(a.getAttribute('href')))
     if (ctx?.handle) return ctx
     fallback ??= ctx
   }
@@ -127,7 +128,7 @@ export function resolveImageElement(img: HTMLImageElement, pathname = ''): Media
       return (elCtx?.tweetId ?? ctx?.tweetId) === ctx?.tweetId
     })
     const pos = photos.indexOf(img)
-    if (pos >= 0) index = pos
+    index = Math.max(0, pos)
   }
 
   const tweetId = ctx?.tweetId ?? key
@@ -156,7 +157,7 @@ export function detectFromDom(
     tweetId: ctx.tweetId,
     handle: ctx.handle,
     type: 'photo' as const,
-    url: upgradePhotoUrl(img.getAttribute('src') ?? ''),
+    url: upgradePhotoUrl(String(img.getAttribute('src'))),
     ext: 'jpg',
     index,
   }))
