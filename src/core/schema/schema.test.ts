@@ -64,6 +64,11 @@ describe('Settings schema', () => {
     expect(s.quickGrabModifier).toBe('alt')
   })
 
+  it('defaults downloadBadgeEnabled on when the key is absent', () => {
+    const s = Schema.decodeUnknownSync(Settings)({})
+    expect(s.downloadBadgeEnabled).toBe(true)
+  })
+
   it('rejects an unknown quick-grab modifier', () => {
     const result = Schema.decodeUnknownResult(Settings)({ quickGrabModifier: 'space' })
     expect(Result.isFailure(result)).toBe(true)

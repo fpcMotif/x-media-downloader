@@ -26,7 +26,7 @@ Scenario: Corrupt value recovers to default
   Given stored settings where downloadBadgeEnabled is a non-boolean value
   When settings are read through the recovery path
   Then the user receives downloadBadgeEnabled = true
-  And other valid keys are preserved
+  And recovery follows the existing semantics (corrupt settings reset to full defaults)
 ```
 
 **Spec Source**: `docs/superpowers/specs/2026-06-12-photo-download-badge-design.md` §5

@@ -20,7 +20,7 @@ export type MediaItem = typeof MediaItem.Type
 export const DownloadStrategyName = Schema.Literals(['direct', 'fetched', 'aria2'])
 export const Theme = Schema.Literals(['light', 'dark', 'system'])
 export const QuickGrabModifier = Schema.Literals(['alt', 'shift', 'ctrl', 'meta'])
-export const DownloadTraceSource = Schema.Literals(['quickgrab', 'background'])
+export const DownloadTraceSource = Schema.Literals(['quickgrab', 'badge', 'background'])
 
 export const DownloadTraceEntry = Schema.Struct({
   source: DownloadTraceSource,
@@ -50,6 +50,9 @@ export const Settings = Schema.Struct({
   quickGrabModifier: QuickGrabModifier.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed('alt' as const)),
   ),
+  // Per-media download badge (Overlay fast path): corner badge on hover/lightbox
+  // that downloads the one hovered Media Item on click. Default on.
+  downloadBadgeEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   // Write a per-item `.json` sidecar (author/url/tweetId/type) next to each file (D).
   sidecarMetadata: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   // aria2 opt-in backend (C). Requests `http://localhost/*` via optional permissions.
