@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs'
+import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
+import { Settings } from '../../core/schema'
 
 const popupCss = readFileSync('src/app.css', 'utf8')
 const popupHtml = readFileSync('src/entrypoints/popup/index.html', 'utf8')
+const appSource = readFileSync('src/entrypoints/popup/App.tsx', 'utf8')
 
 const ruleBody = (selector: string): string => {
   const selectorIndex = popupCss.indexOf(selector)
@@ -41,5 +44,25 @@ describe('popup layout CSS', () => {
     expect(popupHtml).toContain('height: 600px')
     expect(popupHtml).toContain('class="xmd-boot-fallback"')
     expect(popupHtml).toContain('Loading...')
+  })
+})
+
+describe('popup settings controls', () => {
+  it('exposes a download badge toggle in the same group as the Quick Grab controls', () => {
+    const assistStart = appSource.indexOf('title="Assist"')
+    expect(assistStart).toBeGreaterThan(-1)
+    const assist = appSource.slice(assistStart, appSource.indexOf('</main>', assistStart))
+
+    expect(assist).toContain('checked={settings.quickGrabEnabled}')
+    expect(assist).toContain('aria-label="Download badge"')
+    expect(assist).toContain('Show download badge on media')
+    expect(assist).toContain('checked={settings.downloadBadgeEnabled}')
+    expect(assist).toContain('downloadBadgeEnabled: (e.target as HTMLInputElement).checked')
+  })
+
+  it('renders the badge toggle on under default settings', () => {
+    const defaults = Schema.decodeUnknownSync(Settings)({})
+    expect(defaults.downloadBadgeEnabled).toBe(true)
+    expect(appSource).toContain('checked={settings.downloadBadgeEnabled}')
   })
 })

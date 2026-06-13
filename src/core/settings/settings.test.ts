@@ -47,6 +47,12 @@ describe('SettingsService', () => {
     expect(s.convexSyncSecret).toBe('')
     expect(s.cloudDeviceId).toBe('')
   })
+
+  it('recovers downloadBadgeEnabled to its default when the stored value is corrupt', async () => {
+    await fakeBrowser.storage.local.set({ settings: { downloadBadgeEnabled: 'nope' } })
+    const s = await run(getSettings)
+    expect(s.downloadBadgeEnabled).toBe(true)
+  })
 })
 
 describe('watchSettings', () => {

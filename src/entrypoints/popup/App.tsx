@@ -460,6 +460,21 @@ export function App() {
               </select>
             </Field>
           )}
+
+          <label class="xmd-check-row">
+            <input
+              type="checkbox"
+              aria-label="Download badge"
+              checked={settings.downloadBadgeEnabled}
+              onChange={(e) =>
+                void update({ downloadBadgeEnabled: (e.target as HTMLInputElement).checked })
+              }
+            />
+            <span>
+              <strong>Show download badge on media</strong>
+              <small>Corner badge on photos and videos; click downloads that item</small>
+            </span>
+          </label>
         </Section>
 
         <Section

@@ -20,6 +20,17 @@ import {
   type QuickGrabState,
   type QuickGrabUiPhase,
 } from '../../core/quickgrab'
+import {
+  badgeNudgeDelayMs,
+  badgeSavedRevertMs,
+  beginSave,
+  enterMedia,
+  hiddenBadge,
+  leaveMedia,
+  nudgeBadge,
+  resolveSave,
+  type BadgeState,
+} from '../../core/badge'
 import { getSettings, watchSettings } from '../../core/settings'
 import type { MediaItem, Settings } from '../../core/schema'
 
@@ -83,28 +94,40 @@ const sendTracked = (items: ReadonlyArray<MediaItem>): Promise<boolean> =>
     })
     .catch(() => false)
 
-const traceQuickGrab = (
-  stage: string,
-  opts: {
-    readonly item?: MediaItem
-    readonly key?: string
-    readonly elapsedMs?: number
-    readonly detail?: string
-  } = {},
-): void => {
-  void browser.runtime
-    .sendMessage({
-      _tag: 'DownloadTraceEvent',
-      source: 'quickgrab',
-      stage,
-      t: Date.now(),
-      ...(opts.item
-        ? { itemId: opts.item.id, tweetId: opts.item.tweetId, type: opts.item.type }
-        : {}),
-      ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}),
-      ...((opts.detail ?? opts.key) ? { detail: opts.detail ?? `key ${opts.key}` } : {}),
-    })
-    .catch(() => {})
+const traceDownloadUi =
+  (source: 'quickgrab' | 'badge') =>
+  (
+    stage: string,
+    opts: {
+      readonly item?: MediaItem
+      readonly key?: string
+      readonly elapsedMs?: number
+      readonly detail?: string
+    } = {},
+  ): void => {
+    void browser.runtime
+      .sendMessage({
+        _tag: 'DownloadTraceEvent',
+        source,
+        stage,
+        t: Date.now(),
+        ...(opts.item
+          ? { itemId: opts.item.id, tweetId: opts.item.tweetId, type: opts.item.type }
+          : {}),
+        ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}),
+        ...((opts.detail ?? opts.key) ? { detail: opts.detail ?? `key ${opts.key}` } : {}),
+      })
+      .catch(() => {})
+  }
+
+const traceQuickGrab = traceDownloadUi('quickgrab')
+const traceBadge = traceDownloadUi('badge')
+
+/** Accessible name for the badge by the one Media Item it downloads. */
+const BADGE_ARIA: Record<MediaItem['type'], string> = {
+  photo: 'Download photo',
+  video: 'Download video',
+  gif: 'Download GIF',
 }
 
 const previewSrcFromMedia = (media: HoverMediaElement): string =>
@@ -169,6 +192,14 @@ export default defineContentScript({
     let pointerSeen = false
     let hoverArmedAt = 0
     let renderedScanQueued = false
+
+    // Download badge (per-media fast path). `badgeEnabled` fails closed like
+    // `qgEnabled`: nothing renders until stored settings arrive.
+    let badgeEnabled = false
+    let badge: BadgeState = hiddenBadge
+    let badgeMedia: HoverMediaElement | null = null
+    let badgeNudge: ReturnType<typeof setTimeout> | null = null
+    let badgeRevert: ReturnType<typeof setTimeout> | null = null
 
     const rerender = (): void => {
       if (host) render(<Overlay />, host)
@@ -318,16 +349,184 @@ export default defineContentScript({
       return true
     }
 
+    const clearBadgeTimers = (): void => {
+      if (badgeNudge !== null) {
+        clearTimeout(badgeNudge)
+        badgeNudge = null
+      }
+      if (badgeRevert !== null) {
+        clearTimeout(badgeRevert)
+        badgeRevert = null
+      }
+    }
+
+    const resetBadge = (): void => {
+      clearBadgeTimers()
+      badge = hiddenBadge
+      badgeMedia = null
+    }
+
+    const badgeInput = (media: HoverMediaElement | null, key: string | null) => ({
+      enabled: badgeEnabled,
+      // Photos can resolve from the DOM alone at click time; videos/GIFs need the tee.
+      resolvable: key !== null && media !== null && (byKey.has(key) || isImageElement(media)),
+      modifierHeld: grab.active,
+    })
+
+    /** Move the badge entrance to the hovered media (either may be null). */
+    const focusBadge = (media: HoverMediaElement | null, key: string | null): void => {
+      const next = media && key ? enterMedia(badge, key, badgeInput(media, key)) : leaveMedia(badge)
+      if (next === badge) return
+      clearBadgeTimers()
+      badge = next
+      badgeMedia = next.phase === 'hidden' ? null : media
+      if (next.phase === 'shown') {
+        traceBadge('shown', next.key ? { key: next.key } : {})
+        badgeNudge = setTimeout(() => {
+          badgeNudge = null
+          const nudged = nudgeBadge(badge)
+          if (nudged === badge) return
+          badge = nudged
+          traceBadge('nudged', badge.key ? { key: badge.key } : {})
+          rerender()
+        }, badgeNudgeDelayMs)
+      }
+      rerender()
+    }
+
+    /** Hand the badge's one Media Item to the queue; failed retries, in-flight doesn't re-fire. */
+    const onBadgeClick = (e: MouseEvent): void => {
+      e.preventDefault()
+      e.stopPropagation()
+      const media = badgeMedia
+      const key = badge.key
+      const next = beginSave(badge)
+      if (!media || !key || next === badge) return
+      // The node may have been recycled or detached during the entrance (X's
+      // timeline is virtualized) — bail unless it is still the same media.
+      if (!media.isConnected || previewKeyFromMedia(media) !== key) {
+        resetBadge()
+        rerender()
+        return
+      }
+      const item =
+        byKey.get(key) ??
+        (isImageElement(media) ? resolveImageElement(media, location.pathname) : null)
+      if (!item) {
+        traceBadge('no-item-for-hover', { key })
+        resetBadge()
+        rerender()
+        return
+      }
+      clearBadgeTimers()
+      badge = next
+      rerender()
+      void (async () => {
+        const sendStartedAt = Date.now()
+        traceBadge('queued', { item })
+        const ok = await sendTracked([item])
+        traceBadge(ok ? 'start-ack' : 'start-failed', {
+          item,
+          elapsedMs: Date.now() - sendStartedAt,
+        })
+        if (badge.key !== key || badge.phase !== 'queued') return
+        badge = resolveSave(badge, ok)
+        rerender()
+        if (badge.phase !== 'saved') return
+        badgeRevert = setTimeout(() => {
+          badgeRevert = null
+          if (badge.phase !== 'saved' || badge.key !== key) return
+          // Linger, then revert to the idle arrow without a second nudge.
+          badge = { phase: 'shown', key }
+          rerender()
+        }, badgeSavedRevertMs)
+      })()
+    }
+
     // Settings reach open tabs live (popup writes → storage watch). Any change
     // disarms an active grab: a swapped modifier would otherwise never see its
     // keyup, leaving grab mode stuck on.
     const applySettings = (s: Settings): void => {
       qgEnabled = s.quickGrabEnabled
       qgModifier = s.quickGrabModifier
+      badgeEnabled = s.downloadBadgeEnabled
+      resetBadge()
       releaseAll()
+      rerender()
     }
     void getSettings().then(applySettings)
     ctx.onInvalidated(watchSettings(applySettings))
+
+    /** The per-media download badge, anchored to the photo's bottom-right corner. */
+    function BadgeButton({ media }: { readonly media: HoverMediaElement }) {
+      const r = rectOf(media)
+      const lightbox = media.closest('[aria-modal="true"], [role="dialog"]') !== null
+      const size = lightbox ? 40 : 34
+      const inset = lightbox ? 12 : 10
+      const type = badge.key ? byKey.get(badge.key)?.type : undefined
+      return (
+        <button
+          type="button"
+          class={`xmd-badge xmd-badge--${badge.phase}${lightbox ? ' xmd-badge--lightbox' : ''}`}
+          style={{
+            top: `${r.top + r.height - size - inset}px`,
+            left: `${r.left + r.width - size - inset}px`,
+          }}
+          aria-label={BADGE_ARIA[type ?? 'photo']}
+          onClick={onBadgeClick}
+        >
+          <span class="xmd-badge__icon xmd-badge__icon--arrow" aria-hidden="true">
+            <svg viewBox="0 0 20 20" focusable="false">
+              <path
+                d="M10 3.75v8.5m0 0 3.25-3.25M10 12.25 6.75 9M5 15.75h10"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.9"
+              />
+            </svg>
+          </span>
+          <span class="xmd-badge__icon xmd-badge__icon--spinner" aria-hidden="true">
+            <svg viewBox="0 0 20 20" focusable="false">
+              <circle
+                cx="10"
+                cy="10"
+                r="6.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-dasharray="28 13"
+              />
+            </svg>
+          </span>
+          <span class="xmd-badge__icon xmd-badge__icon--check" aria-hidden="true">
+            <svg viewBox="0 0 20 20" focusable="false">
+              <path
+                d="M5.5 10.5l3 3L14.5 7"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2.2"
+              />
+            </svg>
+          </span>
+          <span class="xmd-badge__icon xmd-badge__icon--alert" aria-hidden="true">
+            <svg viewBox="0 0 20 20" focusable="false">
+              <path
+                d="M10 4.5v7m0 3.5v.01"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-width="2.2"
+              />
+            </svg>
+          </span>
+        </button>
+      )
+    }
 
     function Overlay() {
       return (
@@ -354,6 +553,9 @@ export default defineContentScript({
                 </span>
               )}
             </div>
+          )}
+          {badge.phase !== 'hidden' && badgeMedia?.isConnected && (
+            <BadgeButton key={badge.key} media={badgeMedia} />
           )}
           {byId.size > 0 && (
             <button
@@ -416,17 +618,21 @@ export default defineContentScript({
       lastX = e.clientX
       lastY = e.clientY
       pointerSeen = true
-      if (!qgEnabled) return
+      if (!qgEnabled && !badgeEnabled) return
       // Pointer events are the ground truth. They both self-heal a swallowed
       // keyup and cover the common "hold modifier, then hover media" path where
       // the page never saw the initial keydown.
-      if (!syncGrabFromPointer(e)) return
+      const grabbing = qgEnabled && syncGrabFromPointer(e)
       const target = e.target as Element | null
+      // Hovering this extension's own UI (the badge) must not read as leaving
+      // the media underneath it — the entrance would hide before the click.
+      if (target?.tagName === 'XMD-OVERLAY') return
       const media =
         (target?.closest('img,video') as HoverMediaElement | null) ??
         mediaAtPoint(e.clientX, e.clientY)
       const key = previewKeyFromMedia(media)
-      focusHover(media, key)
+      if (grabbing) focusHover(media, key)
+      focusBadge(media, key)
     })
 
     // Scroll moves content without firing mousemove: re-run the hit-test so the
@@ -437,9 +643,22 @@ export default defineContentScript({
       'scroll',
       () => {
         queueRenderedMediaScan()
-        if (!grab.active || !pointerSeen) return
+        if (!pointerSeen || (!grab.active && badge.phase === 'hidden')) return
+        // Pointer parked on our own badge: the media underneath didn't change,
+        // only its rect did — refresh in place rather than re-hit-testing.
+        const top = document.elementsFromPoint(lastX, lastY)[0] as Element | undefined
+        if (top?.tagName === 'XMD-OVERLAY') {
+          if (badge.phase !== 'hidden') rerender()
+          return
+        }
         const media = mediaAtPoint(lastX, lastY)
         const key = previewKeyFromMedia(media)
+        if (media === badgeMedia && key === badge.key) {
+          if (badge.phase !== 'hidden') rerender()
+        } else if (badge.phase !== 'hidden') {
+          focusBadge(media, key)
+        }
+        if (!grab.active) return
         if (media === hoverMedia && key === hoverKey) {
           if (grabUi !== null && media !== null) {
             grabUi = { ...grabUi, rect: rectOf(media) }
@@ -459,6 +678,8 @@ export default defineContentScript({
       grab = pressModifier(grab)
       if (grab.active && !was) {
         setCursorActive(true)
+        // One affordance at a time: the ring owns the hover while the modifier is held.
+        resetBadge()
         // Arm the media under the cursor — but only if a real pointer position is
         // known (no mousemove yet ⇒ lastX/lastY are still 0,0, not a real hover).
         const media = pointerSeen ? mediaAtPoint(lastX, lastY) : null
@@ -474,10 +695,14 @@ export default defineContentScript({
       if (isModifierKey((event as KeyboardEvent).key, qgModifier)) releaseAll()
     })
     ctx.addEventListener(window, 'blur', () => releaseAll())
-    ctx.addEventListener(document, 'mouseleave', () => focusHover(null, null))
+    ctx.addEventListener(document, 'mouseleave', () => {
+      focusHover(null, null)
+      focusBadge(null, null)
+    })
 
     ctx.addEventListener(window, 'wxt:locationchange', () => {
       releaseAll()
+      resetBadge()
       focusHover(null, null)
       queueRenderedMediaScan()
       rerender()
@@ -496,6 +721,7 @@ export default defineContentScript({
       setCursorActive(false)
       grab = idleQuickGrab
       grabUi = null
+      resetBadge()
       let rescanned = 0
       const req = message as { _tag: string; rescanVisible?: boolean }
       if (req.rescanVisible) {
@@ -515,6 +741,7 @@ export default defineContentScript({
       setCursorActive(false)
       grab = idleQuickGrab
       grabUi = null
+      resetBadge()
       renderedScanQueued = false
       browser.runtime.onMessage.removeListener(handleRuntimeMessage)
     })
