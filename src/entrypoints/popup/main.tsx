@@ -3,4 +3,7 @@ import { App } from './App'
 import '../../app.css'
 
 const root = document.getElementById('app')
-if (root) render(<App />, root)
+if (root) {
+  root.replaceChildren()
+  render(<App />, root)
+}

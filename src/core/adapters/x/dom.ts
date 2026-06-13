@@ -44,6 +44,28 @@ export function isGrabbablePhotoUrl(url: string): boolean {
 }
 
 /**
+ * URLs that represent a media tile the user can hover: original photo renditions
+ * plus X's poster frames for videos/GIFs. The poster maps back to a detected
+ * MediaItem through `previewUrl`; the saved URL can still be a best-bitrate MP4.
+ */
+export function isGrabbableMediaPreviewUrl(url: string): boolean {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return false
+  }
+  if (u.hostname !== 'pbs.twimg.com') return false
+  const section = u.pathname.split('/')[1] ?? ''
+  return (
+    u.pathname.startsWith('/media/') ||
+    section === 'tweet_video_thumb' ||
+    section === 'ext_tw_video_thumb' ||
+    section === 'amplify_video_thumb'
+  )
+}
+
+/**
  * The file extension for a *live* `<img>` photo. X serves the rendition format as
  * a `?format=` query param (`jpg|png|webp`) rather than a path extension, so read
  * that first; fall back to a dotted path segment, then to `jpg`. (The resolver's
@@ -54,7 +76,7 @@ export function extFromImgUrl(url: string): string {
   try {
     const u = new URL(url)
     const fmt = u.searchParams.get('format')
-    if (fmt) return fmt
+    if (fmt) return fmt.toLowerCase()
     const base = u.pathname.slice(u.pathname.lastIndexOf('/') + 1)
     const dot = base.lastIndexOf('.')
     return dot >= 0 ? base.slice(dot + 1) : 'jpg'

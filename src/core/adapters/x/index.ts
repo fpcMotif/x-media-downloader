@@ -145,6 +145,20 @@ export function resolveImageElement(img: HTMLImageElement, pathname = ''): Media
   }
 }
 
+/** Resolve rendered X photo images already present in a timeline/list DOM. */
+export function detectRenderedImageElements(root: ParentNode, pathname = ''): MediaItem[] {
+  const out: MediaItem[] = []
+  const seen = new Set<string>()
+  for (const img of root.querySelectorAll<HTMLImageElement>('img')) {
+    const item = resolveImageElement(img, pathname)
+    const key = item ? (mediaKeyFromUrl(item.url) ?? item.id) : null
+    if (!item || !key || seen.has(key)) continue
+    seen.add(key)
+    out.push(item)
+  }
+  return out
+}
+
 /** DOM fallback: photos already rendered as pbs.twimg.com/media images. */
 export function detectFromDom(
   root: ParentNode,

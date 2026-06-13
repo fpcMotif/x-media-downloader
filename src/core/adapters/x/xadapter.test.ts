@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { detectFromJson, detectFromDom, resolveImageElement } from './index'
+import {
+  detectFromJson,
+  detectFromDom,
+  detectRenderedImageElements,
+  resolveImageElement,
+} from './index'
 import { renderFilename } from '../../download/filename'
 import tweetDetail from '../../../test/fixtures/tweet-detail.json'
 
@@ -17,6 +22,52 @@ describe('detectFromJson', () => {
     expect(items[0]).toMatchObject({ handle: 'alice', tweetId: '1790', type: 'photo' })
     expect(items[0]!.url).toContain('name=orig')
   })
+
+  it('keeps a video poster URL while resolving the downloadable MP4', () => {
+    const items = detectFromJson({
+      data: {
+        tweetResult: {
+          result: {
+            rest_id: '77',
+            core: { user_results: { result: { legacy: { screen_name: 'alice' } } } },
+            legacy: {
+              extended_entities: {
+                media: [
+                  {
+                    type: 'video',
+                    id_str: 'v1',
+                    media_url_https: 'https://pbs.twimg.com/ext_tw_video_thumb/77/pu/img/V1.jpg',
+                    video_info: {
+                      variants: [
+                        { content_type: 'application/x-mpegURL', url: 'playlist.m3u8' },
+                        {
+                          content_type: 'video/mp4',
+                          bitrate: 832000,
+                          url: 'https://video.twimg.com/ext_tw_video/77/pu/vid/640x360/low.mp4',
+                        },
+                        {
+                          content_type: 'video/mp4',
+                          bitrate: 2176000,
+                          url: 'https://video.twimg.com/ext_tw_video/77/pu/vid/1280x720/high.mp4',
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    })
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({
+      type: 'video',
+      ext: 'mp4',
+      url: 'https://video.twimg.com/ext_tw_video/77/pu/vid/1280x720/high.mp4',
+      previewUrl: 'https://pbs.twimg.com/ext_tw_video_thumb/77/pu/img/V1.jpg',
+    })
+  })
 })
 
 describe('detectFromDom', () => {
@@ -31,6 +82,44 @@ describe('detectFromDom', () => {
     expect(items).toHaveLength(1)
     expect(items[0]!.url).toContain('name=orig')
     expect(items[0]!.handle).toBe('bob')
+  })
+})
+
+describe('detectRenderedImageElements', () => {
+  it('collects rendered timeline photos using article status links as context', () => {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <article data-testid="tweet">
+        <a href="/alice/status/100"><time>now</time></a>
+        <img src="https://pbs.twimg.com/media/A1?format=jpg&name=small" />
+        <img src="https://pbs.twimg.com/profile_images/nope.jpg" />
+      </article>
+      <article data-testid="tweet">
+        <a href="/bob/status/200"><time>now</time></a>
+        <a href="/bob/status/200/photo/1">
+          <img src="https://pbs.twimg.com/media/B1?format=png&name=900x900" />
+        </a>
+      </article>`
+
+    const items = detectRenderedImageElements(root, '/i/trending/2065122521075036169')
+
+    expect(items).toHaveLength(2)
+    expect(items.map((item) => item.id)).toEqual(['100-0', '200-0'])
+    expect(items.map((item) => item.handle)).toEqual(['alice', 'bob'])
+    expect(items[0]!.url).toBe('https://pbs.twimg.com/media/A1?format=jpg&name=orig')
+    expect(items[1]!.ext).toBe('png')
+  })
+
+  it('de-dupes repeated rendered photos by resolved id', () => {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <article data-testid="tweet">
+        <a href="/alice/status/100"><time>now</time></a>
+        <img src="https://pbs.twimg.com/media/A1?format=jpg&name=small" />
+        <img src="https://pbs.twimg.com/media/A1?format=jpg&name=small" />
+      </article>`
+
+    expect(detectRenderedImageElements(root, '/i/trending/2065122521075036169')).toHaveLength(1)
   })
 })
 

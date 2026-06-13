@@ -1,1 +1,637 @@
 @import 'tailwindcss';
+
+:root {
+  --xmd-bg: oklch(0.982 0.004 255);
+  --xmd-surface: oklch(1 0 0);
+  --xmd-surface-raised: oklch(0.962 0.006 255);
+  --xmd-ink: oklch(0.205 0.012 255);
+  --xmd-muted: oklch(0.47 0.018 255);
+  --xmd-faint: oklch(0.62 0.014 255);
+  --xmd-line: oklch(0.205 0.012 255 / 0.12);
+  --xmd-line-strong: oklch(0.205 0.012 255 / 0.2);
+  --xmd-accent: oklch(0.58 0.176 250);
+  --xmd-accent-hover: oklch(0.52 0.18 250);
+  --xmd-accent-soft: oklch(0.58 0.176 250 / 0.12);
+  --xmd-success: oklch(0.58 0.145 160);
+  --xmd-danger: oklch(0.58 0.19 28);
+  --xmd-shadow-1: 0 1px 2px oklch(0.205 0.012 255 / 0.08);
+  --xmd-shadow-2: 0 8px 14px -12px oklch(0.205 0.012 255 / 0.42);
+  --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+html,
+body,
+#app {
+  width: 380px;
+  min-width: 380px;
+  height: 600px;
+  min-height: 600px;
+  max-height: 600px;
+  margin: 0;
+  overflow: hidden;
+  background: var(--xmd-bg);
+}
+
+.xmd-popup {
+  width: min(380px, 100vw);
+  height: 600px;
+  max-height: 600px;
+  overflow: auto;
+  background: var(--xmd-bg);
+  color: var(--xmd-ink);
+  font:
+    13px/1.35 system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+}
+
+.xmd-popup--loading {
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  color: var(--xmd-muted);
+}
+
+.xmd-popup-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 12px;
+  background: color-mix(in oklch, var(--xmd-bg) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: inset 0 -1px 0 var(--xmd-line);
+}
+
+.xmd-popup-title {
+  display: block;
+  font-size: 15px;
+  font-weight: 720;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+.xmd-popup-subtitle {
+  margin-top: 2px;
+  color: var(--xmd-muted);
+  font-size: 12px;
+  line-height: 1.2;
+  text-wrap: pretty;
+}
+
+.xmd-status-pill,
+.xmd-inline-success {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0 9px;
+  background: var(--xmd-surface);
+  color: var(--xmd-muted);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  box-shadow: inset 0 0 0 1px var(--xmd-line);
+}
+
+.xmd-status-pill--saved,
+.xmd-inline-success {
+  background: oklch(0.58 0.145 160 / 0.1);
+  color: oklch(0.42 0.13 160);
+  box-shadow: inset 0 0 0 1px oklch(0.58 0.145 160 / 0.18);
+}
+
+.xmd-popup-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.xmd-popup-footer {
+  padding: 10px 14px 12px;
+  color: var(--xmd-muted);
+  font-size: 12px;
+  line-height: 1.25;
+  box-shadow: inset 0 1px 0 var(--xmd-line);
+}
+
+.xmd-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
+}
+
+.xmd-primary-button,
+.xmd-secondary-button {
+  min-height: 54px;
+  border: 0;
+  border-radius: 11px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 9px 11px;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transform: scale(1);
+  transition-duration: 150ms;
+  transition-property: background-color, box-shadow, color, opacity, transform;
+  transition-timing-function: var(--xmd-ease);
+}
+
+.xmd-primary-button span,
+.xmd-secondary-button span {
+  display: block;
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.1;
+}
+
+.xmd-primary-button small,
+.xmd-secondary-button small {
+  display: block;
+  font-size: 11px;
+  font-weight: 520;
+  line-height: 1.15;
+}
+
+.xmd-primary-button {
+  background: var(--xmd-accent);
+  color: oklch(1 0 0);
+  box-shadow:
+    var(--xmd-shadow-1),
+    var(--xmd-shadow-2),
+    inset 0 0 0 1px oklch(1 0 0 / 0.18);
+}
+
+.xmd-primary-button small {
+  color: oklch(1 0 0 / 0.78);
+}
+
+.xmd-primary-button--compact {
+  min-height: 42px;
+  align-items: center;
+  text-align: center;
+}
+
+.xmd-secondary-button {
+  background: var(--xmd-surface);
+  color: var(--xmd-ink);
+  box-shadow:
+    var(--xmd-shadow-1),
+    inset 0 0 0 1px var(--xmd-line);
+}
+
+.xmd-secondary-button small {
+  color: var(--xmd-muted);
+}
+
+.xmd-primary-button:hover:not(:disabled) {
+  background: var(--xmd-accent-hover);
+}
+
+.xmd-secondary-button:hover:not(:disabled) {
+  background: var(--xmd-surface-raised);
+  box-shadow:
+    var(--xmd-shadow-1),
+    inset 0 0 0 1px var(--xmd-line-strong);
+}
+
+.xmd-primary-button:active:not(:disabled),
+.xmd-secondary-button:active:not(:disabled),
+.xmd-mode-button:active,
+.xmd-check-row:active,
+.xmd-ghost-button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.xmd-primary-button:focus-visible,
+.xmd-secondary-button:focus-visible,
+.xmd-popup-control:focus-visible,
+.xmd-mode-button:focus-within,
+.xmd-check-row:focus-within {
+  outline: none;
+  box-shadow:
+    0 0 0 3px var(--xmd-accent-soft),
+    inset 0 0 0 1px var(--xmd-accent);
+}
+
+.xmd-primary-button:disabled,
+.xmd-secondary-button:disabled {
+  cursor: default;
+  opacity: 0.56;
+}
+
+.xmd-section,
+.xmd-monitor {
+  border-radius: 12px;
+  background: var(--xmd-surface);
+  box-shadow:
+    var(--xmd-shadow-1),
+    inset 0 0 0 1px var(--xmd-line);
+}
+
+.xmd-section {
+  padding: 12px;
+}
+
+.xmd-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.xmd-section-title,
+.xmd-section-kicker {
+  display: block;
+  color: var(--xmd-ink);
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1.15;
+}
+
+.xmd-section-head p {
+  margin-top: 3px;
+  color: var(--xmd-muted);
+  font-size: 12px;
+  line-height: 1.25;
+  text-wrap: pretty;
+}
+
+.xmd-section-body {
+  display: grid;
+  gap: 10px;
+}
+
+.xmd-field {
+  display: grid;
+  gap: 5px;
+}
+
+.xmd-field label {
+  color: var(--xmd-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.xmd-field p {
+  color: var(--xmd-faint);
+  font-size: 11px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.xmd-popup-control {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--xmd-bg);
+  color: var(--xmd-ink);
+  padding: 0 10px;
+  font-size: 13px;
+  line-height: 1.25;
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--xmd-line);
+  transition-duration: 150ms;
+  transition-property: background-color, box-shadow, color;
+  transition-timing-function: var(--xmd-ease);
+}
+
+.xmd-popup-control:hover {
+  box-shadow: inset 0 0 0 1px var(--xmd-line-strong);
+}
+
+.xmd-number-input {
+  width: 76px;
+}
+
+.xmd-inline-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.xmd-mode-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  border-radius: 12px;
+  background: var(--xmd-bg);
+  padding: 4px;
+  box-shadow: inset 0 0 0 1px var(--xmd-line);
+}
+
+.xmd-mode-button {
+  min-height: 56px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--xmd-muted);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 7px 8px;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transform: scale(1);
+  transition-duration: 150ms;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-timing-function: var(--xmd-ease);
+}
+
+.xmd-mode-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.xmd-mode-button span {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.1;
+}
+
+.xmd-mode-button small {
+  color: var(--xmd-faint);
+  font-size: 11px;
+  line-height: 1.08;
+}
+
+.xmd-mode-button:hover {
+  color: var(--xmd-ink);
+  background: color-mix(in oklch, var(--xmd-surface) 72%, transparent);
+}
+
+.xmd-mode-button--selected {
+  color: var(--xmd-ink);
+  background: var(--xmd-surface);
+  box-shadow:
+    var(--xmd-shadow-1),
+    inset 0 0 0 1px var(--xmd-line);
+}
+
+.xmd-mode-button--selected small {
+  color: var(--xmd-accent);
+}
+
+.xmd-mode-details {
+  display: grid;
+  gap: 10px;
+  border-radius: 10px;
+  background: var(--xmd-bg);
+  padding: 10px;
+  box-shadow: inset 0 0 0 1px var(--xmd-line);
+}
+
+.xmd-check-row {
+  min-height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px;
+  color: var(--xmd-ink);
+  cursor: pointer;
+  transform: scale(1);
+  transition-duration: 150ms;
+  transition-property: background-color, box-shadow, transform;
+  transition-timing-function: var(--xmd-ease);
+}
+
+.xmd-check-row:hover {
+  background: var(--xmd-bg);
+}
+
+.xmd-check-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--xmd-accent);
+  flex: 0 0 auto;
+}
+
+.xmd-check-row span {
+  display: grid;
+  gap: 2px;
+}
+
+.xmd-check-row strong {
+  font-size: 13px;
+  font-weight: 680;
+  line-height: 1.1;
+}
+
+.xmd-check-row small {
+  color: var(--xmd-muted);
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.xmd-monitor {
+  padding: 12px;
+}
+
+.xmd-monitor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.xmd-monitor-head strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 14px;
+  line-height: 1.15;
+}
+
+.xmd-monitor-percent {
+  color: var(--xmd-accent);
+  font-size: 15px;
+  font-weight: 760;
+  line-height: 1;
+}
+
+.xmd-progress {
+  display: block;
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--xmd-bg);
+  box-shadow: inset 0 0 0 1px var(--xmd-line);
+  appearance: none;
+}
+
+.xmd-progress::-webkit-progress-bar {
+  border-radius: inherit;
+  background: transparent;
+}
+
+.xmd-progress::-webkit-progress-value {
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--xmd-accent), oklch(0.65 0.16 205));
+  transition: inline-size 180ms var(--xmd-ease);
+}
+
+.xmd-progress::-moz-progress-bar {
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--xmd-accent), oklch(0.65 0.16 205));
+}
+
+.xmd-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin-top: 10px;
+}
+
+.xmd-stat-grid dt {
+  color: var(--xmd-muted);
+  font-size: 12px;
+}
+
+.xmd-stat-grid dd {
+  color: var(--xmd-ink);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.xmd-event-log {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.xmd-event-log__item {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.95fr) minmax(0, 1.35fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 8px;
+  background: var(--xmd-bg);
+  padding: 5px 7px;
+  box-shadow: inset 0 0 0 1px var(--xmd-line);
+}
+
+.xmd-event-log__stage {
+  color: var(--xmd-ink);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.xmd-event-log__detail {
+  min-width: 0;
+  color: var(--xmd-muted);
+  font-size: 11px;
+  line-height: 1.15;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xmd-event-log__item--quickgrab {
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--xmd-accent) 28%, transparent);
+}
+
+.xmd-ghost-button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--xmd-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  outline: none;
+  padding: 0 10px;
+  box-shadow: inset 0 0 0 1px var(--xmd-line);
+  transition-duration: 150ms;
+  transition-property: background-color, box-shadow, color, transform;
+  transition-timing-function: var(--xmd-ease);
+}
+
+.xmd-ghost-button:hover:not(:disabled) {
+  color: var(--xmd-ink);
+  background: var(--xmd-bg);
+}
+
+.xmd-ghost-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@media (max-width: 360px) {
+  .xmd-popup-main {
+    padding: 10px;
+  }
+
+  .xmd-quick-actions,
+  .xmd-mode-picker {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --xmd-bg: oklch(0.145 0.006 255);
+    --xmd-surface: oklch(0.19 0.008 255);
+    --xmd-surface-raised: oklch(0.24 0.01 255);
+    --xmd-ink: oklch(0.965 0.004 255);
+    --xmd-muted: oklch(0.75 0.012 255);
+    --xmd-faint: oklch(0.62 0.012 255);
+    --xmd-line: oklch(0.965 0.004 255 / 0.12);
+    --xmd-line-strong: oklch(0.965 0.004 255 / 0.2);
+    --xmd-accent: oklch(0.72 0.15 240);
+    --xmd-accent-hover: oklch(0.78 0.13 230);
+    --xmd-accent-soft: oklch(0.72 0.15 240 / 0.18);
+    --xmd-success: oklch(0.78 0.14 160);
+    --xmd-shadow-1: 0 1px 2px oklch(0 0 0 / 0.24);
+    --xmd-shadow-2: 0 8px 14px -12px oklch(0 0 0 / 0.9);
+  }
+
+  .xmd-status-pill--saved,
+  .xmd-inline-success {
+    color: oklch(0.84 0.13 160);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xmd-primary-button,
+  .xmd-secondary-button,
+  .xmd-popup-control,
+  .xmd-mode-button,
+  .xmd-check-row,
+  .xmd-progress::-webkit-progress-value,
+  .xmd-ghost-button {
+    transition-duration: 0ms;
+  }
+}

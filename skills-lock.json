@@ -18,6 +18,12 @@
       "sourceType": "github",
       "skillPath": "skills/make-interfaces-feel-better/SKILL.md",
       "computedHash": "54b6e221bbe4e2d1a8461c3f9ecabe69daf891f964e9ee5e699c323daa018f2e"
+    },
+    "oklch-skill": {
+      "source": "jakubkrehel/oklch-skill",
+      "sourceType": "github",
+      "skillPath": "skills/oklch-skill/SKILL.md",
+      "computedHash": "e627c78e72955352f1efff3771e788a9ac174628fe3238738d1ee6912effdefd"
     }
   }
 }

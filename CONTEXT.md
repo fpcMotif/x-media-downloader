@@ -5,7 +5,7 @@ use these words, they mean exactly this.
 
 ## Core nouns
 
-- **Media Item** — one downloadable piece of media (a *photo*, *video*, or *GIF*)
+- **Media Item** — one downloadable piece of media (a _photo_, _video_, or _GIF_)
   belonging to a Tweet. The atomic unit of a download.
 - **Tweet** — a single X post. Carries up to four photos, **or** one video,
   **or** one GIF.
@@ -21,10 +21,10 @@ use these words, they mean exactly this.
 
 - **Bulk** — downloading every Media Item in a Tweet or Thread in one user action.
 - **Quick Grab** — the fastest path: hold a modifier (Option/Alt by default) and the
-  single photo under the cursor downloads itself at Original quality after a short
-  dwell. Resolves one hovered `<img>` to one Media Item; fires each photo at most
+  single media item under the cursor downloads itself at Original quality after a short
+  dwell. Resolves one hovered `<img>` to one Media Item; fires each item at most
   once per modifier press (the guard against a cursor sweep mass-downloading a grid).
-- **Passive capture** — obtaining media references *solely* from data the user's
+- **Passive capture** — obtaining media references _solely_ from data the user's
   own browsing already fetched (X's own responses + the rendered DOM). Issues
   **no** extra network requests. The default, policy-safe path.
 - **Capture** — a single X response (JSON) observed during Passive capture.
@@ -41,7 +41,7 @@ use these words, they mean exactly this.
   (photo upgrade, Variant selection, de-duplication).
 - **Download Queue** — saves Media Items to disk: rate-limited, resilient to
   interruption and to the browser pausing background work.
-- **Download Strategy** — *how* bytes reach disk, independent of the Media Item.
+- **Download Strategy** — _how_ bytes reach disk, independent of the Media Item.
   **Direct** = hand the URL to the browser's downloader. **Fetched** = retrieve the
   bytes first to verify or repackage them. **aria2** = hand the URL to a user-run
   aria2c daemon over JSON-RPC for fast/resumable transfers to an arbitrary dir.
@@ -76,5 +76,5 @@ use these words, they mean exactly this.
 
 - **`pbs.twimg.com` / `video.twimg.com`** are X's public **media CDNs**, not X's
   official developer API. This project never uses the official API.
-- **`host_permissions`** is a *Chrome* grant to this extension, unrelated to any
+- **`host_permissions`** is a _Chrome_ grant to this extension, unrelated to any
   X API authorization.

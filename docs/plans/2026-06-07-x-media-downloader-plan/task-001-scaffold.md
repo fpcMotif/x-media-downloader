@@ -31,6 +31,6 @@ strict TypeScript and the repo layout from design §9. No feature logic.
 ## Verification
 
 - `bun run typecheck` passes.
-- `bun run build` produces `.output/chrome-mv3/manifest.json` with the expected
+- `bun run build` produces `.output/manifest.json` with the expected
   minimal permissions.
 - `bun test` runs (zero tests) without config error.

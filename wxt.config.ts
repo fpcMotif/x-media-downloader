@@ -9,7 +9,7 @@ export default defineConfig({
     name: 'X Media Downloader',
     description:
       'Download X (Twitter) tweet/thread media at original quality. Minimalist, local-only, no scraping.',
-    permissions: ['downloads', 'storage'],
+    permissions: ['downloads', 'storage', 'activeTab'],
     host_permissions: ['https://x.com/*', 'https://twitter.com/*'],
     // Requested at runtime only when Download Strategy = Fetched (ADR-0003):
     optional_permissions: ['offscreen'],

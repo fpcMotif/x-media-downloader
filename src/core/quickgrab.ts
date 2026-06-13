@@ -11,6 +11,23 @@ export interface ModifierFlags {
   readonly metaKey: boolean
 }
 
+/** Intentional modifier-hover dwell before Quick Grab starts a download. */
+export const quickGrabDwellMs = 500
+
+export type QuickGrabUiPhase = 'charging' | 'queued' | 'saved' | 'noted' | 'failed'
+
+const BADGE_LABEL: Record<QuickGrabUiPhase, string> = {
+  charging: 'Grabbing',
+  queued: 'Queued',
+  saved: 'Started',
+  noted: 'Already queued',
+  failed: 'Failed',
+}
+
+export function quickGrabBadgeLabel(phase: QuickGrabUiPhase): string {
+  return BADGE_LABEL[phase]
+}
+
 const FLAG: Record<GrabModifier, keyof ModifierFlags> = {
   alt: 'altKey',
   shift: 'shiftKey',
@@ -38,7 +55,7 @@ export function isModifierKey(key: string, mod: GrabModifier): boolean {
 
 /**
  * Quick Grab arming state. `active` mirrors the held modifier; `grabbed` holds the
- * media keys already downloaded during the *current* press, so hovering one photo
+ * media keys already downloaded during the *current* press, so hovering one item
  * fires exactly once — the guard against a cursor sweep mass-downloading a grid.
  * Releasing the modifier forgets the set, so a fresh press can re-grab.
  */
@@ -52,7 +69,7 @@ export const idleQuickGrab: QuickGrabState = { active: false, grabbed: new Set()
 /**
  * Enter grab mode. Idempotent across auto-repeat keydowns: only the first press
  * (when not already `active`) resets the grabbed set, so holding the key down
- * doesn't re-arm already-grabbed photos.
+ * doesn't re-arm already-grabbed items.
  */
 export function pressModifier(state: QuickGrabState): QuickGrabState {
   return state.active ? state : { active: true, grabbed: new Set() }
@@ -66,6 +83,15 @@ export function releaseModifier(): QuickGrabState {
 /** Whether hovering `key` should fire a grab now: active and not yet grabbed. */
 export function canGrab(state: QuickGrabState, key: string): boolean {
   return state.active && !state.grabbed.has(key)
+}
+
+/** Reconcile grab mode with live pointer-event modifier flags. */
+export function syncModifierFromFlags(
+  state: QuickGrabState,
+  e: ModifierFlags,
+  mod: GrabModifier,
+): QuickGrabState {
+  return modifierHeld(e, mod) ? pressModifier(state) : state.active ? releaseModifier() : state
 }
 
 /** Record that `key` was grabbed during this press (idempotent). */
