@@ -4,6 +4,8 @@ import { getSettings, setSettings } from '../../core/settings'
 import { aria2OriginPattern } from '../../core/download/aria2'
 import { convexOriginPattern } from '../../core/sync/convex'
 import type { DownloadTraceEntry, MetricsSnapshot, Settings } from '../../core/schema'
+import type { DownloadRecord } from '../../core/history/record'
+import { groupByAuthor, formatRecord, historyEmptyLabel } from './history-section'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
@@ -62,9 +64,20 @@ export function App() {
   const [onXTab, setOnXTab] = useState(false)
   const [activeTabId, setActiveTabId] = useState<number | undefined>(undefined)
   const [clearFeedback, setClearFeedback] = useState<'media' | 'monitor' | null>(null)
+  const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
 
   useEffect(() => {
     void getSettings().then(setSettingsState)
+  }, [])
+
+  // Durable local download history (read-only; capture happens in the background).
+  useEffect(() => {
+    void browser.runtime
+      .sendMessage({ _tag: 'HistoryRequest' })
+      .then((r) =>
+        setHistory((r as { records?: ReadonlyArray<DownloadRecord> } | null)?.records ?? []),
+      )
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -148,6 +161,12 @@ export function App() {
       setMetrics(null)
       showFeedback('monitor')
     }
+  }
+
+  // Clear the durable local history. Safe reset: never cancels downloads or deletes files.
+  const clearHistory = async (): Promise<void> => {
+    await browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' }).catch(() => {})
+    setHistory([])
   }
 
   const update = async (patch: Partial<Settings>): Promise<void> => {
@@ -543,6 +562,69 @@ export function App() {
                   (ADR-0009).
                 </p>
               </div>
+            </div>
+          )}
+        </Section>
+
+        <Section
+          title="Download history"
+          description="A durable local record of your downloads — original link + status."
+        >
+          <label class="xmd-check-row">
+            <input
+              type="checkbox"
+              aria-label="Keep download history"
+              checked={settings.downloadHistoryEnabled}
+              onChange={(e) =>
+                void update({ downloadHistoryEnabled: (e.target as HTMLInputElement).checked })
+              }
+            />
+            <span>
+              <strong>Keep download history</strong>
+              <small>Local only · survives restarts</small>
+            </span>
+          </label>
+
+          {settings.downloadHistoryEnabled && history.length > 0 ? (
+            <div class="xmd-mode-details">
+              {groupByAuthor(history).map((group) => (
+                <div key={group.handle}>
+                  <span class="xmd-section-kicker">@{group.handle}</span>
+                  <ol class="xmd-event-log" aria-label={`Downloads for ${group.handle}`}>
+                    {group.records.map((r) => {
+                      const f = formatRecord(r)
+                      return (
+                        <li
+                          key={r.requestId}
+                          class={`xmd-event-log__item xmd-event-log__item--${f.status}`}
+                        >
+                          <span class="xmd-event-log__stage">{f.status}</span>
+                          <a
+                            class="xmd-event-log__detail"
+                            href={f.link}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {f.title}
+                          </a>
+                        </li>
+                      )
+                    })}
+                  </ol>
+                </div>
+              ))}
+              <button
+                type="button"
+                class="xmd-secondary-button"
+                onClick={() => void clearHistory()}
+              >
+                <span>Clear history</span>
+                <small>Removes the local log; downloads and files are untouched</small>
+              </button>
+            </div>
+          ) : (
+            <div class="xmd-field">
+              <p>{historyEmptyLabel(settings.downloadHistoryEnabled, history.length)}</p>
             </div>
           )}
         </Section>
