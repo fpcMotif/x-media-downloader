@@ -69,6 +69,11 @@ describe('Settings schema', () => {
     expect(s.downloadBadgeEnabled).toBe(true)
   })
 
+  it('defaults downloadHistoryEnabled off when the key is absent', () => {
+    const s = Schema.decodeUnknownSync(Settings)({})
+    expect(s.downloadHistoryEnabled).toBe(false)
+  })
+
   it('rejects an unknown quick-grab modifier', () => {
     const result = Schema.decodeUnknownResult(Settings)({ quickGrabModifier: 'space' })
     expect(Result.isFailure(result)).toBe(true)

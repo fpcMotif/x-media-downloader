@@ -53,9 +53,28 @@ describe('SettingsService', () => {
     const s = await run(getSettings)
     expect(s.downloadBadgeEnabled).toBe(true)
   })
+
+  it('defaults download history off — opt-in posture', async () => {
+    const s = await run(getSettings)
+    expect(s.downloadHistoryEnabled).toBe(false)
+  })
+
+  it('recovers downloadHistoryEnabled to its default when the stored value is corrupt', async () => {
+    await fakeBrowser.storage.local.set({ settings: { downloadHistoryEnabled: 'nope' } })
+    const s = await run(getSettings)
+    expect(s.downloadHistoryEnabled).toBe(false)
+  })
 })
 
 describe('watchSettings', () => {
+  it('delivers downloadHistoryEnabled changes', async () => {
+    const seen: boolean[] = []
+    const unwatch = watchSettings((s) => seen.push(s.downloadHistoryEnabled))
+    await setSettings({ downloadHistoryEnabled: true })
+    expect(seen).toEqual([true])
+    unwatch()
+  })
+
   it('delivers decoded settings on storage writes and stops after unwatch', async () => {
     const seen: boolean[] = []
     const unwatch = watchSettings((s) => seen.push(s.quickGrabEnabled))

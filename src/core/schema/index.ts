@@ -70,6 +70,10 @@ export const Settings = Schema.Struct({
   convexSyncSecret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   // Stable per-install id tagged onto mirrored events; minted on first enable.
   cloudDeviceId: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  // Durable local download history (opt-in, default off): persist each download's
+  // original link + status + provenance to the local store — the local-first twin
+  // of Convex `media_state`. Independent of (orthogonal to) Cloud Sync.
+  downloadHistoryEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 })
 export type Settings = typeof Settings.Type
 
