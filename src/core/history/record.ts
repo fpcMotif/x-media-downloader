@@ -1,6 +1,6 @@
 import { Schema } from 'effect'
 import type { MediaItem } from '../schema'
-import { SyncMediaMeta } from '../sync/events'
+import { SyncMediaMeta, syncMediaFromItem } from '../sync/events'
 
 /**
  * Durable local download record (the local-first twin of a Convex `media_state`
@@ -29,14 +29,7 @@ export function recordFromMediaItem(item: MediaItem, filename: string, at: numbe
     requestId: item.id,
     filename,
     status: 'queued',
-    media: {
-      tweetId: item.tweetId,
-      handle: item.handle,
-      type: item.type,
-      url: item.url,
-      ext: item.ext,
-      index: item.index,
-    },
+    media: syncMediaFromItem(item),
     queuedAt: at,
   }
 }

@@ -34,6 +34,20 @@ export type SyncEvent = typeof SyncEvent.Type
 export const syncEventId = (deviceId: string, requestId: string, kind: SyncEventKind): string =>
   `${deviceId}/${requestId}/${kind}`
 
+/** The metadata-only provenance payload for a Media Item. Single source for both
+ *  the queued Sync Event and the local Download Record, so they reconcile by
+ *  construction (and so does Convex `media_state`). */
+export function syncMediaFromItem(item: MediaItem): SyncMediaMeta {
+  return {
+    tweetId: item.tweetId,
+    handle: item.handle,
+    type: item.type,
+    url: item.url,
+    ext: item.ext,
+    index: item.index,
+  }
+}
+
 /** A Media Item entered the Download Queue; carries the URL-cache payload. */
 export function queuedEvent(item: MediaItem, deviceId: string, at: number): SyncEvent {
   return {
@@ -42,14 +56,7 @@ export function queuedEvent(item: MediaItem, deviceId: string, at: number): Sync
     requestId: item.id,
     deviceId,
     at,
-    media: {
-      tweetId: item.tweetId,
-      handle: item.handle,
-      type: item.type,
-      url: item.url,
-      ext: item.ext,
-      index: item.index,
-    },
+    media: syncMediaFromItem(item),
   }
 }
 
