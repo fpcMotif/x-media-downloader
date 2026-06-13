@@ -36,6 +36,8 @@ import {
   snapshot,
   type MetricsState,
 } from '../core/download/metrics'
+import { decodeStore, emptyStore } from '../core/history/store'
+import { planHistory, type HistoryAction } from '../core/history/wiring'
 
 // Ephemeral monitoring snapshot — session storage survives SW recycling but not
 // a browser restart (ADR-0005). The popup polls it via `MetricsRequest`.
@@ -150,6 +152,24 @@ const recordSync = (settings: Settings, events: ReadonlyArray<SyncEvent>): void 
   })
 }
 
+// Durable local download history (opt-in `downloadHistoryEnabled`): the
+// local-first twin of Convex `media_state`, fed from the SAME outcome points as
+// the Sync Events above so the two never diverge. `local:` survives SW recycle.
+const historyItem = storage.defineItem<unknown>('local:downloadHistory', { fallback: null })
+let historyChain: Promise<void> = Promise.resolve()
+// Serialized read-modify-write, like the outbox, so interleaved SW events can't
+// lose an update. Gated by the toggle; orthogonal to Cloud Sync.
+const recordHistory = (settings: Settings, actions: ReadonlyArray<HistoryAction>): void => {
+  if (!settings.downloadHistoryEnabled || actions.length === 0) return
+  historyChain = historyChain
+    .then(async () => {
+      let store = decodeStore(await historyItem.getValue())
+      for (const a of actions) store = planHistory(store, settings, a)
+      await historyItem.setValue(store)
+    })
+    .catch(() => {})
+}
+
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
   const direct = makeDirectStrategy({ download: (opts) => browser.downloads.download(opts) })
@@ -229,6 +249,15 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
         return item ? [queuedEvent(item, settings.cloudDeviceId, startedAt)] : []
       }),
     )
+    // Same derivation, local store: a queued Download Record per Media Item
+    // (sidecar `.json` requests have no MediaItem and are skipped, like the mirror).
+    recordHistory(
+      settings,
+      requests.flatMap((r): HistoryAction[] => {
+        const item = mediaById.get(r.id)
+        return item ? [{ kind: 'queued', item, filename: r.filename, at: startedAt }] : []
+      }),
+    )
 
     const res = yield* queue.enqueue(requests)
 
@@ -237,11 +266,13 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
     // terminal from our side, and failures-to-start are recorded failed.
     const now = Date.now()
     const syncEvents: SyncEvent[] = []
+    const historyActions: HistoryAction[] = []
     for (const o of res.outcomes) {
       if (!o.ok) {
         inFlight.delete(o.id)
         live = recordOutcome(live, o.id, 'failed', now)
         syncEvents.push(outcomeEvent(o.id, 'failed', settings.cloudDeviceId, now))
+        historyActions.push({ kind: 'failed', requestId: o.id, at: now })
         traceBackground('start-failed', {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
@@ -258,6 +289,7 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
         inFlight.delete(o.id)
         live = recordOutcome(live, o.id, 'complete', now)
         syncEvents.push(outcomeEvent(o.id, 'completed', settings.cloudDeviceId, now))
+        historyActions.push({ kind: 'completed', requestId: o.id, at: now })
         traceBackground('external-complete', {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
@@ -266,6 +298,7 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
       }
     }
     recordSync(settings, syncEvents)
+    recordHistory(settings, historyActions)
     yield* Effect.promise(() => persistSnapshot(now))
 
     return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total }
@@ -309,6 +342,9 @@ export default defineBackground(() => {
             settings.cloudDeviceId,
             now,
           ),
+        ])
+        recordHistory(settings, [
+          { kind: outcome === 'complete' ? 'completed' : 'failed', requestId: id, at: now },
         ])
         traceBackground(outcome === 'complete' ? 'browser-complete' : 'browser-failed', {
           itemId: id,
@@ -376,6 +412,14 @@ export default defineBackground(() => {
           clearedLocks,
         })
       })()
+      return true
+    }
+    if (msg._tag === 'HistoryRequest') {
+      void historyItem.getValue().then((raw) => sendResponse({ records: decodeStore(raw).records }))
+      return true
+    }
+    if (msg._tag === 'ClearHistoryRequest') {
+      void historyItem.setValue(emptyStore).then(() => sendResponse({ ok: true }))
       return true
     }
     return false

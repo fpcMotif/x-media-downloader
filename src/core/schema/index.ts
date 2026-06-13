@@ -149,6 +149,16 @@ export const ClearDownloadMonitorResponse = Schema.TaggedStruct('ClearDownloadMo
 })
 export type ClearDownloadMonitorResponse = typeof ClearDownloadMonitorResponse.Type
 
+// Durable local download history (popup ⇄ background). Requests carry no
+// payload; the response records ride back via `sendResponse` (not the decoded
+// union) so this schema never has to reference DownloadRecord (avoids a
+// schema↔history import cycle).
+export const HistoryRequest = Schema.TaggedStruct('HistoryRequest', {})
+export type HistoryRequest = typeof HistoryRequest.Type
+
+export const ClearHistoryRequest = Schema.TaggedStruct('ClearHistoryRequest', {})
+export type ClearHistoryRequest = typeof ClearHistoryRequest.Type
+
 export const Message = Schema.Union([
   DetectRequest,
   MediaDetected,
@@ -159,5 +169,7 @@ export const Message = Schema.Union([
   DownloadTraceEvent,
   ClearDetectedMediaRequest,
   ClearDownloadMonitorRequest,
+  HistoryRequest,
+  ClearHistoryRequest,
 ])
 export type Message = typeof Message.Type

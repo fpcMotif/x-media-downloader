@@ -112,6 +112,15 @@ describe('Message schema', () => {
     expect(req.clearStaleLocks).toBe(true)
   })
 
+  it('decodes HistoryRequest and ClearHistoryRequest (durable local history)', () => {
+    expect(Schema.decodeUnknownSync(Message)({ _tag: 'HistoryRequest' })._tag).toBe(
+      'HistoryRequest',
+    )
+    expect(Schema.decodeUnknownSync(Message)({ _tag: 'ClearHistoryRequest' })._tag).toBe(
+      'ClearHistoryRequest',
+    )
+  })
+
   it('decodes a local download trace event for monitor diagnostics', () => {
     const raw = {
       _tag: 'DownloadTraceEvent',
