@@ -5,7 +5,10 @@
   [0013 server-side cloud destinations](../../adr/0013-server-side-cloud-destinations.md)
 - **Spec:** [2026-06-14-convex-cloud-backup-design.md](../../superpowers/specs/2026-06-14-convex-cloud-backup-design.md)
 - **Date:** 2026-06-14
-- **Branch:** `feat/cloud-targets-sync`
+- **Branch:** `feat/convex-cloud-destinations` (renamed from `feat/cloud-targets-sync`)
+- **Read first:** [A0-reconciliation.md](./A0-reconciliation.md) — corrects paths (`backend/convex/`,
+  not `convex/`), keeps `media_state` as the catalog, settles identity + presign-everything, and
+  notes the rebase-onto-`main` prerequisite.
 - **Approach:** Test-first (red→green→refactor) per task. Pure reducers with injected timestamps
   (metrics/history precedent, ADR-0008/0010); effectful seams behind fetch-injected ports (aria2
   precedent, ADR-0006; the existing `src/core/sync/convex.ts` port). Effect **v4** idioms only
@@ -171,10 +174,13 @@ phases:
 
 ## Task specs (highlights)
 
-### A0 — Reconcile (`docs/` decision note + thin code)
-Resolve the three reconciliation decisions above into a short ADR addendum or note; pick the
-schema/transport/byte-path shape so B+ build on one model. **Acceptance:** a written decision; no
-two competing catalog tables; the byte-path special-case settled (recommend presign-everything).
+### A0 — Reconcile (settled — see [A0-reconciliation.md](./A0-reconciliation.md))
+Grounded against the shipped `backend/convex/`. **Decided:** backend = `backend/convex/` (not
+`convex/`); reuse `media_state` as the catalog (no `catalogItems`); add `cloudConnections` +
+`uploadJobs`; reuse the `src/core/sync/convex.ts` fetch port; new extension code in `src/core/cloud/`;
+**presign everything** (no pipe). **Open for the user:** identity — Convex Auth now (Option A) vs
+device-scope for the S3/R2 slice (Option B). **Blocking prereq:** rebase the branch onto `main`
+(`bbdad24`) to obtain `backend/` + `src/core/sync/`.
 
 ### A1 — Convex schema (`convex/schema.ts`)
 `cloudConnections` (per-user provider config; `s3Config` non-secret + sealed keys; `oauth` sealed
