@@ -71,6 +71,16 @@ use these words, they mean exactly this.
 - **Outbox** — the local queue of not-yet-delivered Sync Events; drains FIFO
   in small batches with exponential backoff, so downloads never depend on
   connectivity to the cloud.
+- **Download Record** — the durable local record of one Save Request's outcome:
+  its Original-quality media URL (the original link), filename, status
+  (`queued` / `completed` / `failed`), Media Item provenance (Handle, Tweet,
+  type), and timestamps. Keyed by the Save Request — the local-first counterpart
+  of a Cloud Sync `media_state` row, carrying the same provenance by construction.
+- **Download History** — the durable, bounded, **local** collection of Download
+  Records the Popup shows. **Opt-in** (off by default). Survives service-worker
+  recycling and browser restart — unlike the **Snapshot**, which is ephemeral and
+  live. Independent of **Cloud Sync**, which mirrors the same outcomes remotely
+  only when separately enabled.
 
 ## Boundaries (what these are NOT)
 
