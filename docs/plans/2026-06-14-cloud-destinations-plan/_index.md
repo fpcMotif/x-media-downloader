@@ -178,9 +178,9 @@ phases:
 Grounded against the shipped `backend/convex/`. **Decided:** backend = `backend/convex/` (not
 `convex/`); reuse `media_state` as the catalog (no `catalogItems`); add `cloudConnections` +
 `uploadJobs`; reuse the `src/core/sync/convex.ts` fetch port; new extension code in `src/core/cloud/`;
-**presign everything** (no pipe). **Open for the user:** identity — Convex Auth now (Option A) vs
-device-scope for the S3/R2 slice (Option B). **Blocking prereq:** rebase the branch onto `main`
-(`bbdad24`) to obtain `backend/` + `src/core/sync/`.
+**presign everything** (no pipe). **Identity → Option B** (device-scope for the S3/R2 slice; migrate
+to Convex Auth before the first OAuth provider; user can flip to A). **Blocking prereq:** rebase the
+branch onto `main` (`bbdad24`) to obtain `backend/` + `src/core/sync/`.
 
 ### A1 — Convex schema (`convex/schema.ts`)
 `cloudConnections` (per-user provider config; `s3Config` non-secret + sealed keys; `oauth` sealed

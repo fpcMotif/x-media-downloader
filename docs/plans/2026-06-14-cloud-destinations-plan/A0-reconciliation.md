@@ -61,16 +61,21 @@ Secrets (`sealed*`) never read by a public query; `_creationTime` never in an in
 
 The mirror is `deviceId`-scoped and gated by `SYNC_SHARED_SECRET` (`recordEvents` arg). There is **no
 `userId` and no Convex Auth** yet. ADR-0012 says "Convex Auth day one" — so that is a *migration*
-(`deviceId`→`userId`), not greenfield. **Decision needed (flag to user):**
+(`deviceId`→`userId`), not greenfield.
 
-- **Option A (matches ADR-0012):** wire Convex Auth now; `owner = userId`; migrate `media_state`.
-  Required if the deployment is ever shared/multi-user.
+- **Option A (matches ADR-0012 literally):** wire Convex Auth now; `owner = userId`; migrate
+  `media_state`. Required if the deployment is ever shared/multi-user.
 - **Option B (self-host slice):** keep `owner = deviceId` + shared secret for the S3/R2 slice, defer
-  Auth until **before** the first OAuth provider (ADR-0013 only *requires* real auth before storing
-  cloud **OAuth tokens**; S3/R2 keys are user-pasted, acceptable under device scope for a private
-  self-host). Lower friction to ship the first vertical slice.
+  Auth until **before** the first OAuth provider.
 
-Either way, **code-enforce** that no `oauth` connection is created under a `device` owner.
+**Resolved → Option B (default; user can flip to A).** Rationale: the product is a personal,
+local-first, single-user extension; `cloudConvexUrl` is the user's own self-pasted deployment (no
+vendor default, ADR-0011); S3/R2 keys are user-pasted (not OAuth tokens), so ADR-0013's "real auth
+before storing cloud **OAuth** tokens" is not yet triggered; Option B ships the first vertical slice
+with the least friction. **Switch to Option A** the moment the deployment becomes shared/multi-user
+**or** before the Dropbox/Google OAuth phase (whichever comes first) — `owner` stays one field so the
+value migrates `deviceId`→`userId` without a schema change. **Regardless of A/B, code-enforce** that
+no `oauth` connection row is ever created under a `device` owner.
 
 ## 4. Transport — reuse the fetch port, add a query + trigger
 
