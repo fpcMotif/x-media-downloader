@@ -88,8 +88,13 @@ user downloads a post's media on a Bookmarks/Likes surface
    Events: `arm(tweetId, total)`, `itemComplete(tweetId)`, `itemFailed(tweetId)`.
    State per armed tweetId: `{ total, completed, failed, fired }`. Emits
    `'remove'` exactly once, only when `completed === total && failed === 0`;
-   emits nothing further for a fired or failed tweet. Mirrors the idiom of
-   `quickgrab.ts`, `badge.ts`, `launcher.ts`. **Prototype target (§7).**
+   emits nothing further for a fired or failed tweet. `itemComplete`/`itemFailed`
+   for an un-armed tweet are ignored. Mirrors the idiom of `quickgrab.ts`,
+   `badge.ts`, `launcher.ts`. **Validated by prototype (§7).**
+   - **The counter assumes one terminal event per item.** The tracker stays a
+     simple counter (not a Set of ids); correctness therefore depends on the
+     background emitting **at most one** terminal event per `downloadId` — see
+     §3.2. (Decision taken in session over the self-deduping Set alternative.)
 
 2. **`src/core/adapters/x/actions.ts` — the "write" seam.** The first adapter
    code that *acts on* the page rather than reading it.
@@ -116,6 +121,14 @@ Background already maps `downloadId → requestId`. Extend tracking so a
 originating `tabId`. On a `'remove'` decision, background sends
 `{ type: 'clearFromList', tweetId, unbookmark, unlike }` to that tab. The
 content script validates it is still on a Bookmarks/Likes surface before acting.
+
+**Per-item terminal dedup (background responsibility).** `chrome.downloads.onChanged`
+can deliver duplicate `state:'complete'` transitions for one `downloadId`. The
+background tracks which `downloadId`s have already settled and feeds the tracker
+**at most one** `itemComplete`/`itemFailed` per item — otherwise a double-counted
+completion could reach `total` and fire `'remove'` before all distinct items are
+done (a premature, silent clear). This guard is the counterpart to the simple
+counter in §3.1.
 
 ## 4. Behavior Rules (edge cases)
 
@@ -196,7 +209,21 @@ no DOM — the terminal-app branch of the prototype skill.
   manual live-X checklist for the click-through behavior found in §6.
 - **Settings:** schema defaults (`false`/`false`) and popup toggle wiring.
 
-## 9. Open Decisions
+## 9. Prototype Verdict
+
+`src/core/removal.prototype.ts` (throwaway terminal harness) drove the reducer
+through the §8 cases plus awkward orderings. Findings:
+
+- Partial-failure backbone and fire-once latch behave correctly, including when
+  the failure arrives **before** the completions and when a duplicate completion
+  arrives **after** the fire (no re-emit).
+- Surfaced the duplicate-`onChanged` premature-fire risk → resolved as the
+  background-dedup decision now recorded in §3.1 / §3.2.
+
+Verdict: logic approved. The reducer folds directly into `removal.ts`; the
+prototype file is deleted (absorbed) once `removal.ts` lands in the plan.
+
+## 10. Open Decisions
 
 - **Scroll-off behavior** (§4): queue-and-apply-on-re-sighting (default) vs.
   drop-silently. Confirm during spec review or after live verification.
