@@ -1,17 +1,23 @@
 # Clear-on-Save — Design Spec
 
 - **Date:** 2026-06-15
-- **Status:** Approved (design reviewed in session; spec awaiting user sign-off)
-- **Surfaces:** Bookmarks page + Likes page (and lightboxes opened from them)
+- **Status:** Approved + live-verified. **v1 scope = un-like-on-save (Likes
+  page).** Un-bookmark **deferred** — live verification (§6) found no inline
+  un-bookmark control on the Bookmarks page.
+- **v1 surface:** Likes page `/{handle}/likes` (and lightboxes opened from it).
+- **Deferred:** Bookmarks page / un-bookmark (revisit if X restores an inline
+  control, or design an explicit non-silent detail-page flow).
 - **Related ADRs:** ADR-0001 (passive-first), ADR-0002 (fire-and-track queue);
   introduces **ADR-0015** (extension-initiated UI actions)
 
 ## 1. Overview
 
-When the user works through their **Bookmarks** or **Likes** list and downloads
-a post's media, **Clear-on-save** removes that post from the list once *all* of
-its media is **confirmed saved to disk** — turning the list into a
-self-clearing "to-download" queue.
+When the user works through their **Likes** list and downloads a post's media,
+**Clear-on-save** removes that post from the list once *all* of its media is
+**confirmed saved to disk** — turning the list into a self-clearing
+"to-download" queue. (The same mechanism was intended for the Bookmarks list,
+but live verification found no inline un-bookmark control there — see §6 — so
+**un-bookmark is deferred** and v1 ships un-like only.)
 
 A Tweet carries up to four photos (**or** one video **or** one GIF). All of a
 Tweet's downloaded Media Items must reach a **confirmed-complete** terminal
@@ -25,12 +31,12 @@ exact post — both are hard requirements below.
 
 ### Goals
 
-- A bookmark/like list that clears itself as the user downloads, with zero
-  happy-path friction.
+- A Likes list that clears itself as the user downloads, with zero happy-path
+  friction.
 - Remove a post **only** after every Media Item the user downloaded for it is
   **confirmed written to disk** — never on the optimistic "started" signal.
-- Two independent, default-**off** settings: un-bookmark on save, un-like on
-  save.
+- A default-**off** setting `autoUnlikeOnSave` (v1). `autoUnbookmarkOnSave` is
+  deferred until an inline un-bookmark control exists.
 - Reuse the repo's pure-core state-machine idiom so the tricky tally/timing
   logic is unit-testable and prototype-able.
 
@@ -72,14 +78,14 @@ topology (approach "C") keeps the tally as a pure core reducer and uses the
 background only as the event source and the content script only as the DOM hand.
 
 ```
-user downloads a post's media on a Bookmarks/Likes surface
+user downloads a post's media on the Likes surface
   → background fires chrome.downloads.download() per Media Item        [existing]
   → onChanged reports each item complete | failed                      [existing, ADR-0002]
   → background feeds each outcome into the pure `removal` tracker, keyed by tweetId
   → tracker emits exactly one decision per tweet: REMOVE | KEEP | (pending)
   → on REMOVE → background messages the originating tab's content script
   → content script's `xActions` seam finds article[tweetId], clicks the
-    un-bookmark / un-like control(s) enabled in settings
+    un-like control ([data-testid="unlike"]) when autoUnlikeOnSave is on
 ```
 
 ### 3.1 New units
@@ -98,29 +104,33 @@ user downloads a post's media on a Bookmarks/Likes surface
 
 2. **`src/core/adapters/x/actions.ts` — the "write" seam.** The first adapter
    code that *acts on* the page rather than reading it.
-   - `findBookmarkControl(article): Element | null`
-   - `findLikeControl(article): Element | null`
-   - `clearFromList(tweetId, { unbookmark, unlike }): Result`
+   - `findLikeControl(article): Element | null` — resolves the already-liked
+     control, `article [data-testid="unlike"]` (verified §6). **`data-testid`,
+     not aria-label** — aria-labels are localized.
+   - `clearFromList(tweetId, { unlike }): Result`
+   - *(deferred)* `findBookmarkControl` — no inline control exists on the list
+     (§6); not built in v1.
    Selector resolution lives behind one resolver so live-DOM drift is contained
-   to one place. Exact selectors confirmed at live verification (§6).
+   to one place.
 
 3. **Page-context guard** (content script): arm Clear-on-save only when the
-   active surface is a Bookmarks or Likes list. URL-path based so it is
-   resilient to whether X keeps them as separate pages or merges them into a
-   "history" surface. The path matcher set is finalized at live verification.
+   active surface is the **Likes** list — `pathname` matches `/^\/[^/]+\/likes$/`
+   (verified §6). (Bookmarks `'/i/bookmarks'` is recognized but inert in v1,
+   since un-bookmark is deferred.) Path-based so it is locale-independent.
 
 4. **Settings** (`core/schema/index.ts`, Effect v4 Schema):
-   - `autoUnbookmarkOnSave: boolean` — default `false`
-   - `autoUnlikeOnSave: boolean` — default `false`
-   Surfaced as two popup toggles in the settings panel.
+   - `autoUnlikeOnSave: boolean` — default `false` (v1)
+   - *(deferred)* `autoUnbookmarkOnSave: boolean` — added when un-bookmark ships.
+   Surfaced as a popup toggle in the settings panel.
 
 ### 3.2 Messaging
 
 Background already maps `downloadId → requestId`. Extend tracking so a
 `requestId` (and thus each item's outcome) resolves to its `tweetId` and the
 originating `tabId`. On a `'remove'` decision, background sends
-`{ type: 'clearFromList', tweetId, unbookmark, unlike }` to that tab. The
-content script validates it is still on a Bookmarks/Likes surface before acting.
+`{ type: 'clearFromList', tweetId, unlike: true }` to that tab. The content
+script validates it is still on the Likes surface before acting. (Payload keeps
+room for an `unbookmark` flag when that ships.)
 
 **Per-item terminal dedup (background responsibility).** `chrome.downloads.onChanged`
 can deliver duplicate `state:'complete'` transitions for one `downloadId`. The
@@ -147,11 +157,10 @@ counter in §3.1.
   tweet's media nested inside it.
 - **Single-item media.** Video/GIF Tweets have one item; photo Tweets 1–4. The
   tracker handles N = 1..4 uniformly via `arm(tweetId, total)`.
-- **Both states set.** If a post is both bookmarked and liked and both settings
-  are on, clear both in one `clearFromList` call.
-- **Lightbox.** Downloading from a lightbox opened off the list still resolves
-  to the underlying list article, which remains in the DOM behind the modal;
-  the clear applies on close (or immediately if the control is reachable).
+- **Lightbox.** The Likes-list photo lightbox exposes `[data-testid="unlike"]`
+  too (verified §6), and the underlying list article stays in the DOM behind the
+  modal — so the un-like clear applies whether the user downloaded from the list
+  thumbnail or from inside the lightbox.
 - **Fire-once.** The tracker latches per tweetId; re-detection or duplicate
   `onChanged` events never double-fire a clear.
 
@@ -174,20 +183,33 @@ cover. Both updates land as part of the work, not after it.
   is confirmed complete, and we issue no direct API calls (X issues its own
   request, exactly as for a manual click).
 
-## 6. Live Verification (the "check it" task)
+## 6. Live Verification — RESULTS (verified 2026-06-15, live X, logged-in)
 
-Empirical, to be done against live X (logged-in) via the Chrome MCP, before or
-as the first implementation step:
+Done against live X via the Chrome MCP. Findings:
 
-1. Are **Bookmarks** and **Likes** still separate pages, or merged into a
-   "history"-style surface in the current X build? Capture the URL path(s).
-2. The real selectors for the **bookmark** and **like** controls in their
-   *active* (already-bookmarked / already-liked) state, and the
-   confirmation/menu (if any) that a click triggers.
-3. Whether un-bookmark / un-like is a single click or a click-through-menu.
+- **No "history" merge.** Bookmarks is its own page at **`/i/bookmarks`**; Likes
+  is the profile tab at **`/{handle}/likes`** (profile tabs:
+  Posts/Replies/Highlights/Articles/Media/Likes). They are separate; the worried
+  "merged into history" surface does not exist on this build. → page-context
+  matcher: `pathname === '/i/bookmarks'` and `/^\/[^/]+\/likes$/`.
+- **Selectors must be `data-testid`, never aria-label.** The test account's UI is
+  Traditional Chinese; all `aria-label`s are localized (e.g. the like control is
+  `aria="…已喜歡"`). `data-testid` values are stable across locale.
+- **Un-like — feasible inline, single click.** `[data-testid="unlike"]` is
+  present in the action bar of every tweet on **both** the Bookmarks list and the
+  Likes list. (Active/liked state = `unlike`; unliked = `like`.) One click, no
+  menu.
+- **Un-bookmark — BLOCKED on the list (key finding).** `data-testid="removeBookmark"`
+  exists **only on the tweet detail page** action bar. On the **Bookmarks list**,
+  X renders the view-count/analytics button in that slot instead — there is **no
+  `removeBookmark` (or `bookmark`) control anywhere on the list page**, not in the
+  action bar (before or after hover) and not in the per-tweet "…" (`caret`) menu
+  (which offers follow/lists/mute/block/engagements/embed/report/note — no remove
+  option). The only DOM path to remove a bookmark is the detail page, reached by
+  navigating away from the list (scroll-loss, disruptive).
 
-Findings feed the `actions.ts` resolver and the page-context matcher. Until
-verified, both are written behind a single resolver so updates are localized.
+Consequence: un-like is cleanly implementable as designed; **un-bookmark on the
+list has no inline control and needs a separate decision** — see §10.
 
 ## 7. Prototype (/prototype — business-logic branch)
 
@@ -223,7 +245,12 @@ through the §8 cases plus awkward orderings. Findings:
 Verdict: logic approved. The reducer folds directly into `removal.ts`; the
 prototype file is deleted (absorbed) once `removal.ts` lands in the plan.
 
-## 10. Open Decisions
+## 10. Decisions & Open Items
 
+- **Un-bookmark — DEFERRED (resolved in session).** Live verification (§6) found
+  no inline un-bookmark control on the Bookmarks list. Rather than navigate to
+  each tweet's detail page (scroll-loss, jarring under silent mode), v1 ships
+  un-like only. Revisit if X restores an inline control, or design an explicit
+  non-silent detail-page flow.
 - **Scroll-off behavior** (§4): queue-and-apply-on-re-sighting (default) vs.
-  drop-silently. Confirm during spec review or after live verification.
+  drop-silently — still open; confirm during the plan or first implementation.
