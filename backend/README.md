@@ -18,16 +18,20 @@ The deployment URL (`https://<name>.convex.cloud`) goes into the extension
 popup under **Cloud sync to Convex → Convex deployment URL**. The popup's
 "Grant access" button then requests the runtime host permission.
 
-## Optional shared secret
+## Required shared secret
 
-Without a secret, the deployment URL is the only capability gating writes.
-To require one, set an environment variable on the deployment:
+Writes fail closed: a `*.convex.cloud` URL is discoverable and is **not** a
+write capability, so `recordEvents` rejects every insert unless the deployment
+has a secret configured **and** the caller presents a matching one. Set it on
+the deployment:
 
 ```sh
 bunx convex env set SYNC_SHARED_SECRET <value>
 ```
 
-and paste the same value into the popup's **Sync secret** field.
+and paste the same value into the popup's **Sync secret** field. Until both
+sides are set, the extension records nothing (the outbox stays empty rather
+than filling with undeliverable events).
 
 ## Shape
 

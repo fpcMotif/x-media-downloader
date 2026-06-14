@@ -126,7 +126,7 @@ const drainOutbox = async (settings: Settings): Promise<void> => {
     try {
       await port.mutation('sync:recordEvents', {
         events: batch,
-        ...(settings.convexSyncSecret ? { secret: settings.convexSyncSecret } : {}),
+        secret: settings.convexSyncSecret,
       })
       await outboxItem.setValue(
         markDrained(
@@ -145,7 +145,15 @@ const drainOutbox = async (settings: Settings): Promise<void> => {
 /** Mirror state transitions when Cloud Sync is on. Fire-and-forget: downloads
  *  never block on — or fail because of — the cloud (ADR-0009). */
 const recordSync = (settings: Settings, events: ReadonlyArray<SyncEvent>): void => {
-  if (!settings.cloudSyncEnabled || settings.convexUrl === '' || events.length === 0) return
+  // Fail closed: the Convex deployment requires a shared secret (ADR-0009), so
+  // without one every POST would 401 and the outbox would fill undeliverably.
+  if (
+    !settings.cloudSyncEnabled ||
+    settings.convexUrl === '' ||
+    settings.convexSyncSecret === '' ||
+    events.length === 0
+  )
+    return
   withOutbox(async () => {
     await outboxItem.setValue(append(decodeOutbox(await outboxItem.getValue()), events))
     await drainOutbox(settings)
@@ -309,7 +317,8 @@ export default defineBackground(() => {
   // life / offline period; clear the outbox whenever the user turns sync off.
   void (async () => {
     const s = await getSettings()
-    if (s.cloudSyncEnabled && s.convexUrl !== '') withOutbox(() => drainOutbox(s))
+    if (s.cloudSyncEnabled && s.convexUrl !== '' && s.convexSyncSecret !== '')
+      withOutbox(() => drainOutbox(s))
   })()
   watchSettings((s) => {
     if (!s.cloudSyncEnabled) withOutbox(() => outboxItem.setValue(null))

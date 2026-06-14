@@ -533,11 +533,12 @@ export function App() {
                   onChange={(e) => void update({ convexUrl: (e.target as HTMLInputElement).value })}
                 />
               </Field>
-              <Field label="Sync secret (optional)">
+              <Field label="Sync secret (required)">
                 <input
                   type="password"
                   class="xmd-popup-control w-full"
                   aria-label="Convex sync secret"
+                  placeholder="must match the deployment's SYNC_SHARED_SECRET"
                   value={settings.convexSyncSecret}
                   onChange={(e) =>
                     void update({ convexSyncSecret: (e.target as HTMLInputElement).value })
