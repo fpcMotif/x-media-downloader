@@ -39,3 +39,21 @@ Scenario: The two Phase-1 catalog designs are reconciled
 
 - `docs/adr/0014-catalog-seam-reconciliation.md` exists and names the chosen seam.
 - Tasks 004/005/009 either updated to match or explicitly marked "no change needed."
+
+## Outcome (RESOLVED 2026-06-14)
+
+Done as the opening move of execution (read-only). Verdict: **adopt the shipped `media_state` seam;
+retire this plan's `catalogItems`/`syncItems`.** Grounded in `main:backend/convex/schema.ts` + `sync.ts`
++ `src/core/sync/convex.ts`, consistent with the
+[A0 reconciliation brief](../2026-06-14-cloud-destinations-plan/A0-reconciliation.md) — which is the
+authoritative reconciliation record, so **no separate ADR-0014 was written** (avoiding the very
+duplication this spike exists to prevent).
+
+Findings → see the **Reconciliation outcome** table in [_index.md](./_index.md). In short: the Phase-1
+link catalog is already shipped on `main`; backend lives in `backend/convex/`; new extension code
+belongs in `src/core/cloud/`; identity stays `deviceId` (Auth deferred, A0 §3 Option B); presign-
+everything confirmed. Blocking prereq: rebase this branch onto `main` (`bbdad24`) first.
+
+Tasks 004/005/006/007 (and 001's top-level `convex/`) are **superseded — do not execute**. Tasks
+002/003 (settings) and 012/013 (popup consent + status) plus the flexible-trigger idea may survive as
+a thin increment on the shipped seam, if the user wants it.

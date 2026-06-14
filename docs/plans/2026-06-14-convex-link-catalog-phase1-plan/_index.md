@@ -1,9 +1,37 @@
 # Plan — Phase 1 MVP: Convex Link Catalog
 
 - **Date:** 2026-06-14
-- **Status:** Draft — awaiting user approval
+- **Status:** ⚠️ **Largely SUPERSEDED** — the Phase-1 link catalog is already shipped on `main`
+  (`media_state`/`sync_events` + `src/core/sync/convex.ts`). See **Reconciliation outcome** below.
+  Do NOT execute tasks 001/004/005/006/007 as written. (task 015 resolved 2026-06-14)
 - **Design:** [spec](../../superpowers/specs/2026-06-14-convex-cloud-backup-design.md) (§9 Phase 1) · ADR-0011/0012 · [BDD specs](./bdd-specs.md)
 - **Phase-0 prototype (validated):** `study/cloud-sync-prototype/machine.ts`
+
+## Reconciliation outcome (task 015 — resolved 2026-06-14)
+
+Run before any code, this spike found the Phase-1 MVP is **mostly already shipped**. Grounded in
+`main:backend/convex/schema.ts` + `sync.ts` + `src/core/sync/convex.ts`, and consistent with the
+[A0 reconciliation brief](../2026-06-14-cloud-destinations-plan/A0-reconciliation.md) (the authoritative
+reconciliation — read it, don't duplicate it):
+
+| This plan assumed | Shipped reality | Verdict |
+|---|---|---|
+| New `catalogItems` table | `media_state` already stores `{tweetId,handle,type,url,ext,index}` per request | **`media_state` IS the catalog** — drop `catalogItems` |
+| New `syncItems` mutation, deduped | `recordEvents` + `sync_events.eventId` idempotency (at-least-once→exactly-once) | Already done — drop `syncItems` |
+| Backend at top-level `convex/` | Backend is a separate bun package at `backend/convex/` | Wrong path — use `backend/convex/` |
+| Create `src/core/sync/` (task 007) | `src/core/sync/convex.ts` (HTTP port) already shipped | Collision — new code goes in `src/core/cloud/` |
+| Convex Auth day one (task 005) | `deviceId` + `SYNC_SHARED_SECRET`; no Auth | Deferred (A0 §3 Option B) — Auth is a later `deviceId`→`userId` migration |
+| Byte path | (matches) presign-everything | ✅ consistent |
+
+**Decision:** this plan is retired in favour of the shipped mirror + the
+[cloud-destinations plan](../2026-06-14-cloud-destinations-plan/_index.md), which the parallel build
+owns. **Blocking prerequisite (A0 §0):** this branch is based on pre-mirror `main` (`c3be490`) and
+must be rebased/merged onto `main` (`bbdad24`) before any `backend/` work exists to build on.
+
+**Possible salvage (small, non-duplicative):** the only Phase-1 ideas NOT in the shipped mirror are
+the *flexible trigger* (`onDownload`/`onDemand`/`both` + on-demand "Back up" button) and the *popup
+consent gate + 3-state status line*. If wanted, re-scope those as a thin increment on top of the
+shipped `media_state` seam — **not** the backend tasks here. Validate against the rebased tree first.
 
 ## Context
 
