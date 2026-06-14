@@ -258,9 +258,12 @@ weeks-long external review the engineer can't control.
 
 ### Resolved (2026-06-14 session)
 
-1. **Byte path / Convex storage → provider-as-durable.** Convex **never stores** bytes (no
-   zero-setup Convex-storage copy). Photos *transit* a Convex action (`pipe`); video presigns +
-   streams extension→cloud. This overrides the recommendation in item 1 below.
+1. **Byte path → presign everything; bytes never touch Convex.** (Updated 2026-06-14, reversing an
+   earlier "photos pipe via Convex action" draft.) Convex never stores *or relays* bytes. **All**
+   media — photos *and* video — presign + stream extension→cloud directly; Convex only signs and
+   verifies (out-of-band `HeadObject`). **No `pipe` special-case.** One uniform path, zero Convex
+   egress, fully consistent with ADR-0011/0013. → §5/§5.1's `pipe` mode is superseded; the plan's
+   **Task A0** owns rewriting those sections to presign-everything.
 2. **iCloud → dropped** (document-only hand-off; no UI row). Reconciled from an earlier
    "stub-seam" instinct — there is no upload API to build a seam against.
 3. **Connections UI → separate options page.**
