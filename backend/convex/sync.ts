@@ -36,20 +36,39 @@ const event = v.object({
   media: v.optional(media),
 })
 
+// A stored `sync_events` row as returned by reads (the table doc plus Convex's
+// system fields). Used for the `recentEvents` return validator.
+const syncEventDoc = v.object({
+  _id: v.id('sync_events'),
+  _creationTime: v.number(),
+  eventId: v.string(),
+  kind,
+  requestId: v.string(),
+  deviceId: v.string(),
+  at: v.number(),
+  media: v.optional(media),
+})
+
 /**
  * Idempotent batch ingest for the extension outbox (`POST /api/mutation`,
  * path `sync:recordEvents`). The outbox delivers at-least-once; skipping on a
  * seen `eventId` makes recording exactly-once. Batches are ≤64 events
  * (≤128 doc writes) — far below the 16 MiB / 16k-docs mutation limits.
  *
- * When the `SYNC_SHARED_SECRET` env var is set on the deployment, callers
- * must present it; otherwise the deployment URL itself is the capability.
+ * Writes fail closed (ADR-0009 hardening): the deployment MUST set
+ * `SYNC_SHARED_SECRET` and the caller MUST present a matching `secret`. A
+ * `*.convex.cloud` URL is discoverable and is NOT a write capability, so the
+ * URL alone never authorizes an insert.
  */
 export const recordEvents = mutation({
-  args: { events: v.array(event), secret: v.optional(v.string()) },
+  args: { events: v.array(event), secret: v.string() },
+  returns: v.object({ received: v.number(), inserted: v.number() }),
   handler: async (ctx, { events, secret }) => {
     const required = process.env.SYNC_SHARED_SECRET
-    if (required !== undefined && required !== '' && secret !== required) {
+    if (required === undefined || required === '') {
+      throw new Error('unauthorized: deployment has no SYNC_SHARED_SECRET configured')
+    }
+    if (secret !== required) {
       throw new Error('unauthorized: bad or missing sync secret')
     }
     let inserted = 0
@@ -87,6 +106,15 @@ export const recordEvents = mutation({
 /** Newest-first event ledger, cursor-paginated (never fetch 10k rows at once). */
 export const recentEvents = query({
   args: { paginationOpts: paginationOptsValidator },
+  returns: v.object({
+    page: v.array(syncEventDoc),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+    splitCursor: v.optional(v.union(v.string(), v.null())),
+    pageStatus: v.optional(
+      v.union(v.literal('SplitRecommended'), v.literal('SplitRequired'), v.null()),
+    ),
+  }),
   handler: (ctx, { paginationOpts }) =>
     ctx.db.query('sync_events').withIndex('by_at').order('desc').paginate(paginationOpts),
 })
