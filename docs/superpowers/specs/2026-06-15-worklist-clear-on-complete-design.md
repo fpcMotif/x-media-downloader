@@ -89,9 +89,11 @@ A pure reducer. One entry per Tweet:
 {
   tweetId, scope,            // bookmark | like | both (from Membership)
   origin,                    // hook | drain
-  expected: Set<mediaId>,    // seeded BEFORE downloads fire
-  done: Set<mediaId>,        // real onChanged 'complete', deduped (Set semantics)
-  failed: Set<mediaId>,
+  expected:   Set<mediaId>,  // seeded BEFORE downloads fire
+  done:       Set<mediaId>,  // real onChanged 'complete', deduped (Set semantics)
+  failed:     Set<mediaId>,
+  inProgress: Set<mediaId>,  // ids not yet confirmed SETTLED (distinct from done)
+  strategy:   'browser' | 'aria2',
   clear: {                   // per-scope latch — NOT a single boolean
     bookmark: 'none' | 'clearing' | 'cleared' | 'failed',
     like:     'none' | 'clearing' | 'cleared' | 'failed',
@@ -101,17 +103,27 @@ A pure reducer. One entry per Tweet:
 
 - Dedupe `done`/`failed` by set membership (mirrors `src/core/metrics.ts:113`) so a
   duplicate `onChanged` can't make `done` exceed `expected`.
+- **`inProgress` is its own set, separate from `done`, drained by a distinct `Settle`
+  action.** *(Prototype-validated, see `src/core/clear/NOTES.md`.)* This separation is the
+  only thing that makes a late `interrupted`-after-`complete` safe: such an id moves
+  `done → failed` and the Clear never fires. Collapsing completion into one "done" set
+  would wrongly Clear it.
 - **Per-scope latch** because a Tweet in both lists can have un-bookmark succeed while
   un-like fails; a single boolean cannot represent "bookmark cleared, like pending".
+  **`failed` is re-claimable** (retry when next mounted); **`cleared` and `clearing` are
+  not** (no double-mutation, and a user re-bookmark is a no-op). Formally:
+  `canClaim = TrulyComplete && inScope && (status === 'none' || status === 'failed')`.
+  *(Prototype-validated.)*
 
 ### 4.2 Truly Complete gate
 
 A Tweet is **clearable** only when:
 
 1. every `expected` id is in `done`, and
-2. the download has fully **left the in-progress set** — confirmed via
-   `chrome.downloads.search`, not the first `complete` delta. (A late `interrupted`
-   after `complete` must not be able to retroactively undo an irreversible Clear.)
+2. `inProgress` is **empty** — i.e. every download has fully **left the in-progress
+   set**, signalled by the `Settle` action and confirmed via `chrome.downloads.search`,
+   not the first `complete` delta. (A late `interrupted` after `complete` must not be
+   able to retroactively undo an irreversible Clear; the prototype proves this case.)
 
 Any id in `failed` → not clearable; the Tweet stays on the Worklist.
 
