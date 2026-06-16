@@ -36,12 +36,16 @@ import {
   emptyMetrics,
   extendTotal,
   recordOutcome,
+  recordRetry,
   recordSample,
   samplesFromSearch,
-  outcomeFromState,
   snapshot,
   type MetricsState,
 } from '../core/download/metrics'
+import {
+  planInterruptRetry,
+  type PendingInterruptRetry,
+} from '../core/download/interrupt-retry'
 import { decodeStore, emptyStore } from '../core/history/store'
 import { planHistory, type HistoryAction } from '../core/history/wiring'
 
@@ -79,6 +83,37 @@ let traceEvents: DownloadTraceEntry[] = []
 // counts both, the idempotent recordOutcome counts one, and `completed` can
 // never reach `total`. Duplicates are dropped while the original is in flight.
 const inFlight = new Set<string>()
+
+// Browser download metadata for interrupted auto-retry (url/filename + attempt).
+const requestMetaById = new Map<string, { readonly url: string; readonly filename: string }>()
+const interruptAttemptById = new Map<string, number>()
+const pendingRetries = new Map<string, PendingInterruptRetry>()
+const retryTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+
+const retryQueueItem = storage.defineItem<ReadonlyArray<PendingInterruptRetry>>(
+  'session:interruptRetries',
+  { fallback: [] },
+)
+
+const syncPendingRetries = (): void => {
+  void retryQueueItem.setValue([...pendingRetries.values()])
+}
+
+const clearRetryTimeout = (id: string): void => {
+  const handle = retryTimeouts.get(id)
+  if (handle !== undefined) {
+    clearTimeout(handle)
+    retryTimeouts.delete(id)
+  }
+}
+
+const clearInterruptRetryState = (id: string): void => {
+  clearRetryTimeout(id)
+  pendingRetries.delete(id)
+  interruptAttemptById.delete(id)
+  requestMetaById.delete(id)
+  syncPendingRetries()
+}
 
 const withTraceEvents = (snap: MetricsSnapshot): MetricsSnapshot =>
   traceEvents.length === 0 ? snap : { ...snap, events: traceEvents }
@@ -217,6 +252,143 @@ function chooseStrategy(settings: Settings): DownloadStrategy {
   return direct
 }
 
+const failBrowserDownload = async (id: string, downloadId: number, now: number): Promise<void> => {
+  inFlight.delete(id)
+  clearInterruptRetryState(id)
+  requestIdByDownloadId.delete(downloadId)
+  if (live) live = recordOutcome(live, id, 'failed', now)
+  const settings = await getSettings()
+  recordSync(settings, [outcomeEvent(id, 'failed', settings.cloudDeviceId, now)])
+  recordHistory(settings, [{ kind: 'failed', requestId: id, at: now }])
+  traceBackground('browser-failed', {
+    itemId: id,
+    elapsedMs: now - (requestStartedAt.get(id) ?? now),
+    detail: `downloadId ${downloadId}`,
+  })
+  requestStartedAt.delete(id)
+  await persistSnapshot(now)
+}
+
+const completeBrowserDownload = async (id: string, downloadId: number, now: number): Promise<void> => {
+  inFlight.delete(id)
+  clearInterruptRetryState(id)
+  if (live) live = recordOutcome(live, id, 'complete', now)
+  const settings = await getSettings()
+  recordSync(settings, [outcomeEvent(id, 'completed', settings.cloudDeviceId, now)])
+  recordHistory(settings, [{ kind: 'completed', requestId: id, at: now }])
+  traceBackground('browser-complete', {
+    itemId: id,
+    elapsedMs: now - (requestStartedAt.get(id) ?? now),
+    detail: `downloadId ${downloadId}`,
+  })
+  requestStartedAt.delete(id)
+  await persistSnapshot(now)
+}
+
+const fireInterruptRetry = async (id: string): Promise<void> => {
+  const meta = requestMetaById.get(id)
+  if (meta === undefined) {
+    await failBrowserDownload(id, -1, Date.now())
+    return
+  }
+  try {
+    const downloadId = await browser.downloads.download({
+      url: meta.url,
+      filename: meta.filename,
+      conflictAction: 'uniquify',
+    })
+    requestIdByDownloadId.set(downloadId, id)
+    clearRetryTimeout(id)
+    pendingRetries.delete(id)
+    syncPendingRetries()
+    if (live) live = recordSample(live, { id, bytesReceived: 0, totalBytes: -1, t: Date.now() })
+    traceBackground('interrupt-retry-started', {
+      itemId: id,
+      detail: `downloadId ${downloadId}`,
+    })
+    await persistSnapshot(Date.now())
+  } catch {
+    const attempt = interruptAttemptById.get(id) ?? 0
+    const plan = planInterruptRetry({ reason: 'NETWORK_FAILED', attempt })
+    if (plan.schedule) {
+      interruptAttemptById.set(id, plan.nextAttempt)
+      if (live) live = recordRetry(live, id)
+      const nextRetryAt = Date.now() + plan.delayMs
+      pendingRetries.set(id, {
+        id,
+        url: meta.url,
+        filename: meta.filename,
+        attempt: plan.nextAttempt,
+        nextRetryAt,
+      })
+      syncPendingRetries()
+      const handle = setTimeout(() => void fireInterruptRetry(id), plan.delayMs)
+      retryTimeouts.set(id, handle)
+      traceBackground('interrupt-retry-scheduled', {
+        itemId: id,
+        detail: `start-failed in ${plan.delayMs}ms attempt ${plan.nextAttempt}`,
+      })
+      await persistSnapshot(Date.now())
+      return
+    }
+    await failBrowserDownload(id, -1, Date.now())
+  }
+}
+
+const scheduleInterruptRetry = (
+  id: string,
+  downloadId: number,
+  reason: string | undefined,
+  now: number,
+): void => {
+  const attempt = interruptAttemptById.get(id) ?? 0
+  const plan = planInterruptRetry({ reason, attempt })
+  const meta = requestMetaById.get(id)
+  if (!plan.schedule || meta === undefined) {
+    void failBrowserDownload(id, downloadId, now)
+    return
+  }
+
+  requestIdByDownloadId.delete(downloadId)
+  interruptAttemptById.set(id, plan.nextAttempt)
+  if (live) live = recordRetry(live, id)
+
+  const nextRetryAt = now + plan.delayMs
+  pendingRetries.set(id, {
+    id,
+    url: meta.url,
+    filename: meta.filename,
+    attempt: plan.nextAttempt,
+    nextRetryAt,
+  })
+  syncPendingRetries()
+
+  clearRetryTimeout(id)
+  const handle = setTimeout(() => void fireInterruptRetry(id), plan.delayMs)
+  retryTimeouts.set(id, handle)
+
+  traceBackground('interrupt-retry-scheduled', {
+    itemId: id,
+    detail: `${reason ?? 'unknown'} in ${plan.delayMs}ms attempt ${plan.nextAttempt}`,
+  })
+  void persistSnapshot(now)
+}
+
+const rehydrateInterruptRetries = async (): Promise<void> => {
+  const queued = await retryQueueItem.getValue()
+  const now = Date.now()
+  for (const item of queued) {
+    requestMetaById.set(item.id, { url: item.url, filename: item.filename })
+    interruptAttemptById.set(item.id, item.attempt)
+    pendingRetries.set(item.id, item)
+    inFlight.add(item.id)
+    const delay = Math.max(0, item.nextRetryAt - now)
+    clearRetryTimeout(item.id)
+    const handle = setTimeout(() => void fireInterruptRetry(item.id), delay)
+    retryTimeouts.set(item.id, handle)
+  }
+}
+
 const handleDownload = (items: ReadonlyArray<MediaItem>) =>
   Effect.gen(function* () {
     const requestReceivedAt = Date.now()
@@ -240,7 +412,11 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
       yield* Effect.promise(() => persistSnapshot(Date.now()))
       return { _tag: 'QueueUpdate' as const, completed: 0, total: 0 }
     }
-    for (const r of requests) inFlight.add(r.id)
+    for (const r of requests) {
+      inFlight.add(r.id)
+      clearInterruptRetryState(r.id)
+      requestMetaById.set(r.id, { url: r.url, filename: r.filename })
+    }
 
     // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
     // accumulator (and keep the downloadId map) so the monitor reflects both;
@@ -329,6 +505,8 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
   }).pipe(Effect.provide(SettingsServiceLive))
 
 export default defineBackground(() => {
+  void rehydrateInterruptRetries()
+
   // Cloud Sync reconciliation: drain anything left over from a previous SW
   // life / offline period; clear the outbox whenever the user turns sync off.
   void (async () => {
@@ -355,30 +533,13 @@ export default defineBackground(() => {
       } catch {
         /* the record may be gone; ignore */
       }
-      const outcome = outcomeFromState(delta.state?.current)
-      if (outcome) {
-        inFlight.delete(id)
-        if (live) live = recordOutcome(live, id, outcome, now)
-        const settings = await getSettings()
-        recordSync(settings, [
-          outcomeEvent(
-            id,
-            outcome === 'complete' ? 'completed' : 'failed',
-            settings.cloudDeviceId,
-            now,
-          ),
-        ])
-        recordHistory(settings, [
-          { kind: outcome === 'complete' ? 'completed' : 'failed', requestId: id, at: now },
-        ])
-        traceBackground(outcome === 'complete' ? 'browser-complete' : 'browser-failed', {
-          itemId: id,
-          elapsedMs: now - (requestStartedAt.get(id) ?? now),
-          detail: `downloadId ${delta.id}`,
-        })
-        requestStartedAt.delete(id)
+      if (delta.state?.current === 'complete') {
+        await completeBrowserDownload(id, delta.id, now)
+      } else if (delta.state?.current === 'interrupted') {
+        scheduleInterruptRetry(id, delta.id, delta.error?.current, now)
+      } else {
+        await persistSnapshot(now)
       }
-      await persistSnapshot(now)
     })()
   })
 
@@ -426,6 +587,12 @@ export default defineBackground(() => {
         inFlight.clear()
         requestIdByDownloadId.clear()
         requestStartedAt.clear()
+        requestMetaById.clear()
+        interruptAttemptById.clear()
+        for (const handle of retryTimeouts.values()) clearTimeout(handle)
+        retryTimeouts.clear()
+        pendingRetries.clear()
+        void retryQueueItem.setValue([])
         traceEvents = []
         live = null
         await metricsItem.setValue(null)
