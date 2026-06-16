@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '../../core/settings'
 import { aria2OriginPattern } from '../../core/download/aria2'
+import { FETCHED_HOST_PATTERNS, FETCHED_PERMISSIONS } from '../../core/download/fetched-strategy'
 import { convexOriginPattern } from '../../core/sync/convex'
 import type { DownloadTraceEntry, MetricsSnapshot, Settings } from '../../core/schema'
 import type { DownloadRecord } from '../../core/history/record'
@@ -59,6 +60,7 @@ export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
+  const [fetchedGranted, setFetchedGranted] = useState<boolean | null>(null)
   const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
   const [convexGranted, setConvexGranted] = useState<boolean | null>(null)
   const [onXTab, setOnXTab] = useState(false)
@@ -96,6 +98,16 @@ export function App() {
 
   const strategy = settings?.downloadStrategy
   const rpcUrl = settings?.aria2RpcUrl
+  useEffect(() => {
+    if (strategy !== 'fetched') return
+    void browser.permissions
+      .contains({
+        permissions: [...FETCHED_PERMISSIONS],
+        origins: [...FETCHED_HOST_PATTERNS],
+      })
+      .then(setFetchedGranted)
+  }, [strategy])
+
   useEffect(() => {
     if (strategy !== 'aria2' || rpcUrl === undefined) return
     const pattern = aria2OriginPattern(rpcUrl)
@@ -173,6 +185,15 @@ export function App() {
     setSettingsState(await setSettings(patch))
     setSaved(true)
     setTimeout(() => setSaved(false), 1200)
+  }
+
+  const requestFetchedAccess = async (): Promise<void> => {
+    setFetchedGranted(
+      await browser.permissions.request({
+        permissions: [...FETCHED_PERMISSIONS],
+        origins: [...FETCHED_HOST_PATTERNS],
+      }),
+    )
   }
 
   const requestAria2Access = async (): Promise<void> => {
@@ -381,6 +402,23 @@ export function App() {
               )
             })}
           </div>
+
+          {settings.downloadStrategy === 'fetched' && (
+            <div class="xmd-mode-details">
+              {fetchedGranted === false && (
+                <button
+                  type="button"
+                  class="xmd-primary-button xmd-primary-button--compact w-full"
+                  onClick={() => void requestFetchedAccess()}
+                >
+                  <span>Grant offscreen + CDN access</span>
+                </button>
+              )}
+              {fetchedGranted === true && (
+                <p class="xmd-inline-success">Fetched mode permissions granted</p>
+              )}
+            </div>
+          )}
 
           {settings.downloadStrategy === 'aria2' && (
             <div class="xmd-mode-details">

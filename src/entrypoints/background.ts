@@ -24,6 +24,12 @@ import {
   type DownloadStrategy,
 } from '../core/download/strategy'
 import { makeAria2Strategy, makeAria2RpcPort } from '../core/download/aria2'
+import {
+  makeFetchedStrategy,
+  makeFetchPort,
+  makeOffscreenPort,
+  makePermissionsPort,
+} from '../core/download/fetched-strategy'
 import { makeDownloadQueueCore } from '../core/download/queue'
 import { planDownloads } from '../core/download/destination'
 import {
@@ -181,6 +187,16 @@ const recordHistory = (settings: Settings, actions: ReadonlyArray<HistoryAction>
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
   const direct = makeDirectStrategy({ download: (opts) => browser.downloads.download(opts) })
+  if (settings.downloadStrategy === 'fetched') {
+    return makeSchemeRoutingStrategy(
+      makeFetchedStrategy({
+        permissions: makePermissionsPort(),
+        fetch: makeFetchPort(fetch),
+        offscreen: makeOffscreenPort(),
+      }),
+      direct,
+    )
+  }
   if (settings.downloadStrategy === 'aria2') {
     const port = makeAria2RpcPort({
       rpcUrl: settings.aria2RpcUrl,
@@ -197,7 +213,7 @@ function chooseStrategy(settings: Settings): DownloadStrategy {
       direct,
     )
   }
-  // 'direct' (default) and 'fetched' (offscreen path not yet built) both go Direct.
+  // 'direct' (default) uses the browser download manager.
   return direct
 }
 
