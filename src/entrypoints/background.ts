@@ -46,6 +46,7 @@ import {
   planInterruptRetry,
   type PendingInterruptRetry,
 } from '../core/download/interrupt-retry'
+import { refreshMediaUrlFromTabs, type TabMessagingPort } from '../core/download/url-retry'
 import { decodeStore, emptyStore } from '../core/history/store'
 import { planHistory, type HistoryAction } from '../core/history/wiring'
 
@@ -85,7 +86,12 @@ let traceEvents: DownloadTraceEntry[] = []
 const inFlight = new Set<string>()
 
 // Browser download metadata for interrupted auto-retry (url/filename + attempt).
-const requestMetaById = new Map<string, { readonly url: string; readonly filename: string }>()
+interface RequestMeta {
+  readonly url: string
+  readonly filename: string
+  readonly item?: MediaItem
+}
+const requestMetaById = new Map<string, RequestMeta>()
 const interruptAttemptById = new Map<string, number>()
 const pendingRetries = new Map<string, PendingInterruptRetry>()
 const retryTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
@@ -97,6 +103,22 @@ const retryQueueItem = storage.defineItem<ReadonlyArray<PendingInterruptRetry>>(
 
 const syncPendingRetries = (): void => {
   void retryQueueItem.setValue([...pendingRetries.values()])
+}
+
+const makeTabMessagingPort = (): TabMessagingPort => ({
+  queryTabs: async () => {
+    const tabs = await browser.tabs.query({ url: ['*://x.com/*', '*://twitter.com/*'] })
+    return tabs.flatMap((t) => (t.id !== undefined ? [{ id: t.id }] : []))
+  },
+  sendTabMessage: (tabId, message) =>
+    browser.tabs.sendMessage(tabId, message) as Promise<{ readonly url?: string } | undefined>,
+})
+
+/** Re-resolve a CDN url from an open X tab before an interrupt retry. */
+const resolveRetryUrl = async (meta: RequestMeta): Promise<string> => {
+  if (meta.item === undefined) return meta.url
+  const fresh = await refreshMediaUrlFromTabs(meta.item, makeTabMessagingPort())
+  return fresh ?? meta.url
 }
 
 const clearRetryTimeout = (id: string): void => {
@@ -291,9 +313,14 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     await failBrowserDownload(id, -1, Date.now())
     return
   }
+  const url = await resolveRetryUrl(meta)
+  if (url !== meta.url) {
+    requestMetaById.set(id, { ...meta, url })
+    traceBackground('url-refreshed', { itemId: id, detail: 'cdn url updated before retry' })
+  }
   try {
     const downloadId = await browser.downloads.download({
-      url: meta.url,
+      url,
       filename: meta.filename,
       conflictAction: 'uniquify',
     })
@@ -316,10 +343,11 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
       const nextRetryAt = Date.now() + plan.delayMs
       pendingRetries.set(id, {
         id,
-        url: meta.url,
+        url,
         filename: meta.filename,
         attempt: plan.nextAttempt,
         nextRetryAt,
+        ...(meta.item ? { item: meta.item } : {}),
       })
       syncPendingRetries()
       const handle = setTimeout(() => void fireInterruptRetry(id), plan.delayMs)
@@ -360,6 +388,7 @@ const scheduleInterruptRetry = (
     filename: meta.filename,
     attempt: plan.nextAttempt,
     nextRetryAt,
+    ...(meta.item ? { item: meta.item } : {}),
   })
   syncPendingRetries()
 
@@ -378,7 +407,11 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
   const queued = await retryQueueItem.getValue()
   const now = Date.now()
   for (const item of queued) {
-    requestMetaById.set(item.id, { url: item.url, filename: item.filename })
+    requestMetaById.set(item.id, {
+      url: item.url,
+      filename: item.filename,
+      ...(item.item ? { item: item.item } : {}),
+    })
     interruptAttemptById.set(item.id, item.attempt)
     pendingRetries.set(item.id, item)
     inFlight.add(item.id)
@@ -412,10 +445,16 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
       yield* Effect.promise(() => persistSnapshot(Date.now()))
       return { _tag: 'QueueUpdate' as const, completed: 0, total: 0 }
     }
+    const mediaById = new Map(items.map((i) => [i.id, i]))
     for (const r of requests) {
       inFlight.add(r.id)
       clearInterruptRetryState(r.id)
-      requestMetaById.set(r.id, { url: r.url, filename: r.filename })
+      const item = mediaById.get(r.id)
+      requestMetaById.set(r.id, {
+        url: r.url,
+        filename: r.filename,
+        ...(item ? { item } : {}),
+      })
     }
 
     // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
@@ -441,7 +480,6 @@ const handleDownload = (items: ReadonlyArray<MediaItem>) =>
 
     // Mirror queued transitions (Cloud Sync). Sidecar data: requests have no
     // MediaItem (their id is `<media-id>.json`) and are never mirrored.
-    const mediaById = new Map(items.map((i) => [i.id, i]))
     recordSync(
       settings,
       requests.flatMap((r) => {

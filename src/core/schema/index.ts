@@ -159,6 +159,20 @@ export type HistoryRequest = typeof HistoryRequest.Type
 export const ClearHistoryRequest = Schema.TaggedStruct('ClearHistoryRequest', {})
 export type ClearHistoryRequest = typeof ClearHistoryRequest.Type
 
+/** SW → content script: look up a fresh CDN url before an interrupt retry. */
+export const RefreshMediaUrlRequest = Schema.TaggedStruct('RefreshMediaUrlRequest', {
+  itemId: Schema.String,
+  tweetId: Schema.String,
+  index: Schema.optional(Schema.Number),
+  type: Schema.optional(MediaType),
+})
+export type RefreshMediaUrlRequest = typeof RefreshMediaUrlRequest.Type
+
+export const RefreshMediaUrlResponse = Schema.TaggedStruct('RefreshMediaUrlResponse', {
+  url: Schema.optional(Schema.String),
+})
+export type RefreshMediaUrlResponse = typeof RefreshMediaUrlResponse.Type
+
 export const Message = Schema.Union([
   DetectRequest,
   MediaDetected,

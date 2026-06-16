@@ -50,12 +50,16 @@ export function interruptBackoffMs(attempt: number): number {
   return BACKOFF_BASE_MS * 2 ** attempt
 }
 
+import type { MediaItem } from '../schema'
+
 export interface PendingInterruptRetry {
   readonly id: string
   readonly url: string
   readonly filename: string
   readonly attempt: number
   readonly nextRetryAt: number
+  /** Media provenance for URL re-resolution before retry (optional for legacy queue rows). */
+  readonly item?: MediaItem
 }
 
 /** Decide whether to schedule an interrupted download retry. */

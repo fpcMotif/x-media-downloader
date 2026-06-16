@@ -5,6 +5,7 @@ import {
   detectRenderedImageElements,
   resolveImageElement,
 } from '../../core/adapters/x'
+import { findFreshMediaItem } from '../../core/download/url-retry'
 import { mediaKeyFromUrl, isGrabbableMediaPreviewUrl } from '../../core/adapters/x/dom'
 import {
   idleQuickGrab,
@@ -712,8 +713,32 @@ export default defineContentScript({
       message: unknown,
       _sender: unknown,
       sendResponse: (r: unknown) => void,
-    ): void => {
-      if ((message as Record<string, unknown>)?._tag !== 'ClearDetectedMediaRequest') return
+    ): boolean | void => {
+      const tag = (message as Record<string, unknown>)?._tag
+      if (tag === 'RefreshMediaUrlRequest') {
+        const req = message as {
+          itemId: string
+          tweetId: string
+          index?: number
+          type?: MediaItem['type']
+        }
+        let fresh = byId.get(req.itemId)
+        if (fresh?.tweetId !== req.tweetId) fresh = undefined
+        if (fresh === undefined && req.index !== undefined && req.type !== undefined) {
+          const domItems = detectRenderedImageElements(document, location.pathname)
+          if (domItems.length > 0) addDetectedItems(domItems)
+          fresh = findFreshMediaItem(
+            { id: req.itemId, tweetId: req.tweetId, index: req.index, type: req.type },
+            [...byId.values(), ...domItems],
+          )
+        }
+        sendResponse({
+          _tag: 'RefreshMediaUrlResponse',
+          ...(fresh ? { url: fresh.url } : {}),
+        })
+        return true
+      }
+      if (tag !== 'ClearDetectedMediaRequest') return
       const cleared = byId.size
       byId.clear()
       byKey.clear()
