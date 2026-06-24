@@ -1,4 +1,5 @@
 import { Data } from 'effect'
+import { bindFetch } from '../fetch'
 
 /**
  * SSRF guard for the cloud-destinations byte path (ADR-0013 §5.3). The extension
@@ -34,6 +35,10 @@ function isPrivateIpv4(host: string): boolean {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
   if (!m) return false
   const [a, b] = [Number(m[1]), Number(m[2])]
+  // Defense in depth: WHATWG URL parsing already rejects out-of-range octets
+  // (`new URL('https://999.1.1.1/')` throws) before this runs, so this guard is
+  // unreachable via assertAllowedMediaUrl — but kept as a fail-closed invariant.
+  /* v8 ignore next */
   if (a > 255 || b > 255 || Number(m[3]) > 255 || Number(m[4]) > 255) return true // malformed → unsafe
   if (a === 0 || a === 10 || a === 127) return true // this-network, RFC-1918 /8, loopback
   if (a === 169 && b === 254) return true // link-local (incl. 169.254.169.254 metadata)
@@ -88,11 +93,13 @@ export async function guardedFetch(
   fetchImpl: typeof fetch,
   maxHops: number = MAX_REDIRECTS,
 ): Promise<Response> {
+  // Detach the bare global fetch or the MV3 SW rejects it with "Illegal invocation" (see bindFetch).
+  const doFetch = bindFetch(fetchImpl)
   let current = assertAllowedMediaUrl(raw)
   for (let hop = 0; hop <= maxHops; hop += 1) {
     // redirects are inherently sequential — each hop depends on the previous Location
     // oxlint-disable-next-line no-await-in-loop
-    const res = await fetchImpl(current.toString(), { ...init, redirect: 'manual' })
+    const res = await doFetch(current.toString(), { ...init, redirect: 'manual' })
     const redirected = res.status >= 300 && res.status < 400
     if (!redirected) return res
     const location = res.headers.get('location')

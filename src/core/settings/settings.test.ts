@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Effect } from 'effect'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
-import { SettingsService, SettingsServiceLive, setSettings, watchSettings } from './index'
+import {
+  SettingsService,
+  SettingsServiceLive,
+  getSettings,
+  setSettings,
+  watchSettings,
+} from './index'
 
 const run = <A, E>(eff: Effect.Effect<A, E, SettingsService>) =>
   Effect.runPromise(Effect.provide(eff, SettingsServiceLive))
 
-const getSettings = Effect.gen(function* () {
+const getViaService = Effect.gen(function* () {
   const svc = yield* SettingsService
   return yield* svc.get
 })
@@ -17,7 +23,7 @@ beforeEach(() => {
 
 describe('SettingsService', () => {
   it('returns defaults on first run', async () => {
-    const s = await run(getSettings)
+    const s = await run(getViaService)
     expect(s.downloadConcurrency).toBe(3)
     expect(s.authFallbackEnabled).toBe(false)
     expect(s.downloadStrategy).toBe('direct')
@@ -36,12 +42,12 @@ describe('SettingsService', () => {
 
   it('falls back to defaults when stored data is corrupt', async () => {
     await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 'not-a-number' } })
-    const s = await run(getSettings)
+    const s = await run(getViaService)
     expect(s.downloadConcurrency).toBe(3)
   })
 
   it('defaults cloud sync off — local-only posture (ADR-0009)', async () => {
-    const s = await run(getSettings)
+    const s = await run(getViaService)
     expect(s.cloudSyncEnabled).toBe(false)
     expect(s.convexUrl).toBe('')
     expect(s.convexSyncSecret).toBe('')
@@ -50,18 +56,35 @@ describe('SettingsService', () => {
 
   it('recovers downloadBadgeEnabled to its default when the stored value is corrupt', async () => {
     await fakeBrowser.storage.local.set({ settings: { downloadBadgeEnabled: 'nope' } })
-    const s = await run(getSettings)
+    const s = await run(getViaService)
     expect(s.downloadBadgeEnabled).toBe(true)
   })
 
   it('defaults download history off — opt-in posture', async () => {
-    const s = await run(getSettings)
+    const s = await run(getViaService)
     expect(s.downloadHistoryEnabled).toBe(false)
+  })
+
+  it('defaults cross-list clearing off, per-scope clears on — page-scoped posture', async () => {
+    const s = await run(getViaService)
+    // "Clear from every list" is the aggressive opt-in: a clear stays page-scoped
+    // until the user turns it on. The per-scope un-bookmark/un-like default on so
+    // they take effect the moment the (off-by-default) master clearOnSave is enabled.
+    expect(s.clearAllListsOnSave).toBe(false)
+    expect(s.autoUnbookmarkOnSave).toBe(true)
+    expect(s.autoUnlikeOnSave).toBe(true)
+    expect(s.autoNotInterestedOnSave).toBe(true)
+  })
+
+  it('getSettings promise wrapper reads through the live service', async () => {
+    await setSettings({ filenameTemplate: '{handle}/{tweetId}.{ext}' })
+    const s = await getSettings()
+    expect(s.filenameTemplate).toBe('{handle}/{tweetId}.{ext}')
   })
 
   it('recovers downloadHistoryEnabled to its default when the stored value is corrupt', async () => {
     await fakeBrowser.storage.local.set({ settings: { downloadHistoryEnabled: 'nope' } })
-    const s = await run(getSettings)
+    const s = await run(getViaService)
     expect(s.downloadHistoryEnabled).toBe(false)
   })
 })
@@ -90,6 +113,16 @@ describe('watchSettings', () => {
     const unwatch = watchSettings((s) => seen.push(s.downloadConcurrency))
     await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 'nope' } })
     expect(seen).toEqual([3])
+    unwatch()
+  })
+
+  it('decodes a removed stored item back to defaults in the watch callback', async () => {
+    await setSettings({ filenameTemplate: '{tweetId}.{ext}' })
+    const seen: string[] = []
+    const unwatch = watchSettings((s) => seen.push(s.filenameTemplate))
+    // Removing the item fires the watch with the defineItem fallback ({}) → defaults.
+    await fakeBrowser.storage.local.remove('settings')
+    expect(seen).toEqual(['{handle}/{tweetId}_{index}.{ext}'])
     unwatch()
   })
 })

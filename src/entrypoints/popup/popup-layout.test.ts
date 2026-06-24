@@ -5,7 +5,8 @@ import { Settings } from '../../core/schema'
 
 const popupCss = readFileSync('src/app.css', 'utf8')
 const popupHtml = readFileSync('src/entrypoints/popup/index.html', 'utf8')
-const appSource = readFileSync('src/entrypoints/popup/App.tsx', 'utf8')
+const popupSource = readFileSync('src/entrypoints/popup/App.tsx', 'utf8')
+const generalSource = readFileSync('src/entrypoints/options/panels/general.tsx', 'utf8')
 
 const ruleBody = (selector: string): string => {
   const selectorIndex = popupCss.indexOf(selector)
@@ -47,22 +48,32 @@ describe('popup layout CSS', () => {
   })
 })
 
-describe('popup settings controls', () => {
-  it('exposes a download badge toggle in the same group as the Quick Grab controls', () => {
-    const assistStart = appSource.indexOf('title="Assist"')
-    expect(assistStart).toBeGreaterThan(-1)
-    const assist = appSource.slice(assistStart, appSource.indexOf('</main>', assistStart))
+describe('popup is a focused action surface', () => {
+  it('keeps the page worklist actions and a route into the settings page', () => {
+    expect(popupSource).toContain('Download this page')
+    expect(popupSource).toContain('Download one by one')
+    expect(popupSource).toContain('openOptionsPage')
+  })
 
-    expect(assist).toContain('checked={settings.quickGrabEnabled}')
-    expect(assist).toContain('aria-label="Download badge"')
-    expect(assist).toContain('Show download badge on media')
-    expect(assist).toContain('checked={settings.downloadBadgeEnabled}')
-    expect(assist).toContain('downloadBadgeEnabled: (e.target as HTMLInputElement).checked')
+  it('no longer hosts the configuration sections (they moved to the options page)', () => {
+    expect(popupSource).not.toContain('aria-label="Download badge"')
+    expect(popupSource).not.toContain('Authenticated fallback')
+    expect(popupSource).not.toContain('Cloud sync to Convex')
+  })
+})
+
+describe('settings controls live on the options page', () => {
+  it('hosts the download badge toggle alongside the Quick Grab controls in the General panel', () => {
+    expect(generalSource).toContain('checked={settings.quickGrabEnabled}')
+    expect(generalSource).toContain('aria-label="Download badge"')
+    expect(generalSource).toContain('Show download badge on media')
+    expect(generalSource).toContain('checked={settings.downloadBadgeEnabled}')
+    expect(generalSource).toContain('downloadBadgeEnabled: checked')
   })
 
   it('renders the badge toggle on under default settings', () => {
     const defaults = Schema.decodeUnknownSync(Settings)({})
     expect(defaults.downloadBadgeEnabled).toBe(true)
-    expect(appSource).toContain('checked={settings.downloadBadgeEnabled}')
+    expect(generalSource).toContain('checked={settings.downloadBadgeEnabled}')
   })
 })

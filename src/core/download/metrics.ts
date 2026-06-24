@@ -81,6 +81,23 @@ function aggregateBytesReceived(items: ReadonlyMap<string, ItemProgress>): numbe
 }
 
 /**
+ * Drop timeline points older than the rolling window can ever reference. The
+ * window ref is the most recent point with `t <= now - WINDOW_MS`, so the single
+ * newest point at-or-before that cutoff is the oldest one any future snapshot can
+ * use — everything strictly before it is dead weight. Pruning it keeps memory and
+ * per-snapshot scan cost bounded without changing any computed metric.
+ */
+function pruneTimeline(timeline: readonly TimelinePoint[], now: number): readonly TimelinePoint[] {
+  const cutoff = now - WINDOW_MS
+  let keepFrom = 0
+  for (let i = 0; i < timeline.length; i++) {
+    if (timeline[i]!.t <= cutoff) keepFrom = i
+    else break
+  }
+  return keepFrom === 0 ? timeline : timeline.slice(keepFrom)
+}
+
+/**
  * Store the item's latest progress (replacing any earlier sample) and append a
  * timeline point of the running aggregate `bytesReceived` at `sample.t`.
  */
@@ -95,7 +112,7 @@ export function recordSample(state: MetricsState, sample: Sample): MetricsState 
   return {
     ...state,
     items,
-    timeline: [...state.timeline, { t: sample.t, agg }],
+    timeline: [...pruneTimeline(state.timeline, sample.t), { t: sample.t, agg }],
   }
 }
 

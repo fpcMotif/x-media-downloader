@@ -33,4 +33,13 @@ describe('renderFilename', () => {
     expect(renderFilename('/{handle}.{ext}', item)).toBe('alice.jpg')
     expect(renderFilename('{bogus}', item)).toBe('123_0.jpg')
   })
+
+  it('keeps the fallback safe even when the id itself is path-traversal', () => {
+    // A template that sanitizes to nothing falls back to the id/index — which must
+    // ALSO be sanitized so a degenerate tweetId can never smuggle a `..` back in.
+    const out = renderFilename('{bogus}', { ...item, tweetId: '../../etc' })
+    expect(out.startsWith('/')).toBe(false)
+    expect(out).not.toContain('..')
+    expect(out.length).toBeGreaterThan(0)
+  })
 })

@@ -106,4 +106,8 @@ describe('QuickGrab state machine', () => {
     expect(synced.active).toBe(false)
     expect(canGrab(synced, 'V1')).toBe(false)
   })
+
+  it('stays idle when an inactive state sees no modifier (no spurious release)', () => {
+    expect(syncModifierFromFlags(idleQuickGrab, flags({}), 'alt')).toBe(idleQuickGrab)
+  })
 })

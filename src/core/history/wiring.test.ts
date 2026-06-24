@@ -50,6 +50,18 @@ describe('planHistory', () => {
     expect(s).toBe(emptyStore)
   })
 
+  it('skips a non-mirrorable queued action (sidecar .json id) even when on', () => {
+    const on = mkSettings({ downloadHistoryEnabled: true })
+    const sidecar = { ...item, id: '123-0.json' }
+    const s = planHistory(emptyStore, on, {
+      kind: 'queued',
+      item: sidecar,
+      filename: '123-0.json',
+      at: 1000,
+    })
+    expect(s).toBe(emptyStore)
+  })
+
   it('applies a terminal transition when on', () => {
     const on = mkSettings({ downloadHistoryEnabled: true })
     const queued = planHistory(emptyStore, on, {

@@ -8,13 +8,19 @@
     "dev": "convex dev",
     "deploy": "convex deploy",
     "codegen": "convex codegen",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "convex": "^1.41.0"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
     "@types/node": "^25.9.3",
-    "typescript": "^6.0.3"
+    "@vitest/coverage-v8": "4.1.9",
+    "convex-test": "^0.0.53",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   }
 }

@@ -1,0 +1,171 @@
+import { bindFetch } from '../fetch'
+import type { Settings } from '../schema'
+import { ensureRootFolder, makeDriveDestination } from './drive'
+import { makeDropboxDestination } from './dropbox'
+import { authHeader } from './http'
+import {
+  DROPBOX_HOST_PATTERNS,
+  DROPBOX_OAUTH,
+  GDRIVE_HOST_PATTERNS,
+  GDRIVE_OAUTH,
+  type CloudDestination,
+  type CloudProviderId,
+  type OAuthConfig,
+  type UploadInput,
+} from './types'
+
+/**
+ * The **Cloud Provider** record (CONTEXT.md): one cloud byte-upload destination
+ * service (ADR-0013). The single place provider identity is encoded — every
+ * dispatch site reads a record from {@link PROVIDERS} instead of forking on
+ * `'gdrive' vs 'dropbox'`. The remote-path sibling of the **Download Strategy**
+ * seam (`core/download/strategy.ts`). The byte adapters themselves
+ * (`drive.ts` / `dropbox.ts`) are genuinely different APIs and stay behind the
+ * provider-agnostic {@link CloudDestination} interface they already satisfy.
+ */
+
+/** The per-provider flat-`Settings` field layout — every token read/write,
+ *  connect, and disconnect reads off this instead of repeating the field names.
+ *  `folderId` is gdrive-only; its absence on Dropbox preserves the asymmetric
+ *  disconnect wipe (Dropbox must NOT clear a folder field it has no concept of). */
+export interface ProviderFields {
+  readonly clientId: keyof Settings
+  readonly accessToken: keyof Settings
+  readonly refreshToken: keyof Settings
+  readonly expiry: keyof Settings
+  readonly account: keyof Settings
+  readonly folderId?: keyof Settings
+}
+
+/** How a provider revokes its grant on disconnect, as data (ADR-0013 §4). Google
+ *  revokes the refresh token via a form `token=` body; Dropbox revokes via the
+ *  access token in an `Authorization` header. */
+export interface RevokeRecipe {
+  readonly endpoint: string
+  readonly credential: 'refreshToken' | 'accessToken'
+  readonly via: 'formToken' | 'authHeader'
+}
+
+/** The uniform deps the orchestrator hands a provider to build its destination.
+ *  Each provider uses only what it needs: Drive resolves+persists a root folder
+ *  (via `settings`/`writeSettings`) and caches per-handle subfolders (`caches`);
+ *  Dropbox ignores all three. `writeSettings`/`caches` are shell-owned and
+ *  injected, so this module never touches storage directly. */
+export interface DestinationDeps {
+  readonly accessToken: string
+  readonly fetchImpl: typeof fetch
+  readonly fetchSource: (url: string) => Promise<Response>
+  readonly settings: Settings
+  readonly writeSettings: (patch: Partial<Settings>) => Promise<Settings>
+  readonly caches: { readonly driveFolders: Map<string, string> }
+}
+
+/** One cloud byte-upload destination service. Mostly data; the one behavior is
+ *  `makeDestination`, which folds in any provider-specific init. */
+export interface CloudProvider {
+  readonly id: CloudProviderId
+  readonly label: string
+  readonly oauth: OAuthConfig
+  readonly hostPatterns: ReadonlyArray<string>
+  readonly fields: ProviderFields
+  readonly revoke: RevokeRecipe
+  readonly makeDestination: (deps: DestinationDeps) => Promise<CloudDestination>
+}
+
+const GDRIVE_PROVIDER: CloudProvider = {
+  id: 'gdrive',
+  label: 'Google Drive',
+  oauth: GDRIVE_OAUTH,
+  hostPatterns: GDRIVE_HOST_PATTERNS,
+  fields: {
+    clientId: 'gdriveClientId',
+    accessToken: 'gdriveAccessToken',
+    refreshToken: 'gdriveRefreshToken',
+    expiry: 'gdriveTokenExpiry',
+    account: 'gdriveAccount',
+    folderId: 'gdriveFolderId',
+  },
+  revoke: {
+    endpoint: 'https://oauth2.googleapis.com/revoke',
+    credential: 'refreshToken',
+    via: 'formToken',
+  },
+  makeDestination: async (d) => {
+    // Resolve the app root folder once, then persist its id so a SW recycle
+    // doesn't re-resolve it; the per-handle subfolder cache lives for the SW life.
+    let rootId = d.settings.gdriveFolderId
+    if (rootId === '') {
+      rootId = await ensureRootFolder('X Media Downloader', {
+        accessToken: d.accessToken,
+        fetchImpl: d.fetchImpl,
+      })
+      await d.writeSettings({ gdriveFolderId: rootId })
+    }
+    return makeDriveDestination({
+      accessToken: d.accessToken,
+      rootFolderId: rootId,
+      fetchImpl: d.fetchImpl,
+      fetchSource: d.fetchSource,
+      folderCache: d.caches.driveFolders,
+    })
+  },
+}
+
+const DROPBOX_PROVIDER: CloudProvider = {
+  id: 'dropbox',
+  label: 'Dropbox',
+  oauth: DROPBOX_OAUTH,
+  hostPatterns: DROPBOX_HOST_PATTERNS,
+  fields: {
+    clientId: 'dropboxClientId',
+    accessToken: 'dropboxAccessToken',
+    refreshToken: 'dropboxRefreshToken',
+    expiry: 'dropboxTokenExpiry',
+    account: 'dropboxAccount',
+  },
+  revoke: {
+    endpoint: 'https://api.dropboxapi.com/2/auth/token/revoke',
+    credential: 'accessToken',
+    via: 'authHeader',
+  },
+  makeDestination: async (d) =>
+    makeDropboxDestination({
+      accessToken: d.accessToken,
+      fetchImpl: d.fetchImpl,
+      fetchSource: d.fetchSource,
+    }),
+}
+
+/** The provider registry — the single source of provider identity, keyed by id. */
+export const PROVIDERS: Record<CloudProviderId, CloudProvider> = {
+  gdrive: GDRIVE_PROVIDER,
+  dropbox: DROPBOX_PROVIDER,
+}
+
+/** Best-effort revocation per a provider's {@link RevokeRecipe}. Never throws —
+ *  the caller clears local tokens regardless; skips an empty credential. */
+export async function revokeViaRecipe(
+  recipe: RevokeRecipe,
+  tokens: { readonly accessToken: string; readonly refreshToken: string },
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const credential = recipe.credential === 'refreshToken' ? tokens.refreshToken : tokens.accessToken
+  if (credential === '') return
+  const doFetch = bindFetch(fetchImpl)
+  try {
+    if (recipe.via === 'formToken') {
+      await doFetch(recipe.endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: credential }).toString(),
+      })
+    } else {
+      await doFetch(recipe.endpoint, { method: 'POST', headers: authHeader(credential) })
+    }
+  } catch {
+    /* best-effort; local clear proceeds regardless */
+  }
+}
+
+/** Re-export for callers that build an upload at the registry seam. */
+export type { CloudDestination, UploadInput }

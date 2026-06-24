@@ -217,6 +217,54 @@ describe('samplesFromSearch', () => {
   })
 })
 
+describe('long feed batch polled for minutes (bounded timeline)', () => {
+  // A 50-item feed sweep: the background poller calls recordSample on every tick
+  // (~every 500ms) for minutes. Throughput only ever uses the rolling 5s window,
+  // so points older than that window are dead weight — the timeline must not grow
+  // without bound, but the recent-window throughput must stay exact.
+  it('keeps recent-window throughput exact while the timeline stays bounded', () => {
+    const POLL_MS = 500
+    const DURATION_MS = 4 * 60 * 1000 // 4 minutes of polling
+    const ticks = DURATION_MS / POLL_MS // 480 samples
+    const RATE = 2_000_000 // 2 MB/s steady CDN throughput
+
+    let s = emptyMetrics({ total: 1, concurrencyCap: 6, startedAt: 0 })
+    for (let i = 0; i <= ticks; i++) {
+      const t = i * POLL_MS
+      const bytes = (RATE * t) / 1000
+      s = recordSample(s, {
+        id: 'feed-item',
+        bytesReceived: bytes,
+        totalBytes: 8_000_000_000,
+        t,
+      })
+    }
+
+    const now = ticks * POLL_MS
+    // Steady 2 MB/s rate must still be reported exactly from the rolling window.
+    expect(snapshot(s, now).throughputBps).toBe(RATE)
+    // Memory/CPU must be bounded: the retained timeline cannot scale with the
+    // number of polls — a 4-minute sweep at 500ms ticks must keep only a small
+    // window's worth of points, not all ~480 of them.
+    expect(s.timeline.length).toBeLessThan(ticks)
+    expect(s.timeline.length).toBeLessThanOrEqual(20)
+  })
+
+  it('still windows correctly mid-sweep across two interleaved items', () => {
+    const POLL_MS = 500
+    let s = emptyMetrics({ total: 2, concurrencyCap: 6, startedAt: 0 })
+    // Two concurrent feed items each climbing 1 MB/s — combined 2 MB/s.
+    for (let i = 0; i <= 200; i++) {
+      const t = i * POLL_MS
+      s = recordSample(s, { id: 'a', bytesReceived: 1_000 * t, totalBytes: 50_000_000, t })
+      s = recordSample(s, { id: 'b', bytesReceived: 1_000 * t, totalBytes: 50_000_000, t })
+    }
+    const now = 200 * POLL_MS
+    expect(snapshot(s, now).throughputBps).toBe(2_000_000)
+    expect(s.timeline.length).toBeLessThanOrEqual(40)
+  })
+})
+
 describe('outcomeFromState', () => {
   it('maps complete + interrupted to terminal outcomes, in_progress to null', () => {
     expect(outcomeFromState('complete')).toBe('complete')

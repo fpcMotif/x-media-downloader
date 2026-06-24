@@ -1,11 +1,20 @@
-import type { ComponentChildren } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
-import { getSettings, setSettings } from '../../core/settings'
-import { aria2OriginPattern } from '../../core/download/aria2'
-import { convexOriginPattern } from '../../core/sync/convex'
-import type { DownloadTraceEntry, MetricsSnapshot, Settings } from '../../core/schema'
-import type { DownloadRecord } from '../../core/history/record'
-import { groupByAuthor, formatRecord, historyEmptyLabel } from './history-section'
+import { getSettings, setSettings } from '@/core/settings'
+import { DOWNLOAD_MODES } from '@/core/download/strategy'
+import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
+import { isXUrl } from '@/core/adapters/x'
+import type { MetricsSnapshot, Settings } from '@/core/schema'
+import type { DownloadRecord } from '@/core/history/record'
+import { fetchHistory, formatRecord } from './history-section'
+import { cn } from '@/lib/utils'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
+import { Progress } from '@/components/ui/progress'
+import { Switch } from '@/components/ui/switch'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { DownloadIcon, EraserIcon, GearIcon, LayersIcon } from '@/components/icons'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
@@ -28,129 +37,202 @@ function fmtDuration(ms: number): string {
   return `${minutes}m ${seconds}s`
 }
 
-function fmtStage(stage: string): string {
-  return stage
-    .split('-')
-    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
-    .join(' ')
+const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
+
+// Poll the download monitor briskly while a batch is live, but back off when
+// idle — the snapshot is only surfaced when total > 0, so a 1s round-trip to
+// the SW every second is wasted work for an open popup with no batch running.
+const POLL_ACTIVE_MS = 1000
+const POLL_IDLE_MS = 3000
+
+const PAGE_UNREACHABLE = 'Could not reach the page — reload the X tab and try again.'
+
+/** A worklist button that messages the active tab's content script and turns the
+ *  reply into a status line. Owns its own busy/message state and the shared
+ *  confirm → query-tab → send → format → error skeleton; each caller supplies
+ *  only the optional confirm copy, the message tag, and a result→string mapper. */
+function usePageAction<R>(config: {
+  /** Confirm prompt to show before running; omit (undefined) to skip the gate. */
+  confirm?: string | undefined
+  request: { _tag: string }
+  format: (res: R | null) => string
+}): { busy: boolean; msg: string | null; run: () => Promise<void> } {
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const run = async (): Promise<void> => {
+    if (config.confirm !== undefined && !confirm(config.confirm)) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const [tab] = await browser.tabs.query({
+        active: true,
+        currentWindow: true,
+      })
+      if (tab?.id === undefined) {
+        setMsg('No active tab.')
+        return
+      }
+      const res = (await browser.tabs.sendMessage(tab.id, config.request)) as R | null
+      setMsg(config.format(res))
+    } catch {
+      setMsg(PAGE_UNREACHABLE)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return { busy, msg, run }
 }
 
-function traceDetail(event: DownloadTraceEntry): string {
-  const bits = [
-    event.type,
-    event.itemId,
-    event.elapsedMs === undefined ? undefined : fmtDuration(event.elapsedMs),
-    event.detail,
-  ].filter((part): part is string => typeof part === 'string' && part.length > 0)
-  return bits.length === 0 ? event.source : bits.join(' · ')
-}
-
-const modeOptions = [
-  { value: 'direct', label: 'Direct', hint: 'Chrome downloads' },
-  { value: 'fetched', label: 'Fetched', hint: 'Verify files' },
-  { value: 'aria2', label: 'aria2', hint: 'External engine' },
-] as const satisfies ReadonlyArray<{
-  readonly value: Settings['downloadStrategy']
-  readonly label: string
-  readonly hint: string
-}>
+const openOptions = (): void => void browser.runtime.openOptionsPage()
 
 export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
-  const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
-  const [convexGranted, setConvexGranted] = useState<boolean | null>(null)
-  const [onXTab, setOnXTab] = useState(false)
-  const [activeTabId, setActiveTabId] = useState<number | undefined>(undefined)
-  const [clearFeedback, setClearFeedback] = useState<'media' | 'monitor' | null>(null)
   const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
+  const [onXTab, setOnXTab] = useState(false)
+  const [clearFeedback, setClearFeedback] = useState(false)
+
+  // Whether a worklist action will ALSO clear: "Clear after download" is on AND
+  // the strategy is byte-verifiable (aria2 hand-offs are excluded). Drives the
+  // button labels, copy, and the confirm() gating — when off, the actions just
+  // download. Computed before the loading early-return so the action hooks below
+  // (which must run unconditionally) can close over it.
+  const willClear =
+    settings !== null && settings.clearOnSave && settings.downloadStrategy !== 'aria2'
+  const noClearHint = settings?.clearOnSave
+    ? 'aria2 hand-offs can’t be verified — posts download but aren’t removed (use Direct or Fetched to clear).'
+    : 'Turn on “Clear after download” in Settings to also remove each from this list.'
+
+  // Manual one-shot clear: un-bookmark / un-like every post currently on the X
+  // page, via the content script (the same click path that works by hand).
+  // Page-scoped: the content script derives bookmark-vs-like from the list URL
+  // itself, so this carries no scope payload (the per-scope toggles live in
+  // Settings and govern the download-driven clear, not this manual button).
+  const clearVisible = usePageAction<{ cleared?: number }>({
+    confirm: 'Un-like / un-bookmark every post currently on this page? This cannot be undone.',
+    request: { _tag: 'ClearVisibleRequest' },
+    format: (res) => `Cleared ${plural(res?.cleared ?? 0, 'post')} on this page.`,
+  })
+
+  // "Download this page (all at once)": fire every detected post into the queue.
+  const drain = usePageAction<{ count?: number }>({
+    confirm: willClear
+      ? 'Download every post on this page and remove it from this list (un-like on Likes, un-bookmark on Bookmarks) as its media finishes?'
+      : undefined,
+    request: { _tag: 'DrainPageRequest' },
+    format: (res) => {
+      const n = res?.count ?? 0
+      return n === 0
+        ? 'No media detected yet — scroll to load posts, then try again.'
+        : willClear
+          ? `Downloading ${plural(n, 'item')} — each post clears as it finishes.`
+          : `Downloading ${plural(n, 'item')}.`
+    },
+  })
+
+  // Durable one-by-one sweep: hand this list's posts to the background, which
+  // queues each download. Progress is saved; scroll to load more and run again.
+  const sweep = usePageAction<{
+    queued?: number
+    skipped?: number
+    reason?: string
+  }>({
+    confirm: willClear
+      ? 'Go down this page one post at a time — download each, then remove it from THIS list (un-like on Likes, un-bookmark on Bookmarks) once its media truly finishes?'
+      : undefined,
+    request: { _tag: 'SweepPageRequest' },
+    format: (res) => {
+      if (res?.reason === 'not-list-page')
+        return 'Open a Likes or Bookmarks page — the sweep only runs on a list.'
+      if (res?.reason === 'context')
+        return 'Reload the X tab (the extension was updated), then try again.'
+      const q = res?.queued ?? 0
+      const s = res?.skipped ?? 0
+      return q === 0 && s === 0
+        ? 'No new media detected — scroll to load posts, then run again.'
+        : willClear
+          ? `Queued ${plural(q, 'post')}${s > 0 ? `, skipped ${s} already cleared` : ''}. Each removes itself from this list as its download finishes — scroll and run again.`
+          : `Queued ${plural(q, 'post')} for download. ${noClearHint}`
+    },
+  })
 
   useEffect(() => {
     void getSettings().then(setSettingsState)
   }, [])
 
-  // Durable local download history (read-only; capture happens in the background).
-  useEffect(() => {
-    void browser.runtime
-      .sendMessage({ _tag: 'HistoryRequest' })
-      .then((r) =>
-        setHistory((r as { records?: ReadonlyArray<DownloadRecord> } | null)?.records ?? []),
-      )
-      .catch(() => {})
-  }, [])
-
   useEffect(() => {
     void (async () => {
       try {
-        const tabs = await browser.tabs.query({ active: true, currentWindow: true })
+        const tabs = await browser.tabs.query({
+          active: true,
+          currentWindow: true,
+        })
         const tab = tabs[0]
         if (!tab) return
-        setActiveTabId(tab.id)
-        setOnXTab(/https?:\/\/(x|twitter)\.com\//.test(tab.url ?? ''))
+        setOnXTab(isXUrl(tab.url ?? ''))
       } catch {
         /* permission unavailable; the action stays disabled */
       }
     })()
   }, [])
 
-  const strategy = settings?.downloadStrategy
-  const rpcUrl = settings?.aria2RpcUrl
   useEffect(() => {
-    if (strategy !== 'aria2' || rpcUrl === undefined) return
-    const pattern = aria2OriginPattern(rpcUrl)
-    if (pattern === null) {
-      setAria2Granted(null)
-      return
-    }
-    void browser.permissions.contains({ origins: [pattern] }).then(setAria2Granted)
-  }, [strategy, rpcUrl])
-
-  // Reflect whether the Convex deployment's origin is granted (Cloud Sync).
-  const cloudOn = settings?.cloudSyncEnabled
-  const convexUrl = settings?.convexUrl
-  useEffect(() => {
-    if (cloudOn !== true || convexUrl === undefined || convexUrl === '') return
-    const pattern = convexOriginPattern(convexUrl)
-    if (pattern === null) {
-      setConvexGranted(null)
-      return
-    }
-    void browser.permissions.contains({ origins: [pattern] }).then(setConvexGranted)
-  }, [cloudOn, convexUrl])
+    void fetchHistory().then(setHistory)
+  }, [])
 
   useEffect(() => {
+    let handle: ReturnType<typeof setTimeout>
     const poll = (): void => {
       void browser.runtime
         .sendMessage({ _tag: 'MetricsRequest' })
-        .then((m) => setMetrics(m as MetricsSnapshot))
-        .catch(() => {})
+        .then((m) => {
+          const snapshot = m as MetricsSnapshot | null
+          setMetrics(snapshot)
+          // Slow the cadence when no batch is active — the monitor (and thus the
+          // snapshot) is only shown while total > 0.
+          const next = snapshot && snapshot.total > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS
+          handle = setTimeout(poll, next)
+          return next
+        })
+        .catch(() => {
+          handle = setTimeout(poll, POLL_IDLE_MS)
+        })
     }
     poll()
-    const handle = setInterval(poll, 1000)
-    return () => clearInterval(handle)
+    return () => clearTimeout(handle)
   }, [])
 
   if (!settings) {
-    return <div class="xmd-popup xmd-popup--loading">Loading...</div>
+    return <div className="xmd-popup xmd-popup--loading">Loading...</div>
   }
 
-  const showFeedback = (kind: 'media' | 'monitor'): void => {
-    setClearFeedback(kind)
-    setTimeout(() => setClearFeedback(null), 1500)
-  }
+  const activeMode = DOWNLOAD_MODES.find((m) => m.value === settings.downloadStrategy)
+  // Surface which surfaces the clear actually touches — the per-scope toggles
+  // live in Settings, so enabling clear-on-save from the popup would otherwise
+  // commit to hidden sub-settings silently. aria2 never clears (the action copy
+  // already says so), so skip the note there.
+  const clearSurfaces = [
+    settings.autoUnbookmarkOnSave && 'Bookmarks',
+    settings.autoUnlikeOnSave && 'Likes',
+    settings.autoNotInterestedOnSave && 'the For You feed',
+  ].filter((s): s is string => s !== false)
+  const clearScopeNote = !willClear
+    ? null
+    : clearSurfaces.length === 0
+      ? 'No surface selected in Settings — nothing will be removed.'
+      : `Removes saved posts from ${
+          clearSurfaces.length === 1
+            ? clearSurfaces[0]
+            : `${clearSurfaces.slice(0, -1).join(', ')} and ${clearSurfaces.at(-1)}`
+        }.`
 
-  const clearDetectedMedia = async (): Promise<void> => {
-    if (activeTabId === undefined) return
-    try {
-      await browser.tabs.sendMessage(activeTabId, {
-        _tag: 'ClearDetectedMediaRequest',
-        rescanVisible: true,
-      })
-      showFeedback('media')
-    } catch {
-      /* tab may not have content script active */
-    }
+  const update = async (patch: Partial<Settings>): Promise<void> => {
+    setSettingsState(await setSettings(patch))
+    setSaved(true)
+    setTimeout(() => setSaved(false), 1200)
   }
 
   const clearMonitor = async (): Promise<void> => {
@@ -159,532 +241,294 @@ export function App() {
       .catch(() => null)
     if ((res as { ok?: boolean } | null)?.ok) {
       setMetrics(null)
-      showFeedback('monitor')
+      setClearFeedback(true)
+      setTimeout(() => setClearFeedback(false), 1500)
     }
   }
 
-  // Clear the durable local history. Safe reset: never cancels downloads or deletes files.
-  const clearHistory = async (): Promise<void> => {
-    await browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' }).catch(() => {})
-    setHistory([])
-  }
-
-  const update = async (patch: Partial<Settings>): Promise<void> => {
-    setSettingsState(await setSettings(patch))
-    setSaved(true)
-    setTimeout(() => setSaved(false), 1200)
-  }
-
-  const requestAria2Access = async (): Promise<void> => {
-    const pattern = aria2OriginPattern(settings.aria2RpcUrl)
-    if (pattern === null) return
-    setAria2Granted(await browser.permissions.request({ origins: [pattern] }))
-  }
-
-  const requestConvexAccess = async (): Promise<void> => {
-    const pattern = convexOriginPattern(settings.convexUrl)
-    if (pattern === null) return
-    setConvexGranted(await browser.permissions.request({ origins: [pattern] }))
-  }
-
-  const events = metrics?.events ?? []
-  const monitor = metrics && (metrics.total > 0 || events.length > 0) ? metrics : null
+  // Only surface the monitor for a real download batch — not for stray hover/UI
+  // trace events that also ride the metrics snapshot.
+  const monitor = metrics && metrics.total > 0 ? metrics : null
   const monitorDone = monitor ? monitor.completed + monitor.failed : 0
-  const monitorPct =
-    monitor && monitor.total > 0
-      ? Math.min(100, Math.round((monitorDone / monitor.total) * 100))
-      : 0
+  const monitorPct = monitor ? Math.min(100, Math.round((monitorDone / monitor.total) * 100)) : 0
   const canClearMonitor = monitor !== null && monitor.active === 0
+  const recent = settings.downloadHistoryEnabled ? history.slice(0, 3) : []
 
   return (
-    <div class="xmd-popup">
-      <header class="xmd-popup-header">
-        <div>
-          <span class="xmd-popup-title">X Media Downloader</span>
-          <p class="xmd-popup-subtitle">
+    <div className="xmd-popup">
+      <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b bg-background/70 px-3.5 py-3 backdrop-blur-xl">
+        <div className="min-w-0">
+          <span className="block text-[15px] leading-tight font-bold tracking-tight text-balance">
+            X Media Downloader
+          </span>
+          <p className="mt-0.5 flex items-center gap-1.5 text-xs leading-snug text-muted-foreground">
+            <span
+              className={cn(
+                'size-1.5 rounded-full',
+                onXTab ? 'bg-success' : 'bg-muted-foreground/40',
+              )}
+            />
             {onXTab ? 'Ready on this X tab' : 'Open X or Twitter to scan media'}
           </p>
         </div>
-        <span class={`xmd-status-pill${saved ? ' xmd-status-pill--saved' : ''}`}>
-          {saved ? 'Saved' : 'Local only'}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          {saved && <Badge variant="success">Saved</Badge>}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            aria-label="Open settings"
+            title="Settings"
+            onClick={openOptions}
+          >
+            <GearIcon className="size-4" />
+          </Button>
+        </div>
       </header>
 
-      <main class="xmd-popup-main">
-        <section class="xmd-quick-actions" aria-label="Quick actions">
-          <button
-            type="button"
-            class="xmd-primary-button"
-            disabled={!onXTab || activeTabId === undefined}
-            onClick={() => void clearDetectedMedia()}
-          >
-            <span>{clearFeedback === 'media' ? 'Media refreshed' : 'Find new media'}</span>
-            <small>{onXTab ? 'Clear stale picks and rescan' : 'Requires an X tab'}</small>
-          </button>
-          {monitor && (
-            <button
+      <main className="flex flex-col gap-2.5 px-3.5 py-3">
+        {monitor && (
+          <>
+            <Button
               type="button"
-              class="xmd-secondary-button"
+              variant="outline"
+              className="h-9 w-full"
               disabled={!canClearMonitor}
               title={!canClearMonitor ? 'Downloads still active' : undefined}
               onClick={() => void clearMonitor()}
             >
-              <span>
-                {!canClearMonitor
-                  ? 'Active'
-                  : clearFeedback === 'monitor'
-                    ? 'Monitor cleared'
-                    : 'Clear monitor'}
-              </span>
-              <small>{!canClearMonitor ? 'Wait for downloads' : 'Reset old progress'}</small>
-            </button>
-          )}
-        </section>
+              {!canClearMonitor
+                ? 'Active — downloads running'
+                : clearFeedback
+                  ? 'Monitor cleared'
+                  : 'Clear monitor'}
+            </Button>
 
-        {monitor && (
-          <section class="xmd-monitor" aria-label="Download monitor">
-            <div class="xmd-monitor-head">
-              <div>
-                <span class="xmd-section-kicker">Download monitor</span>
-                <strong>
-                  {monitor.total > 0
-                    ? `${monitorDone}/${monitor.total} done`
-                    : 'Waiting for download'}
-                </strong>
-              </div>
-              <span class="xmd-monitor-percent tabular-nums">{monitorPct}%</span>
-            </div>
-            <progress
-              class="xmd-progress"
-              aria-label="Download progress"
-              value={monitorPct}
-              max={100}
-            />
-            <dl class="xmd-stat-grid">
-              <Stat label="Active" value={`${monitor.active}/${monitor.concurrencyCap}`} />
-              <Stat label="Speed" value={fmtRate(monitor.throughputBps)} />
-              <Stat label="Elapsed" value={fmtDuration(monitor.elapsedMs)} />
-              <Stat
-                label="ETA"
-                value={monitor.etaSeconds === undefined ? '-' : `${Math.ceil(monitor.etaSeconds)}s`}
-              />
-              <Stat
-                label="Bytes"
-                value={
-                  monitor.bytesTotal > 0
-                    ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
-                    : fmtBytes(monitor.bytesReceived)
-                }
-              />
-              {monitor.failed > 0 && <Stat label="Failed" value={String(monitor.failed)} />}
-              {monitor.retries > 0 && <Stat label="Retries" value={String(monitor.retries)} />}
-            </dl>
-            {events.length > 0 && (
-              <ol class="xmd-event-log" aria-label="Recent download log">
-                {events.toReversed().map((event) => (
-                  <li
-                    key={`${event.t}:${event.source}:${event.stage}:${event.itemId ?? event.detail ?? ''}`}
-                    class={`xmd-event-log__item xmd-event-log__item--${event.source}`}
-                  >
-                    <span class="xmd-event-log__stage">{fmtStage(event.stage)}</span>
-                    <span class="xmd-event-log__detail">{traceDetail(event)}</span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
+            <Card size="sm" aria-label="Download monitor">
+              <CardHeader className="gap-0.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="grid min-w-0 gap-0.5">
+                    <CardDescription className="text-[11px] font-semibold text-muted-foreground">
+                      Download monitor
+                    </CardDescription>
+                    <CardTitle className="text-sm">
+                      {monitorDone}/{monitor.total} done
+                    </CardTitle>
+                  </div>
+                  <span className="text-[15px] leading-none font-bold tabular-nums text-primary">
+                    {monitorPct}%
+                  </span>
+                </div>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <Progress value={monitorPct} aria-label="Download progress" className="h-1.5" />
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                  <Stat label="Active" value={`${monitor.active}/${monitor.concurrencyCap}`} />
+                  <Stat label="Speed" value={fmtRate(monitor.throughputBps)} />
+                  <Stat label="Elapsed" value={fmtDuration(monitor.elapsedMs)} />
+                  <Stat
+                    label="ETA"
+                    value={
+                      monitor.etaSeconds === undefined ? '-' : `${Math.ceil(monitor.etaSeconds)}s`
+                    }
+                  />
+                  <Stat
+                    label="Bytes"
+                    value={
+                      monitor.bytesTotal > 0
+                        ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
+                        : fmtBytes(monitor.bytesReceived)
+                    }
+                  />
+                  {monitor.failed > 0 && <Stat label="Failed" value={String(monitor.failed)} />}
+                  {monitor.retries > 0 && <Stat label="Retries" value={String(monitor.retries)} />}
+                </dl>
+              </CardContent>
+            </Card>
+          </>
         )}
 
-        <Section title="Save defaults" description="Names and sidecars for new downloads.">
-          <Field label="Filename template" hint="{handle} {tweetId} {index} {ext} {type} {date}">
-            <input
-              class="xmd-popup-control w-full"
-              aria-label="Filename template"
-              value={settings.filenameTemplate}
-              onChange={(e) =>
-                void update({ filenameTemplate: (e.target as HTMLInputElement).value })
-              }
-            />
-          </Field>
-          <label class="xmd-check-row">
-            <input
-              type="checkbox"
-              aria-label="Save metadata sidecar"
-              checked={settings.sidecarMetadata}
-              onChange={(e) =>
-                void update({ sidecarMetadata: (e.target as HTMLInputElement).checked })
-              }
-            />
-            <span>
-              <strong>Save metadata sidecar</strong>
-              <small>.json next to each media file</small>
-            </span>
-          </label>
-        </Section>
+        <Card size="sm" aria-label="On this page">
+          <CardHeader className="gap-0.5">
+            <CardTitle className="text-[13px] font-semibold">On this page</CardTitle>
+            <CardDescription className="text-xs leading-snug">
+              {onXTab
+                ? 'Grab the Likes or Bookmarks list you’re viewing.'
+                : 'Open an X/Twitter Likes or Bookmarks tab to use these.'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2.5">
+            <Button
+              type="button"
+              className="h-11 w-full gap-2"
+              disabled={!onXTab || drain.busy}
+              onClick={() => void drain.run()}
+            >
+              <DownloadIcon className="size-[18px]" />
+              {drain.busy
+                ? 'Draining…'
+                : willClear
+                  ? 'Download + clear this page'
+                  : 'Download this page'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 w-full gap-2"
+              disabled={!onXTab || sweep.busy}
+              onClick={() => void sweep.run()}
+            >
+              <LayersIcon className="size-4" />
+              {sweep.busy
+                ? 'Sweeping…'
+                : willClear
+                  ? 'Download + clear, one by one'
+                  : 'Download one by one'}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-full gap-1.5 text-muted-foreground"
+              disabled={!onXTab || clearVisible.busy}
+              onClick={() => void clearVisible.run()}
+            >
+              <EraserIcon className="size-3.5" />
+              {clearVisible.busy ? 'Clearing…' : 'Clear this page now (no download)'}
+            </Button>
+            {(drain.msg || sweep.msg || clearVisible.msg) && (
+              <p className="text-xs leading-snug text-muted-foreground">
+                {drain.msg ?? sweep.msg ?? clearVisible.msg}
+              </p>
+            )}
+          </CardContent>
+        </Card>
 
-        <Section title="Speed" description="Keep direct mode conservative; raise only when needed.">
-          <div class="xmd-inline-fields">
-            <Field label="Concurrent downloads">
-              <input
-                type="number"
-                min={1}
-                max={10}
-                class="xmd-popup-control xmd-number-input text-center tabular-nums"
-                aria-label="Concurrent downloads"
-                value={settings.downloadConcurrency}
-                onChange={(e) =>
-                  void update({
-                    downloadConcurrency: Number((e.target as HTMLInputElement).value) || 1,
-                  })
-                }
+        <Card size="sm" aria-label="What the actions above do">
+          <CardContent className="flex flex-col gap-3 pt-3">
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              These set what the buttons above do — they don’t download on their own.
+            </p>
+            <div className="grid gap-1.5">
+              <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
+                DOWNLOAD MODE
+              </span>
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                spacing={0}
+                className="w-full"
+                aria-label="Download mode"
+                value={settings.downloadStrategy}
+                onValueChange={(value: string) => {
+                  if (value)
+                    void update({
+                      downloadStrategy: value as Settings['downloadStrategy'],
+                    })
+                }}
+              >
+                {DOWNLOAD_MODES.map((option) => (
+                  <ToggleGroupItem
+                    key={option.value}
+                    value={option.value}
+                    aria-label={`Download mode: ${option.label}`}
+                    className="h-9 flex-1 text-[13px]"
+                  >
+                    {option.label}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+              {activeMode && (
+                <p className="text-[11px] leading-snug text-muted-foreground">{activeMode.hint}</p>
+              )}
+            </div>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
+                <FieldDescription>{CLEAR_AFTER_DOWNLOAD.description}</FieldDescription>
+              </FieldContent>
+              <Switch
+                id="clearOnSave"
+                aria-label="Clear after download"
+                checked={settings.clearOnSave}
+                onCheckedChange={(checked: boolean) => void update({ clearOnSave: checked })}
               />
             </Field>
-            {settings.downloadStrategy === 'aria2' && (
-              <Field label="aria2 split">
-                <input
-                  type="number"
-                  min={1}
-                  max={16}
-                  class="xmd-popup-control xmd-number-input text-center tabular-nums"
-                  aria-label="aria2 split"
-                  value={settings.aria2Split}
-                  onChange={(e) =>
-                    void update({ aria2Split: Number((e.target as HTMLInputElement).value) || 1 })
-                  }
-                />
-              </Field>
+            {clearScopeNote && (
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                {clearScopeNote}{' '}
+                <button
+                  type="button"
+                  onClick={openOptions}
+                  className="font-medium text-primary hover:underline"
+                >
+                  Manage in settings
+                </button>
+              </p>
             )}
-          </div>
-        </Section>
+          </CardContent>
+        </Card>
 
-        <Section title="Download mode" description="Direct is the safest default.">
-          <div class="xmd-mode-picker" aria-label="Download mode">
-            {modeOptions.map((option) => {
-              const selected = settings.downloadStrategy === option.value
-              return (
-                <label
-                  key={option.value}
-                  class={`xmd-mode-button${selected ? ' xmd-mode-button--selected' : ''}`}
-                >
-                  <input
-                    class="xmd-mode-input"
-                    type="radio"
-                    name="downloadStrategy"
-                    value={option.value}
-                    checked={selected}
-                    aria-label={`Download mode: ${option.label}`}
-                    onChange={() => void update({ downloadStrategy: option.value })}
-                  />
-                  <span>{option.label}</span>
-                  <small>{option.hint}</small>
-                </label>
-              )
-            })}
-          </div>
-
-          {settings.downloadStrategy === 'aria2' && (
-            <div class="xmd-mode-details">
-              <Field label="RPC URL">
-                <input
-                  class="xmd-popup-control w-full"
-                  aria-label="aria2 RPC URL"
-                  value={settings.aria2RpcUrl}
-                  onChange={(e) =>
-                    void update({ aria2RpcUrl: (e.target as HTMLInputElement).value })
-                  }
-                />
-              </Field>
-              <Field label="RPC secret">
-                <input
-                  type="password"
-                  class="xmd-popup-control w-full"
-                  aria-label="aria2 RPC secret"
-                  value={settings.aria2Secret}
-                  onChange={(e) =>
-                    void update({ aria2Secret: (e.target as HTMLInputElement).value })
-                  }
-                />
-              </Field>
-              <Field label="Download directory">
-                <input
-                  class="xmd-popup-control w-full"
-                  aria-label="aria2 download directory"
-                  placeholder="aria2 default"
-                  value={settings.aria2Dir}
-                  onChange={(e) => void update({ aria2Dir: (e.target as HTMLInputElement).value })}
-                />
-              </Field>
-              {aria2Granted === false && (
-                <button
-                  type="button"
-                  class="xmd-primary-button xmd-primary-button--compact w-full"
-                  onClick={() => void requestAria2Access()}
-                >
-                  <span>Grant localhost access</span>
-                </button>
-              )}
-              {aria2Granted === true && <p class="xmd-inline-success">localhost access granted</p>}
-            </div>
-          )}
-        </Section>
-
-        <Section title="Assist">
-          <label class="xmd-check-row">
-            <input
-              type="checkbox"
-              aria-label="Authenticated fallback"
-              checked={settings.authFallbackEnabled}
-              onChange={(e) =>
-                void update({ authFallbackEnabled: (e.target as HTMLInputElement).checked })
-              }
-            />
-            <span>
-              <strong>Authenticated fallback</strong>
-              <small>Opt-in only</small>
-            </span>
-          </label>
-
-          <label class="xmd-check-row">
-            <input
-              type="checkbox"
-              aria-label="Quick Grab"
-              checked={settings.quickGrabEnabled}
-              onChange={(e) =>
-                void update({ quickGrabEnabled: (e.target as HTMLInputElement).checked })
-              }
-            />
-            <span>
-              <strong>Hover quick grab</strong>
-              <small>Hold modifier to grab one media item</small>
-            </span>
-          </label>
-
-          {settings.quickGrabEnabled && (
-            <Field label="Quick grab modifier">
-              <select
-                class="xmd-popup-control w-full"
-                aria-label="Quick grab modifier"
-                value={settings.quickGrabModifier}
-                onChange={(e) =>
-                  void update({
-                    quickGrabModifier: (e.target as HTMLSelectElement)
-                      .value as Settings['quickGrabModifier'],
-                  })
-                }
-              >
-                <option value="alt">Alt / Option</option>
-                <option value="shift">Shift</option>
-                <option value="ctrl">Control</option>
-                <option value="meta">Cmd / Win</option>
-              </select>
-            </Field>
-          )}
-
-          <label class="xmd-check-row">
-            <input
-              type="checkbox"
-              aria-label="Download badge"
-              checked={settings.downloadBadgeEnabled}
-              onChange={(e) =>
-                void update({ downloadBadgeEnabled: (e.target as HTMLInputElement).checked })
-              }
-            />
-            <span>
-              <strong>Show download badge on media</strong>
-              <small>Corner badge on photos and videos; click downloads that item</small>
-            </span>
-          </label>
-        </Section>
-
-        <Section
-          title="Cloud sync"
-          description="Mirror download metadata to your own Convex deployment."
-        >
-          <label class="xmd-check-row">
-            <input
-              type="checkbox"
-              aria-label="Cloud sync"
-              checked={settings.cloudSyncEnabled}
-              onChange={(e) => {
-                const enabled = (e.target as HTMLInputElement).checked
-                // Mint the per-install device id once, on first enable (ADR-0009).
-                void update({
-                  cloudSyncEnabled: enabled,
-                  ...(enabled && settings.cloudDeviceId === ''
-                    ? { cloudDeviceId: crypto.randomUUID() }
-                    : {}),
-                })
-              }}
-            />
-            <span>
-              <strong>Cloud sync to Convex</strong>
-              <small>Opt-in · metadata only</small>
-            </span>
-          </label>
-
-          {settings.cloudSyncEnabled && (
-            <div class="xmd-mode-details">
-              <Field label="Convex deployment URL">
-                <input
-                  class="xmd-popup-control w-full"
-                  aria-label="Convex deployment URL"
-                  placeholder="https://<deployment>.convex.cloud"
-                  value={settings.convexUrl}
-                  onChange={(e) => void update({ convexUrl: (e.target as HTMLInputElement).value })}
-                />
-              </Field>
-              <Field label="Sync secret (required)">
-                <input
-                  type="password"
-                  class="xmd-popup-control w-full"
-                  aria-label="Convex sync secret"
-                  placeholder="must match the deployment's SYNC_SHARED_SECRET"
-                  value={settings.convexSyncSecret}
-                  onChange={(e) =>
-                    void update({ convexSyncSecret: (e.target as HTMLInputElement).value })
-                  }
-                />
-              </Field>
-              {convexGranted === false && (
-                <button
-                  type="button"
-                  class="xmd-primary-button xmd-primary-button--compact w-full"
-                  onClick={() => void requestConvexAccess()}
-                >
-                  <span>Grant access to the deployment</span>
-                </button>
-              )}
-              {convexGranted === true && (
-                <p class="xmd-inline-success">deployment access granted ✓</p>
-              )}
-              <div class="xmd-field">
-                <p>
-                  Mirrors download metadata only — never file bytes, captures, or credentials
-                  (ADR-0009).
-                </p>
-              </div>
-            </div>
-          )}
-        </Section>
-
-        <Section
-          title="Download history"
-          description="A durable local record of your downloads — original link + status."
-        >
-          <label class="xmd-check-row">
-            <input
-              type="checkbox"
-              aria-label="Keep download history"
-              checked={settings.downloadHistoryEnabled}
-              onChange={(e) =>
-                void update({ downloadHistoryEnabled: (e.target as HTMLInputElement).checked })
-              }
-            />
-            <span>
-              <strong>Keep download history</strong>
-              <small>Local only · survives restarts</small>
-            </span>
-          </label>
-
-          {settings.downloadHistoryEnabled && history.length > 0 ? (
-            <div class="xmd-mode-details">
-              {groupByAuthor(history).map((group) => (
-                <div key={group.handle}>
-                  <span class="xmd-section-kicker">@{group.handle}</span>
-                  <ol class="xmd-event-log" aria-label={`Downloads for ${group.handle}`}>
-                    {group.records.map((r) => {
-                      const f = formatRecord(r)
-                      return (
-                        <li
-                          key={r.requestId}
-                          class={`xmd-event-log__item xmd-event-log__item--${f.status}`}
-                        >
-                          <span class="xmd-event-log__stage">{f.status}</span>
-                          <a
-                            class="xmd-event-log__detail"
-                            href={f.link}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            {f.title}
-                          </a>
-                        </li>
-                      )
-                    })}
-                  </ol>
-                </div>
-              ))}
-              <button
-                type="button"
-                class="xmd-secondary-button"
-                onClick={() => void clearHistory()}
-              >
-                <span>Clear history</span>
-                <small>Removes the local log; downloads and files are untouched</small>
-              </button>
-            </div>
-          ) : (
-            <div class="xmd-field">
-              <p>{historyEmptyLabel(settings.downloadHistoryEnabled, history.length)}</p>
-            </div>
-          )}
-        </Section>
+        {recent.length > 0 && (
+          <Card size="sm" aria-label="Recent downloads">
+            <CardHeader className="gap-0.5">
+              <CardTitle className="text-[13px] font-semibold">Recent</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ol className="grid gap-1.5" aria-label="Recent downloads">
+                {recent.map((r) => {
+                  const f = formatRecord(r)
+                  const variant =
+                    f.status === 'completed'
+                      ? 'success'
+                      : f.status === 'failed'
+                        ? 'destructive'
+                        : 'outline'
+                  return (
+                    <li key={r.requestId} className="flex items-center gap-2 text-xs">
+                      <Badge variant={variant} className="shrink-0 capitalize">
+                        {f.status}
+                      </Badge>
+                      <a
+                        className="truncate text-muted-foreground hover:text-foreground"
+                        href={f.link}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {f.title}
+                      </a>
+                    </li>
+                  )
+                })}
+              </ol>
+            </CardContent>
+          </Card>
+        )}
       </main>
 
-      <footer class="xmd-popup-footer">
-        {settings.cloudSyncEnabled
-          ? 'Cloud sync on · metadata only'
-          : 'No remote telemetry. Local download log only.'}
+      <footer className="flex items-center justify-between gap-2 border-t px-3.5 py-3 text-xs leading-snug text-muted-foreground">
+        <span>
+          {settings.cloudSyncEnabled
+            ? 'Cloud sync on · metadata only'
+            : 'No remote telemetry · local only'}
+        </span>
+        <button
+          type="button"
+          onClick={openOptions}
+          className="font-semibold text-primary hover:underline"
+        >
+          Open settings
+        </button>
       </footer>
-    </div>
-  )
-}
-
-function Section({
-  title,
-  description,
-  children,
-}: {
-  title: string
-  description?: string
-  children: ComponentChildren
-}) {
-  return (
-    <section class="xmd-section">
-      <div class="xmd-section-head">
-        <div>
-          <span class="xmd-section-title">{title}</span>
-          {description && <p>{description}</p>}
-        </div>
-      </div>
-      <div class="xmd-section-body">{children}</div>
-    </section>
-  )
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string
-  hint?: string
-  children: ComponentChildren
-}) {
-  return (
-    <div class="xmd-field">
-      <label>{label}</label>
-      {children}
-      {hint && <p>{hint}</p>}
     </div>
   )
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-    </>
+    <div className="flex items-center justify-between gap-2">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-medium tabular-nums">{value}</dd>
+    </div>
   )
 }

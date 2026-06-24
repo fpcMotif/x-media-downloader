@@ -30,8 +30,18 @@ export function makeDownloadQueueCore(opts: {
   readonly strategy: DownloadStrategy
   readonly concurrency: number
   readonly retries?: number
+  /** Exponential backoff base for save-start retries (ms). Tests pass a small value. */
+  readonly retryBaseMs?: number
 }): DownloadQueueCore {
-  const { strategy, concurrency, retries = 3 } = opts
+  const { strategy, concurrency, retries = 3, retryBaseMs = 500 } = opts
+  // Exponential backoff (base·2ⁿ) bounded to `retries` attempts. A bare
+  // `Schedule.recurs(n)` retries with ZERO spacing, so a flapping twimg CDN gets
+  // hammered back-to-back; spacing the save-start retry (the SW fetch under the
+  // Fetched strategy, the aria2 RPC) is what was missing. The transfer-level
+  // backoff for an interrupted browser download still lives in interrupt-retry.
+  const retrySchedule = Schedule.exponential(`${retryBaseMs} millis`, 2).pipe(
+    Schedule.both(Schedule.recurs(retries)),
+  )
   return {
     enqueue: (requests) =>
       Effect.gen(function* () {
@@ -39,7 +49,7 @@ export function makeDownloadQueueCore(opts: {
           requests,
           (req) =>
             strategy.save(req).pipe(
-              Effect.retry(Schedule.recurs(retries)),
+              Effect.retry(retrySchedule),
               Effect.map((handle): RequestOutcome => ({ id: req.id, ok: true, handle })),
               Effect.orElseSucceed((): RequestOutcome => ({ id: req.id, ok: false })),
             ),

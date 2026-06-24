@@ -17,6 +17,19 @@
   --xmd-badge-saved-surface: oklch(0.32 0.06 160 / 0.92);
   --xmd-badge-saved-ring: oklch(0.7 0.16 160 / 0.7);
   --xmd-badge-saved-glyph: oklch(0.84 0.14 160);
+  /* Liquid-glass download badge: a translucent tinted lens with a bright
+     specular rim that refracts the media beneath it (Apple "Liquid Glass"). */
+  --xmd-glass-tint: oklch(1 0 0 / 0.09);
+  --xmd-glass-rim: oklch(1 0 0 / 0.72);
+  --xmd-glass-edge: oklch(1 0 0 / 0.26);
+  --xmd-glass-sheen: oklch(1 0 0 / 0.32);
+  --xmd-glass-filter: blur(8px) saturate(1.5) brightness(1.04);
+  /* Pure clear "liquid glass" for the dock: no tint, just a frosted lens that
+     the page refracts through, defined by its bright specular rim. Legibility
+     rides on the rim + glyph halos, never an opaque fill. */
+  --xmd-dock-glass-tint: oklch(1 0 0 / 0.05);
+  --xmd-dock-glass-sheen: oklch(1 0 0 / 0.16);
+  --xmd-dock-glass-filter: blur(16px) saturate(1.8) brightness(1.06);
   --xmd-line-dark: oklch(1 0 0 / 0.14);
   --xmd-shadow: 0 1px 2px oklch(0 0 0 / 0.26), 0 10px 18px -14px oklch(0 0 0 / 0.95);
   --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
@@ -28,123 +41,330 @@
     sans-serif;
 }
 
-.xmd-launcher:active {
-  transform: scale(0.96);
-}
-
-.xmd-launcher:focus-visible {
-  outline: none;
-  box-shadow:
-    0 0 0 3px var(--xmd-focus),
-    0 1px 2px oklch(0 0 0 / 0.2),
-    0 16px 34px -22px oklch(0 0 0 / 0.9),
-    inset 0 0 0 1px oklch(1 0 0 / 0.18);
-}
-
+/* Download-all dock: a compact vertical two-button stack hugging bottom-left,
+   away from X's own bottom-right furniture (Messages dock, Grok stack, video
+   PiP). The top button hands every detected item to the queue — its glyph
+   morphs arrow → spinner → check like the per-media badge, narrated by a side
+   tip. The bottom button is the popup's "Find new media", relocated. */
 .xmd-launcher {
   position: fixed;
-  right: max(18px, env(safe-area-inset-right));
+  left: max(16px, env(safe-area-inset-left));
   bottom: max(18px, env(safe-area-inset-bottom));
   z-index: 2147483647;
-  display: inline-flex;
-  box-sizing: border-box;
-  min-height: 44px;
-  max-width: calc(100vw - 32px);
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 0;
+  box-sizing: border-box;
+  width: 46px;
+  padding: 6px 0;
   border-radius: 999px;
-  background: var(--xmd-surface-dark);
-  color: oklch(1 0 0);
-  padding: 6px 7px 6px 8px;
-  cursor: pointer;
+  background: var(--xmd-badge-scrim);
   font:
-    720 13px/1 system-ui,
+    650 13px/1 system-ui,
     sans-serif;
-  letter-spacing: 0;
   backdrop-filter: blur(10px) saturate(1.08);
   box-shadow:
+    inset 0 0 0 1px var(--xmd-line-dark),
     0 1px 2px oklch(0 0 0 / 0.24),
-    0 16px 34px -22px oklch(0 0 0 / 0.95),
-    inset 0 0 0 1px var(--xmd-line-dark);
-  transform: scale(1);
-  transition-duration: 150ms;
-  transition-property: background-color, box-shadow, color, transform;
-  transition-timing-function: var(--xmd-ease);
+    0 12px 26px -18px oklch(0 0 0 / 0.95);
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 200ms var(--xmd-ease),
+    transform 200ms var(--xmd-ease);
   user-select: none;
   -webkit-font-smoothing: antialiased;
+
+  @starting-style {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* Liquid-glass dock variant (the `dockGlassEnabled` setting). Swaps the solid
+   scrim for a pure clear lens with a bright specular rim, refracting and
+   saturating whatever sits behind it. The fill is near-zero so the page shows
+   straight through; an even top gleam + soft base keep it reading as ONE lens
+   rather than splitting into per-button tiles. Glass-off keeps the solid pill. */
+.xmd-launcher--glass {
+  background:
+    linear-gradient(180deg, var(--xmd-dock-glass-sheen), oklch(1 0 0 / 0) 55%),
+    var(--xmd-dock-glass-tint);
+  backdrop-filter: var(--xmd-dock-glass-filter);
+  -webkit-backdrop-filter: var(--xmd-dock-glass-filter);
+  box-shadow:
+    inset 0 1px 0.5px oklch(1 0 0 / 0.8),
+    inset 0 0 0 1px oklch(1 0 0 / 0.2),
+    inset 0 -6px 12px -12px oklch(0 0 0 / 0.16),
+    0 6px 22px -6px oklch(0 0 0 / 0.45),
+    0 1px 2px oklch(0 0 0 / 0.26);
+}
+
+/* Soft top gleam over the lens, beneath the buttons (pointer-events off). */
+.xmd-launcher--glass::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  background: linear-gradient(180deg, oklch(1 0 0 / 0.14), oklch(1 0 0 / 0) 38%);
+  pointer-events: none;
+}
+
+/* On a clear lens the glyphs go monochrome and carry their own contrast: white
+   fill + a tight dark halo reads as a crisp outline on bright pages and a clean
+   white icon on dark ones, legible over any backdrop (like iOS glass controls).
+   No accent color survives a clear lens over bright media, so we don't use one. */
+.xmd-launcher--glass .xmd-launcher__glyph,
+.xmd-launcher--glass .xmd-launcher__rescan {
+  color: oklch(1 0 0 / 0.96);
+}
+
+.xmd-launcher--glass .xmd-launcher__icon svg,
+.xmd-launcher--glass .xmd-launcher__rescan svg {
+  filter: drop-shadow(0 0 1.5px oklch(0 0 0 / 0.6)) drop-shadow(0 1px 1.5px oklch(0 0 0 / 0.5));
+}
+
+/* The count stays readable without color: a frosted dark pill with a white rim,
+   matching the monochrome lens instead of the solid pill's blue chip. */
+.xmd-launcher--glass .xmd-launcher__count {
+  background: oklch(0.2 0.012 255 / 0.55);
+  box-shadow:
+    inset 0 0 0 1px oklch(1 0 0 / 0.24),
+    0 1px 4px oklch(0 0 0 / 0.4);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* A mid-grey rule reads on both bright and dark backdrops through clear glass. */
+.xmd-launcher--glass .xmd-launcher__rule {
+  background: oklch(0.62 0.004 255 / 0.4);
+}
+
+.xmd-launcher__dl,
+.xmd-launcher__rescan {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background-color 150ms var(--xmd-ease),
+    color 150ms var(--xmd-ease),
+    transform 150ms var(--xmd-ease);
   touch-action: manipulation;
 }
 
+.xmd-launcher__dl {
+  width: 36px;
+  height: 36px;
+}
+
+.xmd-launcher__rescan {
+  width: 32px;
+  height: 32px;
+  color: var(--xmd-muted-on-dark);
+}
+
+.xmd-launcher__rescan svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.xmd-launcher--rescanning .xmd-launcher__rescan svg {
+  animation: xmd-badge-spin 800ms linear infinite;
+}
+
+/* Extends each hit target to ≥44px without growing the visible dock. */
+.xmd-launcher__dl::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+}
+
+.xmd-launcher__rescan::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: inherit;
+}
+
+.xmd-launcher__dl:active,
+.xmd-launcher__rescan:active {
+  transform: scale(0.96);
+}
+
+.xmd-launcher__dl:focus-visible,
+.xmd-launcher__rescan:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--xmd-focus);
+}
+
+.xmd-launcher__rule {
+  width: 22px;
+  height: 1px;
+  flex: 0 0 auto;
+  margin: 5px 0;
+  background: oklch(1 0 0 / 0.16);
+}
+
+.xmd-launcher__glyph {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: var(--xmd-badge-glyph);
+  transition: color 200ms var(--xmd-ease);
+}
+
 .xmd-launcher__icon {
+  position: absolute;
+  inset: 0;
   display: inline-flex;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
-  background: oklch(1 0 0 / 0.1);
-  color: oklch(0.9 0.05 245);
-  transition-duration: 150ms;
-  transition-property: background-color, color;
-  transition-timing-function: var(--xmd-ease);
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.25);
+  filter: blur(4px);
+  transition-duration: 220ms;
+  transition-property: opacity, transform, filter;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .xmd-launcher__icon svg {
   display: block;
-  width: 17px;
-  height: 17px;
+  width: 18px;
+  height: 18px;
 }
 
-.xmd-launcher__label {
-  overflow: hidden;
-  min-width: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.xmd-launcher--idle .xmd-launcher__icon--arrow,
+.xmd-launcher--queued .xmd-launcher__icon--spinner,
+.xmd-launcher--saved .xmd-launcher__icon--check,
+.xmd-launcher--failed .xmd-launcher__icon--alert {
+  opacity: 1;
+  transform: scale(1);
+  filter: blur(0);
 }
 
+.xmd-launcher--queued .xmd-launcher__icon--spinner svg {
+  animation: xmd-badge-spin 800ms linear infinite;
+}
+
+.xmd-launcher--saved .xmd-launcher__glyph {
+  color: var(--xmd-badge-saved-glyph);
+}
+
+.xmd-launcher--failed .xmd-launcher__glyph {
+  color: oklch(0.82 0.13 28);
+}
+
+/* Detected-media count, riding the dock's top-right shoulder. */
 .xmd-launcher__count {
-  min-width: 28px;
-  height: 28px;
-  box-sizing: border-box;
+  position: absolute;
+  top: -7px;
+  left: 24px;
   display: inline-flex;
-  flex: 0 0 auto;
   align-items: center;
-  justify-content: center;
   border-radius: 999px;
-  background: oklch(1 0 0 / 0.12);
-  color: oklch(0.92 0.02 245);
-  padding: 0 8px;
+  background: var(--xmd-accent-hover);
+  color: oklch(1 0 0);
+  padding: 3px 6px;
+  font:
+    700 10.5px/1 system-ui,
+    sans-serif;
   font-variant-numeric: tabular-nums;
-  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.12);
-  transition-duration: 150ms;
-  transition-property: background-color, box-shadow, color;
-  transition-timing-function: var(--xmd-ease);
+  white-space: nowrap;
+  box-shadow: 0 1px 4px oklch(0 0 0 / 0.4);
+  pointer-events: none;
+}
+
+/* Side tip: hover/focus reveals the action name; while a hand-off is in
+   flight the download tip stays up on its own, narrating the phase. */
+.xmd-launcher__tip {
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  background: oklch(0.13 0.012 255 / 0.96);
+  color: oklch(0.97 0.003 255);
+  font:
+    600 12px/1 system-ui,
+    sans-serif;
+  padding: 6px 9px;
+  border-radius: 8px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.3);
+  opacity: 0;
+  transform: translateY(-50%) translateX(-4px);
+  transition:
+    opacity 160ms var(--xmd-ease),
+    transform 160ms var(--xmd-ease);
+  pointer-events: none;
+}
+
+.xmd-launcher__dl:focus-visible .xmd-launcher__tip,
+.xmd-launcher__rescan:focus-visible .xmd-launcher__tip,
+.xmd-launcher--queued .xmd-launcher__dl .xmd-launcher__tip,
+.xmd-launcher--saved .xmd-launcher__dl .xmd-launcher__tip,
+.xmd-launcher--failed .xmd-launcher__dl .xmd-launcher__tip {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+/* Remounted per count, so each newly detected batch plays one tick. */
+.xmd-launcher__num {
+  display: block;
+  animation: xmd-count-tick 300ms var(--xmd-ease);
+}
+
+@keyframes xmd-count-tick {
+  0% {
+    opacity: 0;
+    transform: translateY(-7px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .xmd-launcher:hover {
-    background: var(--xmd-surface-dark-hover);
-    box-shadow:
-      0 1px 2px oklch(0 0 0 / 0.22),
-      0 18px 38px -20px oklch(0 0 0 / 0.98),
-      inset 0 0 0 1px oklch(1 0 0 / 0.2);
+  .xmd-launcher__dl:hover,
+  .xmd-launcher__rescan:hover {
+    background: oklch(1 0 0 / 0.09);
   }
 
-  .xmd-launcher:hover .xmd-launcher__icon,
-  .xmd-launcher:hover .xmd-launcher__count {
-    background: oklch(1 0 0 / 0.16);
+  .xmd-launcher__rescan:hover {
+    color: oklch(0.97 0.003 255);
+  }
+
+  /* Hover stays glassy: a faint frost lift + a soft thin ring — never an opaque
+     white disc, which reads as a solid tile fighting the clear lens. The glyphs
+     are already white at rest, so the ring alone says "this button". */
+  .xmd-launcher--glass .xmd-launcher__dl:hover,
+  .xmd-launcher--glass .xmd-launcher__rescan:hover {
+    background: oklch(1 0 0 / 0.1);
     box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.18);
+  }
+
+  .xmd-launcher__dl:hover .xmd-launcher__tip,
+  .xmd-launcher__rescan:hover .xmd-launcher__tip {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
   }
 }
 
 @media (max-width: 520px) {
   .xmd-launcher {
-    right: 12px;
+    left: 12px;
     bottom: 12px;
-    max-width: calc(100vw - 24px);
   }
 }
 
@@ -376,9 +596,11 @@
   }
 }
 
-/* Photo download badge: a corner affordance that bounces onto hovered media
-   (timeline 34px, lightbox 40px) and morphs arrow → spinner → check. The
-   anchor rect comes from JS inline styles, like the Quick Grab ring. */
+/* Photo download badge: a liquid-glass affordance that bounces onto hovered
+   media's top-left corner (timeline 34px, lightbox 40px) and morphs
+   arrow → spinner → check. A translucent lens blurs and saturates the media
+   beneath it, lit by a bright specular rim. The anchor rect comes from JS
+   inline styles, like the Quick Grab ring. */
 .xmd-badge {
   position: fixed;
   z-index: 2147483646;
@@ -391,21 +613,36 @@
   border: 0;
   border-radius: 999px;
   padding: 0;
-  background: var(--xmd-badge-scrim);
-  color: var(--xmd-badge-glyph);
+  background:
+    radial-gradient(120% 120% at 30% 12%, var(--xmd-glass-sheen), oklch(1 0 0 / 0) 50%),
+    var(--xmd-glass-tint);
+  color: oklch(1 0 0);
   cursor: pointer;
-  backdrop-filter: blur(8px);
+  backdrop-filter: var(--xmd-glass-filter);
+  -webkit-backdrop-filter: var(--xmd-glass-filter);
   box-shadow:
-    inset 0 0 0 1px var(--xmd-badge-ring),
-    0 0 6px var(--xmd-badge-glow),
-    0 2px 8px oklch(0 0 0 / 0.35);
+    inset 0 1px 0.5px var(--xmd-glass-rim),
+    inset 0 0 0 1px var(--xmd-glass-edge),
+    inset 0 -6px 10px -6px oklch(0 0 0 / 0.26),
+    0 4px 14px -3px oklch(0 0 0 / 0.4),
+    0 1px 2px oklch(0 0 0 / 0.28);
   opacity: 1;
   transform: scale(1);
-  transition-duration: 150ms;
-  transition-property: background-color, box-shadow, color, opacity, transform;
+  transition-duration: 180ms;
+  transition-property: box-shadow, color, opacity, transform;
   transition-timing-function: var(--xmd-ease);
   -webkit-font-smoothing: antialiased;
   touch-action: manipulation;
+}
+
+/* Specular sheen: a soft top-down gleam over the lens, under the glyph. */
+.xmd-badge::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  background: linear-gradient(180deg, oklch(1 0 0 / 0.34), oklch(1 0 0 / 0) 46%);
+  pointer-events: none;
 }
 
 /* Extends the hit target to ≥44px without growing the visible circle. */
@@ -424,8 +661,9 @@
   outline: none;
   box-shadow:
     0 0 0 3px var(--xmd-focus),
-    inset 0 0 0 1px var(--xmd-badge-ring),
-    0 2px 8px oklch(0 0 0 / 0.35);
+    inset 0 1px 0.5px var(--xmd-glass-rim),
+    inset 0 0 0 1px var(--xmd-glass-edge),
+    0 4px 14px -3px oklch(0 0 0 / 0.4);
 }
 
 .xmd-badge--lightbox {
@@ -448,18 +686,28 @@
 }
 
 .xmd-badge--saved {
-  background: var(--xmd-badge-saved-surface);
-  color: var(--xmd-badge-saved-glyph);
+  background:
+    radial-gradient(120% 120% at 30% 12%, var(--xmd-glass-sheen), oklch(1 0 0 / 0) 50%),
+    oklch(0.6 0.15 160 / 0.26);
+  color: oklch(1 0 0);
   box-shadow:
-    inset 0 0 0 1px var(--xmd-badge-saved-ring),
-    0 2px 8px oklch(0 0 0 / 0.35);
+    inset 0 1px 0.5px var(--xmd-glass-rim),
+    inset 0 0 0 1px var(--xmd-glass-edge),
+    inset 0 -6px 10px -6px oklch(0.3 0.09 160 / 0.4),
+    0 4px 14px -3px oklch(0.3 0.1 160 / 0.45),
+    0 1px 2px oklch(0 0 0 / 0.3);
 }
 
 .xmd-badge--failed {
-  color: oklch(0.82 0.13 28);
+  background:
+    radial-gradient(120% 120% at 30% 12%, var(--xmd-glass-sheen), oklch(1 0 0 / 0) 50%),
+    oklch(0.6 0.2 28 / 0.28);
+  color: oklch(1 0 0);
   box-shadow:
-    inset 0 0 0 1px var(--xmd-danger),
-    0 2px 8px oklch(0 0 0 / 0.35);
+    inset 0 1px 0.5px var(--xmd-glass-rim),
+    inset 0 0 0 1px var(--xmd-glass-edge),
+    0 4px 14px -3px oklch(0.5 0.18 28 / 0.45),
+    0 1px 2px oklch(0 0 0 / 0.3);
 }
 
 /* Stacked state icons (arrow / spinner / check / alert) cross-fade in place. */
@@ -482,6 +730,8 @@
   display: block;
   width: 18px;
   height: 18px;
+  /* Contrast halo so the white glyph reads on any photo behind the glass. */
+  filter: drop-shadow(0 0 1.5px oklch(0 0 0 / 0.5)) drop-shadow(0 1px 1px oklch(0 0 0 / 0.42));
 }
 
 .xmd-badge--lightbox .xmd-badge__icon svg {
@@ -505,18 +755,22 @@
 
 @media (hover: hover) and (pointer: fine) {
   .xmd-badge:hover {
-    background: oklch(0.13 0.012 255 / 0.92);
+    background:
+      radial-gradient(120% 120% at 30% 12%, oklch(1 0 0 / 0.5), oklch(1 0 0 / 0) 50%),
+      oklch(1 0 0 / 0.2);
     box-shadow:
-      inset 0 0 0 1px oklch(0.62 0.18 245 / 0.7),
-      0 0 8px var(--xmd-badge-glow),
-      0 2px 8px oklch(0 0 0 / 0.35);
+      inset 0 1px 0.5px oklch(1 0 0 / 0.9),
+      inset 0 0 0 1px oklch(1 0 0 / 0.46),
+      inset 0 -6px 10px -6px oklch(0 0 0 / 0.3),
+      0 7px 20px -4px oklch(0 0 0 / 0.45),
+      0 1px 2px oklch(0 0 0 / 0.28);
+    transform: scale(1.05);
   }
 
   .xmd-badge--saved:hover {
-    background: var(--xmd-badge-saved-surface);
-    box-shadow:
-      inset 0 0 0 1px var(--xmd-badge-saved-ring),
-      0 2px 8px oklch(0 0 0 / 0.35);
+    background:
+      radial-gradient(120% 120% at 30% 12%, oklch(1 0 0 / 0.4), oklch(1 0 0 / 0) 50%),
+      oklch(0.6 0.15 160 / 0.36);
   }
 }
 
@@ -567,10 +821,29 @@
 
 @media (prefers-reduced-motion: reduce) {
   .xmd-launcher,
+  .xmd-launcher__dl,
+  .xmd-launcher__rescan,
   .xmd-grab,
   .xmd-grab__badge {
     transition-duration: 0ms;
     transform: none;
+  }
+
+  /* Dock: tips snap in place (the translateY is centering, not motion), the
+     count tick is dropped, and icon morphs fade only. */
+  .xmd-launcher__tip {
+    transition-duration: 0ms;
+    transform: translateY(-50%);
+  }
+
+  .xmd-launcher__num {
+    animation: none;
+  }
+
+  .xmd-launcher__icon {
+    transform: none;
+    filter: none;
+    transition-property: opacity;
   }
 
   .xmd-grab--saved::after,

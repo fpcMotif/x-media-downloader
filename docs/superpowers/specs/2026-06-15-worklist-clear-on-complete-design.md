@@ -272,3 +272,25 @@ Two throwaway spikes; **neither fires destructive live writes at scale**:
   poll later.
 - **Replay path** remains desirable for off-screen/queued posts; deferred behind its own
   ADR + consent + circuit breaker, contingent on the `x-client-transaction-id` question.
+- **Media-less Worklist entries never empty (open decision).** `TrulyComplete` requires
+  `expected.size > 0` (`src/core/clear/ledger.prototype.ts:120`), so a text-only Like or
+  Bookmark — nothing to download — is never Truly Complete and is therefore never
+  Cleared. This is *safe* (it can never un-like on an empty download), but it breaks the
+  "self-emptying list" promise for **Likes**, which are heavily text-only: a Drain leaves
+  every text-only post behind, and its await-phase watchdog (§4.6) times out on each.
+  **Decision needed:** does a confirmed archive-record write (ADR-0012's
+  `{tweetId}_tweet.json`, ledger key `tweet:{id}:record`) count as the completing artifact
+  for a media-less in-scope Tweet — i.e. the record joins `expected` — so the list can
+  actually empty? If yes, the record's save must clear the *same* `onChanged`/reconcile
+  bar as media (never Clear on a planned-but-unsaved record). If no, document that
+  text-only posts are never auto-Cleared and the Drain must **skip** (not stall on) them.
+- **Reconcile is the load-bearing unbuilt piece (build-order risk).** Per §4.3 the live
+  `onChanged` map is in-memory and dropped after a SW recycle
+  (`if (id === undefined || !live) return`, now `src/entrypoints/background.ts:561`; the
+  §4.2/§4.3 line refs `:185-193`/`:321` predate the interrupt-retry rewrite). The Clear
+  hook must gate on reconciled `chrome.downloads.search` **terminal** state via a
+  *persisted* `downloadId ↔ tweetId` map — never on the start-time queue verdict
+  (`res.completed`, `background.ts:542`) nor a bare non-null `live`. Until ADR-0016's
+  persistence + reconcile land, the irreversible Clear is only as honest as in-memory
+  state: this is the one place the "un-like on an unverified download" failure can still
+  reach production after a recycle.

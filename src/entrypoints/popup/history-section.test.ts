@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import type { MediaItem } from '../../core/schema'
 import { recordFromMediaItem, applyOutcome } from '../../core/history/record'
-import { groupByAuthor, formatRecord, historyEmptyLabel } from './history-section'
+import { groupByAuthor, formatRecord, historyEmptyLabel, fetchHistory } from './history-section'
 
 const rec = (id: string, handle: string, at: number) =>
   recordFromMediaItem(
@@ -55,5 +55,37 @@ describe('historyEmptyLabel', () => {
 
   it('is empty when on with records', () => {
     expect(historyEmptyLabel(true, 3)).toBe('')
+  })
+})
+
+describe('fetchHistory', () => {
+  const original = browser.runtime.sendMessage
+  afterEach(() => {
+    browser.runtime.sendMessage = original
+  })
+
+  it('returns the records from a HistoryRequest reply', async () => {
+    const records = [rec('1-0', 'alice', 100)]
+    browser.runtime.sendMessage = (async () => ({
+      records,
+    })) as typeof browser.runtime.sendMessage
+    expect(await fetchHistory()).toBe(records)
+  })
+
+  it('returns [] when the reply has no records', async () => {
+    browser.runtime.sendMessage = (async () => ({})) as typeof browser.runtime.sendMessage
+    expect(await fetchHistory()).toEqual([])
+  })
+
+  it('returns [] when the reply is null', async () => {
+    browser.runtime.sendMessage = (async () => null) as typeof browser.runtime.sendMessage
+    expect(await fetchHistory()).toEqual([])
+  })
+
+  it('returns [] when sendMessage rejects', async () => {
+    browser.runtime.sendMessage = (async () => {
+      throw new Error('no receiver')
+    }) as typeof browser.runtime.sendMessage
+    expect(await fetchHistory()).toEqual([])
   })
 })

@@ -7,6 +7,10 @@ use these words, they mean exactly this.
 
 - **Media Item** — one downloadable piece of media (a _photo_, _video_, or _GIF_)
   belonging to a Tweet. The atomic unit of a download.
+- **Media Key** — the stable identity of a piece of media, derived from its CDN
+  URL and shared by every reference to it (the rendered image, the poster frame of
+  a video, the resolved download). Two references with the same Media Key **are**
+  the same media — the basis for de-duplication.
 - **Tweet** — a single X post. Carries up to four photos, **or** one video,
   **or** one GIF.
 - **Thread** — a chain of Tweets by the same author in one conversation. The
@@ -32,6 +36,11 @@ use these words, they mean exactly this.
 - **Auth fallback** — an opt-in, default-**off** escalation that replays exactly
   one authenticated request to reach Media Items not yet loaded. **Not** passive;
   never enumerates a profile.
+- **Recovery** — actively re-requesting a single Media Item that Passive capture
+  failed to observe, from X's public embed endpoint — **without** authentication
+  or credential replay (distinct from Auth fallback). The one sanctioned exception
+  to Passive capture; fires only for a media element visibly on the page whose
+  reference was never captured (typically a video behind an SPA cache hit).
 
 ## Components (by responsibility, not implementation)
 
@@ -48,9 +57,29 @@ use these words, they mean exactly this.
   Direct is the default; Fetched and aria2 are opt-in. A strategy consumes a
   **Save Request** (`id` + `url` + relative `filename`) and returns a **Download
   Handle** (a browser download id, or an aria2 gid).
+- **Terminal Outcome** — what a browser **Download Handle** finally resolves to
+  after hand-off: `complete` (bytes landed on disk) or `failed` (interrupted /
+  gone). The single point from which one download's result fans out to every
+  durable record of it — the **Metrics / Snapshot**, **Download History**, the
+  `completed` / `failed` **Sync Event**, and the badge correction the **Overlay**
+  shows. An aria2 hand-off has no Terminal Outcome — it is terminal the moment it
+  is handed off.
+- **Settle** — the confirmation that a browser **Download Handle**'s recorded
+  `complete` truly landed on disk. After a short window the byte is re-probed
+  (`chrome.downloads.search`, behind the **Settle Port**) so a late
+  post-`complete` interrupt is caught first. The sole gate on the irreversible
+  **Clear** (the opt-in auto un-bookmark / un-like on save): a download that
+  cannot be confirmed landed is a _late interrupt_, never a Settle, so the Clear
+  never fires on bytes that never arrived. The verdict is pure (`core/clear`);
+  the **Settle Port** is its injected probe seam — real `chrome.downloads.search`
+  in the service worker, a fixture row in tests.
 - **Sidecar** — an optional `.json` file saved next to a Media Item recording its
   provenance (author, url, tweetId, type). Opt-in; rides the same download path as
   a `data:` URL (no extra permissions).
+- **Detected Media Set** — the collection of Media Items found on the current
+  page, de-duplicated by Media Key, together with how each was obtained (Passive
+  capture vs. Recovery). The basis for the **Bulk** count and what a **Selection**
+  is drawn from.
 - **Selection** — the user's current pick of Media Items, built by grabbing a
   single item, a whole Tweet, or a whole Thread. Resolving a Selection re-indexes
   each Tweet's chosen items contiguously from 0 (so naming stays gap-free).
@@ -62,6 +91,14 @@ use these words, they mean exactly this.
   (the fast path).
 - **Popup** — the toolbar panel: Download Queue manager + Settings + Monitor (the
   manager path).
+- **Cloud Provider** — a record describing one cloud byte-upload destination
+  (Google Drive, Dropbox): its OAuth config, host patterns, display label,
+  Settings-field layout, token-revocation recipe, and a factory that builds its
+  **Cloud Destination** (the provider-agnostic byte sink, ADR-0013). The single
+  place provider identity is encoded — the upload orchestrator reads the record
+  and never forks on the provider. The registry is keyed by provider id; two
+  providers exist today. The remote-path sibling of the **Download Strategy**
+  seam (Direct / Fetched / aria2).
 - **Cloud Sync** — opt-in (default **off**) mirroring of download-state
   *metadata* into a user-supplied Convex deployment. Never carries media
   bytes, Captures, or credentials.

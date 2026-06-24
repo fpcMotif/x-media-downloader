@@ -1,4 +1,5 @@
 import { Effect } from 'effect'
+import { bindFetch } from '../fetch'
 import { DownloadError } from '../errors'
 import type { DownloadStrategy, SaveRequest } from './strategy'
 
@@ -79,9 +80,11 @@ export function makeAria2RpcPort(cfg: {
   readonly secret: string
   readonly fetchImpl: typeof fetch
 }): Aria2RpcPort {
+  // Detach fetch from `cfg` or the MV3 SW rejects it with "Illegal invocation".
+  const doFetch = bindFetch(cfg.fetchImpl)
   return {
     addUri: async (urls, options) => {
-      const res = await cfg.fetchImpl(cfg.rpcUrl, {
+      const res = await doFetch(cfg.rpcUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(buildJsonRpcBody('aria2.addUri', [urls, options], cfg.secret)),

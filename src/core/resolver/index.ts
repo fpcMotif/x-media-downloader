@@ -19,15 +19,18 @@ export interface RawTweet {
   readonly media: ReadonlyArray<RawMedia>
 }
 
+/* v8 ignore next -- String.split always yields a non-empty array; `?? url` is unreachable */
+const stripQuery = (url: string): string => url.split('?')[0] ?? url
+
 function basenameId(url: string): string {
-  const path = url.split('?')[0] ?? url
+  const path = stripQuery(url)
   const base = path.slice(path.lastIndexOf('/') + 1)
   const dot = base.lastIndexOf('.')
   return dot >= 0 ? base.slice(0, dot) : base
 }
 
 function extFromUrl(url: string, fallback: string): string {
-  const path = url.split('?')[0] ?? url
+  const path = stripQuery(url)
   const dot = path.lastIndexOf('.')
   return dot >= 0 ? path.slice(dot + 1) : fallback
 }
@@ -41,16 +44,20 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
   const out: MediaItem[] = []
   const seen = new Set<string>()
   tweet.media.forEach((m) => {
-    const id = m.id_str ?? basenameId(m.media_url_https)
-    if (seen.has(id)) return
     if (m.type === 'photo') {
+      const url = upgradePhotoUrl(m.media_url_https)
+      // Identity is the media key (the resolved-url basename) — the SAME value the
+      // tee, the DOM resolver, and syndication each derive for this media, so one
+      // media is one item no matter which path saw it (ADR-0016).
+      const id = basenameId(url)
+      if (seen.has(id)) return
       seen.add(id)
       out.push({
         id,
         tweetId: tweet.tweetId,
         handle: tweet.handle,
         type: 'photo',
-        url: upgradePhotoUrl(m.media_url_https),
+        url,
         previewUrl: m.media_url_https,
         ext: extFromUrl(m.media_url_https, 'jpg'),
         index: out.length,
@@ -59,6 +66,8 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
     }
     const variant = m.video_info ? pickVideoVariant(m.video_info.variants) : null
     if (!variant) return
+    const id = basenameId(variant.url)
+    if (seen.has(id)) return
     seen.add(id)
     out.push({
       id,

@@ -40,3 +40,11 @@ export function historyEmptyLabel(enabled: boolean, count: number): string {
   if (count === 0) return 'No downloads yet'
   return ''
 }
+
+/** Ask the background for the durable download history; never throws (returns [] on failure). */
+export async function fetchHistory(): Promise<ReadonlyArray<DownloadRecord>> {
+  return browser.runtime
+    .sendMessage({ _tag: 'HistoryRequest' })
+    .then((r) => (r as { records?: ReadonlyArray<DownloadRecord> } | null)?.records ?? [])
+    .catch(() => [])
+}

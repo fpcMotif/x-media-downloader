@@ -76,4 +76,35 @@ describe('decodeOutbox', () => {
     expect(decodeOutbox(null)).toEqual(emptyOutbox)
     expect(decodeOutbox({ pending: 'nope' })).toEqual(emptyOutbox)
   })
+
+  it('does not wedge sync forever when storage.local poisons nextAttemptAt with NaN/Infinity', () => {
+    // A corrupted storage.local value: type-valid Number, but non-finite. With the
+    // raw Schema.Number this survives decode and isReady() returns false on every
+    // tick (NaN/Infinity comparisons), so drainOutbox early-returns forever.
+    const poisoned = (nextAttemptAt: number) => ({
+      pending: [JSON.parse(JSON.stringify(ev(1)))],
+      consecutiveFailures: 0,
+      nextAttemptAt,
+    })
+
+    const fromNaN = decodeOutbox(poisoned(Number.NaN))
+    const fromInf = decodeOutbox(poisoned(Number.POSITIVE_INFINITY))
+
+    expect(Number.isFinite(fromNaN.nextAttemptAt)).toBe(true)
+    expect(Number.isFinite(fromInf.nextAttemptAt)).toBe(true)
+    // Sync must be able to drain again at a sane wall clock instead of freezing.
+    expect(isReady(fromNaN, Date.now())).toBe(true)
+    expect(isReady(fromInf, Date.now())).toBe(true)
+  })
+
+  it('treats a non-finite consecutiveFailures as corrupt instead of carrying it forward', () => {
+    const s = decodeOutbox({
+      pending: [],
+      consecutiveFailures: Number.POSITIVE_INFINITY,
+      nextAttemptAt: 0,
+    })
+    expect(Number.isFinite(s.consecutiveFailures)).toBe(true)
+    // markFailed must compute a finite, capped backoff off the recovered state.
+    expect(markFailed(s, 0).nextAttemptAt).toBeLessThanOrEqual(300_000)
+  })
 })

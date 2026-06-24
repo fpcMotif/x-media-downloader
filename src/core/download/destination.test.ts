@@ -33,6 +33,17 @@ describe('buildSidecar', () => {
     const meta = buildSidecar(item)
     expect('tweetUrl' in meta).toBe(false)
   })
+
+  it('includes capturedAt when ctx provides it', () => {
+    const meta = buildSidecar(item, { capturedAt: '2026-06-20T00:00:00Z' })
+    expect(meta.capturedAt).toBe('2026-06-20T00:00:00Z')
+    expect('tweetUrl' in meta).toBe(false)
+  })
+
+  it('omits capturedAt when ctx is present but capturedAt is undefined', () => {
+    const meta = buildSidecar(item, { tweetUrl: 'https://x.com/alice/status/123' })
+    expect('capturedAt' in meta).toBe(false)
+  })
 })
 
 describe('planDownloads', () => {

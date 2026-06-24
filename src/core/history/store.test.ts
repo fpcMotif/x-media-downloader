@@ -60,6 +60,15 @@ describe('applyTransition', () => {
     const after = applyTransition(before, '9-9', 'failed', 200)
     expect(after).toEqual(before)
   })
+
+  it('is monotonic — a later contradictory outcome never regresses a terminal record', () => {
+    // A cross-recycle reconcile could record `failed` after `completed` was already
+    // mirrored; the first terminal must win (no completed→failed regression).
+    const completed = applyTransition(upsert(emptyStore, rec('1-0', 100)), '1-0', 'completed', 200)
+    const after = applyTransition(completed, '1-0', 'failed', 300)
+    expect(after).toBe(completed) // same reference: nothing changed
+    expect(after.records.find((x) => x.requestId === '1-0')?.status).toBe('completed')
+  })
 })
 
 describe('decodeStore', () => {
