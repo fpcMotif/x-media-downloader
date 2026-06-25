@@ -123,10 +123,105 @@ describe('makeAria2RpcPort', () => {
     await expect(port.addUri(['u'], {})).rejects.toThrow('aria2 error 1')
   })
 
+  it('rejects with a placeholder code when an error carries neither message nor code', async () => {
+    const fetchImpl = (() =>
+      Promise.resolve({ json: async () => ({ error: {} }) } as Response)) as typeof fetch
+    const port = makeAria2RpcPort({ rpcUrl: 'http://x', secret: '', fetchImpl })
+    await expect(port.addUri(['u'], {})).rejects.toThrow('aria2 error ?')
+  })
+
   it('rejects a malformed body with neither result nor error', async () => {
     const fetchImpl = (() =>
       Promise.resolve({ json: async () => ({}) } as Response)) as typeof fetch
     const port = makeAria2RpcPort({ rpcUrl: 'http://x', secret: '', fetchImpl })
     await expect(port.addUri(['u'], {})).rejects.toThrow('malformed')
+  })
+
+  it('calls fetch with a global receiver, never as a method of cfg (Illegal invocation)', async () => {
+    // Native `fetch` in the MV3 service worker throws when its receiver is not
+    // the global scope. A non-arrow stub exposes the dynamic `this`, proving the
+    // port never invokes it as `cfg.fetchImpl(...)` (`this === cfg`).
+    const brandChecked = function (this: unknown) {
+      if (this !== globalThis && this !== undefined) {
+        throw new TypeError("Failed to execute 'fetch' on 'WorkerGlobalScope': Illegal invocation")
+      }
+      return Promise.resolve({ json: async () => ({ result: 'gid' }) } as Response)
+    } as typeof fetch
+    const port = makeAria2RpcPort({ rpcUrl: 'http://x', secret: '', fetchImpl: brandChecked })
+    await expect(port.addUri(['u'], {})).resolves.toBe('gid')
+  })
+
+  it('rejects cleanly when the aria2 daemon is down (fetch refuses the connection)', async () => {
+    // Nothing listening on :6800 — the SW `fetch` rejects with a TypeError. The
+    // port must surface that rather than hang or resolve an undefined gid.
+    const fetchImpl = (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch
+    const port = makeAria2RpcPort({
+      rpcUrl: 'http://localhost:6800/jsonrpc',
+      secret: '',
+      fetchImpl,
+    })
+    await expect(port.addUri(['https://x/v.mp4'], {})).rejects.toThrow(/Failed to fetch/)
+  })
+
+  it('rejects when pointed at a non-aria2 server that returns an HTML 200', async () => {
+    // A misconfigured rpcUrl hitting some web server: 200 OK, but the body is an
+    // HTML page, so `res.json()` throws. The port must reject, not crash opaquely.
+    const fetchImpl = (() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON at position 0')
+        },
+      } as unknown as Response)) as typeof fetch
+    const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:8080/', secret: '', fetchImpl })
+    await expect(port.addUri(['https://x/v.mp4'], {})).rejects.toThrow(SyntaxError)
+  })
+})
+
+describe('real-world: aria2 end-to-end with a twimg video', () => {
+  const videoReq: SaveRequest = {
+    id: '1750000000000000000-0',
+    url: 'https://video.twimg.com/ext_tw_video/1750000000000000000/pu/vid/avc1/720x1280/abcDEF123.mp4?tag=12',
+    filename: 'alice/1750000000000000000_0.mp4',
+  }
+
+  it('hands the full CDN url (query intact) + nested out path to the daemon and yields the gid', async () => {
+    let sent: { url: string; body: { params: unknown[] } } | undefined
+    const fetchImpl = ((u: string, i: RequestInit) => {
+      sent = { url: u, body: JSON.parse(String(i.body)) }
+      return Promise.resolve({ json: async () => ({ result: 'GID9f3a' }) } as Response)
+    }) as typeof fetch
+    const port = makeAria2RpcPort({
+      rpcUrl: 'http://localhost:6800/jsonrpc',
+      secret: 'sek',
+      fetchImpl,
+    })
+    const handle = await Effect.runPromise(
+      makeAria2Strategy(port, { split: 16, dir: '/Users/alice/Downloads/x' }).save(videoReq),
+    )
+    expect(handle).toEqual({ kind: 'aria2', gid: 'GID9f3a' })
+    expect(sent?.url).toBe('http://localhost:6800/jsonrpc')
+    expect(sent?.body.params).toEqual([
+      'token:sek',
+      [videoReq.url],
+      {
+        out: 'alice/1750000000000000000_0.mp4',
+        split: '16',
+        'max-connection-per-server': '16',
+        dir: '/Users/alice/Downloads/x',
+      },
+    ])
+  })
+
+  it('turns a dead daemon into a Failure exit (never a silent success)', async () => {
+    const fetchImpl = (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch
+    const port = makeAria2RpcPort({
+      rpcUrl: 'http://localhost:6800/jsonrpc',
+      secret: '',
+      fetchImpl,
+    })
+    const exit = await Effect.runPromiseExit(makeAria2Strategy(port, { split: 8 }).save(videoReq))
+    expect(Exit.isFailure(exit)).toBe(true)
   })
 })

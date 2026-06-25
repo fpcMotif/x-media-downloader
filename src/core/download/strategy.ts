@@ -1,5 +1,25 @@
 import { Effect } from 'effect'
 import { DownloadError } from '../errors'
+import type { Settings } from '../schema'
+
+/**
+ * Display metadata for the three download strategies — the single source of truth
+ * shared by the popup's compact mode toggle and the options Downloads panel, so
+ * the label/hint copy can never drift between the two surfaces.
+ */
+export const DOWNLOAD_MODES = [
+  {
+    value: 'direct',
+    label: 'Direct',
+    hint: 'Chrome downloads the file directly — the safest default.',
+  },
+  { value: 'fetched', label: 'Fetched', hint: 'Fetches and verifies each file before saving.' },
+  { value: 'aria2', label: 'aria2', hint: 'Hands the download to a local aria2 JSON-RPC engine.' },
+] as const satisfies ReadonlyArray<{
+  readonly value: Settings['downloadStrategy']
+  readonly label: string
+  readonly hint: string
+}>
 
 /**
  * One unit of work for a strategy: a URL to fetch + a relative filename to write.

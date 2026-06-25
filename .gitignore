@@ -5,3 +5,14 @@ dist/
 *.log
 .DS_Store
 study/
+
+# Local env — holds the Convex deployment secret; never commit
+.env
+.env.local
+.env.*.local
+
+# Generated / tooling output — never commit
+coverage/
+.claude/tmp/
+.impeccable/
+droid-wiki/

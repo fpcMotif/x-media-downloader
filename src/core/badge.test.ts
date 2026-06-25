@@ -9,6 +9,7 @@ import {
   nudgeBadge,
   beginSave,
   resolveSave,
+  resolveOutcome,
 } from './badge'
 
 const showable = { enabled: true, resolvable: true, modifierHeld: false }
@@ -125,6 +126,37 @@ describe('badge save flow', () => {
   })
 })
 
+describe('resolveOutcome (late terminal outcome corrects the optimistic save)', () => {
+  it('flips an optimistically-saved badge to failed when the bytes never landed', () => {
+    // The start ack saved the badge the instant the request was handed off; the
+    // real 403/timeout arrives ~seconds later and must correct the green check.
+    const saved = resolveSave(beginSave(enterMedia(hiddenBadge, 'P1', showable)), true)
+    const corrected = resolveOutcome(saved, false)
+    expect(corrected.phase).toBe('failed')
+    expect(corrected.key).toBe('P1')
+  })
+
+  it('a confirmed completion on an already-saved badge is a same-reference no-op', () => {
+    // Same ref so the caller never cancels the pending saved→shown revert timer.
+    const saved = resolveSave(beginSave(enterMedia(hiddenBadge, 'P1', showable)), true)
+    expect(resolveOutcome(saved, true)).toBe(saved)
+  })
+
+  it('also resolves a still-queued entrance (outcome beat the start ack)', () => {
+    const queued = beginSave(enterMedia(hiddenBadge, 'P1', showable))
+    expect(resolveOutcome(queued, true).phase).toBe('saved')
+    expect(resolveOutcome(queued, false).phase).toBe('failed')
+  })
+
+  it('never touches an entrance that moved on, reverted to shown, or already failed', () => {
+    expect(resolveOutcome(hiddenBadge, false)).toBe(hiddenBadge)
+    const shown = enterMedia(hiddenBadge, 'P1', showable)
+    expect(resolveOutcome(shown, false)).toBe(shown) // reverted to the idle arrow
+    const failed = resolveSave(beginSave(enterMedia(hiddenBadge, 'P2', showable)), false)
+    expect(resolveOutcome(failed, true)).toBe(failed)
+  })
+})
+
 describe('leaving the media', () => {
   it('resets shown, nudged, saved, and failed entrances to hidden', () => {
     const shown = enterMedia(hiddenBadge, 'P1', showable)
@@ -133,5 +165,9 @@ describe('leaving the media', () => {
     const queued = beginSave(shown)
     expect(leaveMedia(resolveSave(queued, true))).toBe(hiddenBadge)
     expect(leaveMedia(resolveSave(queued, false))).toBe(hiddenBadge)
+  })
+
+  it('leaves an already-hidden badge as the same reference', () => {
+    expect(leaveMedia(hiddenBadge)).toBe(hiddenBadge)
   })
 })

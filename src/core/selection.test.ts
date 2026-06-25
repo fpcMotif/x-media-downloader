@@ -5,7 +5,6 @@ import {
   toggleMedia,
   selectTweet,
   selectThread,
-  clearSelection,
   resolveSelection,
   type Registry,
 } from './selection'
@@ -122,10 +121,6 @@ describe('selection', () => {
     const resolved = resolveSelection(dupRegistry, sel)
     expect(resolved.length).toBe(1)
     expect(resolved[0]?.tweetId).toBe('t1')
-  })
-
-  it('clearSelection yields an empty set', () => {
-    expect(clearSelection().ids.size).toBe(0)
   })
 
   it('does not mutate registry items on resolve', () => {

@@ -31,8 +31,14 @@ export function upsert(
   record: DownloadRecord,
   cap: number = DEFAULT_HISTORY_CAP,
 ): DownloadStore {
-  const existing = store.records.find((r) => r.requestId === record.requestId)
-  const others = store.records.filter((r) => r.requestId !== record.requestId)
+  let existing: DownloadRecord | undefined
+  const others = store.records.filter((r) => {
+    if (r.requestId === record.requestId) {
+      existing = r
+      return false
+    }
+    return true
+  })
   const effective =
     existing !== undefined && isTerminal(existing.status) && record.status === 'queued'
       ? existing
@@ -40,7 +46,12 @@ export function upsert(
   return { records: [effective, ...others].slice(0, cap) }
 }
 
-/** Apply a terminal outcome to an existing record in place; no-op if the request is unknown. */
+/**
+ * Apply a terminal outcome to an existing record in place; no-op if the request is
+ * unknown. Monotonic: once a record is terminal, a later contradictory outcome
+ * (e.g. a cross-recycle boot reconcile recording `failed` after `completed` was
+ * already mirrored) does NOT regress it — the first terminal wins.
+ */
 export function applyTransition(
   store: DownloadStore,
   requestId: string,
@@ -48,11 +59,11 @@ export function applyTransition(
   at: number,
   bytes?: { received: number; total: number },
 ): DownloadStore {
-  let found = false
+  let changed = false
   const records = store.records.map((r) => {
-    if (r.requestId !== requestId) return r
-    found = true
+    if (r.requestId !== requestId || isTerminal(r.status)) return r
+    changed = true
     return applyOutcome(r, kind, at, bytes)
   })
-  return found ? { records } : store
+  return changed ? { records } : store
 }

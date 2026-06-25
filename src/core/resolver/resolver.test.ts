@@ -6,6 +6,17 @@ describe('upgradePhotoUrl', () => {
     const url = 'https://pbs.twimg.com/media/ABC?format=jpg&name=small'
     expect(upgradePhotoUrl(url)).toBe('https://pbs.twimg.com/media/ABC?format=jpg&name=orig')
   })
+
+  it('swaps a lossy format=webp rendition for the jpg original', () => {
+    const url = 'https://pbs.twimg.com/media/ABC?format=webp&name=small'
+    const out = new URL(upgradePhotoUrl(url))
+    expect(out.searchParams.get('format')).toBe('jpg')
+    expect(out.searchParams.get('name')).toBe('orig')
+  })
+
+  it('returns the input unchanged when it is not a parseable URL', () => {
+    expect(upgradePhotoUrl('not a url')).toBe('not a url')
+  })
 })
 
 describe('pickVideoVariant', () => {
@@ -21,6 +32,16 @@ describe('pickVideoVariant', () => {
 
   it('returns null when there is no mp4 variant', () => {
     expect(pickVideoVariant([{ content_type: 'application/x-mpegURL', url: 'p.m3u8' }])).toBeNull()
+  })
+
+  it('treats missing bitrate as zero on both sides of the reduce comparison', () => {
+    const picked = pickVideoVariant([
+      { content_type: 'video/mp4', url: 'a.mp4' },
+      { content_type: 'video/mp4', url: 'b.mp4' },
+    ])
+    // Both lack a bitrate → neither beats the other; the first stays best.
+    expect(picked?.url).toBe('a.mp4')
+    expect(picked?.bitrate).toBeUndefined()
   })
 })
 
@@ -64,6 +85,71 @@ describe('resolveTweetMedia', () => {
     expect(items[1]).toMatchObject({ type: 'video', index: 1, ext: 'mp4' })
     expect(items[1]!.url).toBe('https://video.twimg.com/high.mp4')
     expect(items[1]!.previewUrl).toBe('https://pbs.twimg.com/tweet_video_thumb/BBB.jpg')
+  })
+
+  it('ids media by its media key (url basename), not the raw id_str (ADR-0016)', () => {
+    const items = resolveTweetMedia({
+      tweetId: '1790',
+      handle: 'alice',
+      // id_str present but DELIBERATELY != the media key: the key wins, so the same
+      // media resolves to the same id no matter which path (tee/DOM/syndication) saw it.
+      media: [
+        { type: 'photo', id_str: '999', media_url_https: 'https://pbs.twimg.com/media/ABC.jpg' },
+      ],
+    })
+    expect(items[0]!.id).toBe('ABC')
+  })
+
+  it('de-dupes two video entries that resolve to the same mp4 (media-key id)', () => {
+    const variants = [
+      { content_type: 'video/mp4', bitrate: 1000, url: 'https://video.twimg.com/SAME.mp4' },
+    ]
+    const items = resolveTweetMedia({
+      tweetId: '1',
+      handle: 'a',
+      media: [
+        {
+          type: 'video',
+          media_url_https: 'https://pbs.twimg.com/x/A.jpg',
+          video_info: { variants },
+        },
+        {
+          type: 'video',
+          media_url_https: 'https://pbs.twimg.com/x/B.jpg',
+          video_info: { variants },
+        },
+      ],
+    })
+    expect(items).toHaveLength(1) // both → id 'SAME' → second is deduped
+  })
+
+  it('derives an id and jpg fallback ext from a dot-less, query-less media url', () => {
+    // basenameId/extFromUrl take their else branches when the url has no dot at all.
+    const items = resolveTweetMedia({
+      tweetId: '7',
+      handle: 'carol',
+      media: [{ type: 'photo', media_url_https: 'https://x/media/NODOT' }],
+    })
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ id: 'NODOT', ext: 'jpg', type: 'photo' })
+  })
+
+  it('omits bitrate from a chosen mp4 variant that has none', () => {
+    // The conditional spread takes its `{}` branch when bitrate is undefined.
+    const items = resolveTweetMedia({
+      tweetId: '8',
+      handle: 'dave',
+      media: [
+        {
+          type: 'video',
+          media_url_https: 'https://pbs.twimg.com/x/t.jpg',
+          video_info: { variants: [{ content_type: 'video/mp4', url: 'https://v/nobr.mp4' }] },
+        },
+      ],
+    })
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ type: 'video', url: 'https://v/nobr.mp4' })
+    expect('bitrate' in items[0]!).toBe(false)
   })
 
   it('de-duplicates repeated media by id', () => {

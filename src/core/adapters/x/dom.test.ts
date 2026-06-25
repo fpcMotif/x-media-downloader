@@ -6,7 +6,15 @@ import {
   isGrabbablePhotoUrl,
   isGrabbableMediaPreviewUrl,
   extFromImgUrl,
+  videoPosterUrl,
 } from './dom'
+
+/** Build a detached subtree and return its first `<video>`. */
+const videoEl = (html: string): HTMLVideoElement => {
+  const root = document.createElement('div')
+  root.innerHTML = html.trim()
+  return root.querySelector('video')!
+}
 
 const media = (id: string, tweetId: string, index: number, url: string): MediaItem => ({
   id,
@@ -88,6 +96,84 @@ describe('isGrabbableMediaPreviewUrl', () => {
     )
     expect(isGrabbableMediaPreviewUrl('https://video.twimg.com/media/x.mp4')).toBe(false)
     expect(isGrabbableMediaPreviewUrl('https://example.com/tweet_video_thumb/VID.jpg')).toBe(false)
+  })
+
+  it('returns false for an unparseable url', () => {
+    expect(isGrabbableMediaPreviewUrl('not a url')).toBe(false)
+  })
+})
+
+describe('videoPosterUrl', () => {
+  it("returns the video's own .poster property when it is a grabbable twimg preview", () => {
+    const video = document.createElement('video')
+    Object.defineProperty(video, 'poster', {
+      value: 'https://pbs.twimg.com/ext_tw_video_thumb/77/pu/img/V1.jpg',
+      configurable: true,
+    })
+    expect(videoPosterUrl(video)).toBe('https://pbs.twimg.com/ext_tw_video_thumb/77/pu/img/V1.jpg')
+  })
+
+  it('falls back to the hidden _video_thumb <img> in the player container', () => {
+    const video = videoEl(`
+      <div data-testid="videoPlayer">
+        <video src="blob:x"></video>
+        <img src="https://pbs.twimg.com/tweet_video_thumb/VID.jpg" />
+      </div>
+    `)
+    expect(videoPosterUrl(video)).toBe('https://pbs.twimg.com/tweet_video_thumb/VID.jpg')
+  })
+
+  it('matches a srcset-only thumb img and reads its .src when currentSrc is empty', () => {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <div data-testid="videoComponent">
+        <video src="blob:x"></video>
+        <img srcset="https://pbs.twimg.com/amplify_video_thumb/9/img/T2.jpg 1x"
+             src="https://pbs.twimg.com/amplify_video_thumb/9/img/T2.jpg" />
+      </div>
+    `.trim()
+    const video = root.querySelector('video')!
+    const img = root.querySelector('img')!
+    // currentSrc would short-circuit the `||`; force it empty so the `.src` arm runs.
+    Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
+    expect(videoPosterUrl(video)).toBe('https://pbs.twimg.com/amplify_video_thumb/9/img/T2.jpg')
+  })
+
+  it('reads a poster set via getAttribute when the property is empty', () => {
+    const video = document.createElement('video')
+    video.setAttribute('poster', 'https://pbs.twimg.com/ext_tw_video_thumb/5/pu/img/G1.jpg')
+    expect(videoPosterUrl(video)).toBe('https://pbs.twimg.com/ext_tw_video_thumb/5/pu/img/G1.jpg')
+  })
+
+  it('falls back to the parent element when there is no player container', () => {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <div>
+        <video src="blob:x"></video>
+        <img src="https://pbs.twimg.com/tweet_video_thumb/Parent.jpg" />
+      </div>
+    `.trim()
+    const video = root.querySelector('video')!
+    expect(videoPosterUrl(video)).toBe('https://pbs.twimg.com/tweet_video_thumb/Parent.jpg')
+  })
+
+  it('returns null when neither the poster nor a sibling thumb is grabbable', () => {
+    const video = videoEl(
+      '<video poster="https://pbs.twimg.com/profile_images/avatar.jpg"></video>',
+    )
+    expect(videoPosterUrl(video)).toBeNull()
+  })
+
+  it('returns null when the thumb img src is not a grabbable preview url', () => {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <div data-testid="videoPlayer">
+        <video src="blob:x"></video>
+        <img src="https://example.com/_video_thumb/X.jpg" />
+      </div>
+    `.trim()
+    const video = root.querySelector('video')!
+    expect(videoPosterUrl(video)).toBeNull()
   })
 })
 

@@ -10,8 +10,10 @@ const BACKOFF_CAP_MS = 300_000
 
 const OutboxStateSchema = Schema.Struct({
   pending: Schema.Array(SyncEvent),
-  consecutiveFailures: Schema.Number,
-  nextAttemptAt: Schema.Number,
+  // Finite-only: a poisoned NaN/Infinity here makes isReady() false forever and
+  // wedges drainOutbox, so non-finite values must decode-fail into emptyOutbox.
+  consecutiveFailures: Schema.Finite,
+  nextAttemptAt: Schema.Finite,
 })
 export type OutboxState = typeof OutboxStateSchema.Type
 

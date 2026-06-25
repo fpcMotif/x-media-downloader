@@ -53,6 +53,56 @@ Privacy/permissions posture:
 - An optional shared secret (Convex env var `SYNC_SHARED_SECRET`) gates the
   public mutation.
 
+## Data flow
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant CS as Content script
+  participant BG as Background SW
+  participant OB as Outbox (storage.local)
+  participant CX as Convex /api/mutation
+  participant DB as sync_events + media_state
+  participant PU as Popup
+
+  CS->>BG: download event (queued / completed / failed)
+  Note over BG: gate — cloudSyncEnabled + URL + secret
+  BG->>OB: append SyncEvent (eventId = device/request/kind)
+  BG-)BG: drainOutbox (fire-and-forget; download never blocks)
+  loop FIFO, batch ≤64, until empty or first failure
+    BG->>CX: POST sync:recordEvents {events, secret}
+    Note over BG,CX: fetch bound to globalThis<br/>(else "Illegal invocation" in the SW)
+    CX->>CX: secret === SYNC_SHARED_SECRET (fail-closed)
+    CX->>DB: skip seen eventId, else insert + patch media_state
+    CX-->>BG: {received, inserted}
+    BG->>OB: markDrained
+    BG->>PU: status "Connected ✓"
+  end
+```
+
+Outbox batch lifecycle:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Pending: event appended
+  Pending --> Draining: isReady (no active backoff)
+  Draining --> Drained: 200 success → markDrained
+  Draining --> Failed: throw → markFailed (exponential backoff)
+  Failed --> Pending: backoff elapsed → retry
+  Drained --> [*]
+```
+
+> **Implementation note — service-worker `fetch` receiver.** The HTTP port must
+> call the injected `fetch` **detached from its config object**. `cfg.fetchImpl(...)`
+> invokes native `fetch` with `this === cfg`, which the MV3 service worker rejects
+> with `TypeError: Failed to execute 'fetch' on 'WorkerGlobalScope': Illegal
+> invocation` — the request never leaves the worker, so "Test connection" reports
+> "Could not reach the deployment" even though the backend is healthy. Bind at port
+> construction: `const doFetch = cfg.fetchImpl.bind(globalThis)`. Arrow-function test
+> mocks ignore `this` and miss this entirely; the regression guard is a non-arrow
+> brand-check stub (`convex.test.ts`, `aria2.test.ts`). Same fix applies to
+> `makeAria2RpcPort`.
+
 ## Consequences
 
 - Local-only default mode is untouched; cloud mode gains a durable,

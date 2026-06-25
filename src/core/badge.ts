@@ -71,3 +71,19 @@ export function beginSave(state: BadgeState): BadgeState {
 export function resolveSave(state: BadgeState, ok: boolean): BadgeState {
   return state.phase === 'queued' ? { phase: ok ? 'saved' : 'failed', key: state.key } : state
 }
+
+/**
+ * A LATE terminal outcome (bytes actually landed / 403 / timeout), arriving after
+ * the start ack already flipped the badge to `saved`. Corrects the optimistic
+ * `saved` — the start ack only meant "handed to the browser", not "on disk". A
+ * still-`queued` entrance is resolved too; an entrance that has moved on, reverted
+ * to the idle arrow, or already failed is left untouched. The caller guarantees
+ * the outcome belongs to THIS entrance (same request id and live media key).
+ */
+export function resolveOutcome(state: BadgeState, ok: boolean): BadgeState {
+  if (state.phase !== 'saved' && state.phase !== 'queued') return state
+  const phase = ok ? 'saved' : 'failed'
+  // A confirmed complete on an already-saved badge is a no-op: keep the SAME
+  // reference so the caller doesn't cancel the pending saved→shown revert timer.
+  return phase === state.phase ? state : { phase, key: state.key }
+}

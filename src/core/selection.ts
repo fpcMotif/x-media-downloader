@@ -47,15 +47,10 @@ export function selectThread(sel: Selection, registry: Registry, threadId: strin
   const ids = new Set(sel.ids)
   if (threadId == null) return { ids }
   for (const group of registry) {
-    if (group.threadId === undefined || group.threadId !== threadId) continue
+    if (group.threadId !== threadId) continue
     for (const item of group.items) ids.add(item.id)
   }
   return { ids }
-}
-
-/** Reset to an empty selection. */
-export function clearSelection(): Selection {
-  return { ids: new Set() }
 }
 
 /**

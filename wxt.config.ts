@@ -1,6 +1,22 @@
+import { readFileSync } from 'node:fs'
 import { defineConfig } from 'wxt'
 import preact from '@preact/preset-vite'
 import tailwindcss from '@tailwindcss/vite'
+
+// When a local `.env` pre-seeds Cloud Sync (WXT_CONVEX_URL), promote the Convex
+// origin from an optional to a REQUIRED host permission for THIS build only —
+// unpacked dev extensions get required host permissions auto-granted on reload,
+// so the seeded config works with zero clicks. A normal build (no `.env`) keeps
+// it optional and opt-in (ADR-0009).
+const seedsConvex = (() => {
+  try {
+    return /^\s*WXT_CONVEX_URL=\S/m.test(readFileSync('.env', 'utf8'))
+  } catch {
+    return false
+  }
+})()
+
+const CONVEX_ORIGIN = 'https://*.convex.cloud/*'
 
 // https://wxt.dev/api/config.html
 export default defineConfig({
@@ -9,17 +25,39 @@ export default defineConfig({
     name: 'X Media Downloader',
     description:
       'Download X (Twitter) tweet/thread media at original quality. Minimalist, local-only, no scraping.',
-    permissions: ['downloads', 'storage', 'activeTab'],
-    host_permissions: ['https://x.com/*', 'https://twitter.com/*'],
+    // `identity` powers chrome.identity.launchWebAuthFlow for Cloud Upload OAuth
+    // (ADR-0013). Required (not optional): `identity` is not reliably grantable
+    // via chrome.permissions.request. launchWebAuthFlow needs no host permission
+    // for the auth window or the chromiumapp.org redirect.
+    // `alarms` powers the Cloud Upload backoff wake-up (ADR-0013) so failed
+    // uploads retry autonomously after the service worker suspends.
+    permissions: ['downloads', 'storage', 'activeTab', 'identity', 'alarms'],
+    host_permissions: [
+      'https://x.com/*',
+      'https://twitter.com/*',
+      // X's public embed endpoint — the background fetches it to recover a video
+      // the passive tee missed (SPA cache hit / lazy reply). Required (not opt-in)
+      // so the media count is correct out of the box; read-only, X-owned, narrow.
+      'https://cdn.syndication.twimg.com/*',
+      ...(seedsConvex ? [CONVEX_ORIGIN] : []),
+    ],
     // Requested at runtime only when Download Strategy = Fetched (ADR-0003):
     optional_permissions: ['offscreen'],
-    // twimg CDN = Fetched (ADR-0003); localhost = aria2 JSON-RPC opt-in
-    // (ADR-0006); convex.cloud = Cloud Sync opt-in (ADR-0009).
+    // twimg CDN = Fetched (ADR-0003) AND the Cloud Upload byte source (ADR-0013);
+    // localhost = aria2 JSON-RPC opt-in (ADR-0006); convex.cloud = Cloud Sync
+    // opt-in (ADR-0009), unless a local `.env` pre-seeds it (then it's required,
+    // above); the googleapis/dropboxapi origins = Cloud Upload provider APIs
+    // (ADR-0013), requested at provider-connect time.
     optional_host_permissions: [
       'https://pbs.twimg.com/*',
       'https://video.twimg.com/*',
       'http://localhost/*',
-      'https://*.convex.cloud/*',
+      'https://www.googleapis.com/*',
+      'https://oauth2.googleapis.com/*',
+      'https://api.dropboxapi.com/*',
+      'https://content.dropboxapi.com/*',
+      'https://www.dropbox.com/*',
+      ...(seedsConvex ? [] : [CONVEX_ORIGIN]),
     ],
   },
   vite: () => ({

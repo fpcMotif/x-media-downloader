@@ -1,3 +1,4 @@
+import { X_HOST_MATCH } from '../core/adapters/x'
 import { isGraphqlMediaUrl } from './inject/tee'
 
 /**
@@ -6,7 +7,7 @@ import { isGraphqlMediaUrl } from './inject/tee'
  * CustomEvent. Issues no requests of its own; always returns the page's response.
  */
 export default defineContentScript({
-  matches: ['*://x.com/*', '*://twitter.com/*'],
+  matches: [...X_HOST_MATCH],
   world: 'MAIN',
   runAt: 'document_start',
   main() {

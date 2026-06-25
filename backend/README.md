@@ -40,6 +40,11 @@ than filling with undeliverable events).
 - `sync:recentEvents` — newest-first cursor-paginated ledger for future
   dashboard/popup views (`POST /api/query`).
 
+Both reads and writes **fail closed** on the shared `secret` (ADR-0009
+hardening): the `recentEvents` / `recentUploadJobs` queries require it too, so a
+discoverable `*.convex.cloud` URL never exposes the ledger to an unauthenticated
+caller.
+
 Phase 2 (durable export jobs via Workflow/Workpool) and Phase 3 (provider
 byte layer) build on these tables — see
 `docs/plans/2026-06-11-convex-control-plane-plan/handoff-phase-2-3.md`.

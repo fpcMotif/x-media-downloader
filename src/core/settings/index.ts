@@ -9,6 +9,7 @@ const item = storage.defineItem<unknown>('local:settings', { fallback: {} })
 /** Decode stored settings; fall back to defaults on a SchemaError (corrupt data). */
 function decode(raw: unknown): Settings {
   try {
+    /* v8 ignore next -- defineItem's fallback ({}) means raw is never null/undefined here; `?? {}` is unreachable */
     return Schema.decodeUnknownSync(SettingsSchema)(raw ?? {})
   } catch {
     return defaults
