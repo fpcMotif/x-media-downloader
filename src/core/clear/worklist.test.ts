@@ -4,6 +4,7 @@ import {
   decodeWorklist,
   emptyWorklist,
   enqueue,
+  enqueueBatch,
   isCleared,
   keyFor,
   markState,
@@ -24,6 +25,25 @@ describe('sweep worklist', () => {
     const b = enqueue(a, '1', 'like', 200)
     expect(b[keyFor('like', '1')]?.state).toBe('queued')
     expect(b[keyFor('like', '1')]?.at).toBe(200)
+  })
+
+  it('enqueueBatch behaves identically to individual enqueues but optimizes allocations', () => {
+    const ids = ['1', '2', '3']
+    // Compare single enqueues vs batch.
+    let sequential = emptyWorklist
+    for (const id of ids) sequential = enqueue(sequential, id, 'like', 100)
+
+    const batched = enqueueBatch(emptyWorklist, ids, 'like', 100)
+    expect(batched).toEqual(sequential)
+
+    // A batch containing some already-cleared items safely skips them.
+    const cleared = markState(batched, '2', 'like', 'cleared', 150)
+    const secondBatch = enqueueBatch(cleared, ids, 'like', 200)
+
+    expect(secondBatch[keyFor('like', '1')]?.at).toBe(200)
+    expect(secondBatch[keyFor('like', '2')]?.state).toBe('cleared') // untouched
+    expect(secondBatch[keyFor('like', '2')]?.at).toBe(150)
+    expect(secondBatch[keyFor('like', '3')]?.at).toBe(200)
   })
 
   it('never re-queues a cleared tweet (cleared is terminal)', () => {

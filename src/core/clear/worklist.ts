@@ -80,6 +80,29 @@ export const enqueue = (
   return { ...wl, [key]: { tweetId, scope, state: 'queued', at } }
 }
 
+/** Take responsibility for multiple (tweet, scope) at `queued`, unless that scope is
+ *  already `cleared`. Batches the object allocations to avoid O(N^2) overhead
+ *  when enqueuing many posts at once. */
+export const enqueueBatch = (
+  wl: SweepWorklist,
+  tweetIds: ReadonlyArray<string>,
+  scope: ClearScope,
+  at: number,
+): SweepWorklist => {
+  let next: Record<string, SweepEntry> = wl
+  let mutated = false
+  for (const tweetId of tweetIds) {
+    const key = keyFor(scope, tweetId)
+    if (wl[key]?.state === 'cleared') continue
+    if (!mutated) {
+      next = { ...wl }
+      mutated = true
+    }
+    next[key] = { tweetId, scope, state: 'queued', at }
+  }
+  return next
+}
+
 /** Advance an EXISTING (tweet, scope) entry's state. No-op when that scope isn't
  *  tracked (so a normal, non-sweep download never creates a worklist entry) or is
  *  already `cleared` (terminal). Returns the same reference when nothing changes. */

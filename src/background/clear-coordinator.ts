@@ -13,7 +13,7 @@ import {
 import {
   capWorklist,
   decodeWorklist,
-  enqueue as enqueueSweep,
+  enqueueBatch as enqueueSweepBatch,
   isCleared as isSweepCleared,
   markState as markSweepState,
   type SweepState,
@@ -350,6 +350,7 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
       worklistQueue.push(async () => {
         let wl = decodeWorklist(await sweepWorklistItem.getValue())
         const now = Date.now()
+        const tweetIdsToEnqueue: string[] = []
         for (const p of posts) {
           // Scope-qualified: a post already cleared in the OTHER list (e.g.
           // un-bookmarked) must still be swept here (e.g. un-liked).
@@ -357,8 +358,11 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
             skipped += 1
             continue
           }
-          wl = enqueueSweep(wl, p.tweetId, scope, now)
+          tweetIdsToEnqueue.push(p.tweetId)
           queuedPosts.push({ items: p.items })
+        }
+        if (tweetIdsToEnqueue.length > 0) {
+          wl = enqueueSweepBatch(wl, tweetIdsToEnqueue, scope, now)
         }
         await sweepWorklistItem.setValue(capWorklist(wl, SWEEP_WORKLIST_MAX))
         resolve()
