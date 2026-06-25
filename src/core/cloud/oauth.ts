@@ -8,6 +8,9 @@ import type { OAuthConfig, OAuthTokens } from './types'
  * (the aria2/convex port convention) so they test without the network. No
  * client secret anywhere — PKCE replaces it; an extension bundle can't keep one.
  */
+const DEFAULT_EXPIRES_IN_SECONDS = 3600
+const MS_PER_SECOND = 1000
+
 export class OAuthError extends Error {
   readonly _tag = 'OAuthError'
   constructor(reason: string) {
@@ -168,7 +171,7 @@ export async function exchangeCode(input: {
   return {
     accessToken,
     refreshToken: json.refresh_token,
-    expiresAt: input.now + (json.expires_in ?? 3600) * 1000,
+    expiresAt: input.now + (json.expires_in ?? DEFAULT_EXPIRES_IN_SECONDS) * MS_PER_SECOND,
     ...(account !== undefined ? { account } : {}),
   }
 }
@@ -187,7 +190,10 @@ export async function refreshAccessToken(input: {
     grant_type: 'refresh_token',
   })
   const accessToken = requireAccessToken(json, 'refresh response')
-  return { accessToken, expiresAt: input.now + (json.expires_in ?? 3600) * 1000 }
+  return {
+    accessToken,
+    expiresAt: input.now + (json.expires_in ?? DEFAULT_EXPIRES_IN_SECONDS) * MS_PER_SECOND,
+  }
 }
 
 /** Whether a token expires within `skewMs` of `now` (refresh proactively). */
