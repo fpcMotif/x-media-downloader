@@ -249,278 +249,376 @@ export function App() {
   // Only surface the monitor for a real download batch — not for stray hover/UI
   // trace events that also ride the metrics snapshot.
   const monitor = metrics && metrics.total > 0 ? metrics : null
-  const monitorDone = monitor ? monitor.completed + monitor.failed : 0
-  const monitorPct = monitor ? Math.min(100, Math.round((monitorDone / monitor.total) * 100)) : 0
   const canClearMonitor = monitor !== null && monitor.active === 0
   const recent = settings.downloadHistoryEnabled ? history.slice(0, 3) : []
 
   return (
     <div className="xmd-popup">
-      <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b bg-background/70 px-3.5 py-3 backdrop-blur-xl">
-        <div className="min-w-0">
-          <span className="block text-[15px] leading-tight font-bold tracking-tight text-balance">
-            X Media Downloader
-          </span>
-          <p className="mt-0.5 flex items-center gap-1.5 text-xs leading-snug text-muted-foreground">
-            <span
-              className={cn(
-                'size-1.5 rounded-full',
-                onXTab ? 'bg-success' : 'bg-muted-foreground/40',
-              )}
-            />
-            {onXTab ? 'Ready on this X tab' : 'Open X or Twitter to scan media'}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {saved && <Badge variant="success">Saved</Badge>}
-          <Button
-            type="button"
-            variant="outline"
-            size="icon-sm"
-            aria-label="Open settings"
-            title="Settings"
-            onClick={openOptions}
-          >
-            <GearIcon className="size-4" />
-          </Button>
-        </div>
-      </header>
+      <Header onXTab={onXTab} saved={saved} onOpenOptions={openOptions} />
 
       <main className="flex flex-col gap-2.5 px-3.5 py-3">
         {monitor && (
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 w-full"
-              disabled={!canClearMonitor}
-              title={!canClearMonitor ? 'Downloads still active' : undefined}
-              onClick={() => void clearMonitor()}
-            >
-              {!canClearMonitor
-                ? 'Active — downloads running'
-                : clearFeedback
-                  ? 'Monitor cleared'
-                  : 'Clear monitor'}
-            </Button>
-
-            <Card size="sm" aria-label="Download monitor">
-              <CardHeader className="gap-0.5">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="grid min-w-0 gap-0.5">
-                    <CardDescription className="text-[11px] font-semibold text-muted-foreground">
-                      Download monitor
-                    </CardDescription>
-                    <CardTitle className="text-sm">
-                      {monitorDone}/{monitor.total} done
-                    </CardTitle>
-                  </div>
-                  <span className="text-[15px] leading-none font-bold tabular-nums text-primary">
-                    {monitorPct}%
-                  </span>
-                </div>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                <Progress value={monitorPct} aria-label="Download progress" className="h-1.5" />
-                <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-                  <Stat label="Active" value={`${monitor.active}/${monitor.concurrencyCap}`} />
-                  <Stat label="Speed" value={fmtRate(monitor.throughputBps)} />
-                  <Stat label="Elapsed" value={fmtDuration(monitor.elapsedMs)} />
-                  <Stat
-                    label="ETA"
-                    value={
-                      monitor.etaSeconds === undefined ? '-' : `${Math.ceil(monitor.etaSeconds)}s`
-                    }
-                  />
-                  <Stat
-                    label="Bytes"
-                    value={
-                      monitor.bytesTotal > 0
-                        ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
-                        : fmtBytes(monitor.bytesReceived)
-                    }
-                  />
-                  {monitor.failed > 0 && <Stat label="Failed" value={String(monitor.failed)} />}
-                  {monitor.retries > 0 && <Stat label="Retries" value={String(monitor.retries)} />}
-                </dl>
-              </CardContent>
-            </Card>
-          </>
+          <DownloadMonitor
+            monitor={monitor}
+            canClearMonitor={canClearMonitor}
+            clearFeedback={clearFeedback}
+            clearMonitor={clearMonitor}
+          />
         )}
 
-        <Card size="sm" aria-label="On this page">
-          <CardHeader className="gap-0.5">
-            <CardTitle className="text-[13px] font-semibold">On this page</CardTitle>
-            <CardDescription className="text-xs leading-snug">
-              {onXTab
-                ? 'Grab the Likes or Bookmarks list you’re viewing.'
-                : 'Open an X/Twitter Likes or Bookmarks tab to use these.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2.5">
-            <Button
-              type="button"
-              className="h-11 w-full gap-2"
-              disabled={!onXTab || drain.busy}
-              onClick={() => void drain.run()}
-            >
-              <DownloadIcon className="size-[18px]" />
-              {drain.busy
-                ? 'Draining…'
-                : willClear
-                  ? 'Download + clear this page'
-                  : 'Download this page'}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-10 w-full gap-2"
-              disabled={!onXTab || sweep.busy}
-              onClick={() => void sweep.run()}
-            >
-              <LayersIcon className="size-4" />
-              {sweep.busy
-                ? 'Sweeping…'
-                : willClear
-                  ? 'Download + clear, one by one'
-                  : 'Download one by one'}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="w-full gap-1.5 text-muted-foreground"
-              disabled={!onXTab || clearVisible.busy}
-              onClick={() => void clearVisible.run()}
-            >
-              <EraserIcon className="size-3.5" />
-              {clearVisible.busy ? 'Clearing…' : 'Clear this page now (no download)'}
-            </Button>
-            {(drain.msg || sweep.msg || clearVisible.msg) && (
-              <p className="text-xs leading-snug text-muted-foreground">
-                {drain.msg ?? sweep.msg ?? clearVisible.msg}
-              </p>
-            )}
-          </CardContent>
-        </Card>
+        <PageActions
+          onXTab={onXTab}
+          drain={drain}
+          sweep={sweep}
+          clearVisible={clearVisible}
+          willClear={willClear}
+        />
 
-        <Card size="sm" aria-label="What the actions above do">
-          <CardContent className="flex flex-col gap-3 pt-3">
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              These set what the buttons above do — they don’t download on their own.
-            </p>
-            <div className="grid gap-1.5">
-              <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
-                DOWNLOAD MODE
-              </span>
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                spacing={0}
-                className="w-full"
-                aria-label="Download mode"
-                value={settings.downloadStrategy}
-                onValueChange={(value: string) => {
-                  if (value)
-                    void update({
-                      downloadStrategy: value as Settings['downloadStrategy'],
-                    })
-                }}
-              >
-                {DOWNLOAD_MODES.map((option) => (
-                  <ToggleGroupItem
-                    key={option.value}
-                    value={option.value}
-                    aria-label={`Download mode: ${option.label}`}
-                    className="h-9 flex-1 text-[13px]"
-                  >
-                    {option.label}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-              {activeMode && (
-                <p className="text-[11px] leading-snug text-muted-foreground">{activeMode.hint}</p>
-              )}
-            </div>
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
-                <FieldDescription>{CLEAR_AFTER_DOWNLOAD.description}</FieldDescription>
-              </FieldContent>
-              <Switch
-                id="clearOnSave"
-                aria-label="Clear after download"
-                checked={settings.clearOnSave}
-                onCheckedChange={(checked: boolean) => void update({ clearOnSave: checked })}
-              />
-            </Field>
-            {clearScopeNote && (
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                {clearScopeNote}{' '}
-                <button
-                  type="button"
-                  onClick={openOptions}
-                  className="font-medium text-primary hover:underline"
-                >
-                  Manage in settings
-                </button>
-              </p>
-            )}
-          </CardContent>
-        </Card>
+        <ModeSettings
+          settings={settings}
+          update={update}
+          activeMode={activeMode}
+          clearScopeNote={clearScopeNote}
+          onOpenOptions={openOptions}
+        />
 
-        {recent.length > 0 && (
-          <Card size="sm" aria-label="Recent downloads">
-            <CardHeader className="gap-0.5">
-              <CardTitle className="text-[13px] font-semibold">Recent</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ol className="grid gap-1.5" aria-label="Recent downloads">
-                {recent.map((r) => {
-                  const f = formatRecord(r)
-                  const variant =
-                    f.status === 'completed'
-                      ? 'success'
-                      : f.status === 'failed'
-                        ? 'destructive'
-                        : 'outline'
-                  return (
-                    <li key={r.requestId} className="flex items-center gap-2 text-xs">
-                      <Badge variant={variant} className="shrink-0 capitalize">
-                        {f.status}
-                      </Badge>
-                      <a
-                        className="truncate text-muted-foreground hover:text-foreground"
-                        href={f.link}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {f.title}
-                      </a>
-                    </li>
-                  )
-                })}
-              </ol>
-            </CardContent>
-          </Card>
-        )}
+        <RecentDownloads recent={recent} />
       </main>
 
-      <footer className="flex items-center justify-between gap-2 border-t px-3.5 py-3 text-xs leading-snug text-muted-foreground">
-        <span>
-          {settings.cloudSyncEnabled
-            ? 'Cloud sync on · metadata only'
-            : 'No remote telemetry · local only'}
-        </span>
-        <button
-          type="button"
-          onClick={openOptions}
-          className="font-semibold text-primary hover:underline"
-        >
-          Open settings
-        </button>
-      </footer>
+      <Footer cloudSyncEnabled={settings.cloudSyncEnabled} onOpenOptions={openOptions} />
     </div>
+  )
+}
+
+function Header({
+  onXTab,
+  saved,
+  onOpenOptions,
+}: {
+  onXTab: boolean
+  saved: boolean
+  onOpenOptions: () => void
+}) {
+  return (
+    <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b bg-background/70 px-3.5 py-3 backdrop-blur-xl">
+      <div className="min-w-0">
+        <span className="block text-[15px] leading-tight font-bold tracking-tight text-balance">
+          X Media Downloader
+        </span>
+        <p className="mt-0.5 flex items-center gap-1.5 text-xs leading-snug text-muted-foreground">
+          <span
+            className={cn(
+              'size-1.5 rounded-full',
+              onXTab ? 'bg-success' : 'bg-muted-foreground/40',
+            )}
+          />
+          {onXTab ? 'Ready on this X tab' : 'Open X or Twitter to scan media'}
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        {saved && <Badge variant="success">Saved</Badge>}
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          aria-label="Open settings"
+          title="Settings"
+          onClick={onOpenOptions}
+        >
+          <GearIcon className="size-4" />
+        </Button>
+      </div>
+    </header>
+  )
+}
+
+function DownloadMonitor({
+  monitor,
+  canClearMonitor,
+  clearFeedback,
+  clearMonitor,
+}: {
+  monitor: MetricsSnapshot
+  canClearMonitor: boolean
+  clearFeedback: boolean
+  clearMonitor: () => void
+}) {
+  const monitorDone = monitor.completed + monitor.failed
+  const monitorPct = Math.min(100, Math.round((monitorDone / monitor.total) * 100))
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        className="h-9 w-full"
+        disabled={!canClearMonitor}
+        title={!canClearMonitor ? 'Downloads still active' : undefined}
+        onClick={() => void clearMonitor()}
+      >
+        {!canClearMonitor
+          ? 'Active — downloads running'
+          : clearFeedback
+            ? 'Monitor cleared'
+            : 'Clear monitor'}
+      </Button>
+
+      <Card size="sm" aria-label="Download monitor">
+        <CardHeader className="gap-0.5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="grid min-w-0 gap-0.5">
+              <CardDescription className="text-[11px] font-semibold text-muted-foreground">
+                Download monitor
+              </CardDescription>
+              <CardTitle className="text-sm">
+                {monitorDone}/{monitor.total} done
+              </CardTitle>
+            </div>
+            <span className="text-[15px] leading-none font-bold tabular-nums text-primary">
+              {monitorPct}%
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <Progress value={monitorPct} aria-label="Download progress" className="h-1.5" />
+          <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+            <Stat label="Active" value={`${monitor.active}/${monitor.concurrencyCap}`} />
+            <Stat label="Speed" value={fmtRate(monitor.throughputBps)} />
+            <Stat label="Elapsed" value={fmtDuration(monitor.elapsedMs)} />
+            <Stat
+              label="ETA"
+              value={monitor.etaSeconds === undefined ? '-' : `${Math.ceil(monitor.etaSeconds)}s`}
+            />
+            <Stat
+              label="Bytes"
+              value={
+                monitor.bytesTotal > 0
+                  ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
+                  : fmtBytes(monitor.bytesReceived)
+              }
+            />
+            {monitor.failed > 0 && <Stat label="Failed" value={String(monitor.failed)} />}
+            {monitor.retries > 0 && <Stat label="Retries" value={String(monitor.retries)} />}
+          </dl>
+        </CardContent>
+      </Card>
+    </>
+  )
+}
+
+function PageActions({
+  onXTab,
+  drain,
+  sweep,
+  clearVisible,
+  willClear,
+}: {
+  onXTab: boolean
+  drain: { busy: boolean; msg: string | null; run: () => Promise<void> }
+  sweep: { busy: boolean; msg: string | null; run: () => Promise<void> }
+  clearVisible: { busy: boolean; msg: string | null; run: () => Promise<void> }
+  willClear: boolean
+}) {
+  return (
+    <Card size="sm" aria-label="On this page">
+      <CardHeader className="gap-0.5">
+        <CardTitle className="text-[13px] font-semibold">On this page</CardTitle>
+        <CardDescription className="text-xs leading-snug">
+          {onXTab
+            ? 'Grab the Likes or Bookmarks list you’re viewing.'
+            : 'Open an X/Twitter Likes or Bookmarks tab to use these.'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2.5">
+        <Button
+          type="button"
+          className="h-11 w-full gap-2"
+          disabled={!onXTab || drain.busy}
+          onClick={() => void drain.run()}
+        >
+          <DownloadIcon className="size-[18px]" />
+          {drain.busy
+            ? 'Draining…'
+            : willClear
+              ? 'Download + clear this page'
+              : 'Download this page'}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-10 w-full gap-2"
+          disabled={!onXTab || sweep.busy}
+          onClick={() => void sweep.run()}
+        >
+          <LayersIcon className="size-4" />
+          {sweep.busy
+            ? 'Sweeping…'
+            : willClear
+              ? 'Download + clear, one by one'
+              : 'Download one by one'}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="w-full gap-1.5 text-muted-foreground"
+          disabled={!onXTab || clearVisible.busy}
+          onClick={() => void clearVisible.run()}
+        >
+          <EraserIcon className="size-3.5" />
+          {clearVisible.busy ? 'Clearing…' : 'Clear this page now (no download)'}
+        </Button>
+        {(drain.msg || sweep.msg || clearVisible.msg) && (
+          <p className="text-xs leading-snug text-muted-foreground">
+            {drain.msg ?? sweep.msg ?? clearVisible.msg}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ModeSettings({
+  settings,
+  update,
+  activeMode,
+  clearScopeNote,
+  onOpenOptions,
+}: {
+  settings: Settings
+  update: (patch: Partial<Settings>) => Promise<void>
+  activeMode: { label: string; value: string; hint: string } | undefined
+  clearScopeNote: string | null
+  onOpenOptions: () => void
+}) {
+  return (
+    <Card size="sm" aria-label="What the actions above do">
+      <CardContent className="flex flex-col gap-3 pt-3">
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          These set what the buttons above do — they don’t download on their own.
+        </p>
+        <div className="grid gap-1.5">
+          <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
+            DOWNLOAD MODE
+          </span>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            spacing={0}
+            className="w-full"
+            aria-label="Download mode"
+            value={settings.downloadStrategy}
+            onValueChange={(value: string) => {
+              if (value)
+                void update({
+                  downloadStrategy: value as Settings['downloadStrategy'],
+                })
+            }}
+          >
+            {DOWNLOAD_MODES.map((option) => (
+              <ToggleGroupItem
+                key={option.value}
+                value={option.value}
+                aria-label={`Download mode: ${option.label}`}
+                className="h-9 flex-1 text-[13px]"
+              >
+                {option.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          {activeMode && (
+            <p className="text-[11px] leading-snug text-muted-foreground">{activeMode.hint}</p>
+          )}
+        </div>
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
+            <FieldDescription>{CLEAR_AFTER_DOWNLOAD.description}</FieldDescription>
+          </FieldContent>
+          <Switch
+            id="clearOnSave"
+            aria-label="Clear after download"
+            checked={settings.clearOnSave}
+            onCheckedChange={(checked: boolean) => void update({ clearOnSave: checked })}
+          />
+        </Field>
+        {clearScopeNote && (
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            {clearScopeNote}{' '}
+            <button
+              type="button"
+              onClick={onOpenOptions}
+              className="font-medium text-primary hover:underline"
+            >
+              Manage in settings
+            </button>
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RecentDownloads({ recent }: { recent: ReadonlyArray<DownloadRecord> }) {
+  if (recent.length === 0) return null
+
+  return (
+    <Card size="sm" aria-label="Recent downloads">
+      <CardHeader className="gap-0.5">
+        <CardTitle className="text-[13px] font-semibold">Recent</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ol className="grid gap-1.5" aria-label="Recent downloads">
+          {recent.map((r) => {
+            const f = formatRecord(r)
+            const variant =
+              f.status === 'completed'
+                ? 'success'
+                : f.status === 'failed'
+                  ? 'destructive'
+                  : 'outline'
+            return (
+              <li key={r.requestId} className="flex items-center gap-2 text-xs">
+                <Badge variant={variant} className="shrink-0 capitalize">
+                  {f.status}
+                </Badge>
+                <a
+                  className="truncate text-muted-foreground hover:text-foreground"
+                  href={f.link}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {f.title}
+                </a>
+              </li>
+            )
+          })}
+        </ol>
+      </CardContent>
+    </Card>
+  )
+}
+
+function Footer({
+  cloudSyncEnabled,
+  onOpenOptions,
+}: {
+  cloudSyncEnabled: boolean
+  onOpenOptions: () => void
+}) {
+  return (
+    <footer className="flex items-center justify-between gap-2 border-t px-3.5 py-3 text-xs leading-snug text-muted-foreground">
+      <span>
+        {cloudSyncEnabled ? 'Cloud sync on · metadata only' : 'No remote telemetry · local only'}
+      </span>
+      <button
+        type="button"
+        onClick={onOpenOptions}
+        className="font-semibold text-primary hover:underline"
+      >
+        Open settings
+      </button>
+    </footer>
   )
 }
 
