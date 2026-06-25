@@ -16,16 +16,19 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { DownloadIcon, EraserIcon, GearIcon, LayersIcon } from '@/components/icons'
 
+const KB = 1000
+const MB = 1_000_000
+
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
-  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} MB/s`
-  return `${Math.round(bps / 1000)} KB/s`
+  if (bps >= MB) return `${(bps / MB).toFixed(1)} MB/s`
+  return `${Math.round(bps / KB)} KB/s`
 }
 
 function fmtBytes(bytes: number): string {
   if (bytes <= 0) return '-'
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`
-  if (bytes >= 1000) return `${Math.round(bytes / 1000)} KB`
+  if (bytes >= MB) return `${(bytes / MB).toFixed(1)} MB`
+  if (bytes >= KB) return `${Math.round(bytes / KB)} KB`
   return `${bytes} B`
 }
 
