@@ -1,6 +1,9 @@
 import { bindFetch } from '../fetch'
 import type { OAuthConfig, OAuthTokens } from './types'
 
+const DEFAULT_EXPIRES_IN_SECONDS = 3600
+const MS_PER_SECOND = 1000
+
 /**
  * OAuth 2.0 Authorization Code + PKCE for a Chrome MV3 extension (ADR-0013 §4).
  * Pure helpers (verifier/challenge/auth-URL/redirect-parse) are I/O-free and
@@ -168,7 +171,7 @@ export async function exchangeCode(input: {
   return {
     accessToken,
     refreshToken: json.refresh_token,
-    expiresAt: input.now + (json.expires_in ?? 3600) * 1000,
+    expiresAt: input.now + (json.expires_in ?? DEFAULT_EXPIRES_IN_SECONDS) * MS_PER_SECOND,
     ...(account !== undefined ? { account } : {}),
   }
 }
@@ -187,7 +190,10 @@ export async function refreshAccessToken(input: {
     grant_type: 'refresh_token',
   })
   const accessToken = requireAccessToken(json, 'refresh response')
-  return { accessToken, expiresAt: input.now + (json.expires_in ?? 3600) * 1000 }
+  return {
+    accessToken,
+    expiresAt: input.now + (json.expires_in ?? DEFAULT_EXPIRES_IN_SECONDS) * MS_PER_SECOND,
+  }
 }
 
 /** Whether a token expires within `skewMs` of `now` (refresh proactively). */
