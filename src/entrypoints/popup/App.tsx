@@ -16,24 +16,30 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { DownloadIcon, EraserIcon, GearIcon, LayersIcon } from '@/components/icons'
 
+const BYTES_PER_KB = 1000
+const BYTES_PER_MB = 1_000_000
+const MS_PER_SECOND = 1000
+const MS_PER_MINUTE = 60_000
+const TEN_SECONDS_MS = 10_000
+
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
-  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} MB/s`
-  return `${Math.round(bps / 1000)} KB/s`
+  if (bps >= BYTES_PER_MB) return `${(bps / BYTES_PER_MB).toFixed(1)} MB/s`
+  return `${Math.round(bps / BYTES_PER_KB)} KB/s`
 }
 
 function fmtBytes(bytes: number): string {
   if (bytes <= 0) return '-'
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`
-  if (bytes >= 1000) return `${Math.round(bytes / 1000)} KB`
+  if (bytes >= BYTES_PER_MB) return `${(bytes / BYTES_PER_MB).toFixed(1)} MB`
+  if (bytes >= BYTES_PER_KB) return `${Math.round(bytes / BYTES_PER_KB)} KB`
   return `${bytes} B`
 }
 
 function fmtDuration(ms: number): string {
-  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`
-  const minutes = Math.floor(ms / 60_000)
-  const seconds = Math.round((ms % 60_000) / 1000)
+  if (ms < MS_PER_SECOND) return `${Math.max(0, Math.round(ms))}ms`
+  if (ms < MS_PER_MINUTE) return `${(ms / MS_PER_SECOND).toFixed(ms < TEN_SECONDS_MS ? 1 : 0)}s`
+  const minutes = Math.floor(ms / MS_PER_MINUTE)
+  const seconds = Math.round((ms % MS_PER_MINUTE) / MS_PER_SECOND)
   return `${minutes}m ${seconds}s`
 }
 
