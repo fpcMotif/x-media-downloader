@@ -29,11 +29,15 @@ function fmtBytes(bytes: number): string {
   return `${bytes} B`
 }
 
+const MS_PER_SECOND = 1000
+const TEN_SECONDS_MS = 10_000
+const MS_PER_MINUTE = 60_000
+
 function fmtDuration(ms: number): string {
-  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`
-  const minutes = Math.floor(ms / 60_000)
-  const seconds = Math.round((ms % 60_000) / 1000)
+  if (ms < MS_PER_SECOND) return `${Math.max(0, Math.round(ms))}ms`
+  if (ms < MS_PER_MINUTE) return `${(ms / MS_PER_SECOND).toFixed(ms < TEN_SECONDS_MS ? 1 : 0)}s`
+  const minutes = Math.floor(ms / MS_PER_MINUTE)
+  const seconds = Math.round((ms % MS_PER_MINUTE) / MS_PER_SECOND)
   return `${minutes}m ${seconds}s`
 }
 
