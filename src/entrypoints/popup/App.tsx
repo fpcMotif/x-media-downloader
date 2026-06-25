@@ -45,6 +45,10 @@ const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' 
 const POLL_ACTIVE_MS = 1000
 const POLL_IDLE_MS = 3000
 
+// Duration to show success feedback before hiding it.
+const FEEDBACK_SAVED_MS = 1200
+const FEEDBACK_CLEARED_MS = 1500
+
 const PAGE_UNREACHABLE = 'Could not reach the page — reload the X tab and try again.'
 
 /** A worklist button that messages the active tab's content script and turns the
@@ -232,7 +236,7 @@ export function App() {
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
     setSaved(true)
-    setTimeout(() => setSaved(false), 1200)
+    setTimeout(() => setSaved(false), FEEDBACK_SAVED_MS)
   }
 
   const clearMonitor = async (): Promise<void> => {
@@ -242,7 +246,7 @@ export function App() {
     if ((res as { ok?: boolean } | null)?.ok) {
       setMetrics(null)
       setClearFeedback(true)
-      setTimeout(() => setClearFeedback(false), 1500)
+      setTimeout(() => setClearFeedback(false), FEEDBACK_CLEARED_MS)
     }
   }
 
