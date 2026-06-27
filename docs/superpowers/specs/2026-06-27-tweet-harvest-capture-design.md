@@ -1,7 +1,7 @@
 # Tweet Harvest ("Capture") — Design Spec
 
 - **Date:** 2026-06-27
-- **Status:** Approved (design); hardened via adversarial review 2026-06-27; awaiting user spec review → implementation plan
+- **Status:** Approved + reviewed (2026-06-27); §15 open questions resolved; ready for implementation plan
 - **Author:** brainstorming session (f + Claude)
 - **Related:** ADR-0001 (passive tee), ADR-0009 (Convex control plane), ADR-0013 (client-side cloud byte upload / offscreen), ADR-0016 (media-key identity); [[timeline-saved-status-planned]]
 - **Posture change:** mirroring tweet **text** extends the documented Convex scope *"metadata only — never bytes, captures, or auth"* → **new ADR-0017 required** (see §11)
@@ -430,14 +430,14 @@ via the real extension (out of gate).
 3. **Phase 3 (deferred, out of v1).** Notion/Sheets off the `toRows` seam; active link
    enrichment; in-overlay thread-export affordance.
 
-## 15. Open questions for spec review
+## 15. Resolved decisions (spec review, 2026-06-27)
 
-1. **Mirror payload size:** mirror full `text` + all `links` (recommended — it's the point
-   of the feature), or a trimmed projection to keep Convex rows small?
-2. **`captureAllScrolled` default once `captureEnabled` is on:** keep OFF (narrow: media +
-   opened threads) — recommended — vs. ON.
-3. **Retain `rawText` in the Convex mirror too,** or local-only (recommended: local-only;
-   the mirror carries expanded `text` only, to bound row size)?
+1. **Mirror payload:** mirror full expanded `text` + all `links` (it's the point of the
+   feature). Matches §9.
+2. **`captureAllScrolled` default once `captureEnabled` is on:** **OFF** (narrow: media +
+   opened threads). Matches §12 defaults.
+3. **`rawText`:** **local-only.** The Convex `tweet_captures` row carries expanded `text`
+   only (no `rawText`), to bound row size. Matches the §9 schema.
 
 ## 16. File manifest
 
