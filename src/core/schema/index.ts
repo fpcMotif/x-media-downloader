@@ -1,4 +1,5 @@
 import { Schema, Effect } from 'effect'
+import { TweetRecord } from '../capture/record'
 
 export const MediaType = Schema.Literals(['photo', 'video', 'gif'])
 export type MediaType = typeof MediaType.Type
@@ -154,6 +155,12 @@ export const Settings = Schema.Struct({
   // Daily budget caps (local calendar day; hard-stop once either is reached); 0 = off.
   dailyMaxMB: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   dailyMaxCount: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  // Knowledge Capture (Tweet Harvest, spec §12): harvest tweet TEXT/metadata off
+  // the GraphQL tee into a local store, with an opt-in Convex mirror. All default
+  // off — the master gate keeps the capture pipeline dormant until opted in.
+  captureEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  captureAllScrolled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  captureMirrorEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 })
 export type Settings = typeof Settings.Type
 
@@ -414,6 +421,28 @@ export const SavedStatusResponse = Schema.TaggedStruct('SavedStatusResponse', {
 })
 export type SavedStatusResponse = typeof SavedStatusResponse.Type
 
+/** content → background: harvested tweet records off the GraphQL tee, mirrored
+ *  into the local capture store (+ opt-in Convex). `{ stored }` rides back. */
+export const CaptureTweets = Schema.TaggedStruct('CaptureTweets', {
+  records: Schema.Array(TweetRecord),
+})
+export type CaptureTweets = typeof CaptureTweets.Type
+
+/** panel → background: capture-store counts. `{ tweets, conversations, recent }` back. */
+export const CaptureSummaryRequest = Schema.TaggedStruct('CaptureSummaryRequest', {})
+export type CaptureSummaryRequest = typeof CaptureSummaryRequest.Type
+
+/** panel → background: build + deliver an export. `{ ok, filename }` back. */
+export const ExportCaptureRequest = Schema.TaggedStruct('ExportCaptureRequest', {
+  kind: Schema.Literals(['jsonl', 'tree', 'markdown']),
+  conversationId: Schema.optional(Schema.String),
+})
+export type ExportCaptureRequest = typeof ExportCaptureRequest.Type
+
+/** panel → background: wipe the local capture store. `{ cleared }` back. */
+export const ClearCaptureRequest = Schema.TaggedStruct('ClearCaptureRequest', {})
+export type ClearCaptureRequest = typeof ClearCaptureRequest.Type
+
 export const Message = Schema.Union([
   DetectRequest,
   MediaDetected,
@@ -438,5 +467,9 @@ export const Message = Schema.Union([
   TransferOutcome,
   SavedStatusRequest,
   SavedStatusResponse,
+  CaptureTweets,
+  CaptureSummaryRequest,
+  ExportCaptureRequest,
+  ClearCaptureRequest,
 ])
 export type Message = typeof Message.Type

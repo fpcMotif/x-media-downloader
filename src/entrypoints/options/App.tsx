@@ -9,6 +9,7 @@ import {
   SlidersIcon,
   ListChecksIcon,
   CloudIcon,
+  LayersIcon,
   ClockIcon,
   InfoIcon,
   CheckIcon,
@@ -20,6 +21,7 @@ import { DownloadsPanel } from './panels/downloads'
 import { FiltersPanel } from './panels/filters'
 import { WorklistPanel } from './panels/worklist'
 import { CloudPanel } from './panels/cloud'
+import { CapturePanel } from './panels/capture'
 import { HistoryPanel } from './panels/history'
 import { AboutPanel } from './panels/about'
 
@@ -47,6 +49,12 @@ const SECTIONS = [
     Panel: WorklistPanel,
   },
   { id: 'cloud', label: 'Cloud', icon: CloudIcon, Panel: CloudPanel },
+  {
+    id: 'capture',
+    label: 'Knowledge Capture',
+    icon: LayersIcon,
+    Panel: CapturePanel,
+  },
   { id: 'history', label: 'History', icon: ClockIcon, Panel: HistoryPanel },
   { id: 'about', label: 'About', icon: InfoIcon, Panel: AboutPanel },
 ] as const satisfies ReadonlyArray<Section>
