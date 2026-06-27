@@ -1,6 +1,11 @@
 # ADR-0009 — Convex as an opt-in cloud control plane (metadata only, never bytes)
 
 - **Status:** Accepted (2026-06-11)
+- **Extended by:** [ADR-0017](0017-capture-mirror-extends-convex-scope.md) — the
+  "metadata only — never bytes, captures, or auth" posture below scopes the **media**
+  mirror. The Tweet Harvest capture mirror extends the Convex scope to tweet **text**
+  (+ link metadata; still never media bytes/captures/auth), behind its own opt-in
+  `captureMirrorEnabled` (default OFF).
 
 ## Context
 

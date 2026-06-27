@@ -8,6 +8,8 @@ import {
   X_HOST_MATCH,
 } from '../../core/adapters/x'
 import { makeDetectionStore } from '../../core/adapters/x/detection-store'
+import { harvestTweets } from '../../core/capture/harvest'
+import type { Source, TweetRecord } from '../../core/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
 import {
   mediaKeyFromUrl,
@@ -80,7 +82,13 @@ import {
   type HandlerDeps,
 } from './handlers'
 import { makeDrainQueue, addPending, readyToClear, type DrainQueue } from '../../core/clear/drain'
-import type { ClearScope, MediaItem, Settings, SavedStatusResponse } from '../../core/schema'
+import type {
+  CaptureTweets,
+  ClearScope,
+  MediaItem,
+  Settings,
+  SavedStatusResponse,
+} from '../../core/schema'
 
 interface Rect {
   readonly top: number
@@ -941,6 +949,9 @@ export default defineContentScript({
     // Scope-gated to the home + List timelines, and gated on the `showSavedStatus`
     // setting (applySettings keeps `savedStatusOn` live).
     let savedStatusOn = false
+    // Tweet-text harvest gate + breadth flag (§7); applySettings keeps them live.
+    let captureEnabled = false
+    let captureAllScrolled = false
     let savedSweepTimer: ReturnType<typeof setTimeout> | null = null
     const scheduleSavedSweep = (): void => {
       if (savedSweepTimer !== null) clearTimeout(savedSweepTimer)
@@ -1305,6 +1316,10 @@ export default defineContentScript({
       // Cross-device "Saved" status: gate the sweep on the toggle; a flip re-paints.
       savedStatusOn = s.showSavedStatus
       scheduleSavedSweep()
+      // Tweet-text harvest (§7): default OFF. `captureAllScrolled` widens breadth
+      // from media/thread tweets to every scrolled text-only tweet.
+      captureEnabled = s.captureEnabled
+      captureAllScrolled = s.captureAllScrolled
       // Surface clear-on-save state in the PAGE console (the one you can see here),
       // so "why didn't it un-like?" is answerable without the SW console: if
       // clearOnSave is false, nothing ever clears — turn it on in the popup.
@@ -1450,14 +1465,65 @@ export default defineContentScript({
     })
     ui.mount()
 
+    // Tweet-text harvest producer (§7): the only state is this bounded pending
+    // buffer plus one debounce timer — no per-session identity Set. Re-sending a
+    // tweet is a cheap no-op at the durable merge (§6.4), which is what lets a
+    // later rich TweetDetail sighting upgrade an earlier thin timeline one.
+    const MAX_CAPTURE_BATCH = 64
+    const CAPTURE_FLUSH_DEBOUNCE_MS = 750
+    let captureBuffer: TweetRecord[] = []
+    let captureFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+    // Ship the pending buffer in CaptureTweets messages capped at MAX_CAPTURE_BATCH
+    // records each, draining fully so nothing is dropped. Fire-and-forget via
+    // safeSend: a stale context is a refresh hint, not a harvest failure.
+    const flushCaptures = (): void => {
+      if (captureFlushTimer !== null) {
+        clearTimeout(captureFlushTimer)
+        captureFlushTimer = null
+      }
+      while (captureBuffer.length > 0) {
+        const records = captureBuffer.slice(0, MAX_CAPTURE_BATCH)
+        captureBuffer = captureBuffer.slice(MAX_CAPTURE_BATCH)
+        void safeSend(() =>
+          browser.runtime.sendMessage({ _tag: 'CaptureTweets', records } satisfies CaptureTweets),
+        )
+      }
+    }
+
+    const harvestFrom = (json: unknown, path: string): void => {
+      if (!captureEnabled) return
+      const source: Source = path.includes('/TweetDetail') ? 'tweetDetail' : 'timeline'
+      const records = harvestTweets(json, {
+        source,
+        includeTextOnly: captureAllScrolled,
+        capturedAt: Date.now(),
+      })
+      if (records.length === 0) return
+      captureBuffer.push(...records)
+      if (captureBuffer.length >= MAX_CAPTURE_BATCH) {
+        flushCaptures()
+        return
+      }
+      if (captureFlushTimer !== null) clearTimeout(captureFlushTimer)
+      captureFlushTimer = setTimeout(flushCaptures, CAPTURE_FLUSH_DEBOUNCE_MS)
+    }
+
     document.addEventListener('xmd:media-response', (event) => {
       const detail = (event as CustomEvent<{ path: string; body: string }>).detail
       try {
         const json: unknown = JSON.parse(detail.body)
         if (store.addDetected(detectFromJson(json)).length > 0) rerender()
+        harvestFrom(json, detail.path)
       } catch {
         /* ignore non-JSON / unexpected shapes */
       }
+    })
+
+    // Don't lose a sub-debounce batch when the tab is navigated away or unloaded.
+    ctx.addEventListener(window, 'pagehide', flushCaptures)
+    ctx.addEventListener(document, 'visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushCaptures()
     })
 
     // Quick Grab hover tracking: hold the configured modifier and hover a real

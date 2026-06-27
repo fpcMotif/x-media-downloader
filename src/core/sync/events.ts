@@ -3,8 +3,11 @@ import { MediaType, type MediaItem } from '../schema'
 
 /**
  * Append-only state transitions mirrored to the cloud control plane
- * (ADR-0009). Metadata only by construction: the schema has no fields for
+ * (ADR-0009). Media metadata only by construction: the schema has no fields for
  * captures, auth headers, or bytes, and decode drops unknown keys.
+ *
+ * Scope note: this is the *media* mirror. Tweet TEXT rides a separate, own-opt-in
+ * mirror that extends the Convex scope — see ADR-0017.
  */
 export const SyncEventKind = Schema.Literals(['queued', 'completed', 'failed'])
 export type SyncEventKind = typeof SyncEventKind.Type

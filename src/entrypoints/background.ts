@@ -74,6 +74,11 @@ import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator, hookScopes } from '../background/clear-coordinator'
 import { isClearableTweetId } from '../core/clear/clearer'
+import * as captureDb from '../background/capture-db'
+import { mirrorCaptures } from '../background/capture-outbox'
+import { recentConversations, selectConversation, summarize } from '../core/capture/store'
+import { buildTree } from '../core/capture/tree'
+import { toJsonl, toMarkdown, toTreeJson } from '../core/capture/export'
 
 // Ephemeral monitoring snapshot — session storage survives SW recycling but not
 // a browser restart (ADR-0005). The popup polls it via `MetricsRequest`.
@@ -1047,6 +1052,64 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   }
 }
 
+// Knowledge Capture exports (spec §10). The SW can't mint `blob:` URLs, so a
+// built artifact is delivered as a `data:` URL by default and routed through the
+// offscreen `saveBlob` port (which mints the blob URL in the offscreen doc) only
+// when it's too large to inline. ~2 MB ceiling on the encoded data: URL.
+const captureRecentLimit = 20
+const captureDataUrlMaxBytes = 2 * 1024 * 1024
+const captureOffscreen = makeOffscreenPort()
+
+const captureDataUrl = (text: string): string =>
+  `data:application/json;charset=utf-8,${encodeURIComponent(text)}`
+
+/** Deliver an export artifact MV3-safely: a `data:` URL handed to
+ *  `chrome.downloads.download` below the size ceiling, else the offscreen
+ *  `saveBlob` port (one ensure/close per call, like fetched-strategy). */
+const deliverCaptureExport = async (text: string, filename: string): Promise<void> => {
+  const url = captureDataUrl(text)
+  if (url.length <= captureDataUrlMaxBytes) {
+    await browser.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false })
+    return
+  }
+  const bytes = new TextEncoder().encode(text)
+  try {
+    await captureOffscreen.ensureDocument()
+    await captureOffscreen.saveBlob({ bytes, mimeType: 'application/json', filename })
+  } finally {
+    await captureOffscreen.closeDocument().catch(() => {})
+  }
+}
+
+/** Build the requested export over the harvested records and deliver it (spec
+ *  §10): JSONL across the whole store, or one conversation's tree as JSON /
+ *  Markdown. Quote text is resolved against the full record set. Returns the
+ *  artifact filename, or null when a thread export names no conversation. */
+const handleCaptureExport = async (
+  kind: 'jsonl' | 'tree' | 'markdown',
+  conversationId: string | undefined,
+): Promise<string | null> => {
+  if (kind === 'jsonl') {
+    const records = await captureDb.allRecords()
+    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const filename = `xharvest-${day}.jsonl`
+    await deliverCaptureExport(toJsonl(records), filename)
+    return filename
+  }
+  if (conversationId === undefined) return null
+  const all = await captureDb.allRecords()
+  const [tree] = buildTree(selectConversation(all, conversationId))
+  if (tree === undefined) return null
+  if (kind === 'tree') {
+    const filename = `thread-${conversationId}.json`
+    await deliverCaptureExport(toTreeJson(tree, all), filename)
+    return filename
+  }
+  const filename = `thread-${conversationId}.md`
+  await deliverCaptureExport(toMarkdown(tree, all), filename)
+  return filename
+}
+
 // Typed message-router table. Each entry returns the value to send back; the
 // listener pipes it to sendResponse and keeps the channel open. `handle` narrows
 // the union member for the entry while keeping the table's value type uniform.
@@ -1109,6 +1172,31 @@ const messageHandlers: MessageHandlers = {
     const body = await recoverSyndicationBody(msg.tweetId)
     return { _tag: 'RecoverTweetMediaResponse', ...(body !== null ? { body } : {}) }
   }),
+  // Knowledge Capture (spec §8/§9/§10/§12). The dispatcher persists the batch to
+  // the durable IndexedDB store (source of truth), then offers it to the opt-in
+  // Convex mirror fire-and-forget — `mirrorCaptures` gates internally and never
+  // affects the `{ stored }` reply.
+  CaptureTweets: handle<'CaptureTweets'>(async (msg) => {
+    await captureDb.putRecords(msg.records)
+    mirrorCaptures(msg.records)
+    return { stored: msg.records.length }
+  }),
+  CaptureSummaryRequest: async () => {
+    const records = await captureDb.allRecords()
+    return {
+      ...summarize(records),
+      recent: recentConversations(records, captureRecentLimit),
+    }
+  },
+  ExportCaptureRequest: handle<'ExportCaptureRequest'>(async (msg) => {
+    const filename = await handleCaptureExport(msg.kind, msg.conversationId)
+    return filename === null ? { ok: false, filename: '' } : { ok: true, filename }
+  }),
+  ClearCaptureRequest: async () => {
+    const cleared = await captureDb.count()
+    await captureDb.clear()
+    return { cleared }
+  },
 }
 
 export default defineBackground(() => {

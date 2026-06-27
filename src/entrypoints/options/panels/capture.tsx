@@ -40,8 +40,7 @@ export function CapturePanel({ settings, update }: PanelProps) {
     setSummary({ tweets: 0, conversations: 0, recent: [] })
   }
 
-  const syncConfigured =
-    settings.cloudSyncEnabled && settings.convexUrl !== '' && settings.convexSyncSecret !== ''
+  const syncConfigured = settings.convexUrl !== '' && settings.convexSyncSecret !== ''
   const recent = summary?.recent ?? []
 
   return (
