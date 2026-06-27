@@ -212,10 +212,13 @@ in a thread; counts drift). So raw last-write-wins-by-time is wrong. The single 
 
 ```
 keep incoming over existing  ⟺  incoming.sourceRank > existing.sourceRank
-                                  OR (equal rank AND incoming.capturedAt ≥ existing.at)
+                                  OR (equal rank AND incoming.capturedAt ≥ existing.capturedAt)
 ```
 
-`sourceRank` (and `capturedAt`/`at`) ride on the `TweetRecord`, the `SyncCaptureEvent`,
+The local `TweetRecord` timestamp field is **`capturedAt`**; the Convex `tweet_captures`
+row mirrors that same value as **`at`** (column rename only). The mutation applies the
+identical rule with `at` in place of `capturedAt`. `sourceRank` (and the timestamp) ride
+on the `TweetRecord`, the `SyncCaptureEvent`,
 and the `tweet_captures` row, so a later thin timeline sighting can **never** overwrite a
 rich `TweetDetail` record on either side. Field-wise, the winner replaces the loser whole
 (records are self-consistent snapshots). Symmetric tests on both sides (§13) assert
