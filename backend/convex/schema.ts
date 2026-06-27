@@ -28,6 +28,29 @@ export const syncEventFields = {
   media: v.optional(media),
 }
 
+// Tweet Harvest mirror (§9). Validators are the single source of truth: the
+// `tweet_captures` table below is defined from `captureRow`, and captures.ts
+// imports `captureRow` for its mutation arg validator rather than re-declaring.
+export const captureLink = v.object({
+  expandedUrl: v.string(),
+  title: v.optional(v.string()),
+  domain: v.optional(v.string()),
+})
+
+export const captureRow = v.object({
+  captureId: v.string(), // `${deviceId}/${tweetId}`
+  deviceId: v.string(),
+  tweetId: v.string(),
+  conversationId: v.string(),
+  inReplyToTweetId: v.optional(v.string()),
+  handle: v.string(),
+  text: v.string(),
+  createdAt: v.optional(v.number()),
+  links: v.optional(v.array(captureLink)),
+  sourceRank: v.number(),
+  at: v.number(),
+})
+
 export default defineSchema({
   // Append-only ledger of extension state transitions (ADR-0009). `eventId`
   // is the client's deterministic idempotency key: at-least-once delivery
@@ -75,5 +98,15 @@ export default defineSchema({
     error: v.optional(v.string()),
   })
     .index('by_job', ['jobId'])
+    .index('by_at', ['at']),
+
+  // Tweet Harvest "Capture" mirror (§9). Best-effort cloud mirror of the
+  // extension's local TweetRecord store; IndexedDB remains source of truth.
+  // `captureId` (`${deviceId}/${tweetId}`) is the idempotency key; upserts apply
+  // the §6.4 rank-then-`at` merge (NOT last-write-wins) so a thin timeline
+  // sighting never overwrites a rich TweetDetail row.
+  tweet_captures: defineTable(captureRow)
+    .index('by_capture_id', ['captureId'])
+    .index('by_conversation', ['conversationId'])
     .index('by_at', ['at']),
 })

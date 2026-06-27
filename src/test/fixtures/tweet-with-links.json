@@ -1,0 +1,53 @@
+{
+  "data": {
+    "tweetResult": {
+      "result": {
+        "__typename": "Tweet",
+        "rest_id": "3001",
+        "core": {
+          "user_results": {
+            "result": {
+              "__typename": "User",
+              "rest_id": "601",
+              "legacy": {
+                "screen_name": "links_author",
+                "name": "Links Author"
+              }
+            }
+          }
+        },
+        "views": { "count": "4200", "state": "EnabledWithCount" },
+        "legacy": {
+          "id_str": "3001",
+          "conversation_id_str": "3001",
+          "full_text": "Two reads: https://t.co/yt00000000 and https://t.co/arx0000000",
+          "created_at": "Thu Apr 24 11:00:00 +0000 2025",
+          "lang": "en",
+          "reply_count": 0,
+          "retweet_count": 1,
+          "favorite_count": 9,
+          "quote_count": 0,
+          "bookmark_count": 2,
+          "entities": {
+            "urls": [
+              {
+                "url": "https://t.co/yt00000000",
+                "expanded_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "display_url": "youtube.com/watch?v=dQw4w9…",
+                "indices": [11, 34]
+              },
+              {
+                "url": "https://t.co/arx0000000",
+                "expanded_url": "https://arxiv.org/abs/1706.03762",
+                "display_url": "arxiv.org/abs/1706.03762",
+                "indices": [39, 62]
+              }
+            ],
+            "user_mentions": [],
+            "hashtags": []
+          }
+        }
+      }
+    }
+  }
+}

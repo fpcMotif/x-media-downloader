@@ -31,7 +31,10 @@ export default defineConfig({
     // for the auth window or the chromiumapp.org redirect.
     // `alarms` powers the Cloud Upload backoff wake-up (ADR-0013) so failed
     // uploads retry autonomously after the service worker suspends.
-    permissions: ['downloads', 'storage', 'activeTab', 'identity', 'alarms'],
+    // `unlimitedStorage` keeps the Tweet Harvest IndexedDB store (`xmd-capture`)
+    // from being evicted under browser storage pressure — the breadth flag can
+    // harvest tens of thousands of text records.
+    permissions: ['downloads', 'storage', 'activeTab', 'identity', 'alarms', 'unlimitedStorage'],
     host_permissions: [
       'https://x.com/*',
       'https://twitter.com/*',

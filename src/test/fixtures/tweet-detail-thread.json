@@ -1,0 +1,156 @@
+{
+  "data": {
+    "threaded_conversation_with_injections_v2": {
+      "instructions": [
+        {
+          "type": "TimelineAddEntries",
+          "entries": [
+            {
+              "entryId": "tweet-2001",
+              "content": {
+                "entryType": "TimelineTimelineItem",
+                "__typename": "TimelineTimelineItem",
+                "itemContent": {
+                  "itemType": "TimelineTweet",
+                  "__typename": "TimelineTweet",
+                  "tweet_results": {
+                    "result": {
+                      "__typename": "Tweet",
+                      "rest_id": "2001",
+                      "core": {
+                        "user_results": {
+                          "result": {
+                            "__typename": "User",
+                            "rest_id": "501",
+                            "legacy": {
+                              "screen_name": "root_author",
+                              "name": "Root Author"
+                            }
+                          }
+                        }
+                      },
+                      "views": { "count": "12000", "state": "EnabledWithCount" },
+                      "legacy": {
+                        "id_str": "2001",
+                        "conversation_id_str": "2001",
+                        "full_text": "root tweet of the thread",
+                        "created_at": "Thu Apr 24 10:25:00 +0000 2025",
+                        "lang": "en",
+                        "reply_count": 2,
+                        "retweet_count": 5,
+                        "favorite_count": 40,
+                        "quote_count": 1,
+                        "bookmark_count": 3,
+                        "entities": { "urls": [], "user_mentions": [], "hashtags": [] }
+                      }
+                    }
+                  },
+                  "tweetDisplayType": "Tweet"
+                }
+              }
+            },
+            {
+              "entryId": "conversationthread-2001",
+              "content": {
+                "entryType": "TimelineTimelineModule",
+                "__typename": "TimelineTimelineModule",
+                "displayType": "VerticalConversation",
+                "items": [
+                  {
+                    "entryId": "conversationthread-2001-tweet-2002",
+                    "item": {
+                      "itemContent": {
+                        "itemType": "TimelineTweet",
+                        "__typename": "TimelineTweet",
+                        "tweet_results": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "2002",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "__typename": "User",
+                                  "rest_id": "502",
+                                  "legacy": {
+                                    "screen_name": "reply_a_author",
+                                    "name": "Reply A Author"
+                                  }
+                                }
+                              }
+                            },
+                            "views": { "count": "800", "state": "EnabledWithCount" },
+                            "legacy": {
+                              "id_str": "2002",
+                              "conversation_id_str": "2001",
+                              "in_reply_to_status_id_str": "2001",
+                              "in_reply_to_screen_name": "root_author",
+                              "full_text": "reply A to the root",
+                              "created_at": "Thu Apr 24 10:30:00 +0000 2025",
+                              "lang": "en",
+                              "reply_count": 1,
+                              "retweet_count": 0,
+                              "favorite_count": 6,
+                              "quote_count": 0,
+                              "bookmark_count": 0,
+                              "entities": { "urls": [], "user_mentions": [], "hashtags": [] }
+                            }
+                          }
+                        },
+                        "tweetDisplayType": "Tweet"
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "conversationthread-2001-tweet-2003",
+                    "item": {
+                      "itemContent": {
+                        "itemType": "TimelineTweet",
+                        "__typename": "TimelineTweet",
+                        "tweet_results": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "2003",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "__typename": "User",
+                                  "rest_id": "503",
+                                  "legacy": {
+                                    "screen_name": "reply_b_author",
+                                    "name": "Reply B Author"
+                                  }
+                                }
+                              }
+                            },
+                            "views": { "count": "120", "state": "EnabledWithCount" },
+                            "legacy": {
+                              "id_str": "2003",
+                              "conversation_id_str": "2001",
+                              "in_reply_to_status_id_str": "2002",
+                              "in_reply_to_screen_name": "reply_a_author",
+                              "full_text": "grandchild reply B to reply A",
+                              "created_at": "Thu Apr 24 10:35:00 +0000 2025",
+                              "lang": "en",
+                              "reply_count": 0,
+                              "retweet_count": 0,
+                              "favorite_count": 2,
+                              "quote_count": 0,
+                              "bookmark_count": 0,
+                              "entities": { "urls": [], "user_mentions": [], "hashtags": [] }
+                            }
+                          }
+                        },
+                        "tweetDisplayType": "Tweet"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        { "type": "TimelineTerminateTimeline", "direction": "Top" }
+      ]
+    }
+  }
+}
