@@ -539,6 +539,26 @@ const postEvent = (msg: unknown): void => {
  *  grab never hides the whole post (1 of 4 photos must not "Not interested" it). */
 type ClearExpect = ReadonlyArray<{ readonly tweetId: string; readonly ids: ReadonlyArray<string> }>
 
+type SkipSummary = ReadonlyArray<{ readonly reason: string; readonly count: number }>
+
+// Friendly labels for admission-gate skip reasons (mirrors SkipReason).
+const SKIP_LABELS: Record<string, string> = {
+  duplicate: 'already saved',
+  'filtered-type': 'filtered',
+  'too-small': 'too small',
+  'too-big': 'too big',
+  'daily-budget': 'daily limit',
+}
+
+/** Surface why media was dropped by the gate. The overlay has no toast surface,
+ *  so — like notifyContextLost — this goes to the console. */
+const reportSkipped = (skipped?: SkipSummary): void => {
+  if (!skipped || skipped.length === 0) return
+  const total = skipped.reduce((n, s) => n + s.count, 0)
+  const parts = skipped.map((s) => `${s.count} ${SKIP_LABELS[s.reason] ?? s.reason}`)
+  console.info(`[XMD] ${total} skipped — ${parts.join(', ')}`)
+}
+
 /** Send one tracked request; false on a background start failure OR a dead
  *  channel (a stale tab — the user is told to reload rather than failing mutely).
  *  `clearExpect` (For You only) widens the clear gate to the whole post. */
@@ -558,7 +578,8 @@ const sendTracked = (
       return false
     }
     if (out.status === 'error') return false
-    const r = out.reply as { completed?: number; total?: number } | undefined
+    const r = out.reply as { completed?: number; total?: number; skipped?: SkipSummary } | undefined
+    reportSkipped(r?.skipped)
     return r?.completed !== undefined && r.completed === r.total
   })
 
