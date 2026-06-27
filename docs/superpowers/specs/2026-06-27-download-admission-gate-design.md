@@ -97,7 +97,7 @@ Four independent gates, each its own setting:
 | Media-type | `skipTypes: ('video'\|'gif'\|'photo')[]` | `MediaItem.type` (free) | `filtered-type` |
 | Min-resolution | `minWidth`, `minHeight` | `MediaItem.width/height` when present (free) | `too-small` |
 | Per-file size cap | `maxFileSizeMB` | HEAD preflight → content-length | `too-big` |
-| Daily budget | `dailyMaxBytes`, `dailyMaxCount` | durable per-day tally | `daily-budget` |
+| Daily budget | `dailyMaxMB`, `dailyMaxCount` | durable per-day tally | `daily-budget` |
 
 ### Daily-budget store — `src/core/download/daily-budget.ts`
 
@@ -112,7 +112,7 @@ Four independent gates, each its own setting:
 
 ## Settings & UI
 
-- New fields on the `Settings` struct ([src/core/schema/index.ts](../../../src/core/schema/index.ts)), all default off/zero: `preventDuplicateDownloads`, `skipTypes`, `minWidth`, `minHeight`, `maxFileSizeMB`, `dailyMaxBytes`, `dailyMaxCount`.
+- New fields on the `Settings` struct ([src/core/schema/index.ts](../../../src/core/schema/index.ts)), all default off/zero: `preventDuplicateDownloads`, `skipTypes`, `minWidth`, `minHeight`, `maxFileSizeMB`, `dailyMaxMB`, `dailyMaxCount`. (Persisted settings are MB-valued and user-friendly; the gate converts `maxFileSizeMB`/`dailyMaxMB` to bytes internally.)
 - The daily tally is **not** in `Settings` (it's runtime state, separate key).
 - New options panel `src/entrypoints/options/panels/filters.tsx` ("Downloads & Filters"): the dedup toggle (with its auto-enables-history note), the four filters, and today's usage with the "reset today" button. Keeps `general.tsx` from growing further.
 
