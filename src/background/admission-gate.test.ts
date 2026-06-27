@@ -3,6 +3,7 @@ import { Schema } from 'effect'
 import { makeAdmissionGate } from './admission-gate'
 import { Settings, type MediaItem } from '../core/schema'
 import type { SavedIndex } from '../core/sync/saved-index'
+import type { SizeProbePort } from '../core/download/size-probe'
 
 const baseSettings = (over: Partial<typeof Settings.Type>): typeof Settings.Type => ({
   ...Schema.decodeUnknownSync(Settings)({}),
@@ -28,7 +29,7 @@ const queryConvex = async () => []
 
 describe('makeAdmissionGate', () => {
   it('runs cheap filters before any probe — type-filtered item never reaches the probe', async () => {
-    const sizeProbe = { probe: vi.fn(async () => 10) }
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ skipTypes: ['video'], maxFileSizeMB: 1 }),
       savedIndex: savedIndexReturning([]),
@@ -46,7 +47,7 @@ describe('makeAdmissionGate', () => {
   })
 
   it('does not probe when neither size cap nor byte budget is active (count budget on)', async () => {
-    const sizeProbe = { probe: vi.fn(async () => 10) }
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ maxFileSizeMB: 0, dailyMaxMB: 0, dailyMaxCount: 5 }),
       savedIndex: savedIndexReturning([]),
@@ -64,7 +65,7 @@ describe('makeAdmissionGate', () => {
   })
 
   it('drops duplicate tweets via the saved set — every item of a saved tweet is skipped', async () => {
-    const sizeProbe = { probe: vi.fn(async () => 10) }
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ preventDuplicateDownloads: true }),
       savedIndex: savedIndexReturning(['T1']),
@@ -87,7 +88,9 @@ describe('makeAdmissionGate', () => {
 
   it('size cap skips an over-cap file and fails open on an unknown size', async () => {
     const sizeProbe = {
-      probe: vi.fn(async (url: string) => (url.endsWith('big') ? 5 * 1024 * 1024 : null)),
+      probe: vi.fn<SizeProbePort['probe']>(async (url: string) =>
+        url.endsWith('big') ? 5 * 1024 * 1024 : null,
+      ),
     }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ maxFileSizeMB: 1 }),
@@ -106,7 +109,7 @@ describe('makeAdmissionGate', () => {
   })
 
   it('locks the daily budget once the projection would exceed dailyMaxCount', async () => {
-    const sizeProbe = { probe: vi.fn(async () => 0) }
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 0) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ dailyMaxCount: 3 }),
       savedIndex: savedIndexReturning([]),
@@ -128,7 +131,7 @@ describe('makeAdmissionGate', () => {
   })
 
   it('degrades gracefully when the backstop is unavailable — resolve returns only the local subset, never throws', async () => {
-    const sizeProbe = { probe: vi.fn(async () => 10) }
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
     // Convex unreachable: resolve yields only the locally-known saved subset.
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ preventDuplicateDownloads: true }),
@@ -147,7 +150,7 @@ describe('makeAdmissionGate', () => {
   })
 
   it('result shape: admitted is MediaItem[] and skipped preserves input order', async () => {
-    const sizeProbe = { probe: vi.fn(async () => 0) }
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 0) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ skipTypes: ['gif'], dailyMaxCount: 2 }),
       savedIndex: savedIndexReturning([]),

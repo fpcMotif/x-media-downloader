@@ -34,6 +34,10 @@ import { makeDownloadQueueCore } from '../core/download/queue'
 import { makeSerialQueue } from '../core/serial-queue'
 import { isMessageAllowed } from '../core/sender-guard'
 import { planDownloads } from '../core/download/destination'
+import { makeSizeProbe } from '../core/download/size-probe'
+import { type BudgetRecord } from '../core/download/daily-budget'
+import { type SkipReason } from '../core/download/admission'
+import { bindFetch } from '../core/fetch'
 import {
   emptyMetrics,
   extendTotal,
@@ -66,6 +70,8 @@ import { makeTabBroadcaster } from '../background/tab-broadcaster'
 import { makeSyncOutbox } from '../background/sync-outbox'
 import { makeCloudUpload } from '../background/cloud-upload'
 import { makeSavedStatusCoordinator } from '../background/saved-status'
+import { makeAdmissionGate } from '../background/admission-gate'
+import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator, hookScopes } from '../background/clear-coordinator'
 import { isClearableTweetId } from '../core/clear/clearer'
 
@@ -316,6 +322,31 @@ void (async () => {
   savedIndex.seed(records.filter((r) => r.status === 'completed').map((r) => r.media.tweetId))
 })()
 
+// Download Admission Gate: a pre-scheduling check that drops duplicates and
+// filtered / over-budget media before planDownloads. Size is HEAD-probed via a
+// bound fetch (the MV3 SW rejects an unbound one, see bindFetch). The daily-budget
+// tally lives in its own durable key, resets per local calendar day, and is
+// accrued on completion through a serial queue so concurrent settles don't race.
+const dailyBudgetItem = storage.defineItem<BudgetRecord>('local:daily-budget', {
+  fallback: { day: '', bytes: 0, count: 0 },
+})
+const budgetStore = makeDailyBudgetStore({
+  storage: {
+    get: () => dailyBudgetItem.getValue(),
+    set: (record) => dailyBudgetItem.setValue(record),
+  },
+  now: () => Date.now(),
+})
+const budgetQueue = makeSerialQueue(queueError('budget'))
+const headFetch = bindFetch(fetch)
+const admissionGate = makeAdmissionGate({
+  getSettings,
+  savedIndex,
+  queryConvex: queryConvexSaved,
+  sizeProbe: makeSizeProbe({ fetch: (url, init) => headFetch(url, init) }),
+  readTodayBudget: () => budgetStore.readToday(),
+})
+
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
   const direct = makeDirectStrategy({ download: (opts) => browser.downloads.download(opts) })
@@ -396,7 +427,18 @@ const settleBrowserDownload = async (
   // Light up the "Saved" status for this post immediately (instant, offline) — the
   // local-first half of the cross-device index; tweetId is unknown for an unqueued
   // sidecar, in which case there is nothing to mark.
-  if (complete && tweetId !== undefined) savedStatusCoordinator.onCompleted(tweetId)
+  if (complete && tweetId !== undefined) {
+    savedStatusCoordinator.onCompleted(tweetId)
+    // Accrue the daily-budget tally (media completions only — sidecars carry no
+    // tweetId). Prefer the known total size, else last-sampled bytes, else 0.
+    const progress = live?.items.get(id)
+    const bytes = progress
+      ? progress.totalBytes > 0
+        ? progress.totalBytes
+        : progress.bytesReceived
+      : 0
+    budgetQueue.push(() => budgetStore.recordCompletion(bytes, 1))
+  }
   traceBackground(complete ? 'browser-complete' : 'browser-failed', {
     itemId: id,
     elapsedMs: now - (requestStartedAt.get(id) ?? now),
@@ -676,6 +718,15 @@ const ensureStuckPoll = (): void => {
     stuckPollTimer = setInterval(() => void reconcileStuckDownloads(), STUCK_RECONCILE_POLL_MS)
 }
 
+/** Aggregate the gate's per-item skips into by-reason counts for the response. */
+const summarizeSkipped = (
+  skipped: ReadonlyArray<{ readonly reason: SkipReason }>,
+): { reason: SkipReason; count: number }[] => {
+  const counts = new Map<SkipReason, number>()
+  for (const s of skipped) counts.set(s.reason, (counts.get(s.reason) ?? 0) + 1)
+  return [...counts].map(([reason, count]) => ({ reason, count }))
+}
+
 const handleDownload = (
   items: ReadonlyArray<MediaItem>,
   sweep?: { readonly scope: Scope },
@@ -689,7 +740,12 @@ const handleDownload = (
     const settings = yield* svc.get
     const strategy = chooseStrategy(settings)
     const queue = makeDownloadQueueCore({ strategy, concurrency: settings.downloadConcurrency })
-    const requests = items
+    // Admission gate (dedup + filters/caps): decide which media may be scheduled
+    // BEFORE planning, so skipped items are never expanded into requests. A pure
+    // pass-through when every gate setting is off.
+    const admission = yield* Effect.promise(() => admissionGate.admit(items))
+    const skipped = summarizeSkipped(admission.skipped)
+    const requests = admission.admitted
       .flatMap((item) =>
         planDownloads({
           template: settings.filenameTemplate,
@@ -698,13 +754,16 @@ const handleDownload = (
         }),
       )
       .filter((r) => !inFlight.has(r.id))
-    // Everything already in flight: report success without re-downloading.
+    // Nothing to schedule (all gate-skipped or already in flight): report with the
+    // skip summary so the overlay can explain why nothing downloaded.
     if (requests.length === 0) {
-      traceBackground('request-deduped', { detail: 'all items already in flight' })
+      traceBackground('request-deduped', {
+        detail: `${admission.admitted.length} admitted, ${admission.skipped.length} skipped`,
+      })
       yield* Effect.promise(() => persistSnapshot(Date.now()))
-      return { _tag: 'QueueUpdate' as const, completed: 0, total: 0 }
+      return { _tag: 'QueueUpdate' as const, completed: 0, total: 0, skipped }
     }
-    const mediaById = new Map(items.map((i) => [i.id, i]))
+    const mediaById = new Map(admission.admitted.map((i) => [i.id, i]))
     for (const r of requests) {
       inFlight.add(r.id)
       clearInterruptRetryState(r.id)
@@ -885,7 +944,7 @@ const handleDownload = (
     persistTransfers()
     yield* Effect.promise(() => persistSnapshot(now))
 
-    return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total }
+    return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total, skipped }
   }).pipe(Effect.provide(SettingsServiceLive))
 
 /** The durable one-by-one sweep (content → background). Skip tweets already

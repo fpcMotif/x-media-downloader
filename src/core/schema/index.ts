@@ -195,9 +195,23 @@ export const DownloadRequest = Schema.TaggedStruct('DownloadRequest', {
     Schema.Array(Schema.Struct({ tweetId: Schema.String, ids: Schema.Array(Schema.String) })),
   ),
 })
+// Why a download was dropped by the admission gate (mirrors the SkipReason union
+// in src/core/download/admission.ts; keep the two literal lists in sync).
+export const SkipReason = Schema.Literals([
+  'duplicate',
+  'filtered-type',
+  'too-small',
+  'too-big',
+  'daily-budget',
+])
+export type SkipReason = typeof SkipReason.Type
 export const QueueUpdate = Schema.TaggedStruct('QueueUpdate', {
   completed: Schema.Number,
   total: Schema.Number,
+  // Admission-gate drops aggregated by reason (omitted when nothing was skipped).
+  skipped: Schema.optional(
+    Schema.Array(Schema.Struct({ reason: SkipReason, count: Schema.Number })),
+  ),
 })
 export const MetricsRequest = Schema.TaggedStruct('MetricsRequest', {})
 export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {
