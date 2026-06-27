@@ -1,6 +1,7 @@
 import { Schema, Effect } from 'effect'
 
 export const MediaType = Schema.Literals(['photo', 'video', 'gif'])
+export type MediaType = typeof MediaType.Type
 
 export const MediaItem = Schema.Struct({
   id: Schema.String,
@@ -135,6 +136,24 @@ export const Settings = Schema.Struct({
   dropboxRefreshToken: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   dropboxTokenExpiry: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   dropboxAccount: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  // Download Admission Gate (opt-in; all default off/zero → gate is a pass-through):
+  // a pre-scheduling gate that skips duplicates and filtered / over-budget media.
+  // See docs/superpowers/specs/2026-06-27-download-admission-gate-design.md.
+  // Per-tweet duplicate prevention; the options UI auto-enables downloadHistoryEnabled
+  // (its data source) when this is turned on.
+  preventDuplicateDownloads: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+  ),
+  // Skip these media types entirely (e.g. ['video']). Empty = no type filter.
+  skipTypes: Schema.Array(MediaType).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  // Min-resolution filter; 0 = off. Skips media below either dimension when known.
+  minWidth: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  minHeight: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  // Per-file size cap in MB (HEAD-probed content-length); 0 = off.
+  maxFileSizeMB: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  // Daily budget caps (local calendar day; hard-stop once either is reached); 0 = off.
+  dailyMaxMB: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  dailyMaxCount: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
 })
 export type Settings = typeof Settings.Type
 

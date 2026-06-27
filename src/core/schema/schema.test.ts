@@ -81,6 +81,17 @@ describe('Settings schema', () => {
     expect(s.showSavedStatus).toBe(true)
   })
 
+  it('defaults the admission-gate filter keys off/zero when absent', () => {
+    const s = Schema.decodeUnknownSync(Settings)({})
+    expect(s.preventDuplicateDownloads).toBe(false)
+    expect(s.skipTypes).toEqual([])
+    expect(s.minWidth).toBe(0)
+    expect(s.minHeight).toBe(0)
+    expect(s.maxFileSizeMB).toBe(0)
+    expect(s.dailyMaxMB).toBe(0)
+    expect(s.dailyMaxCount).toBe(0)
+  })
+
   it('rejects an unknown quick-grab modifier', () => {
     const result = Schema.decodeUnknownResult(Settings)({ quickGrabModifier: 'space' })
     expect(Result.isFailure(result)).toBe(true)

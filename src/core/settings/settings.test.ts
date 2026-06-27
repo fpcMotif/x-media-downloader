@@ -87,6 +87,23 @@ describe('SettingsService', () => {
     const s = await run(getViaService)
     expect(s.downloadHistoryEnabled).toBe(false)
   })
+
+  it('defaults the admission-gate filter keys off/zero — opt-in posture', async () => {
+    const s = await run(getViaService)
+    expect(s.preventDuplicateDownloads).toBe(false)
+    expect(s.skipTypes).toEqual([])
+    expect(s.minWidth).toBe(0)
+    expect(s.minHeight).toBe(0)
+    expect(s.maxFileSizeMB).toBe(0)
+    expect(s.dailyMaxMB).toBe(0)
+    expect(s.dailyMaxCount).toBe(0)
+  })
+
+  it('recovers preventDuplicateDownloads to its default when the stored value is corrupt', async () => {
+    await fakeBrowser.storage.local.set({ settings: { preventDuplicateDownloads: 'nope' } })
+    const s = await run(getViaService)
+    expect(s.preventDuplicateDownloads).toBe(false)
+  })
 })
 
 describe('watchSettings', () => {
