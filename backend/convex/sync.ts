@@ -59,7 +59,12 @@ async function materializeState(ctx: Ctx, e: SyncEvent): Promise<void> {
     ...(e.media !== undefined ? { media: e.media } : {}),
   }
   if (row === null) {
-    await ctx.db.insert('media_state', { requestId: e.requestId, deviceId: e.deviceId, ...patch })
+    await ctx.db.insert('media_state', {
+      requestId: e.requestId,
+      deviceId: e.deviceId,
+      tweetId: e.media?.tweetId ?? '',
+      ...patch,
+    })
   } else if (e.at >= row.at) {
     await ctx.db.patch(row._id, patch)
   }
@@ -116,5 +121,59 @@ export const recentEvents = query({
   handler: (ctx, { paginationOpts, secret }) => {
     assertSecret(secret)
     return ctx.db.query('sync_events').withIndex('by_at').order('desc').paginate(paginationOpts)
+  },
+})
+
+// The overlay sweep keeps ~30 articles mounted; the cap is generous headroom and a
+// guard against an unbounded point-lookup fan-out from a malformed caller.
+const DOWNLOADED_AMONG_CAP = 128
+
+/**
+ * Membership query for the timeline "Saved" status: of the given tweetIds, which
+ * have at least one `completed` `media_state` row — on ANY device (the `by_tweet`
+ * index ignores `deviceId`, so a post saved on a phone shows as saved on a laptop).
+ * Reads fail closed on the same shared secret as the rest of the ledger.
+ */
+export const downloadedAmong = query({
+  args: { secret: v.string(), tweetIds: v.array(v.string()) },
+  returns: v.array(v.string()),
+  handler: async (ctx, { secret, tweetIds }) => {
+    assertSecret(secret)
+    if (tweetIds.length > DOWNLOADED_AMONG_CAP) {
+      throw new Error(`downloadedAmong: batch too large (${tweetIds.length} > ${DOWNLOADED_AMONG_CAP})`)
+    }
+    const out: string[] = []
+    for (const tweetId of new Set(tweetIds)) {
+      const completed = await ctx.db
+        .query('media_state')
+        .withIndex('by_tweet', (q) => q.eq('tweetId', tweetId))
+        .filter((q) => q.eq(q.field('lastKind'), 'completed'))
+        .first()
+      if (completed !== null) out.push(tweetId)
+    }
+    return out
+  },
+})
+
+/**
+ * One-off migration: fill the top-level `tweetId` on `media_state` rows written
+ * before the column existed, deriving it from the nested `media.tweetId`. Idempotent
+ * (only patches rows whose `tweetId` is still empty). Secret-gated like every write.
+ */
+export const backfillTweetId = mutation({
+  args: { secret: v.string() },
+  returns: v.object({ patched: v.number() }),
+  handler: async (ctx, { secret }) => {
+    assertSecret(secret)
+    let patched = 0
+    const rows = await ctx.db.query('media_state').collect()
+    for (const row of rows) {
+      const fromMedia = row.media?.tweetId
+      if (row.tweetId === '' && fromMedia !== undefined && fromMedia !== '') {
+        await ctx.db.patch(row._id, { tweetId: fromMedia })
+        patched += 1
+      }
+    }
+    return { patched }
   },
 })

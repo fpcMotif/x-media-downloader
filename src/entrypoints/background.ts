@@ -15,6 +15,8 @@ import {
   watchSettings,
 } from '../core/settings'
 import { queuedEvent, outcomeEvent, type SyncEvent } from '../core/sync/events'
+import { makeConvexHttpPort, queryDownloadedAmong } from '../core/sync/convex'
+import { makeSavedIndex, type QueryConvex } from '../core/sync/saved-index'
 import { refreshMediaUrlFromTabs } from '../core/download/media-url-refresh'
 import {
   makeDirectStrategy,
@@ -45,6 +47,7 @@ import {
 import { planInterruptRetry, type PendingInterruptRetry } from '../core/download/interrupt-retry'
 import { syndicationUrl } from '../core/adapters/x/syndication'
 import {
+  classifyTransfer,
   emptyTracker,
   partitionOwnership,
   planBootReconcile,
@@ -62,6 +65,7 @@ import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
 import { makeSyncOutbox } from '../background/sync-outbox'
 import { makeCloudUpload } from '../background/cloud-upload'
+import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeClearCoordinator, hookScopes } from '../background/clear-coordinator'
 import { isClearableTweetId } from '../core/clear/clearer'
 
@@ -290,6 +294,28 @@ const clearCoordinator = makeClearCoordinator({
 })
 const { recordClearComplete, recordClearFailure } = clearCoordinator
 
+// Cross-device "Saved" status (B+C): the local-first SavedIndex answers overlay
+// sweeps. Seeded from the durable history (this device's completed downloads), fed
+// every local completion (instant + offline), and unioned with Convex truth for
+// other devices. `queryConvex` reads settings each call so toggling sync on/off —
+// or pasting a deployment URL — takes effect without a restart; sync-off → C-only.
+const savedIndex = makeSavedIndex()
+const queryConvexSaved: QueryConvex = async (tweetIds) => {
+  const s = await getSettings()
+  if (!isSyncConfigured(s)) return []
+  const port = makeConvexHttpPort({ deploymentUrl: s.convexUrl, fetchImpl: fetch })
+  return queryDownloadedAmong(port, s.convexSyncSecret, tweetIds)
+}
+const savedStatusCoordinator = makeSavedStatusCoordinator({
+  index: savedIndex,
+  queryConvex: queryConvexSaved,
+})
+// Seed once on SW startup from the durable history's completed tweetIds.
+void (async () => {
+  const { records } = decodeStore(await historyItem.getValue())
+  savedIndex.seed(records.filter((r) => r.status === 'completed').map((r) => r.media.tweetId))
+})()
+
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
   const direct = makeDirectStrategy({ download: (opts) => browser.downloads.download(opts) })
@@ -343,6 +369,7 @@ const settleBrowserDownload = async (
   if (complete) recordClearComplete(tweetId, id, downloadId)
   else recordClearFailure(tweetId, id)
   requestIdByDownloadId.delete(downloadId)
+  stopStuckPollIfIdle() // last download settled → let the watchdog go quiet
   // The terminal-outcome fan-out is ONE pure decision (core/download/terminal-outcome):
   // it advances the tracker + metrics and emits the sync/history/backlink intents. This
   // shell only RUNS the returned effects, in order. The settled tracker MUST be flushed
@@ -366,6 +393,10 @@ const settleBrowserDownload = async (
   // asymmetries now, so this shell calls each sink unconditionally.
   recordSync(settings, fx.syncEvents)
   recordHistory(settings, fx.historyActions)
+  // Light up the "Saved" status for this post immediately (instant, offline) — the
+  // local-first half of the cross-device index; tweetId is unknown for an unqueued
+  // sidecar, in which case there is nothing to mark.
+  if (complete && tweetId !== undefined) savedStatusCoordinator.onCompleted(tweetId)
   traceBackground(complete ? 'browser-complete' : 'browser-failed', {
     itemId: id,
     elapsedMs: now - (requestStartedAt.get(id) ?? now),
@@ -399,6 +430,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
       conflictAction: 'uniquify',
     })
     requestIdByDownloadId.set(downloadId, id)
+    ensureStuckPoll() // watchdog recovers a missed terminal onChanged for this retry too
     // Remove from the retry queue BEFORE adding to the transfers ledger (mirrors
     // scheduleInterruptRetry's safe remove-then-add): a crash in this window then
     // leaves the id in NEITHER ledger — a lost retry, never a double-drive where
@@ -579,6 +611,71 @@ const reconcileTransfersOnBoot = async (): Promise<void> => {
   // oxlint-enable no-await-in-loop
 }
 
+// A browser download resolves ONLY via a `downloads.onChanged` terminal delta. Under a
+// burst of concurrent completions the MV3 worker can miss/drop that delta — the download
+// then sits in-flight forever, and a multi-media tweet gated on ALL its media being
+// Settled never clears (its un-bookmark / un-like never fires; the post stays liked).
+// Boot reconcile recovers this only after a SW restart. This watchdog closes the
+// SW-was-alive-but-missed-the-event gap: while downloads are active it polls the source
+// of truth (`downloads.search`) for any request that has outlived a generous window and
+// drives the missed terminal through the SAME settle path — so the clear (and the
+// metrics/history/sync fan-out) finally fire. It never fabricates: only a row that
+// search itself reports `complete` clears; `interrupted`/missing-file fails; a still
+// downloading or purged row is left alone.
+const STUCK_RECONCILE_AFTER_MS = 12_000
+const STUCK_RECONCILE_POLL_MS = 6_000
+let stuckPollTimer: ReturnType<typeof setInterval> | null = null
+
+const stopStuckPollIfIdle = (): void => {
+  if (stuckPollTimer !== null && requestIdByDownloadId.size === 0) {
+    clearInterval(stuckPollTimer)
+    stuckPollTimer = null
+  }
+}
+
+const reconcileStuckDownloads = async (): Promise<void> => {
+  const now = Date.now()
+  // Snapshot first — the settle helpers below mutate requestIdByDownloadId mid-loop.
+  const stuck = [...requestIdByDownloadId.entries()].filter(
+    ([, id]) =>
+      // The durable interrupt-retry queue owns its ids — never double-drive them here.
+      !pendingRetries.has(id) &&
+      now - (requestStartedAt.get(id) ?? now) >= STUCK_RECONCILE_AFTER_MS,
+  )
+  // oxlint-disable no-await-in-loop -- few items; outcome side-effects are serial
+  for (const [downloadId, id] of stuck) {
+    let row: ReconcileRow | undefined
+    try {
+      row = (await browser.downloads.search({ id: downloadId }))[0]
+    } catch {
+      continue // transient search failure — try again next tick
+    }
+    // A live onChanged may have settled it during the await; only act if still mapped.
+    if (requestIdByDownloadId.get(downloadId) !== id) continue
+    const verdict = classifyTransfer(row)
+    if (verdict === 'complete') {
+      traceBackground('reconcile-stuck-complete', {
+        itemId: id,
+        detail: `downloadId ${downloadId}`,
+      })
+      await completeBrowserDownload(id, downloadId, now)
+    } else if (verdict === 'failed') {
+      traceBackground('reconcile-stuck-failed', { itemId: id, detail: `downloadId ${downloadId}` })
+      await failBrowserDownload(id, downloadId, now)
+    }
+    // 'in-progress' (genuinely downloading) / 'unknown' (purged record) → leave it.
+  }
+  // oxlint-enable no-await-in-loop
+  stopStuckPollIfIdle()
+}
+
+/** Arm the stuck-download watchdog while downloads are active (no-op if already armed).
+ *  It self-stops once nothing is in flight, so it never keeps the worker awake idly. */
+const ensureStuckPoll = (): void => {
+  if (stuckPollTimer === null)
+    stuckPollTimer = setInterval(() => void reconcileStuckDownloads(), STUCK_RECONCILE_POLL_MS)
+}
+
 const handleDownload = (
   items: ReadonlyArray<MediaItem>,
   sweep?: { readonly scope: Scope },
@@ -683,9 +780,9 @@ const handleDownload = (
     // other list. It reads the option but NEVER mutates it. The auto-hook keeps
     // its per-scope toggles; the sweep clears exactly the page's scope.
     const clearScopes: Scope[] = sweep
-      ? (settings.clearAllListsOnSave
+      ? settings.clearAllListsOnSave
         ? [...new Set([sweep.scope, ...hookScopes(settings).filter((s) => s !== 'notInterested')])]
-        : [sweep.scope])
+        : [sweep.scope]
       : hookScopes(settings)
     const clearOrigin = sweep ? 'sweep' : 'hook'
     if (settings.downloadStrategy === 'aria2') {
@@ -755,6 +852,7 @@ const handleDownload = (
         })
       } else if (o.handle?.kind === 'browser') {
         requestIdByDownloadId.set(o.handle.id, o.id)
+        ensureStuckPoll() // watchdog recovers a missed terminal onChanged for this download
         // Only media downloads enter the durable ledger; sidecar `.json` requests
         // carry no badge and are never mirrored, so they need no outcome tracking.
         if (!o.id.endsWith('.json'))
@@ -867,6 +965,7 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   const clearedLocks = inFlight.size
   inFlight.clear()
   requestIdByDownloadId.clear()
+  stopStuckPollIfIdle() // map emptied → tear the watchdog down
   requestStartedAt.clear()
   requestMetaById.clear()
   interruptAttemptById.clear()
@@ -926,6 +1025,7 @@ const messageHandlers: MessageHandlers = {
   }),
   ClearDownloadMonitorRequest: () => clearDownloadMonitor(),
   HistoryRequest: async () => ({ records: decodeStore(await historyItem.getValue()).records }),
+  SavedStatusRequest: handle<'SavedStatusRequest'>((msg) => savedStatusCoordinator.handle(msg)),
   ClearHistoryRequest: async () => {
     await historyItem.setValue(emptyStore)
     return { ok: true }

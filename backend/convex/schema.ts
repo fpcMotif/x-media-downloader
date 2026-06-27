@@ -41,11 +41,13 @@ export default defineSchema({
   media_state: defineTable({
     requestId: v.string(),
     deviceId: v.string(),
+    tweetId: v.string(),
     lastKind: kind,
     at: v.number(),
     media: v.optional(media),
   })
     .index('by_device_request', ['deviceId', 'requestId'])
+    .index('by_tweet', ['tweetId'])
     .index('by_at', ['at']),
 
   // Cloud byte-upload ledger mirror (ADR-0013). Control plane ONLY — bytes never

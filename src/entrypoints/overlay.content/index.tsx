@@ -72,9 +72,15 @@ import {
   tweetIdOfArticle,
   TWEET_ARTICLE_SEL,
 } from '../../core/clear/clearer'
-import { clearMountedTweet, messageHandlers, type HandlerDeps } from './handlers'
+import {
+  clearMountedTweet,
+  messageHandlers,
+  sweepSavedStatus,
+  savedStatusVisible,
+  type HandlerDeps,
+} from './handlers'
 import { makeDrainQueue, addPending, readyToClear, type DrainQueue } from '../../core/clear/drain'
-import type { ClearScope, MediaItem, Settings } from '../../core/schema'
+import type { ClearScope, MediaItem, Settings, SavedStatusResponse } from '../../core/schema'
 
 interface Rect {
   readonly top: number
@@ -270,13 +276,38 @@ async function dismissFeedbackStub(cell: Element | null): Promise<void> {
 // clearing it as it mounts — then restores the user's scroll position. Bounded by a
 // step cap + a bottom-reached guard so it can never spin.
 const DRAIN_DEBOUNCE_MS = 1200
-const DRAIN_SCROLL_SETTLE_MS = 450
+// Debounce for the cross-device "Saved" status sweep: a burst of scroll/render
+// mutations collapses into one overlay→background round-trip + chip pass.
+const SAVED_SWEEP_DEBOUNCE_MS = 500
+
+/** Ask the background which of these tweetIds are already downloaded (cross-device).
+ *  Fail-safe: a context-invalidated / errored / malformed reply yields no marks. */
+const requestSavedStatus = async (tweetIds: string[]): Promise<string[]> => {
+  const out = await safeSend(() =>
+    browser.runtime.sendMessage({ _tag: 'SavedStatusRequest', tweetIds }),
+  )
+  if (out.status !== 'ok') return []
+  const reply = out.reply
+  return reply !== null && typeof reply === 'object' && 'saved' in reply
+    ? [...(reply as SavedStatusResponse).saved]
+    : []
+}
+const DRAIN_SCROLL_SETTLE_MS = 600
 const DRAIN_MAX_STEPS = 60
 const DRAIN_VIEWPORT_FRACTION = 0.9
+// A drain pass that clears nothing is NOT proof the work is gone: jumping to the top
+// of a deeply-scrolled virtualized feed makes X re-render lazily, so the pending posts
+// often haven't mounted yet when the scan reaches where they'll land. Retry a bounded
+// number of empty passes (with a longer backoff so the feed can catch up) before
+// giving up — otherwise the tail of a batch is stranded whenever its final pass
+// happens to surface nothing.
+const DRAIN_RETRY_BACKOFF_MS = 2500
+const DRAIN_MAX_EMPTY_PASSES = 4
 
 const pendingClears: DrainQueue = makeDrainQueue()
 let draining = false
 let drainTimer: ReturnType<typeof setTimeout> | null = null
+let emptyDrainPasses = 0
 
 /** Numeric tweetIds of every tweet article mounted right now. */
 const mountedTweetIds = (): string[] => {
@@ -348,10 +379,13 @@ async function drainPendingClears(): Promise<void> {
       const before = window.scrollY
       window.scrollBy(0, Math.round(window.innerHeight * DRAIN_VIEWPORT_FRACTION))
       await new Promise((r) => setTimeout(r, DRAIN_SCROLL_SETTLE_MS))
-      // Bottom reached (scroll didn't advance) twice running → stop, never spin.
+      // Scroll didn't advance: either the true bottom, or X hasn't extended the
+      // virtualized feed yet (a lazy re-render after the jump to top). Only 3 stalls
+      // in a row count as the bottom, so a slow extension doesn't end the scan before
+      // the pending posts mount in.
       if (window.scrollY <= before) {
         noProgress += 1
-        if (noProgress >= 2) break
+        if (noProgress >= 3) break
       } else {
         noProgress = 0
       }
@@ -362,23 +396,39 @@ async function drainPendingClears(): Promise<void> {
     draining = false
     reportClear('drain-end', `cleared ${clearedThisPass}, ${pendingClears.size} still pending`)
     if (import.meta.env.DEV) clearLog('drain end ·', pendingClears.size, 'still pending')
-    // Re-run ONLY if this pass made progress and work remains — picks up posts that
-    // settled mid-scroll, while a fully-stuck pass (nothing cleared) stops for good.
-    if (clearedThisPass > 0 && pendingClears.size > 0) scheduleDrain()
+    // Keep going while work remains. A pass that cleared something resets the empty
+    // budget and re-runs promptly (more posts settle mid-scroll); a pass that cleared
+    // nothing spends one retry of a bounded budget — a longer backoff lets a lazily
+    // re-rendering feed catch up — before the drain finally gives up. This stops the
+    // tail of a batch being abandoned just because one pass surfaced nothing, without
+    // ever spinning forever on posts that genuinely aren't on this list.
+    if (pendingClears.size > 0) {
+      if (clearedThisPass > 0) {
+        emptyDrainPasses = 0
+        scheduleDrain()
+      } else if (emptyDrainPasses < DRAIN_MAX_EMPTY_PASSES) {
+        emptyDrainPasses += 1
+        scheduleDrain(DRAIN_RETRY_BACKOFF_MS)
+      }
+    }
   }
 }
 
-/** Debounced so a whole batch's not-mounted clears accumulate into ONE scroll pass. */
-const scheduleDrain = (): void => {
+/** Debounced so a whole batch's not-mounted clears accumulate into ONE scroll pass.
+ *  Empty-pass retries pass a longer `delayMs` so the feed can settle before re-scanning. */
+const scheduleDrain = (delayMs: number = DRAIN_DEBOUNCE_MS): void => {
   if (drainTimer !== null) clearTimeout(drainTimer)
   drainTimer = setTimeout(() => {
     drainTimer = null
     void drainPendingClears()
-  }, DRAIN_DEBOUNCE_MS)
+  }, delayMs)
 }
 
 const queueDrain = (tweetId: string, scopes: ClearScope[], allLists: boolean): void => {
   addPending(pendingClears, tweetId, scopes, allLists)
+  // Fresh work arrived — restore the full retry budget so earlier empty passes don't
+  // count against surfacing these posts.
+  emptyDrainPasses = 0
   scheduleDrain()
 }
 
@@ -863,6 +913,28 @@ export default defineContentScript({
       }
     }
 
+    // Cross-device "Saved ✓" status: a debounced observer paints a chip on
+    // already-downloaded posts as the timeline churns / on SPA navigation. The
+    // request is network-bounded (overlay → background → maybe Convex), so it is
+    // debounced; the chip is injected idempotently and only on a positive reply.
+    // Scope-gated to the home + List timelines, and gated on the `showSavedStatus`
+    // setting (applySettings keeps `savedStatusOn` live).
+    let savedStatusOn = false
+    let savedSweepTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleSavedSweep = (): void => {
+      if (savedSweepTimer !== null) clearTimeout(savedSweepTimer)
+      savedSweepTimer = setTimeout(() => {
+        savedSweepTimer = null
+        void sweepSavedStatus({
+          document,
+          inScope: () => savedStatusVisible(location.pathname, savedStatusOn),
+          requestSavedStatus,
+        })
+      }, SAVED_SWEEP_DEBOUNCE_MS)
+    }
+    const savedSweepObserver = new MutationObserver(scheduleSavedSweep)
+    savedSweepObserver.observe(document.body, { childList: true, subtree: true })
+
     const clearDwell = (): void => {
       if (dwell !== null) {
         clearTimeout(dwell)
@@ -1209,6 +1281,9 @@ export default defineContentScript({
       // Hide the cleared-post feedback stub only when the For-You "Not interested"
       // clear is actually active (master + the per-scope toggle on).
       setStubCollapse(s.clearOnSave && s.autoNotInterestedOnSave)
+      // Cross-device "Saved" status: gate the sweep on the toggle; a flip re-paints.
+      savedStatusOn = s.showSavedStatus
+      scheduleSavedSweep()
       // Surface clear-on-save state in the PAGE console (the one you can see here),
       // so "why didn't it un-like?" is answerable without the SW console: if
       // clearOnSave is false, nothing ever clears — turn it on in the popup.

@@ -9,6 +9,7 @@ import { bindFetch } from '../fetch'
 
 export interface ConvexPort {
   readonly mutation: (path: string, args: Record<string, unknown>) => Promise<unknown>
+  readonly query: (path: string, args: Record<string, unknown>) => Promise<unknown>
 }
 
 /**
@@ -78,32 +79,53 @@ export function makeConvexHttpPort(cfg: {
   const base = cfg.deploymentUrl.replace(/\/+$/, '')
   // Detach fetch from `cfg` or the MV3 SW rejects it with "Illegal invocation".
   const doFetch = bindFetch(cfg.fetchImpl)
-  return {
-    mutation: async (path, args) => {
-      const res = await doFetch(`${base}/api/mutation`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(buildFunctionCall(path, args)),
+  // Shared request+parse for both endpoints so `mutation` and `query` can never
+  // drift in how they POST the envelope or classify a failure. `endpoint` is the
+  // path after `/api` (`mutation` vs `query`).
+  const call = async (
+    endpoint: 'mutation' | 'query',
+    path: string,
+    args: Record<string, unknown>,
+  ) => {
+    const res = await doFetch(`${base}/api/${endpoint}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(buildFunctionCall(path, args)),
+    })
+    if (!res.ok) throw new ConvexHttpError({ status: res.status })
+    // A 200 from a non-Convex host (parked domain, corp proxy, SPA index.html)
+    // serves HTML, so `res.json()` throws a raw SyntaxError. Wrap it into the
+    // same vocabulary as the other failures so the drain loop classifies it as a
+    // sync error instead of surfacing an opaque parser stack trace.
+    let body: { status?: string; value?: unknown; errorMessage?: string }
+    try {
+      body = (await res.json()) as { status?: string; value?: unknown; errorMessage?: string }
+    } catch {
+      throw new ConvexMalformedError({ detail: 'convex: malformed response (invalid JSON body)' })
+    }
+    if (body.status === 'error') {
+      throw new ConvexFunctionError({
+        errorMessage: body.errorMessage ?? 'convex: function error',
       })
-      if (!res.ok) throw new ConvexHttpError({ status: res.status })
-      // A 200 from a non-Convex host (parked domain, corp proxy, SPA index.html)
-      // serves HTML, so `res.json()` throws a raw SyntaxError. Wrap it into the
-      // same vocabulary as the other failures so the drain loop classifies it as a
-      // sync error instead of surfacing an opaque parser stack trace.
-      let body: { status?: string; value?: unknown; errorMessage?: string }
-      try {
-        body = (await res.json()) as { status?: string; value?: unknown; errorMessage?: string }
-      } catch {
-        throw new ConvexMalformedError({ detail: 'convex: malformed response (invalid JSON body)' })
-      }
-      if (body.status === 'error') {
-        throw new ConvexFunctionError({
-          errorMessage: body.errorMessage ?? 'convex: function error',
-        })
-      }
-      if (body.status !== 'success')
-        throw new ConvexMalformedError({ detail: 'convex: malformed response' })
-      return body.value
-    },
+    }
+    if (body.status !== 'success')
+      throw new ConvexMalformedError({ detail: 'convex: malformed response' })
+    return body.value
   }
+  return {
+    mutation: (path, args) => call('mutation', path, args),
+    query: (path, args) => call('query', path, args),
+  }
+}
+
+/**
+ * Ask the deployment which of `tweetIds` have already been downloaded. Shapes the
+ * `sync:downloadedAmong` query call and narrows the envelope value to `string[]`.
+ */
+export function queryDownloadedAmong(
+  port: ConvexPort,
+  secret: string,
+  tweetIds: string[],
+): Promise<string[]> {
+  return port.query('sync:downloadedAmong', { secret, tweetIds }) as Promise<string[]>
 }

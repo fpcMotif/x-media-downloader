@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { buildFunctionCall, convexOriginPattern, makeConvexHttpPort } from './convex'
+import {
+  buildFunctionCall,
+  convexOriginPattern,
+  makeConvexHttpPort,
+  queryDownloadedAmong,
+  type ConvexPort,
+} from './convex'
 import { classifySyncError } from './status'
 
 describe('buildFunctionCall', () => {
@@ -187,5 +193,86 @@ describe('makeConvexHttpPort', () => {
       inserted: 1,
     })
     expect(calls).toBe(2)
+  })
+
+  it('POSTs the envelope to /api/query and unwraps the success value', async () => {
+    let url: string | undefined
+    let init: RequestInit | undefined
+    const fetchImpl = ((u: string, i: RequestInit) => {
+      url = u
+      init = i
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ status: 'success', value: ['T1'] }),
+      } as Response)
+    }) as typeof fetch
+    const port = makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud/', fetchImpl })
+    const value = await port.query('sync:downloadedAmong', {
+      secret: 's',
+      tweetIds: ['T1', 'T2'],
+    })
+    expect(value).toEqual(['T1'])
+    expect(url).toBe('https://x.convex.cloud/api/query')
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({
+      path: 'sync:downloadedAmong',
+      args: { secret: 's', tweetIds: ['T1', 'T2'] },
+      format: 'json',
+    })
+  })
+
+  it('query rejects on a non-2xx response', async () => {
+    const fetchImpl = (() =>
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+      } as Response)) as typeof fetch
+    const port = makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud', fetchImpl })
+    await expect(port.query('sync:downloadedAmong', {})).rejects.toThrow('500')
+  })
+
+  it('query rejects with the server errorMessage on a function error', async () => {
+    const fetchImpl = (() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ status: 'error', errorMessage: 'boom' }),
+      } as Response)) as typeof fetch
+    const port = makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud', fetchImpl })
+    await expect(port.query('sync:downloadedAmong', {})).rejects.toThrow('boom')
+  })
+
+  it('query surfaces a malformed failure on an HTML body', async () => {
+    const fetchImpl = (() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token <')
+        },
+      } as unknown as Response)) as typeof fetch
+    const port = makeConvexHttpPort({ deploymentUrl: 'https://parked.example.com', fetchImpl })
+    await expect(port.query('sync:downloadedAmong', {})).rejects.toThrow(
+      /convex: malformed response/,
+    )
+  })
+})
+
+describe('queryDownloadedAmong', () => {
+  it('shapes the call and returns the value', async () => {
+    let path: string | undefined
+    let args: Record<string, unknown> | undefined
+    const port: ConvexPort = {
+      mutation: async () => undefined,
+      query: async (p, a) => {
+        path = p
+        args = a
+        return ['T1']
+      },
+    }
+    const downloaded = await queryDownloadedAmong(port, 'secret', ['T1', 'T2'])
+    expect(downloaded).toEqual(['T1'])
+    expect(path).toBe('sync:downloadedAmong')
+    expect(args).toEqual({ secret: 'secret', tweetIds: ['T1', 'T2'] })
   })
 })

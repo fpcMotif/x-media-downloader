@@ -86,4 +86,24 @@ describe('canResolveHoverItem', () => {
     const img = el('<img src="https://pbs.twimg.com/ext_tw_video_thumb/77/pu/img/V1.jpg" />')
     expect(canResolveHoverItem(img, 'V1', new Map([['V1', videoItem]]))).toBe(true)
   })
+
+  it('prefers currentSrc over src for a responsive image (the loaded source)', () => {
+    // src points at a non-grabbable profile image, but the actually-rendered
+    // `currentSrc` is a grabbable media photo — `currentSrc || src` must read it.
+    const img = el('<img src="https://pbs.twimg.com/profile_images/zzz.jpg" />') as HTMLImageElement
+    Object.defineProperty(img, 'currentSrc', {
+      value: 'https://pbs.twimg.com/media/P0?format=jpg&name=small',
+      configurable: true,
+    })
+    expect(canResolveHoverItem(img, 'P0', new Map())).toBe(true)
+  })
+
+  it('falls back to src when currentSrc is empty (not-yet-loaded image)', () => {
+    // `currentSrc` is '' before the image loads → the `|| element.src` arm decides.
+    const img = el(
+      '<img src="https://pbs.twimg.com/media/P0?format=jpg&name=small" />',
+    ) as HTMLImageElement
+    Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
+    expect(canResolveHoverItem(img, 'P0', new Map())).toBe(true)
+  })
 })

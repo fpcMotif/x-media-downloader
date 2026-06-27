@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { handleClearTweet } from './handlers'
+import {
+  handleClearTweet,
+  sweepSavedStatus,
+  isSavedStatusScope,
+  savedStatusVisible,
+} from './handlers'
 import type { HandlerDeps } from './handlers'
+import { findArticle } from '../../core/clear/clearer'
 
 // handleClearTweet is the (previously untested) wiring that decides WHICH scopes
 // actually click on a clear: page-scoped by default, membership-driven under
@@ -119,5 +125,79 @@ describe('handleClearTweet — scope wiring', () => {
     expect(res.results).toEqual([])
     // The post virtualized out → hand it to the drain instead of dropping it.
     expect(queueDrain).toHaveBeenCalledWith('999', ALL, true)
+  })
+})
+
+describe('sweepSavedStatus — Saved ✓ chip', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('injects exactly one chip on a saved post and none on an unsaved one', async () => {
+    document.body.append(tweetArticle({ tweetId: '1' }), tweetArticle({ tweetId: '2' }))
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => ['1'])
+
+    await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
+
+    expect(findArticle(document, '1')?.querySelectorAll('.xdl-saved-chip').length).toBe(1)
+    expect(findArticle(document, '2')?.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+    expect(requestSavedStatus).toHaveBeenCalledWith(['1', '2'])
+  })
+
+  it('is idempotent — a second sweep does not double-inject', async () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => ['1'])
+
+    await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
+    await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
+
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(1)
+  })
+
+  it('skips entirely when out of scope — no request, no chip', async () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => ['1'])
+
+    await sweepSavedStatus({ document, inScope: () => false, requestSavedStatus })
+
+    expect(requestSavedStatus).not.toHaveBeenCalled()
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
+
+  it('fail-safe: an empty reply marks nothing', async () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(
+      async () => [] as string[],
+    )
+
+    await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
+
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
+})
+
+describe('isSavedStatusScope', () => {
+  it('is true on the home timeline and List timelines', () => {
+    expect(isSavedStatusScope('/home')).toBe(true)
+    expect(isSavedStatusScope('/i/lists/1234567890')).toBe(true)
+  })
+  it('is false on profiles, likes, and bookmarks', () => {
+    expect(isSavedStatusScope('/jack')).toBe(false)
+    expect(isSavedStatusScope('/jack/likes')).toBe(false)
+    expect(isSavedStatusScope('/i/bookmarks')).toBe(false)
+  })
+})
+
+describe('savedStatusVisible — setting gate × scope', () => {
+  it('requires the setting ON and an in-scope timeline', () => {
+    expect(savedStatusVisible('/home', true)).toBe(true)
+    expect(savedStatusVisible('/i/lists/42', true)).toBe(true)
+  })
+  it('is false when the toggle is off, even on an in-scope page', () => {
+    expect(savedStatusVisible('/home', false)).toBe(false)
+    expect(savedStatusVisible('/i/lists/42', false)).toBe(false)
+  })
+  it('is false on an out-of-scope page even when the toggle is on', () => {
+    expect(savedStatusVisible('/jack', true)).toBe(false)
   })
 })

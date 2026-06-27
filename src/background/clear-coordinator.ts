@@ -222,7 +222,9 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
       // reports ok:true so the ledger settles) behind the same token as a REAL flip,
       // so a log reading `like:ok` could mean "un-liked" OR "skipped". Split them:
       // ok = verified flip, noop = deliberately not fired, fail = clicked but no flip.
-      detail: results.map((r) => `${r.scope}:${r.ok ? (r.noop ? 'noop' : 'ok') : 'fail'}`).join(' '),
+      detail: results
+        .map((r) => `${r.scope}:${r.ok ? (r.noop ? 'noop' : 'ok') : 'fail'}`)
+        .join(' '),
     })
     if (prunable(after)) clearLedger.delete(tweetId)
   }

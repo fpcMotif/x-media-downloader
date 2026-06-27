@@ -80,6 +80,63 @@ type MessageHandler = (
   sendResponse: SendResponse,
 ) => boolean | void
 
+// ── Cross-device "Saved" status sweep (B+C) ──────────────────────────────────
+
+/** CSS class of an injected chip — and the idempotency guard (one per article). */
+const SAVED_CHIP_CLASS = 'xdl-saved-chip'
+
+/** The pages where the "Saved" status is shown: the home timeline (For You /
+ *  Following) and List timelines. Profiles, Likes, Bookmarks, search, and
+ *  single-tweet pages are out of scope for v1. */
+export function isSavedStatusScope(pathname: string): boolean {
+  return pathname === '/home' || /^\/i\/lists\/\d+/.test(pathname)
+}
+
+/** The full gate for the sweep: the `showSavedStatus` setting is on AND the page is
+ *  an in-scope timeline. The overlay passes this as the sweep's `inScope`. */
+export function savedStatusVisible(pathname: string, showSavedStatus: boolean): boolean {
+  return showSavedStatus && isSavedStatusScope(pathname)
+}
+
+/** Inject the "Saved ✓" chip into an article, once. Idempotent: a re-sweep over an
+ *  already-marked article is a no-op (the chip itself is the marker). */
+function markArticleSaved(article: Element, doc: Document): void {
+  if (article.querySelector(`.${SAVED_CHIP_CLASS}`) !== null) return
+  // Give the chip a positioning context without disturbing X's own layout classes.
+  if (article instanceof HTMLElement && article.style.position === '') {
+    article.style.position = 'relative'
+  }
+  const chip = doc.createElement('div')
+  chip.className = SAVED_CHIP_CLASS
+  chip.textContent = 'Saved ✓'
+  chip.setAttribute('aria-label', 'Already downloaded')
+  article.appendChild(chip)
+}
+
+/** Sweep the visible timeline: enumerate posts (de-duped by tweetId), ask the
+ *  background which are already downloaded cross-device, and chip each saved one.
+ *  Fail-safe by construction — a chip appears ONLY on a positive reply, so missing
+ *  data or a dropped request never marks a post. */
+export async function sweepSavedStatus(deps: {
+  readonly document: Document
+  readonly inScope: () => boolean
+  readonly requestSavedStatus: (tweetIds: string[]) => Promise<string[]>
+}): Promise<void> {
+  if (!deps.inScope()) return
+  const byTweet = new Map<string, Element>()
+  for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
+    const tweetId = tweetIdOfArticle(article)
+    if (tweetId === null || byTweet.has(tweetId)) continue
+    byTweet.set(tweetId, article)
+  }
+  if (byTweet.size === 0) return
+  const saved = await deps.requestSavedStatus([...byTweet.keys()])
+  for (const tweetId of saved) {
+    const article = byTweet.get(tweetId)
+    if (article !== undefined) markArticleSaved(article, deps.document)
+  }
+}
+
 // A tracked transfer reached its TERMINAL outcome after the optimistic save
 // (bytes landed / 403 / timeout). Correct the badge/launcher that fired it,
 // ONLY while still on screen. Broadcast to every X tab, so this no-ops unless
@@ -282,7 +339,11 @@ export async function clearMountedTweet(
       results.push({ scope, ok: await deps.clearScope(tweetId, scope) })
     } else {
       if (import.meta.env.DEV)
-        deps.clearLog(scope, '→ skipped', allLists ? '(not a member / off-feed)' : '(not this page)')
+        deps.clearLog(
+          scope,
+          '→ skipped',
+          allLists ? '(not a member / off-feed)' : '(not this page)',
+        )
       results.push({ scope, ok: true, noop: true })
     }
   }

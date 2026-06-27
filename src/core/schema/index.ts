@@ -58,6 +58,9 @@ export const Settings = Schema.Struct({
   downloadDockEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   // Render the dock as translucent "liquid glass" instead of the solid dark pill.
   dockGlassEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  // Timeline "Saved" status (Overlay): mark already-downloaded tweets in the
+  // feed so you can see at a glance what's been grabbed. Default on.
+  showSavedStatus: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   // Auto-show sensitive-content covers (opt-in, default off): when X hides media
   // behind a "Content warning" cover, click its reveal control so the media
   // renders inline. The GraphQL tee already captures sensitive media for bulk
@@ -365,6 +368,19 @@ export const TransferOutcome = Schema.TaggedStruct('TransferOutcome', {
 })
 export type TransferOutcome = typeof TransferOutcome.Type
 
+/** content → background: which of these tweets are already downloaded? Used by
+ *  the timeline "Saved" status overlay to mark grabbed posts in the feed. */
+export const SavedStatusRequest = Schema.TaggedStruct('SavedStatusRequest', {
+  tweetIds: Schema.Array(Schema.String),
+})
+export type SavedStatusRequest = typeof SavedStatusRequest.Type
+
+/** background → content: the subset of the queried tweetIds that are saved. */
+export const SavedStatusResponse = Schema.TaggedStruct('SavedStatusResponse', {
+  saved: Schema.Array(Schema.String),
+})
+export type SavedStatusResponse = typeof SavedStatusResponse.Type
+
 export const Message = Schema.Union([
   DetectRequest,
   MediaDetected,
@@ -387,5 +403,7 @@ export const Message = Schema.Union([
   SweepEnqueueRequest,
   RecoverTweetMediaRequest,
   TransferOutcome,
+  SavedStatusRequest,
+  SavedStatusResponse,
 ])
 export type Message = typeof Message.Type
