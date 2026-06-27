@@ -102,7 +102,14 @@ export function shouldClickScope(input: {
   const { scope, onScope, member, allLists } = input
   if (!allLists) return scope === onScope
   if (scope === 'notInterested') return onScope === 'notInterested'
-  return member
+  // The page's OWN list scope (e.g. `like` on the Likes page) is a guaranteed member
+  // — the post is in this very list, that's why it's mounted here — so always fire it,
+  // never gating on the `member` snapshot. That snapshot is read AFTER a prior
+  // cross-list scope's clear (un-bookmark) re-renders the action bar in place, and can
+  // transiently false-negative the un-like control, silently dropping the page clear
+  // ("un-bookmarked but not un-liked"). The authoritative membership re-check still
+  // happens in `clearScope` at click time; cross-list scopes stay membership-gated.
+  return scope === onScope || member
 }
 /** A quoted tweet renders as an anchor-less `div[role="link"]` card nested in the
  *  article. We must never resolve OR click anything inside it — that belongs to a
@@ -133,6 +140,18 @@ export function tweetIdOfArticle(article: Element): string | null {
     if (m?.[1]) return m[1]
   }
   return null
+}
+
+/** Can the Clear even LOCATE this post? `findArticle` matches a tweet ONLY by its
+ *  numeric `/status/{id}` permalink, so a tweetId that isn't X's numeric snowflake
+ *  can never match a mounted article — it would defer-then-drop on every tab and
+ *  silently leave the post in its lists ("not mounted"). That happens for the
+ *  media-key fallback the X adapter uses when a photo's tweet context can't be
+ *  resolved (`tweetId ?? key` — e.g. a quote-card image, whose id belongs to a
+ *  DIFFERENT post and must NOT be cleared). Gate clear seeding on this so such items
+ *  are skipped honestly up front, never seeded into a clear that can only fail. */
+export function isClearableTweetId(tweetId: string): boolean {
+  return /^[0-9]{1,20}$/.test(tweetId)
 }
 
 /** The mounted `<article>` whose resolved tweetId matches — the id-match guard

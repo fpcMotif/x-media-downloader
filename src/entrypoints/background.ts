@@ -63,6 +63,7 @@ import { makeTabBroadcaster } from '../background/tab-broadcaster'
 import { makeSyncOutbox } from '../background/sync-outbox'
 import { makeCloudUpload } from '../background/cloud-upload'
 import { makeClearCoordinator, hookScopes } from '../background/clear-coordinator'
+import { isClearableTweetId } from '../core/clear/clearer'
 
 // Ephemeral monitoring snapshot — session storage survives SW recycling but not
 // a browser restart (ADR-0005). The popup polls it via `MetricsRequest`.
@@ -681,7 +682,11 @@ const handleDownload = (
     // seed ONLY the page's scope (origin 'sweep'), so it can never touch the
     // other list. It reads the option but NEVER mutates it. The auto-hook keeps
     // its per-scope toggles; the sweep clears exactly the page's scope.
-    const clearScopes: Scope[] = sweep ? [sweep.scope] : hookScopes(settings)
+    const clearScopes: Scope[] = sweep
+      ? (settings.clearAllListsOnSave
+        ? [...new Set([sweep.scope, ...hookScopes(settings).filter((s) => s !== 'notInterested')])]
+        : [sweep.scope])
+      : hookScopes(settings)
     const clearOrigin = sweep ? 'sweep' : 'hook'
     if (settings.downloadStrategy === 'aria2') {
       traceBackground('clear-skip', { detail: 'aria2 hand-offs are not byte-verifiable; excluded' })
@@ -691,11 +696,28 @@ const handleDownload = (
       traceBackground('clear-skip', { detail: 'both Un-bookmark and Un-like are OFF' })
     } else {
       const byTweet = new Map<string, string[]>()
+      const unclearable = new Set<string>()
       for (const r of requests) {
         const item = mediaById.get(r.id)
         if (item === undefined) continue
+        // The Clear can only LOCATE a post by its numeric /status/ id (findArticle).
+        // The X adapter falls back to the media KEY as tweetId when a photo's tweet
+        // context can't be resolved (e.g. a quote-card image, whose id belongs to a
+        // DIFFERENT post). Such an id never matches a mounted article, so seeding it
+        // would only defer-then-drop and silently leave the post in its lists — and
+        // un-liking by a stray match would hit the WRONG post. Skip it: downloads
+        // still run (they key off `requests`, not `byTweet`); only the doomed,
+        // unsafe clear is dropped, and visibly (trace below) instead of silently.
+        if (!isClearableTweetId(item.tweetId)) {
+          unclearable.add(item.tweetId)
+          continue
+        }
         byTweet.set(item.tweetId, [...(byTweet.get(item.tweetId) ?? []), r.id])
       }
+      if (unclearable.size > 0)
+        traceBackground('clear-skip', {
+          detail: `${unclearable.size} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
+        })
       // For You: widen `expected` to the post's FULL media set so the clear waits
       // for every photo — a 1-of-4 grab must never mark the post Truly Complete and
       // "Not interested"-hide it, losing the other three. Only widens tweets in this

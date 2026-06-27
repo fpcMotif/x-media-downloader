@@ -65,6 +65,9 @@ export interface HandlerDeps {
   readonly notifyContextLost: () => void
   readonly clearLog: (...args: unknown[]) => void
   readonly clearScope: (tweetId: string, scope: ClearScope) => Promise<boolean>
+  /** Queue a not-mounted clear for the auto-scroll drain (the post has virtualized
+   *  out of the DOM; the overlay scrolls the list to surface it, then clears it). */
+  readonly queueDrain: (tweetId: string, scopes: ClearScope[], allLists: boolean) => void
 }
 
 type SendResponse = (r: unknown) => void
@@ -250,64 +253,65 @@ export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) =>
 // un-like it by clicking X's own control, then VERIFY the testid flipped
 // before reporting ok. id-match guard + membership check defend against
 // virtualization clicking the wrong post (spec §4.4).
+export type ClearResult = { scope: ClearScope; ok: boolean; noop?: boolean }
+
+/**
+ * Clear one MOUNTED tweet. Which scope(s) actually click is `shouldClickScope`'s
+ * call: page-scoped by default (only the current page's list / "Not interested" on
+ * For You), or membership-driven when "Clear from every list" (allLists) is on. The
+ * scope that removes the post from the CURRENT view (page's own list / NI) DETACHES
+ * the article, so it runs LAST — cross-list clicks must act on a still-mounted
+ * article. The live article is re-resolved EACH iteration (a prior scope's clear can
+ * re-render the action bar in place; a stale reference could false-negative a real
+ * membership). Shared by the live handler and the auto-scroll drain.
+ */
+export async function clearMountedTweet(
+  deps: Pick<HandlerDeps, 'document' | 'location' | 'clearScope' | 'clearLog'>,
+  tweetId: string,
+  scopes: ReadonlyArray<ClearScope>,
+  allLists: boolean,
+): Promise<ClearResult[]> {
+  const onScope = clearableScope(deps.location.pathname, deps.document)
+  const ordered = [...scopes.filter((s) => s !== onScope), ...scopes.filter((s) => s === onScope)]
+  const results: ClearResult[] = []
+  // oxlint-disable no-await-in-loop -- pace clicks one scope at a time
+  for (const scope of ordered) {
+    const live = findArticle(deps.document, tweetId)
+    const member = scope === 'notInterested' || live === null ? false : isMember(live, scope)
+    if (shouldClickScope({ scope, onScope, member, allLists })) {
+      results.push({ scope, ok: await deps.clearScope(tweetId, scope) })
+    } else {
+      if (import.meta.env.DEV)
+        deps.clearLog(scope, '→ skipped', allLists ? '(not a member / off-feed)' : '(not this page)')
+      results.push({ scope, ok: true, noop: true })
+    }
+  }
+  // oxlint-enable no-await-in-loop
+  return results
+}
+
 export const handleClearTweet: MessageHandler = (message, deps, sendResponse) => {
   const req = message as { tweetId: string; scopes: ClearScope[]; allLists?: boolean }
   const allLists = req.allLists === true
   if (import.meta.env.DEV)
     deps.clearLog('request', req.tweetId, req.scopes, allLists ? '· all-lists' : '')
   void (async () => {
-    // Not mounted in THIS tab → empty results, so the background defers (and
-    // tries another tab) instead of recording a false failure (spec §4.5).
     const article = findArticle(deps.document, req.tweetId)
     if (article === null) {
+      // Not mounted: X virtualizes the timeline (~30 articles in the DOM at once), so
+      // a post downloaded seconds ago has usually scrolled out by the time its clear
+      // fires. Queue it for the auto-scroll drain (scroll the list to surface the
+      // post, then clear it) instead of dropping it. Still report empty results so the
+      // background's in-memory ledger settles — the drain owns the retry now.
       if (import.meta.env.DEV) {
         const n = deps.document.querySelectorAll('article[data-testid="tweet"]').length
-        deps.clearLog('article not mounted here → defer.', n, 'articles on page')
+        deps.clearLog('not mounted → queued for scroll-drain.', n, 'articles on page')
       }
+      deps.queueDrain(req.tweetId, req.scopes, allLists)
       sendResponse({ _tag: 'ClearTweetResponse', results: [] })
       return
     }
-    // Which scope(s) actually click is `shouldClickScope`'s call: page-scoped by
-    // default (only the current page's list / "Not interested" on For You), or
-    // membership-driven when "Clear from every list" (allLists) is on — un-bookmark
-    // a liked post, un-like a bookmarked one, anywhere. A scope that doesn't fire
-    // resolves ok:true + noop:true so the in-memory ledger settles but the durable
-    // sweep flag never counts a non-click as a verified clear.
-    const onScope = clearableScope(deps.location.pathname, deps.document)
-    // The scope that removes the post from the CURRENT view — the page's own list,
-    // or "Not interested" on For You — DETACHES the article. Process it LAST so the
-    // cross-list clicks act on a still-mounted article; on a detached node a later
-    // click would false-confirm (its un-control is already gone) with no real
-    // account mutation. Cross-list actions (e.g. un-bookmark while on Likes) don't
-    // remove the post from the current page, so they stay mounted for each other.
-    const ordered = [
-      ...req.scopes.filter((s) => s !== onScope),
-      ...req.scopes.filter((s) => s === onScope),
-    ]
-    const results: { scope: ClearScope; ok: boolean; noop?: boolean }[] = []
-    // oxlint-disable no-await-in-loop -- pace clicks one scope at a time
-    for (const scope of ordered) {
-      // Re-resolve the article EACH iteration (mirroring clearScope's own
-      // findArticle-at-click-time discipline) so membership is read off a LIVE
-      // node, never the top-of-handler snapshot: a prior scope's clear can
-      // re-render the action bar in place, and reading the stale reference could
-      // false-negative a real membership and silently drop a clear with no retry
-      // (the durable worklist has no re-trigger in v1). Gone now → nothing to do.
-      const live = findArticle(deps.document, req.tweetId)
-      const member = scope === 'notInterested' || live === null ? false : isMember(live, scope)
-      if (shouldClickScope({ scope, onScope, member, allLists })) {
-        results.push({ scope, ok: await deps.clearScope(req.tweetId, scope) })
-      } else {
-        if (import.meta.env.DEV)
-          deps.clearLog(
-            scope,
-            '→ skipped',
-            allLists ? '(not a member / off-feed)' : '(not this page)',
-          )
-        results.push({ scope, ok: true, noop: true })
-      }
-    }
-    // oxlint-enable no-await-in-loop
+    const results = await clearMountedTweet(deps, req.tweetId, req.scopes, allLists)
     sendResponse({ _tag: 'ClearTweetResponse', results })
   })()
   return true

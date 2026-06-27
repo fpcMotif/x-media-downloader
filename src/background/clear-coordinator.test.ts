@@ -168,4 +168,38 @@ describe('Settle Port gate (irreversible Clear)', () => {
     expect(settleProbe).toHaveBeenCalledTimes(2)
     expect(sendClearToTabs).not.toHaveBeenCalled()
   })
+
+  it('supports multiple scopes for sweep when clearAllListsOnSave is true', async () => {
+    const { deps, sendClearToTabs } = makeDeps({
+      getSettings: async () =>
+        settings({
+          clearOnSave: true,
+          autoUnbookmarkOnSave: true,
+          autoUnlikeOnSave: true,
+          clearAllListsOnSave: true,
+        }),
+    })
+    const c = makeClearCoordinator(deps)
+    c.seedClearLedger(new Map([['T', ['m0']]]), ['bookmark', 'like'], 'sweep')
+    c.recordClearComplete('T', 'm0', 123)
+    await vi.runAllTimersAsync()
+    expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark', 'like'], true)
+  })
+
+  it('keeps single scope for sweep when clearAllListsOnSave is false', async () => {
+    const { deps, sendClearToTabs } = makeDeps({
+      getSettings: async () =>
+        settings({
+          clearOnSave: true,
+          autoUnbookmarkOnSave: true,
+          autoUnlikeOnSave: true,
+          clearAllListsOnSave: false,
+        }),
+    })
+    const c = makeClearCoordinator(deps)
+    c.seedClearLedger(new Map([['T', ['m0']]]), ['bookmark'], 'sweep')
+    c.recordClearComplete('T', 'm0', 123)
+    await vi.runAllTimersAsync()
+    expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark'], false)
+  })
 })

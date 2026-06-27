@@ -20,7 +20,7 @@ export type MediaItem = typeof MediaItem.Type
 export const DownloadStrategyName = Schema.Literals(['direct', 'fetched', 'aria2'])
 export const Theme = Schema.Literals(['light', 'dark', 'system'])
 export const QuickGrabModifier = Schema.Literals(['alt', 'shift', 'ctrl', 'meta'])
-export const DownloadTraceSource = Schema.Literals(['quickgrab', 'badge', 'background'])
+export const DownloadTraceSource = Schema.Literals(['quickgrab', 'badge', 'background', 'clear'])
 
 const traceFields = {
   source: DownloadTraceSource,

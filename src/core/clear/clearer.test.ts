@@ -11,6 +11,7 @@ import {
   findFeedbackButton,
   findNotInterestedItem,
   flipConfirmed,
+  isClearableTweetId,
   isClearedStub,
   isForYouHome,
   isMember,
@@ -30,6 +31,22 @@ function article(opts: { tweetId: string; bookmarked?: boolean; liked?: boolean 
   `
   return el
 }
+
+describe('clearer — isClearableTweetId (DOM-locatable id guard)', () => {
+  it('accepts X numeric snowflake ids, rejects the media-key fallback', () => {
+    expect(isClearableTweetId('2069527192787472572')).toBe(true)
+    expect(isClearableTweetId('1')).toBe(true)
+    // The adapter's `tweetId ?? key` fallback yields a non-numeric media key that
+    // can never match a `/status/{id}` article — clearing it only defer-then-drops.
+    expect(isClearableTweetId('jO4OvymczbTx7WL4')).toBe(false)
+    expect(isClearableTweetId('HLkY8gTWsAASx-7')).toBe(false)
+    expect(isClearableTweetId('')).toBe(false)
+    // Anchored: no partial/embedded/whitespace match, and over-wide ids rejected.
+    expect(isClearableTweetId('123abc')).toBe(false)
+    expect(isClearableTweetId('12 34')).toBe(false)
+    expect(isClearableTweetId('123456789012345678901')).toBe(false)
+  })
+})
 
 describe('clearer DOM helpers', () => {
   beforeEach(() => {
@@ -202,6 +219,28 @@ describe('clearer — shouldClickScope (page-scoped vs. Clear-from-every-list)',
       expect(shouldClickScope({ scope: 'like', onScope: null, member: true, allLists: true })).toBe(
         true,
       )
+    })
+
+    it('ALWAYS fires the page’s own scope even if the member snapshot is transiently false', () => {
+      // Regression guard for "un-bookmarked but not un-liked" on the Likes page: the
+      // page's own scope (like on Likes) is a guaranteed member — the post is mounted
+      // in this very list — so it must fire even when a prior cross-list clear's
+      // in-place re-render transiently blanks the un-like control in the snapshot.
+      // (clearScope still does the authoritative membership re-check at click time.)
+      expect(
+        shouldClickScope({ scope: 'like', onScope: 'like', member: true, allLists: true }),
+      ).toBe(true)
+      expect(
+        shouldClickScope({ scope: 'like', onScope: 'like', member: false, allLists: true }),
+      ).toBe(true)
+      // Symmetric on Bookmarks (pageScope=bookmark): un-bookmark always fires there.
+      expect(
+        shouldClickScope({ scope: 'bookmark', onScope: 'bookmark', member: false, allLists: true }),
+      ).toBe(true)
+      // …but a CROSS-list scope still needs real membership (never fire blindly).
+      expect(
+        shouldClickScope({ scope: 'bookmark', onScope: 'like', member: false, allLists: true }),
+      ).toBe(false)
     })
 
     it('notInterested stays For-You-only even in all-lists mode (no membership to read)', () => {
