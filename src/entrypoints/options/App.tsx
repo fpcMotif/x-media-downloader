@@ -17,6 +17,7 @@ import {
 import type { PanelProps } from './ui'
 import { GeneralPanel } from './panels/general'
 import { DownloadsPanel } from './panels/downloads'
+import { FiltersPanel } from './panels/filters'
 import { WorklistPanel } from './panels/worklist'
 import { CloudPanel } from './panels/cloud'
 import { HistoryPanel } from './panels/history'
@@ -38,6 +39,7 @@ const SECTIONS = [
     icon: DownloadIcon,
     Panel: DownloadsPanel,
   },
+  { id: 'filters', label: 'Filters', icon: SlidersIcon, Panel: FiltersPanel },
   {
     id: 'worklist',
     label: 'Worklist & clearing',
