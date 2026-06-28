@@ -1178,6 +1178,8 @@ const messageHandlers: MessageHandlers = {
   // affects the `{ stored }` reply.
   CaptureTweets: handle<'CaptureTweets'>(async (msg) => {
     await captureDb.putRecords(msg.records)
+    const total = await captureDb.count()
+    console.info(`[XMD] capture received ${msg.records.length} record(s); store total=${total}`)
     mirrorCaptures(msg.records)
     return { stored: msg.records.length }
   }),
@@ -1276,12 +1278,26 @@ export default defineBackground(() => {
 
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const decoded = Schema.decodeUnknownResult(Message)(message)
-    if (Result.isFailure(decoded)) return false
+    if (Result.isFailure(decoded)) {
+      const rawTag = (message as { _tag?: unknown } | null)?._tag
+      if (typeof rawTag === 'string' && rawTag.startsWith('Capture'))
+        console.warn(
+          `[XMD] capture message ${rawTag} FAILED schema decode (dropped):`,
+          decoded.failure,
+        )
+      return false
+    }
     const msg = decoded.success
     // Sender authorization: drop anything from another extension, an off-origin
     // content script, or a content script reaching for a UI-only tag — before
     // any download / OAuth / cloud-egress / clear handler runs.
-    if (!isMessageAllowed(msg._tag, sender, browser.runtime.id)) return false
+    if (!isMessageAllowed(msg._tag, sender, browser.runtime.id)) {
+      if (msg._tag.startsWith('Capture'))
+        console.warn(
+          `[XMD] capture message ${msg._tag} BLOCKED by sender guard (contentScript=${sender?.tab !== undefined && sender?.tab !== null})`,
+        )
+      return false
+    }
     const h = messageHandlers[msg._tag]
     if (!h) return false
     // A rejected handler must still resolve the channel: without this `.catch` the

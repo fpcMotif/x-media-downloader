@@ -1473,6 +1473,7 @@ export default defineContentScript({
     const CAPTURE_FLUSH_DEBOUNCE_MS = 750
     let captureBuffer: TweetRecord[] = []
     let captureFlushTimer: ReturnType<typeof setTimeout> | null = null
+    let captureStateLogged = false
 
     // Ship the pending buffer in CaptureTweets messages capped at MAX_CAPTURE_BATCH
     // records each, draining fully so nothing is dropped. Fire-and-forget via
@@ -1485,6 +1486,7 @@ export default defineContentScript({
       while (captureBuffer.length > 0) {
         const records = captureBuffer.slice(0, MAX_CAPTURE_BATCH)
         captureBuffer = captureBuffer.slice(MAX_CAPTURE_BATCH)
+        console.info(`[XMD] capture flush → sending ${records.length} record(s)`)
         void safeSend(() =>
           browser.runtime.sendMessage({ _tag: 'CaptureTweets', records } satisfies CaptureTweets),
         )
@@ -1492,32 +1494,52 @@ export default defineContentScript({
     }
 
     const harvestFrom = (json: unknown, path: string): void => {
-      if (!captureEnabled) return
-      const source: Source = path.includes('/TweetDetail') ? 'tweetDetail' : 'timeline'
-      const records = harvestTweets(json, {
-        source,
-        includeTextOnly: captureAllScrolled,
-        capturedAt: Date.now(),
-      })
-      if (records.length === 0) return
-      captureBuffer.push(...records)
-      if (captureBuffer.length >= MAX_CAPTURE_BATCH) {
-        flushCaptures()
+      if (!captureEnabled) {
+        if (!captureStateLogged) {
+          console.info(
+            '[XMD] capture DISABLED in this tab — toggle "Harvest tweets" ON, then RELOAD the x.com tab',
+          )
+          captureStateLogged = true
+        }
         return
       }
-      if (captureFlushTimer !== null) clearTimeout(captureFlushTimer)
-      captureFlushTimer = setTimeout(flushCaptures, CAPTURE_FLUSH_DEBOUNCE_MS)
+      const source: Source = path.includes('/TweetDetail') ? 'tweetDetail' : 'timeline'
+      try {
+        const records = harvestTweets(json, {
+          source,
+          includeTextOnly: captureAllScrolled,
+          capturedAt: Date.now(),
+        })
+        console.info(
+          `[XMD] capture harvest path=${path} source=${source} all=${captureAllScrolled} → got ${records.length} record(s)`,
+        )
+        if (records.length === 0) return
+        captureBuffer.push(...records)
+        if (captureBuffer.length >= MAX_CAPTURE_BATCH) {
+          flushCaptures()
+          return
+        }
+        if (captureFlushTimer !== null) clearTimeout(captureFlushTimer)
+        captureFlushTimer = setTimeout(flushCaptures, CAPTURE_FLUSH_DEBOUNCE_MS)
+      } catch (err) {
+        console.warn('[XMD] capture harvest THREW (not a media failure):', err)
+      }
     }
 
     document.addEventListener('xmd:media-response', (event) => {
       const detail = (event as CustomEvent<{ path: string; body: string }>).detail
+      let json: unknown
       try {
-        const json: unknown = JSON.parse(detail.body)
-        if (store.addDetected(detectFromJson(json)).length > 0) rerender()
-        harvestFrom(json, detail.path)
+        json = JSON.parse(detail.body)
       } catch {
-        /* ignore non-JSON / unexpected shapes */
+        return /* non-JSON tee body */
       }
+      try {
+        if (store.addDetected(detectFromJson(json)).length > 0) rerender()
+      } catch {
+        /* media detection is best-effort */
+      }
+      harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
     })
 
     // Don't lose a sub-debounce batch when the tab is navigated away or unloaded.
