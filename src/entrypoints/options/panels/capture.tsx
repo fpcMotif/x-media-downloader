@@ -19,13 +19,28 @@ const fetchSummary = (): Promise<CaptureSummary | null> =>
     .then((s) => (s as CaptureSummary | null) ?? null)
     .catch(() => null)
 
+// The SW builds the artifact text; we download it from THIS page (extension
+// pages have a DOM + URL.createObjectURL — the SW has neither). Reliable across
+// Chrome versions, unlike a SW `data:`-URL or `chrome.downloads` call.
 const exportCapture = async (
   kind: 'jsonl' | 'tree' | 'markdown',
   conversationId?: string,
 ): Promise<void> => {
-  await browser.runtime
+  const res = (await browser.runtime
     .sendMessage({ _tag: 'ExportCaptureRequest', kind, conversationId })
-    .catch(() => {})
+    .catch(() => null)) as { ok?: boolean; filename?: string; text?: string } | null
+  if (!res?.ok || typeof res.text !== 'string' || res.text.length === 0) {
+    console.warn('[XMD] capture export: nothing to download', res)
+    return
+  }
+  const url = URL.createObjectURL(new Blob([res.text], { type: 'application/octet-stream' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = res.filename ?? 'harvest.jsonl'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
 }
 
 export function CapturePanel({ settings, update }: PanelProps) {

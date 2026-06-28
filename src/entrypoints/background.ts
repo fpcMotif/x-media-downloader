@@ -1052,62 +1052,28 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   }
 }
 
-// Knowledge Capture exports (spec §10). The SW can't mint `blob:` URLs, so a
-// built artifact is delivered as a `data:` URL by default and routed through the
-// offscreen `saveBlob` port (which mints the blob URL in the offscreen doc) only
-// when it's too large to inline. ~2 MB ceiling on the encoded data: URL.
+// Knowledge Capture exports (spec §10). The MV3 service worker can't mint
+// `blob:` URLs and `data:` downloads are unreliable, so the SW only BUILDS the
+// artifact text; the options page (which has a DOM + URL.createObjectURL) does
+// the actual download. Quote text is resolved against the full record set.
 const captureRecentLimit = 20
-const captureDataUrlMaxBytes = 2 * 1024 * 1024
-const captureOffscreen = makeOffscreenPort()
 
-const captureDataUrl = (text: string): string =>
-  `data:application/json;charset=utf-8,${encodeURIComponent(text)}`
-
-/** Deliver an export artifact MV3-safely: a `data:` URL handed to
- *  `chrome.downloads.download` below the size ceiling, else the offscreen
- *  `saveBlob` port (one ensure/close per call, like fetched-strategy). */
-const deliverCaptureExport = async (text: string, filename: string): Promise<void> => {
-  const url = captureDataUrl(text)
-  if (url.length <= captureDataUrlMaxBytes) {
-    await browser.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false })
-    return
-  }
-  const bytes = new TextEncoder().encode(text)
-  try {
-    await captureOffscreen.ensureDocument()
-    await captureOffscreen.saveBlob({ bytes, mimeType: 'application/json', filename })
-  } finally {
-    await captureOffscreen.closeDocument().catch(() => {})
-  }
-}
-
-/** Build the requested export over the harvested records and deliver it (spec
- *  §10): JSONL across the whole store, or one conversation's tree as JSON /
- *  Markdown. Quote text is resolved against the full record set. Returns the
- *  artifact filename, or null when a thread export names no conversation. */
-const handleCaptureExport = async (
+const buildCaptureExport = async (
   kind: 'jsonl' | 'tree' | 'markdown',
   conversationId: string | undefined,
-): Promise<string | null> => {
+): Promise<{ filename: string; text: string } | null> => {
   if (kind === 'jsonl') {
     const records = await captureDb.allRecords()
     const day = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    const filename = `xharvest-${day}.jsonl`
-    await deliverCaptureExport(toJsonl(records), filename)
-    return filename
+    return { filename: `xharvest-${day}.jsonl`, text: toJsonl(records) }
   }
   if (conversationId === undefined) return null
   const all = await captureDb.allRecords()
   const [tree] = buildTree(selectConversation(all, conversationId))
   if (tree === undefined) return null
-  if (kind === 'tree') {
-    const filename = `thread-${conversationId}.json`
-    await deliverCaptureExport(toTreeJson(tree, all), filename)
-    return filename
-  }
-  const filename = `thread-${conversationId}.md`
-  await deliverCaptureExport(toMarkdown(tree, all), filename)
-  return filename
+  if (kind === 'tree')
+    return { filename: `thread-${conversationId}.json`, text: toTreeJson(tree, all) }
+  return { filename: `thread-${conversationId}.md`, text: toMarkdown(tree, all) }
 }
 
 // Typed message-router table. Each entry returns the value to send back; the
@@ -1191,8 +1157,12 @@ const messageHandlers: MessageHandlers = {
     }
   },
   ExportCaptureRequest: handle<'ExportCaptureRequest'>(async (msg) => {
-    const filename = await handleCaptureExport(msg.kind, msg.conversationId)
-    return filename === null ? { ok: false, filename: '' } : { ok: true, filename }
+    const built = await buildCaptureExport(msg.kind, msg.conversationId)
+    if (built === null) return { ok: false, filename: '', text: '' }
+    console.info(
+      `[XMD] capture export ${msg.kind} → ${built.filename} (${built.text.length} bytes)`,
+    )
+    return { ok: true, filename: built.filename, text: built.text }
   }),
   ClearCaptureRequest: async () => {
     const cleared = await captureDb.count()
