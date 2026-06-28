@@ -64,7 +64,11 @@ export default defineSchema({
   media_state: defineTable({
     requestId: v.string(),
     deviceId: v.string(),
-    tweetId: v.string(),
+    // Optional for backward compatibility: rows written before the saved-status
+    // `tweetId` column existed lack it entirely, so a required validator blocks the
+    // whole schema push (and with it every other table, incl. tweet_captures). The
+    // sync.ts backfill derives it from `media.tweetId`; new rows always set it.
+    tweetId: v.optional(v.string()),
     lastKind: kind,
     at: v.number(),
     media: v.optional(media),
