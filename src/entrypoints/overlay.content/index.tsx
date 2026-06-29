@@ -70,7 +70,6 @@ import {
   isForYouHome,
   isMember,
   notInterestedConfirmed,
-  pageScope,
   tweetIdOfArticle,
   TWEET_ARTICLE_SEL,
 } from '../../core/clear/clearer'
@@ -81,7 +80,7 @@ import {
   savedStatusVisible,
   type HandlerDeps,
 } from './handlers'
-import { makeDrainQueue, addPending, readyToClear, type DrainQueue } from '../../core/clear/drain'
+import { makeScrollDrain } from '../../core/clear/scroll-drain'
 import type {
   CaptureTweets,
   ClearScope,
@@ -276,14 +275,9 @@ async function dismissFeedbackStub(cell: Element | null): Promise<void> {
 }
 
 // ── Auto-scroll drain for not-mounted clears ──
-//
-// X virtualizes the timeline (~30 articles in the DOM at once; a post scrolled past
-// is removed entirely), so a clear that fires seconds after its download settles
-// usually can't find its post mounted. Rather than drop those, `queueDrain` collects
-// them and `drainPendingClears` scrolls the Likes/Bookmarks list to surface each one,
-// clearing it as it mounts — then restores the user's scroll position. Bounded by a
-// step cap + a bottom-reached guard so it can never spin.
-const DRAIN_DEBOUNCE_MS = 1200
+// The bounded scroll-pass loop lives in `core/clear/scroll-drain`; this entrypoint
+// wires the live window/document/timer ports + the real clear and trace sinks into it
+// (see `scrollDrain` below).
 // Debounce for the cross-device "Saved" status sweep: a burst of scroll/render
 // mutations collapses into one overlay→background round-trip + chip pass.
 const SAVED_SWEEP_DEBOUNCE_MS = 500
@@ -300,23 +294,6 @@ const requestSavedStatus = async (tweetIds: string[]): Promise<string[]> => {
     ? [...(reply as SavedStatusResponse).saved]
     : []
 }
-const DRAIN_SCROLL_SETTLE_MS = 600
-const DRAIN_MAX_STEPS = 60
-const DRAIN_VIEWPORT_FRACTION = 0.9
-// A drain pass that clears nothing is NOT proof the work is gone: jumping to the top
-// of a deeply-scrolled virtualized feed makes X re-render lazily, so the pending posts
-// often haven't mounted yet when the scan reaches where they'll land. Retry a bounded
-// number of empty passes (with a longer backoff so the feed can catch up) before
-// giving up — otherwise the tail of a batch is stranded whenever its final pass
-// happens to surface nothing.
-const DRAIN_RETRY_BACKOFF_MS = 2500
-const DRAIN_MAX_EMPTY_PASSES = 4
-
-const pendingClears: DrainQueue = makeDrainQueue()
-let draining = false
-let drainTimer: ReturnType<typeof setTimeout> | null = null
-let emptyDrainPasses = 0
-
 /** Numeric tweetIds of every tweet article mounted right now. */
 const mountedTweetIds = (): string[] => {
   const out: string[] = []
@@ -349,96 +326,28 @@ const reportClear = (stage: string, detail: string, tweetId?: string): void => {
   )
 }
 
-async function drainPendingClears(): Promise<void> {
-  if (draining || pendingClears.size === 0) return
-  // Only auto-scroll on a Likes/Bookmarks list page — the drain is meaningless on the
-  // For You feed (NI has no membership to revisit) and must never hijack scrolling
-  // elsewhere. A page switch mid-batch just leaves the rest pending (re-seeded on a
-  // future download).
-  if (pageScope(location.pathname) === null) return
-  draining = true
-  const startY = window.scrollY
-  let clearedThisPass = 0
-  reportClear('drain-start', `${pendingClears.size} post(s) pending — scanning the list`)
-  if (import.meta.env.DEV) clearLog('drain start ·', pendingClears.size, 'pending')
-  try {
-    // Scan from the TOP: a "download this page" batch is detected as you scroll DOWN,
-    // so the cleared posts sit ABOVE wherever you ended up — a down-only scan from the
-    // current position would miss most of them.
-    window.scrollTo(0, 0)
-    await new Promise((r) => setTimeout(r, DRAIN_SCROLL_SETTLE_MS))
-    let noProgress = 0
-    // oxlint-disable no-await-in-loop -- a paced scroll pass, one viewport at a time
-    for (let step = 0; step < DRAIN_MAX_STEPS && pendingClears.size > 0; step++) {
-      for (const id of readyToClear(pendingClears, mountedTweetIds())) {
-        const p = pendingClears.get(id)
-        pendingClears.delete(id)
-        if (p !== undefined) {
-          const results = await clearMountedTweet(drainDeps(), id, p.scopes, p.allLists)
-          clearedThisPass += 1
-          reportClear(
-            'cleared',
-            results.map((r) => `${r.scope}:${r.ok ? (r.noop ? 'noop' : 'ok') : 'fail'}`).join(' '),
-            id,
-          )
-        }
-      }
-      if (pendingClears.size === 0) break
-      const before = window.scrollY
-      window.scrollBy(0, Math.round(window.innerHeight * DRAIN_VIEWPORT_FRACTION))
-      await new Promise((r) => setTimeout(r, DRAIN_SCROLL_SETTLE_MS))
-      // Scroll didn't advance: either the true bottom, or X hasn't extended the
-      // virtualized feed yet (a lazy re-render after the jump to top). Only 3 stalls
-      // in a row count as the bottom, so a slow extension doesn't end the scan before
-      // the pending posts mount in.
-      if (window.scrollY <= before) {
-        noProgress += 1
-        if (noProgress >= 3) break
-      } else {
-        noProgress = 0
-      }
-    }
-    // oxlint-enable no-await-in-loop
-  } finally {
-    window.scrollTo(0, startY) // put the user back where they were
-    draining = false
-    reportClear('drain-end', `cleared ${clearedThisPass}, ${pendingClears.size} still pending`)
-    if (import.meta.env.DEV) clearLog('drain end ·', pendingClears.size, 'still pending')
-    // Keep going while work remains. A pass that cleared something resets the empty
-    // budget and re-runs promptly (more posts settle mid-scroll); a pass that cleared
-    // nothing spends one retry of a bounded budget — a longer backoff lets a lazily
-    // re-rendering feed catch up — before the drain finally gives up. This stops the
-    // tail of a batch being abandoned just because one pass surfaced nothing, without
-    // ever spinning forever on posts that genuinely aren't on this list.
-    if (pendingClears.size > 0) {
-      if (clearedThisPass > 0) {
-        emptyDrainPasses = 0
-        scheduleDrain()
-      } else if (emptyDrainPasses < DRAIN_MAX_EMPTY_PASSES) {
-        emptyDrainPasses += 1
-        scheduleDrain(DRAIN_RETRY_BACKOFF_MS)
-      }
-    }
-  }
-}
-
-/** Debounced so a whole batch's not-mounted clears accumulate into ONE scroll pass.
- *  Empty-pass retries pass a longer `delayMs` so the feed can settle before re-scanning. */
-const scheduleDrain = (delayMs: number = DRAIN_DEBOUNCE_MS): void => {
-  if (drainTimer !== null) clearTimeout(drainTimer)
-  drainTimer = setTimeout(() => {
-    drainTimer = null
-    void drainPendingClears()
-  }, delayMs)
-}
-
-const queueDrain = (tweetId: string, scopes: ClearScope[], allLists: boolean): void => {
-  addPending(pendingClears, tweetId, scopes, allLists)
-  // Fresh work arrived — restore the full retry budget so earlier empty passes don't
-  // count against surfacing these posts.
-  emptyDrainPasses = 0
-  scheduleDrain()
-}
+// The bounded scroll-pass loop is `core/clear/scroll-drain`; here we inject the live
+// window/document/timer ports + the real clear and trace sinks.
+const scrollDrain = makeScrollDrain({
+  scroll: {
+    position: () => window.scrollY,
+    to: (y) => window.scrollTo(0, y),
+    by: (dy) => window.scrollBy(0, dy),
+    viewport: () => window.innerHeight,
+  },
+  clock: {
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    after: (ms, fn) => {
+      const h = setTimeout(fn, ms)
+      return () => clearTimeout(h)
+    },
+  },
+  path: () => location.pathname,
+  liveMountedIds: mountedTweetIds,
+  clearMounted: (id, scopes, allLists) => clearMountedTweet(drainDeps(), id, scopes, allLists),
+  report: reportClear,
+})
+const queueDrain = scrollDrain.queue
 
 // Page-level grab-cursor CSS for eligible twimg media previews, built once at
 // module load. The video poster sections come from `VIDEO_PREVIEW_SECTIONS` in

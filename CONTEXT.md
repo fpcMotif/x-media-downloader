@@ -91,6 +91,14 @@ use these words, they mean exactly this.
   never fires on bytes that never arrived. The verdict is pure (`core/clear`);
   the **Settle Port** is its injected probe seam — real `chrome.downloads.search`
   in the service worker, a fixture row in tests.
+- **Drain** (Scroll Drain) — the recovery path for a **Clear** whose Tweet is not
+  currently mounted. X virtualizes the timeline (only a small window of articles
+  sits in the DOM at once), so a Clear firing seconds after its download settles
+  often cannot find its post. Rather than drop it, the not-mounted Clear is queued;
+  the Drain scrolls the Likes/Bookmarks list from the top to surface each pending
+  post and fires its Clear as the post mounts, then restores the user's original
+  scroll position. Bounded — it gives up after a budget of passes that surface
+  nothing new. Runs only on a list page (Likes/Bookmarks), never the For You feed.
 - **Sidecar** — an optional `.json` file saved next to a Media Item recording its
   provenance (author, url, tweetId, type). Opt-in; rides the same download path as
   a `data:` URL (no extra permissions).
