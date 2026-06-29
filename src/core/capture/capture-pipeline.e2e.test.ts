@@ -178,15 +178,15 @@ describe('capture pipeline e2e (harvest → merge → tree → export)', () => {
     expect(markdown).not.toContain('THIN sighting')
     const rootLine = jsonl
       .split('\n')
-      .map((l) => JSON.parse(l) as TweetRecord)
-      .find((r) => r.tweetId === '2001')!
+      .map((l) => JSON.parse(l) as { id: string; text: string; kind: string })
+      .find((r) => r.id === '2001')!
     expect(rootLine.text).toBe('root tweet of the thread')
-    expect(rootLine.sourceRank).toBe(2)
+    expect(rootLine.kind).toBe('tweet')
   })
 
   it("inlines a quoted tweet's text where the outer tweet references it", () => {
     const quoter = records.find((r) => r.tweetId === '2004')!
     expect(quoter.quotedTweetId).toBe('3001')
-    expect(markdown).toContain('> quote 3001: the quoted insight')
+    expect(markdown).toMatch(/> quote https:\/\/x\.com\/\S*status\/3001: the quoted insight/)
   })
 })
