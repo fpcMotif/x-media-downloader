@@ -19,7 +19,6 @@ const record = (overrides: Partial<TweetRecord> = {}): TweetRecord => ({
   author: { handle: 'alice' },
   text: 'hello',
   rawText: 'hello',
-  metrics: {},
   links: [],
   media: [],
   mentions: [],

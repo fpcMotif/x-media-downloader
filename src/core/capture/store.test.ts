@@ -22,7 +22,6 @@ const make = (over: {
   author: { handle: over.handle ?? 'alice' },
   text: over.text ?? `text-${over.tweetId}`,
   rawText: over.text ?? `text-${over.tweetId}`,
-  metrics: {},
   links: [],
   media: [],
   mentions: [],

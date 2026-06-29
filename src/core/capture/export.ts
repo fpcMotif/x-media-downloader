@@ -27,14 +27,6 @@ export interface ExportQuote {
   readonly url: string
   readonly text: string | null
 }
-export interface ExportMetrics {
-  readonly replies: number | null
-  readonly reposts: number | null
-  readonly likes: number | null
-  readonly quotes: number | null
-  readonly bookmarks: number | null
-  readonly views: number | null
-}
 export interface ExportTweet {
   readonly id: string
   readonly url: string
@@ -55,7 +47,6 @@ export interface ExportTweet {
   readonly mentions: ReadonlyArray<string>
   readonly hashtags: ReadonlyArray<string>
   readonly quote: ExportQuote | null
-  readonly metrics: ExportMetrics
   readonly source: string
 }
 
@@ -107,14 +98,6 @@ export function toExportTweet(r: TweetRecord, byId: Map<string, TweetRecord>): E
     mentions: [...r.mentions],
     hashtags: [...r.hashtags],
     quote,
-    metrics: {
-      replies: r.metrics.replies ?? null,
-      reposts: r.metrics.retweets ?? null,
-      likes: r.metrics.likes ?? null,
-      quotes: r.metrics.quotes ?? null,
-      bookmarks: r.metrics.bookmarks ?? null,
-      views: r.metrics.views ?? null,
-    },
     source: r.source,
   }
 }
@@ -199,9 +182,6 @@ export interface Row {
   readonly text: string
   readonly links: string
   readonly media: string
-  readonly replies: number | null
-  readonly likes: number | null
-  readonly views: number | null
 }
 
 export function toRows(records: ReadonlyArray<TweetRecord>): Row[] {
@@ -219,9 +199,6 @@ export function toRows(records: ReadonlyArray<TweetRecord>): Row[] {
       text: e.text,
       links: e.links.map((l) => l.url).join(' '),
       media: e.media.map((m) => m.url).join(' '),
-      replies: e.metrics.replies,
-      likes: e.metrics.likes,
-      views: e.metrics.views,
     }
   })
 }

@@ -18,7 +18,6 @@ const rec = (
   author: { handle: 'alice' },
   text: '',
   rawText: '',
-  metrics: {},
   links: [],
   media: [],
   mentions: [],
@@ -48,7 +47,6 @@ const root = rec({
   ],
   mentions: ['carol'],
   hashtags: ['ai'],
-  metrics: { replies: 1, retweets: 2, likes: 794, quotes: 3, bookmarks: 4, views: 1000 },
 })
 
 const reply = rec({
@@ -81,7 +79,7 @@ const quoted = rec({
 const all = [root, reply, quoting, quoted]
 
 describe('toExportTweet', () => {
-  it('projects the clean schema: permalink, ISO times, kind, metrics, resolved quote', () => {
+  it('projects the clean schema: permalink, ISO times, kind, resolved quote', () => {
     const e = toExportTweet(root, byId(all))
     expect(e).toMatchObject<Partial<ExportTweet>>({
       id: 'R',
@@ -102,14 +100,6 @@ describe('toExportTweet', () => {
       domain: 'example.com',
     })
     expect(e.media[0]).toEqual({ type: 'photo', url: 'https://pbs/m1.jpg', ext: 'jpg' })
-    expect(e.metrics).toEqual({
-      replies: 1,
-      reposts: 2,
-      likes: 794,
-      quotes: 3,
-      bookmarks: 4,
-      views: 1000,
-    })
   })
 
   it('derives kind=reply with a replyTo object, and null-coalesces sparse fields', () => {
@@ -119,14 +109,6 @@ describe('toExportTweet', () => {
     expect(e.author).toEqual({ handle: 'bob', name: null, id: null })
     expect(e.createdAt).not.toBeNull()
     expect(e.links[0]).toEqual({ url: 'https://bare.example', title: null, domain: null })
-    expect(e.metrics).toEqual({
-      replies: null,
-      reposts: null,
-      likes: null,
-      quotes: null,
-      bookmarks: null,
-      views: null,
-    })
   })
 
   it('resolves a quote to the quoted author permalink + inlined text', () => {
@@ -166,9 +148,7 @@ describe('toJsonl', () => {
     const parsed = lines.map((l) => JSON.parse(l) as ExportTweet)
     expect(parsed.map((p) => p.id)).toEqual(['R', 'A', 'Q', 'QT'])
     for (const p of parsed) {
-      expect(
-        'url' in p && 'replyTo' in p && 'quote' in p && 'metrics' in p && 'createdAt' in p,
-      ).toBe(true)
+      expect('url' in p && 'replyTo' in p && 'quote' in p && 'createdAt' in p).toBe(true)
     }
     const replyLine = parsed.find((p) => p.id === 'A')!
     expect(replyLine.replyTo).toEqual({ id: 'R', handle: 'alice' })
@@ -270,13 +250,10 @@ describe('toRows', () => {
       name: 'Alice',
       links: 'https://example.com/post',
       media: 'https://pbs/m1.jpg https://pbs/m2.jpg',
-      likes: 794,
-      views: 1000,
     })
     const a = rows.find((x) => x.id === 'A')!
     expect(a.name).toBe('')
     expect(a.media).toBe('')
-    expect(a.likes).toBeNull()
   })
 
   it('uses empty createdAt when absent', () => {

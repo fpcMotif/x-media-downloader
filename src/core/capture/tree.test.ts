@@ -11,7 +11,6 @@ const rec = (
   author: { handle: 'a' },
   text: '',
   rawText: '',
-  metrics: {},
   links: [],
   media: [],
   mentions: [],

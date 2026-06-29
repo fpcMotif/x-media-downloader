@@ -118,24 +118,6 @@ describe('tweetRecordFromNode', () => {
     expect(rec?.quotedTweetId).toBe('5002')
   })
 
-  it('fills metrics including views.count', () => {
-    const rec = tweetRecordFromNode({
-      node: rootNode,
-      author: findAuthor(rootNode),
-      mediaRaw: [],
-      source: 'tweetDetail',
-      capturedAt: at,
-    })
-    expect(rec?.metrics).toEqual({
-      replies: 2,
-      retweets: 5,
-      likes: 40,
-      quotes: 1,
-      bookmarks: 3,
-      views: 12000,
-    })
-  })
-
   it('expands t.co in text while keeping the original in rawText', () => {
     const rec = tweetRecordFromNode({
       node: linksNode,
@@ -352,7 +334,7 @@ describe('tweetRecordFromNode', () => {
     expect(rec?.retweetOf).toBeUndefined()
   })
 
-  it('falls back conversationId to tweetId and tolerates malformed views/created_at', () => {
+  it('falls back conversationId to tweetId and tolerates a malformed created_at', () => {
     const thin = {
       __typename: 'Tweet',
       rest_id: '6100',
@@ -361,7 +343,6 @@ describe('tweetRecordFromNode', () => {
           result: { __typename: 'User', rest_id: '61', legacy: { screen_name: 'thin' } },
         },
       },
-      views: { count: 'not-a-number' },
       legacy: {
         id_str: '6100',
         full_text: 'thin one',
@@ -377,7 +358,6 @@ describe('tweetRecordFromNode', () => {
       capturedAt: at,
     })
     expect(rec?.conversationId).toBe('6100')
-    expect(rec?.metrics).toEqual({})
     expect(rec?.createdAt).toBeUndefined()
     expect(rec?.lang).toBeUndefined()
     expect(rec?.mentions).toEqual([])

@@ -11,15 +11,6 @@ export function sourceRank(source: Source): number {
   return source === 'tweetDetail' ? 2 : 1
 }
 
-const MetricsSchema = Schema.Struct({
-  replies: Schema.optional(Schema.Number),
-  retweets: Schema.optional(Schema.Number),
-  likes: Schema.optional(Schema.Number),
-  quotes: Schema.optional(Schema.Number),
-  bookmarks: Schema.optional(Schema.Number),
-  views: Schema.optional(Schema.Number),
-})
-
 const AuthorSchema = Schema.Struct({
   handle: Schema.String,
   name: Schema.optional(Schema.String),
@@ -58,7 +49,6 @@ export const TweetRecord = Schema.Struct({
   rawText: Schema.String,
   createdAt: Schema.optional(Schema.Number),
   lang: Schema.optional(Schema.String),
-  metrics: MetricsSchema,
   links: Schema.Array(LinkSchema),
   media: Schema.Array(MediaRef),
   mentions: Schema.Array(Schema.String),
@@ -75,16 +65,6 @@ type Obj = Record<string, unknown>
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
-const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
-
-/** `views.count` is a numeric string sibling of `legacy` at the result node. */
-const viewsCount = (node: Obj): number | undefined => {
-  const views = node['views']
-  const raw = isObj(views) ? str(views['count']) : undefined
-  if (raw === undefined) return undefined
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : undefined
-}
 
 const optionalEntry = <K extends string, V>(key: K, v: V | undefined): Record<K, V> | object =>
   v !== undefined ? ({ [key]: v } as Record<K, V>) : {}
@@ -174,15 +154,6 @@ export function tweetRecordFromNode(args: {
   const tweetId = str(tweet['rest_id']) ?? str(legacy['id_str']) ?? ''
   const rawText = str(legacy['full_text']) ?? ''
 
-  const metrics = {
-    ...optionalEntry('replies', num(legacy['reply_count'])),
-    ...optionalEntry('retweets', num(legacy['retweet_count'])),
-    ...optionalEntry('likes', num(legacy['favorite_count'])),
-    ...optionalEntry('quotes', num(legacy['quote_count'])),
-    ...optionalEntry('bookmarks', num(legacy['bookmark_count'])),
-    ...optionalEntry('views', viewsCount(tweet)),
-  }
-
   return {
     tweetId,
     conversationId: str(legacy['conversation_id_str']) ?? tweetId,
@@ -193,7 +164,6 @@ export function tweetRecordFromNode(args: {
     rawText,
     ...optionalEntry('createdAt', createdAtMs(legacy)),
     ...optionalEntry('lang', str(legacy['lang'])),
-    metrics,
     links: joinedLinks(legacy, tweet['card']),
     media: mediaRefs(tweetId, author.handle, mediaRaw),
     mentions: mentions(legacy),
