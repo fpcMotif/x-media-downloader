@@ -2,9 +2,8 @@ import type { MediaItem, Settings } from '../core/schema'
 import {
   type FilterSettings,
   type SkipReason,
+  evaluateAdmission,
   freeReason,
-  sizeReason,
-  budgetReason,
 } from '../core/download/admission'
 import type { SizeProbePort } from '../core/download/size-probe'
 import type { SavedIndex, QueryConvex } from '../core/sync/saved-index'
@@ -58,24 +57,20 @@ export function makeAdmissionGate(deps: {
     const skipped: { item: MediaItem; reason: SkipReason }[] = []
 
     for (const item of items) {
+      // `freeReason` runs here ONLY to gate the expensive HEAD probe — a type-filtered or
+      // duplicate item must never reach the network. The admission verdict itself is the
+      // pure `evaluateAdmission`, which re-runs `freeReason` (cheap, pure, idempotent), so
+      // the free → size → budget decision now lives in exactly one place.
       const free = freeReason(item, filter, savedTweetIds)
-      if (free) {
-        skipped.push({ item, reason: free })
-        continue
-      }
-      const sizeBytes = probeActive ? await deps.sizeProbe.probe(item.url) : null
-      const size = sizeReason(sizeBytes, filter.maxFileSizeBytes)
-      if (size) {
-        skipped.push({ item, reason: size })
-        continue
-      }
-      const budget = budgetReason(
+      const sizeBytes = free === null && probeActive ? await deps.sizeProbe.probe(item.url) : null
+      const decision = evaluateAdmission(item, {
+        settings: filter,
+        savedTweetIds,
+        sizeBytes,
         running,
-        { bytes: sizeBytes ?? 0, count: 1 },
-        { dailyMaxBytes: filter.dailyMaxBytes, dailyMaxCount: filter.dailyMaxCount },
-      )
-      if (budget) {
-        skipped.push({ item, reason: budget })
+      })
+      if (!decision.admit) {
+        skipped.push({ item, reason: decision.reason })
         continue
       }
       admitted.push(item)
