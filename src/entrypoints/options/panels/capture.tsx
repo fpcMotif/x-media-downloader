@@ -1,58 +1,34 @@
 import { useEffect, useState } from 'preact/hooks'
-import type { RecentConversation } from '@/core/capture/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, SettingGroup, type PanelProps } from '../ui'
 import { LayersIcon, DownloadIcon, EraserIcon } from '@/components/icons'
-
-type CaptureSummary = {
-  readonly tweets: number
-  readonly conversations: number
-  readonly recent: ReadonlyArray<RecentConversation>
-}
-
-const fetchSummary = (): Promise<CaptureSummary | null> =>
-  browser.runtime
-    .sendMessage({ _tag: 'CaptureSummaryRequest' })
-    .then((s) => (s as CaptureSummary | null) ?? null)
-    .catch(() => null)
-
-// The SW builds the artifact text; we download it from THIS page (extension
-// pages have a DOM + URL.createObjectURL — the SW has neither). Reliable across
-// Chrome versions, unlike a SW `data:`-URL or `chrome.downloads` call.
-const exportCapture = async (
-  kind: 'jsonl' | 'tree' | 'markdown',
-  conversationId?: string,
-): Promise<void> => {
-  const res = (await browser.runtime
-    .sendMessage({ _tag: 'ExportCaptureRequest', kind, conversationId })
-    .catch(() => null)) as { ok?: boolean; filename?: string; text?: string } | null
-  if (!res?.ok || typeof res.text !== 'string' || res.text.length === 0) {
-    console.warn('[XMD] capture export: nothing to download', res)
-    return
-  }
-  const url = URL.createObjectURL(new Blob([res.text], { type: 'application/octet-stream' }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = res.filename ?? 'harvest.jsonl'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 2000)
-}
+import {
+  fetchCaptureSummary,
+  runCaptureExport,
+  type CaptureExportKind,
+  type CaptureSummary,
+} from '@/components/capture-export'
 
 export function CapturePanel({ settings, update }: PanelProps) {
   const [summary, setSummary] = useState<CaptureSummary | null>(null)
+  const [exportMsg, setExportMsg] = useState<string | null>(null)
 
-  useEffect(() => {
-    void fetchSummary().then(setSummary)
-  }, [])
+  const refreshSummary = (): void => void fetchCaptureSummary().then(setSummary)
+  useEffect(refreshSummary, [])
+
+  const doExport = async (kind: CaptureExportKind, conversationId?: string): Promise<void> => {
+    const outcome = await runCaptureExport(kind, conversationId)
+    setExportMsg(outcome.detail)
+    setTimeout(() => setExportMsg(null), 5000)
+  }
 
   const clearHarvest = async (): Promise<void> => {
     await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
     setSummary({ tweets: 0, conversations: 0, recent: [] })
+    setExportMsg(null)
   }
 
   const syncConfigured = settings.convexUrl !== '' && settings.convexSyncSecret !== ''
@@ -126,6 +102,9 @@ export function CapturePanel({ settings, update }: PanelProps) {
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline">{summary?.tweets ?? 0} tweets</Badge>
           <Badge variant="outline">{summary?.conversations ?? 0} conversations</Badge>
+          <Button type="button" variant="ghost" size="sm" onClick={refreshSummary}>
+            Refresh
+          </Button>
         </div>
 
         {recent.length > 0 ? (
@@ -144,7 +123,7 @@ export function CapturePanel({ settings, update }: PanelProps) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => void exportCapture('tree', c.conversationId)}
+                    onClick={() => void doExport('tree', c.conversationId)}
                   >
                     Export tree
                   </Button>
@@ -152,7 +131,7 @@ export function CapturePanel({ settings, update }: PanelProps) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => void exportCapture('markdown', c.conversationId)}
+                    onClick={() => void doExport('markdown', c.conversationId)}
                   >
                     Export Markdown
                   </Button>
@@ -172,7 +151,7 @@ export function CapturePanel({ settings, update }: PanelProps) {
             variant="outline"
             size="sm"
             className="self-start"
-            onClick={() => void exportCapture('jsonl')}
+            onClick={() => void doExport('jsonl')}
           >
             Export all (JSONL)
           </Button>
@@ -187,6 +166,8 @@ export function CapturePanel({ settings, update }: PanelProps) {
             Clear harvest
           </Button>
         </div>
+
+        {exportMsg && <FieldDescription>{exportMsg}</FieldDescription>}
       </SettingGroup>
     </>
   )
