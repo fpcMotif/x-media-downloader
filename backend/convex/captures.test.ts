@@ -86,3 +86,58 @@ describe('captures:recordCaptures', () => {
     expect(rows[0]).toMatchObject({ sourceRank: 2, text: 'rich detail' })
   })
 })
+
+describe('captures:list', () => {
+  it('fails closed on a bad caller secret', async () => {
+    const t = convexTest(schema, modules)
+    await expect(t.query(api.captures.list, { secret: 'WRONG' })).rejects.toThrow(
+      /bad or missing sync secret/,
+    )
+  })
+
+  it('returns the recorded rows newest-first (`by_at` desc)', async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(api.captures.recordCaptures, {
+      captures: [
+        capture({ captureId: 'dev-1/t-1', tweetId: 't-1', at: 1_000 }),
+        capture({ captureId: 'dev-1/t-2', tweetId: 't-2', at: 3_000 }),
+        capture({ captureId: 'dev-1/t-3', tweetId: 't-3', at: 2_000 }),
+      ],
+      secret: SECRET,
+    })
+
+    const rows = await t.query(api.captures.list, { secret: SECRET })
+    expect(rows.map((r) => r.tweetId)).toEqual(['t-2', 't-3', 't-1'])
+  })
+
+  it('scopes to one thread when conversationId is given', async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(api.captures.recordCaptures, {
+      captures: [
+        capture({ captureId: 'dev-1/t-1', tweetId: 't-1', conversationId: 'c-1' }),
+        capture({ captureId: 'dev-1/t-2', tweetId: 't-2', conversationId: 'c-2' }),
+        capture({ captureId: 'dev-1/t-3', tweetId: 't-3', conversationId: 'c-1' }),
+      ],
+      secret: SECRET,
+    })
+
+    const rows = await t.query(api.captures.list, { secret: SECRET, conversationId: 'c-1' })
+    expect(rows.map((r) => r.tweetId).sort()).toEqual(['t-1', 't-3'])
+    expect(rows.every((r) => r.conversationId === 'c-1')).toBe(true)
+  })
+
+  it('narrows to one device when deviceId is given', async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(api.captures.recordCaptures, {
+      captures: [
+        capture({ captureId: 'dev-1/t-1', tweetId: 't-1', deviceId: 'dev-1' }),
+        capture({ captureId: 'dev-2/t-2', tweetId: 't-2', deviceId: 'dev-2' }),
+      ],
+      secret: SECRET,
+    })
+
+    const rows = await t.query(api.captures.list, { secret: SECRET, deviceId: 'dev-2' })
+    expect(rows.map((r) => r.tweetId)).toEqual(['t-2'])
+    expect(rows.every((r) => r.deviceId === 'dev-2')).toBe(true)
+  })
+})

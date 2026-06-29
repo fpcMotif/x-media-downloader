@@ -2,14 +2,17 @@
 // deployment), mirroring uploads.ts / sync.ts.
 import {
   mutationGeneric,
+  queryGeneric,
   type DataModelFromSchemaDefinition,
   type MutationBuilder,
+  type QueryBuilder,
 } from 'convex/server'
 import { v } from 'convex/values'
 import schema, { captureRow } from './schema'
 
 type DataModel = DataModelFromSchemaDefinition<typeof schema>
 const mutation = mutationGeneric as MutationBuilder<DataModel, 'public'>
+const query = queryGeneric as QueryBuilder<DataModel, 'public'>
 
 /**
  * Fail-closed shared-secret authorization (ADR-0009 hardening), shared with the
@@ -55,5 +58,38 @@ export const recordCaptures = mutation({
       }
     }
     return { received: captures.length, upserted }
+  },
+})
+
+/** Default page size: a generous full-history pull for a cross-device export. */
+const LIST_DEFAULT_LIMIT = 1000
+
+/**
+ * Read the Tweet Harvest mirror so the cloud copy is usable cross-device (§9).
+ * Newest-first by default (`by_at` desc); scoped to a single thread via the
+ * `by_conversation` index when `conversationId` is given. `deviceId` narrows to
+ * one device's rows. No `returns` validator: the docs carry Convex system fields
+ * (`_id`/`_creationTime`) the captureRow validator doesn't describe. Reads fail
+ * closed on the same shared secret as the write (ADR-0009 hardening): the mirror
+ * (text, handles, links, device + tweet ids) is not exposed to an unauthenticated
+ * caller on the discoverable `*.convex.cloud` URL.
+ */
+export const list = query({
+  args: {
+    secret: v.string(),
+    deviceId: v.optional(v.string()),
+    limit: v.optional(v.number()),
+    conversationId: v.optional(v.string()),
+  },
+  handler: async (ctx, { secret, deviceId, limit, conversationId }) => {
+    assertSecret(secret)
+    const base =
+      conversationId !== undefined
+        ? ctx.db
+            .query('tweet_captures')
+            .withIndex('by_conversation', (q) => q.eq('conversationId', conversationId))
+        : ctx.db.query('tweet_captures').withIndex('by_at').order('desc')
+    const rows = await base.take(limit ?? LIST_DEFAULT_LIMIT)
+    return deviceId !== undefined ? rows.filter((r) => r.deviceId === deviceId) : rows
   },
 })
