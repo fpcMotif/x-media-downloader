@@ -95,10 +95,10 @@ export const DropboxUploaderLive = Layer.effect(
       Effect.gen(function* () {
         const res = yield* Effect.tryPromise({
           try: () => rpc(accessToken, 'files/upload', commitInfo(path), bytes),
-          catch: (e) =>
-            e instanceof CloudHttpError
-              ? e
-              : new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
+          // A single-upload rpc only rejects on a transport failure — a non-2xx is a
+          // resolved Response handled by dropboxFail below, never thrown — so (unlike
+          // the session sink) it is never a CloudHttpError.
+          catch: (e) => new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
         })
         if (!res.ok) return yield* dropboxFail(res)
         return yield* okJson<FileMetadata>(res)

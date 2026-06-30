@@ -309,3 +309,34 @@ describe('DropboxUploader — empty-body edges', () => {
     expect(await h.upload(input())).toMatchObject({ kind: 'failure', reason: 'empty source' })
   })
 })
+
+// A non-CloudHttpError thrown inside the single files/upload rpc (dropped socket).
+const routeUploadThrows: Route = (endpoint) => {
+  if (endpoint === 'files/upload') throw new Error('socket dropped')
+  return new Response('unexpected', { status: 500 })
+}
+// A non-CloudHttpError thrown inside the streamed session loop (dropped socket).
+const routeSessionThrows: Route = (endpoint) => {
+  if (endpoint.endsWith('upload_session/start')) throw new Error('socket dropped')
+  return new Response('unexpected', { status: 500 })
+}
+
+describe('DropboxUploader — transport edge branches', () => {
+  it('small media: a transport throw becomes a status-0 failure', async () => {
+    const h = harness(
+      routeUploadThrows,
+      sourceStub(() => sourceResponse(new Uint8Array(2048))),
+    )
+    expect((await h.upload(input())).kind).toBe('failure')
+  })
+
+  it('session: a transport throw mid-stream becomes a status-0 failure', async () => {
+    const h = harness(
+      routeSessionThrows,
+      sourceStub(() =>
+        sourceResponse(new Uint8Array(20 * 1024 * 1024).fill(3), { contentLength: null }),
+      ),
+    )
+    expect((await h.upload(input('alice/big.mp4'))).kind).toBe('failure')
+  })
+})

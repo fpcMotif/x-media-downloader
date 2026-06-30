@@ -452,3 +452,23 @@ describe('isTokenExpired', () => {
     expect(isTokenExpired(100_000, 100_000 - 61_000)).toBe(false)
   })
 })
+
+describe('postToken transport failure', () => {
+  it('maps a token-endpoint transport failure to OAuthError (context: token-endpoint)', async () => {
+    const throwing = (async () => {
+      throw new Error('network down')
+    }) as unknown as typeof fetch
+    const err = await Effect.runPromise(
+      exchangeCode({
+        cfg: GDRIVE_OAUTH,
+        clientId: 'cid',
+        code: 'c',
+        codeVerifier: 'v',
+        redirectUri: REDIRECT,
+        now: 0,
+      }).pipe(Effect.provide(makeFetchServiceLive(throwing)), Effect.flip),
+    )
+    expect(err).toBeInstanceOf(OAuthError)
+    expect(err.context).toBe('token-endpoint')
+  })
+})

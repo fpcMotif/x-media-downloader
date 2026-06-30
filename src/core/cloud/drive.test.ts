@@ -380,3 +380,49 @@ describe('DriveUploader — error & resumable edge paths', () => {
     expect((out as { reason: string }).reason).toBe('drive HTTP 500') // body '' ⇒ no `: <body>` suffix
   })
 })
+
+// Folder list non-2xx → falls through to create (found.ok === false).
+const routeRootListFailsThenCreate: Route = (url, init) =>
+  isGet(init)
+    ? new Response('down', { status: 500 })
+    : new Response(JSON.stringify({ id: 'root-x' }), { status: 200 })
+// Folder create returns 200 but no id → Effect.die.
+const routeFolderCreateNoId: Route = (url, init) =>
+  isGet(init)
+    ? new Response(JSON.stringify({ files: [] }), { status: 200 })
+    : new Response(JSON.stringify({}), { status: 200 })
+// A non-CloudHttpError thrown inside the resumable PUT sink (dropped socket).
+const routePutThrows: Route = (url, init) => {
+  if (url.includes('uploadType=resumable'))
+    return new Response(null, { status: 200, headers: { location: 'https://s/put' } })
+  if (url === 'https://s/put') throw new Error('socket dropped')
+  return folderResolved(url, init)
+}
+
+describe('DriveUploader — folder + transport edge branches', () => {
+  it('ensureRoot: creates when the folder list query itself is not ok', async () => {
+    const h = harness(
+      routeRootListFailsThenCreate,
+      sourceStub(() => sourceResponse(new Uint8Array(1))),
+    )
+    expect(await h.ensureRoot()).toBe('root-x')
+  })
+
+  it('fails when folder creation returns no id', async () => {
+    const h = harness(
+      routeFolderCreateNoId,
+      sourceStub(() => sourceResponse(new Uint8Array(16))),
+    )
+    const out = await h.upload(input())
+    expect(out).toMatchObject({ kind: 'failure' })
+    expect((out as { reason: string }).reason).toMatch(/no id/)
+  })
+
+  it('resumable: a transport throw mid-PUT becomes a status-0 failure', async () => {
+    const h = harness(
+      routePutThrows,
+      sourceStub(() => sourceResponse(new Uint8Array(300).fill(9), { contentLength: null })),
+    )
+    expect((await h.upload(input())).kind).toBe('failure')
+  })
+})
