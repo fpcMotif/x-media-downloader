@@ -24,7 +24,8 @@
   "dependencies": {
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "effect": "4.0.0-beta.78",
+    "cnfast": "^0.0.8",
+    "effect": "^4.0.0-beta.92",
     "lucide-react": "^0.469.0",
     "preact": "^10.29.2",
     "radix-ui": "^1.5.0",

@@ -80,11 +80,14 @@ export function parseAuthRedirect(redirectUrl: string, expectedState: string): {
   // Providers return params on the query string for the code flow.
   const p = u.searchParams
   const err = p.get('error')
-  if (err !== null) throw new OAuthError({ message: `consent failed: ${err}`, context: 'consent-failed' })
+  if (err !== null)
+    throw new OAuthError({ message: `consent failed: ${err}`, context: 'consent-failed' })
   const state = p.get('state')
-  if (state !== expectedState) throw new OAuthError({ message: 'state mismatch (possible CSRF)', context: 'state-mismatch' })
+  if (state !== expectedState)
+    throw new OAuthError({ message: 'state mismatch (possible CSRF)', context: 'state-mismatch' })
   const code = p.get('code')
-  if (code === null || code === '') throw new OAuthError({ message: 'no authorization code in redirect', context: 'no-code' })
+  if (code === null || code === '')
+    throw new OAuthError({ message: 'no authorization code in redirect', context: 'no-code' })
   return { code }
 }
 
@@ -137,7 +140,10 @@ async function postToken(
   try {
     json = (await res.json()) as TokenResponse
   } catch {
-    throw new OAuthError({ message: `token endpoint returned non-JSON (HTTP ${res.status})`, context: 'non-json' })
+    throw new OAuthError({
+      message: `token endpoint returned non-JSON (HTTP ${res.status})`,
+      context: 'non-json',
+    })
   }
   if (!res.ok || json.error !== undefined) {
     throw new OAuthError({
@@ -169,7 +175,10 @@ export async function exchangeCode(input: {
   if (json.refresh_token === undefined || json.refresh_token === '') {
     // Without a refresh token the connection dies in ~1 hour; treat as a setup
     // error (Google: needs access_type=offline+prompt=consent; Dropbox: offline).
-    throw new OAuthError({ message: 'no refresh_token — reconnect and grant offline access', context: 'no-offline-grant' })
+    throw new OAuthError({
+      message: 'no refresh_token — reconnect and grant offline access',
+      context: 'no-offline-grant',
+    })
   }
   const account = emailFromIdToken(json.id_token) ?? json.account_id
   return {

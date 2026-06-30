@@ -1,0 +1,21 @@
+# Normalize line endings: store as LF in the repo and check out as LF
+# everywhere (including Windows). Keeps oxfmt (endOfLine: lf) and the
+# popup-layout CSS substring test deterministic across platforms.
+* text=auto eol=lf
+
+# Binary assets: never apply line-ending conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.avif binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.wasm binary
+*.pdf binary
+*.zip binary

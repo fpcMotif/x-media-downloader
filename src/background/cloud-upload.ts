@@ -140,6 +140,17 @@ const clearUploadBadge = (): void => {
   void browser.action.setBadgeText({ text: '' }).catch(() => {})
 }
 
+const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
+  const f = PROVIDERS[p].fields
+  return {
+    clientId: s[f.clientId] as string,
+    accessToken: s[f.accessToken] as string,
+    refreshToken: s[f.refreshToken] as string,
+    expiry: s[f.expiry] as number,
+    account: s[f.account] as string,
+  }
+}
+
 export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const { getSettings, fetchImpl } = deps
 
@@ -154,17 +165,6 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const cloudFetchSource = (url: string): Promise<Response> => guardedFetch(url, {}, fetchImpl)
   // Last non-skip failure, for the popup's status line (diagnostic; resets on recycle).
   let lastUploadError: string | null = null
-
-  const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
-    const f = PROVIDERS[p].fields
-    return {
-      clientId: s[f.clientId] as string,
-      accessToken: s[f.accessToken] as string,
-      refreshToken: s[f.refreshToken] as string,
-      expiry: s[f.expiry] as number,
-      account: s[f.account] as string,
-    }
-  }
 
   const isProviderConnected = (s: Settings, p: CloudProviderId): boolean => {
     const t = providerTokens(s, p)

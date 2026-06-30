@@ -16,7 +16,7 @@ describe('PROBE: does the harness actually drive the path?', () => {
   it('negative (undefined probe): the settle closure MUST run and reach the gate', async () => {
     const probeCalls: number[] = []
     const traceStages: string[] = []
-    const sendClearToTabs = vi.fn(async () => mountedFlip)
+    const sendClearToTabs = vi.fn<ClearCoordinatorDeps['sendClearToTabs']>(async () => mountedFlip)
     const deps: ClearCoordinatorDeps = {
       queueError: () => () => {},
       getSettings: async () => CLEAR_ON,
