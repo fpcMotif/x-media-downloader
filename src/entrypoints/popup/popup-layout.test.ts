@@ -96,3 +96,12 @@ describe('popup hosts per-surface clear toggles', () => {
     expect(popupSource).toContain('update({ autoNotInterestedOnSave: v })')
   })
 })
+
+describe('popup hosts local-data wipes', () => {
+  it('offers confirm-gated wipes for download history and the harvest archive', () => {
+    expect(popupSource).toContain('ClearHistoryRequest')
+    expect(popupSource).toContain('ClearCaptureRequest')
+    expect(popupSource).toContain('Clear download history')
+    expect(popupSource).toContain('Clear harvest archive')
+  })
+})

@@ -271,6 +271,19 @@ export function App() {
     }
   }
 
+  const clearLocalHistory = async (): Promise<void> => {
+    if (!confirm('Delete the local download history? Files already saved to disk are untouched.'))
+      return
+    await browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' }).catch(() => {})
+    setHistory([])
+  }
+
+  const clearLocalHarvest = async (): Promise<void> => {
+    if (!confirm('Delete the entire harvested-tweet archive? This cannot be undone.')) return
+    await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
+    setCaptureSummary({ tweets: 0, conversations: 0, recent: [] })
+  }
+
   // Only surface the monitor for a real download batch — not for stray hover/UI
   // trace events that also ride the metrics snapshot.
   const monitor = metrics && metrics.total > 0 ? metrics : null
@@ -545,6 +558,37 @@ export function App() {
             </CardContent>
           </Card>
         )}
+
+        <Card size="sm" aria-label="Local data">
+          <CardHeader className="gap-0.5">
+            <CardTitle className="text-[13px] font-semibold">Local data</CardTitle>
+            <CardDescription className="text-xs leading-snug">
+              Wipe this extension’s stored data. Never deletes files on disk.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full gap-2"
+              onClick={() => void clearLocalHistory()}
+            >
+              <EraserIcon className="size-4" />
+              Clear download history
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full gap-2"
+              onClick={() => void clearLocalHarvest()}
+            >
+              <EraserIcon className="size-4" />
+              Clear harvest archive
+            </Button>
+          </CardContent>
+        </Card>
 
         {recent.length > 0 && (
           <Card size="sm" aria-label="Recent downloads">
