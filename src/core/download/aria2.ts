@@ -1,6 +1,7 @@
 import { Effect } from 'effect'
 import { bindFetch } from '../fetch'
-import { DownloadError } from '../errors'
+import { DownloadError, Aria2RpcError } from '../errors'
+import { errorReason } from '../error'
 import type { DownloadStrategy, SaveRequest } from './strategy'
 
 /** Minimal port over aria2's JSON-RPC `aria2.addUri`; resolves to the new gid. */
@@ -69,7 +70,7 @@ export function makeAria2Strategy(port: Aria2RpcPort, opts: Aria2Options): Downl
     save: (req) =>
       Effect.tryPromise({
         try: () => port.addUri([req.url], buildAria2Options(req, opts)),
-        catch: (cause) => new DownloadError({ id: req.id, reason: String(cause) }),
+        catch: (cause) => new DownloadError({ id: req.id, reason: errorReason(cause) }),
       }).pipe(Effect.map((gid) => ({ kind: 'aria2' as const, gid }))),
   }
 }
@@ -93,8 +94,13 @@ export function makeAria2RpcPort(cfg: {
         result?: string
         error?: { code?: number; message?: string }
       }
-      if (body.error) throw new Error(body.error.message ?? `aria2 error ${body.error.code ?? '?'}`)
-      if (typeof body.result !== 'string') throw new Error('aria2: malformed JSON-RPC response')
+      if (body.error)
+        throw new Aria2RpcError({
+          message: body.error.message ?? `aria2 error ${body.error.code ?? '?'}`,
+          ...(body.error.code !== undefined ? { code: body.error.code } : {}),
+        })
+      if (typeof body.result !== 'string')
+        throw new Aria2RpcError({ message: 'aria2: malformed JSON-RPC response' })
       return body.result
     },
   }

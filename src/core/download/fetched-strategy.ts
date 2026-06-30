@@ -1,5 +1,6 @@
 import { Effect } from 'effect'
-import { DownloadError } from '../errors'
+import { DownloadError, OffscreenSaveError } from '../errors'
+import { errorReason } from '../error'
 import { bindFetch } from '../fetch'
 import type { DownloadStrategy, SaveRequest } from './strategy'
 
@@ -173,7 +174,7 @@ export function makeFetchedStrategy(opts: {
                 await offscreen.closeDocument().catch(() => {})
               }
             })(),
-          catch: (cause) => new DownloadError({ id: req.id, reason: String(cause) }),
+          catch: (cause) => new DownloadError({ id: req.id, reason: errorReason(cause) }),
         })
 
         return { kind: 'browser' as const, id: downloadId }
@@ -251,7 +252,7 @@ export function makeOffscreenPort(): OffscreenPort {
         filename,
       })) as { downloadId?: number; error?: string }
       if (typeof res.downloadId !== 'number') {
-        throw new Error(res.error ?? 'offscreen save failed')
+        throw new OffscreenSaveError({ message: res.error ?? 'offscreen save failed' })
       }
       return res.downloadId
     },

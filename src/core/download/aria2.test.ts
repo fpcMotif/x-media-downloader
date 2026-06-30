@@ -179,6 +179,28 @@ describe('makeAria2RpcPort', () => {
   })
 })
 
+const makeErrorMappingPort = (body: unknown) =>
+  makeAria2RpcPort({
+    rpcUrl: 'http://localhost:6800/jsonrpc',
+    secret: '',
+    fetchImpl: (async () => new Response(JSON.stringify(body))) as unknown as typeof fetch,
+  })
+
+describe('makeAria2RpcPort error mapping', () => {
+  it('throws Aria2RpcError with code on an error envelope', async () => {
+    await expect(makeErrorMappingPort({ error: { code: 1, message: 'bad uri' } }).addUri(['u'], {})).rejects.toMatchObject(
+      { _tag: 'Aria2RpcError', message: 'bad uri', code: 1 },
+    )
+  })
+
+  it('throws Aria2RpcError on a malformed response', async () => {
+    await expect(makeErrorMappingPort({ result: 42 }).addUri(['u'], {})).rejects.toMatchObject({
+      _tag: 'Aria2RpcError',
+      message: 'aria2: malformed JSON-RPC response',
+    })
+  })
+})
+
 describe('real-world: aria2 end-to-end with a twimg video', () => {
   const videoReq: SaveRequest = {
     id: '1750000000000000000-0',

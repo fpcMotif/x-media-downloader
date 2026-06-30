@@ -438,6 +438,28 @@ function stubOffscreen() {
   }
 }
 
+describe('makeOffscreenPort — OffscreenSaveError', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('throws OffscreenSaveError when the offscreen response carries an error', async () => {
+    browser.offscreen = {
+      hasDocument: async () => true,
+      createDocument: async () => {},
+      closeDocument: async () => {},
+    } as unknown as typeof browser.offscreen
+    browser.runtime.sendMessage = (async () => ({
+      error: 'disk full',
+    })) as typeof browser.runtime.sendMessage
+
+    const port = makeOffscreenPort()
+    await expect(
+      port.saveBlob({ bytes: new Uint8Array([1]), mimeType: 'image/jpeg', filename: 'a.jpg' }),
+    ).rejects.toMatchObject({ _tag: 'OffscreenSaveError', message: 'disk full' })
+  })
+})
+
 describe('makeOffscreenPort', () => {
   afterEach(() => {
     vi.restoreAllMocks()
