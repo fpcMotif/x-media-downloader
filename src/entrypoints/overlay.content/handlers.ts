@@ -22,6 +22,7 @@ import {
   pageScope,
   shouldClickScope,
   tweetIdOfArticle,
+  type MembershipScope,
 } from '../../core/clear/clearer'
 import type { makeDetectionStore } from '../../core/adapters/x/detection-store'
 import type { ClearScope, MediaItem } from '../../core/schema'
@@ -195,6 +196,28 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
   return true
 }
 
+/** Click the clear control on every mounted post that is a clearable member of
+ *  `scope`, paced one click at a time so X registers each. Returns how many were
+ *  clicked. Shared by the one-shot visible clear and the whole-list scroll sweep. */
+export async function clearMountedForScope(
+  document: Document,
+  scope: MembershipScope,
+  paceMs: number,
+): Promise<number> {
+  let cleared = 0
+  // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
+  for (const article of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
+    const ctrl = clearControl(article, scope)
+    if (ctrl === null) continue
+    const target = (ctrl.closest('button,[role="button"]') as HTMLElement | null) ?? ctrl
+    target.click()
+    cleared++
+    await new Promise((r) => setTimeout(r, paceMs))
+  }
+  // oxlint-enable no-await-in-loop
+  return cleared
+}
+
 // Manual "Clear this page now" (popup button): un-bookmark / un-like EVERY
 // currently-mounted post for the requested scopes — a one-shot Drain of the
 // visible worklist, independent of downloads. Same click path proven to work.
@@ -212,17 +235,7 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
       return
     }
-    let cleared = 0
-    // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
-    for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
-      const ctrl = clearControl(article, scope.value)
-      if (ctrl === null) continue
-      const target = (ctrl.closest('button,[role="button"]') as HTMLElement | null) ?? ctrl
-      target.click()
-      cleared++
-      await new Promise((r) => setTimeout(r, 350))
-    }
-    // oxlint-enable no-await-in-loop
+    const cleared = await clearMountedForScope(deps.document, scope.value, 350)
     if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
     sendResponse({ _tag: 'ClearVisibleResponse', cleared })
   })()
