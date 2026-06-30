@@ -20,9 +20,13 @@ const makeFetch = (respond: (url: string, init?: RequestInit) => Response) => {
   const layer = Layer.succeed(FetchService, {
     fetch: (url, init) => {
       calls.push({ url, init })
-      return Effect.tryPromise({ try: async () => respond(url, init), catch: (cause) => new FetchError({ url, cause }) })
+      return Effect.tryPromise({
+        try: async () => respond(url, init),
+        catch: (cause) => new FetchError({ url, cause }),
+      })
     },
-    fetchPromise: (async (url: string | URL, init?: RequestInit) => respond(String(url), init)) as typeof fetch,
+    fetchPromise: (async (url: string | URL, init?: RequestInit) =>
+      respond(String(url), init)) as typeof fetch,
   })
   return { layer, calls }
 }
@@ -58,8 +62,12 @@ describe('buildAria2Options', () => {
 
 describe('aria2OriginPattern', () => {
   it('derives a host-only match pattern (drops the port)', () => {
-    expect(Option.getOrNull(aria2OriginPattern('http://localhost:6800/jsonrpc'))).toBe('http://localhost/*')
-    expect(Option.getOrNull(aria2OriginPattern('https://aria.example.com/rpc'))).toBe('https://aria.example.com/*')
+    expect(Option.getOrNull(aria2OriginPattern('http://localhost:6800/jsonrpc'))).toBe(
+      'http://localhost/*',
+    )
+    expect(Option.getOrNull(aria2OriginPattern('https://aria.example.com/rpc'))).toBe(
+      'https://aria.example.com/*',
+    )
   })
 
   it('returns none for an unparseable url', () => {
@@ -109,7 +117,9 @@ describe('makeAria2Strategy', () => {
 
 describe('makeAria2RpcPort', () => {
   it('POSTs a JSON-RPC envelope and returns the gid', async () => {
-    const { layer, calls } = makeFetch(() => ({ json: async () => ({ result: 'gidABC' }) }) as Response)
+    const { layer, calls } = makeFetch(
+      () => ({ json: async () => ({ result: 'gidABC' }) }) as Response,
+    )
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: 'S' })
     expect(await runAddUri(port, layer, ['https://x/v.mp4'], { out: 'v.mp4' })).toBe('gidABC')
     expect(calls[0]!.url).toBe('http://localhost:6800/jsonrpc')
@@ -120,24 +130,32 @@ describe('makeAria2RpcPort', () => {
   })
 
   it('fails when the JSON-RPC response carries an error', async () => {
-    const { layer } = makeFetch(() => ({ json: async () => ({ error: { code: 1, message: 'unauthorized' } }) }) as Response)
+    const { layer } = makeFetch(
+      () => ({ json: async () => ({ error: { code: 1, message: 'unauthorized' } }) }) as Response,
+    )
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: '' })
     await expect(runAddUri(port, layer)).rejects.toThrow('unauthorized')
   })
 
   it('fails (with the code) when an error carries no message', async () => {
     const { layer } = makeFetch(() => ({ json: async () => ({ error: { code: 1 } }) }) as Response)
-    await expect(runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer)).rejects.toThrow('aria2 error 1')
+    await expect(
+      runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).rejects.toThrow('aria2 error 1')
   })
 
   it('fails with a placeholder code when an error carries neither message nor code', async () => {
     const { layer } = makeFetch(() => ({ json: async () => ({ error: {} }) }) as Response)
-    await expect(runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer)).rejects.toThrow('aria2 error ?')
+    await expect(
+      runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).rejects.toThrow('aria2 error ?')
   })
 
   it('fails on a malformed body with neither result nor error', async () => {
     const { layer } = makeFetch(() => ({ json: async () => ({}) }) as Response)
-    await expect(runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer)).rejects.toThrow('malformed')
+    await expect(
+      runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).rejects.toThrow('malformed')
   })
 
   it('fails (Aria2RpcError) when the daemon is down (fetch refuses the connection)', async () => {
@@ -169,7 +187,9 @@ const errorBody = (body: unknown) => makeFetch(() => new Response(JSON.stringify
 describe('makeAria2RpcPort error mapping', () => {
   it('fails with Aria2RpcError + code on an error envelope', async () => {
     const { layer } = errorBody({ error: { code: 1, message: 'bad uri' } })
-    await expect(runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer)).rejects.toMatchObject({
+    await expect(
+      runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).rejects.toMatchObject({
       _tag: 'Aria2RpcError',
       message: 'bad uri',
       code: 1,
@@ -178,7 +198,9 @@ describe('makeAria2RpcPort error mapping', () => {
 
   it('fails with Aria2RpcError on a malformed response', async () => {
     const { layer } = errorBody({ result: 42 })
-    await expect(runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer)).rejects.toMatchObject({
+    await expect(
+      runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).rejects.toMatchObject({
       _tag: 'Aria2RpcError',
       message: 'aria2: malformed JSON-RPC response',
     })
@@ -193,7 +215,9 @@ describe('real-world: aria2 end-to-end with a twimg video', () => {
   }
 
   it('hands the full CDN url (query intact) + nested out path to the daemon and yields the gid', async () => {
-    const { layer, calls } = makeFetch(() => ({ json: async () => ({ result: 'GID9f3a' }) }) as Response)
+    const { layer, calls } = makeFetch(
+      () => ({ json: async () => ({ result: 'GID9f3a' }) }) as Response,
+    )
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: 'sek' })
     const handle = await Effect.runPromise(
       makeAria2Strategy(port, { split: 16, dir: '/Users/alice/Downloads/x' }, layer).save(videoReq),
@@ -204,7 +228,12 @@ describe('real-world: aria2 end-to-end with a twimg video', () => {
     expect(body.params).toEqual([
       'token:sek',
       [videoReq.url],
-      { out: 'alice/1750000000000000000_0.mp4', split: '16', 'max-connection-per-server': '16', dir: '/Users/alice/Downloads/x' },
+      {
+        out: 'alice/1750000000000000000_0.mp4',
+        split: '16',
+        'max-connection-per-server': '16',
+        dir: '/Users/alice/Downloads/x',
+      },
     ])
   })
 

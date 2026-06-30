@@ -91,7 +91,10 @@ export const runUpload = <R>(
         Effect.succeed<UploadOutcome>({ kind: 'failure', reason: e.message, status: e.status }),
       ),
       Effect.catchCause((cause) =>
-        Effect.succeed<UploadOutcome>({ kind: 'failure', reason: errorReason(Cause.squash(cause)) }),
+        Effect.succeed<UploadOutcome>({
+          kind: 'failure',
+          reason: errorReason(Cause.squash(cause)),
+        }),
       ),
     )
   })

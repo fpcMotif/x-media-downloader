@@ -64,6 +64,24 @@ use these words, they mean exactly this.
   `completed` / `failed` **Sync Event**, and the badge correction the **Overlay**
   shows. An aria2 hand-off has no Terminal Outcome — it is terminal the moment it
   is handed off.
+- **Retry Scheduler** — the owner of an interrupted browser transfer's second
+  chance. A **Download Handle** that ends `interrupted` for a transient reason
+  (network / server / file-transient) is re-tried with exponential backoff
+  (2s/4s/8s, capped) rather than failed; a non-retryable reason (user-cancelled,
+  forbidden, disk-full) fails at once. The retry *decision* — whether, how long,
+  and the CDN-url refresh before re-firing — is pure (`core/download`
+  interrupt-retry), folding the **Transfer Tracker** and **Metrics** transitions
+  into its result exactly as **Terminal Outcome** does. The Retry Scheduler is its
+  effectful shell: it holds the in-flight retry queue (durable across SW recycle,
+  ADR-0005) and the timer wheel behind an injected **Clock Port** and **Download
+  Port**, applying the pure result's intents. A retry that exhausts its attempts
+  hands off to the **Terminal Outcome** as `failed`. It owns the boot tie-break
+  with the **Transfer Tracker** — an id it owns (`ownedIds`) is reconciled by it
+  alone, never double-driven.
+- **Clock Port** — the injected timer seam (`setTimeout` / `clearTimeout`) shared
+  by the **Retry Scheduler**'s backoff and the **Settle** confirm-window, so both
+  schedule against fake timers in tests. The temporal sibling of the **Settle
+  Port**: this one *schedules* work, that one *observes* a download's bytes.
 - **Settle** — the confirmation that a browser **Download Handle**'s recorded
   `complete` truly landed on disk. After a short window the byte is re-probed
   (`chrome.downloads.search`, behind the **Settle Port**) so a late
@@ -73,6 +91,14 @@ use these words, they mean exactly this.
   never fires on bytes that never arrived. The verdict is pure (`core/clear`);
   the **Settle Port** is its injected probe seam — real `chrome.downloads.search`
   in the service worker, a fixture row in tests.
+- **Drain** (Scroll Drain) — the recovery path for a **Clear** whose Tweet is not
+  currently mounted. X virtualizes the timeline (only a small window of articles
+  sits in the DOM at once), so a Clear firing seconds after its download settles
+  often cannot find its post. Rather than drop it, the not-mounted Clear is queued;
+  the Drain scrolls the Likes/Bookmarks list from the top to surface each pending
+  post and fires its Clear as the post mounts, then restores the user's original
+  scroll position. Bounded — it gives up after a budget of passes that surface
+  nothing new. Runs only on a list page (Likes/Bookmarks), never the For You feed.
 - **Sidecar** — an optional `.json` file saved next to a Media Item recording its
   provenance (author, url, tweetId, type). Opt-in; rides the same download path as
   a `data:` URL (no extra permissions).

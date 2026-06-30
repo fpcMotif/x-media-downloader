@@ -1,5 +1,5 @@
 import { TWEET_ARTICLE_SEL } from '../../clear/clearer'
-import { resolveTweetMedia, upgradePhotoUrl, type RawMedia } from '../../resolver'
+import { resolveTweetMedia, upgradePhotoUrl } from '../../resolver'
 import type { MediaItem } from '../../schema'
 import {
   mediaKeyFromUrl,
@@ -10,6 +10,9 @@ import {
   STATUS_LINK_SEL,
   VIDEO_PLAYER_SEL,
 } from './dom'
+import { forEachTweetNode } from './walk'
+
+export { forEachTweetNode, findAuthor, NESTED_TWEET_KEYS, type Author } from './walk'
 
 /** Host-match patterns for X tabs — the single source of truth used by the
  *  manifest content-script globs and `browser.tabs.query`. */
@@ -18,73 +21,19 @@ export const X_HOST_MATCH = ['*://x.com/*', '*://twitter.com/*'] as const
 /** Whether a URL is an x.com / twitter.com page. */
 export const isXUrl = (url: string): boolean => /https?:\/\/(x|twitter)\.com\//.test(url)
 
-type Obj = Record<string, unknown>
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
-
-/** Depth-first visit of every object node in an arbitrary JSON tree. */
-function walk(node: unknown, visit: (obj: Obj) => void): void {
-  if (Array.isArray(node)) {
-    for (const v of node) walk(v, visit)
-    return
-  }
-  if (isObj(node)) {
-    visit(node)
-    for (const v of Object.values(node)) walk(v, visit)
-  }
-}
-
-/** Keys whose subtree describes a DIFFERENT tweet (a quote or a retweet), never
- *  the author of the node being attributed. Skipped when locating the author. */
-const NESTED_TWEET_KEYS = new Set(['quoted_status_result', 'retweeted_status_result'])
-
-/** The `screen_name` of THIS tweet's author. A plain depth-first scan returns the
- *  first `screen_name` anywhere under the node, but a quoted/retweeted tweet nests
- *  its OWN author there — and X serializes `quoted_status_result` as a sibling of
- *  `core`, often first in key order — so an unpruned walk mis-files the outer
- *  tweet's media under the quoted author. Prune those subtrees (each is visited
- *  separately by {@link detectFromJson} and keeps its own author). */
-function findScreenName(node: unknown): string | undefined {
-  let found: string | undefined
-  const scan = (n: unknown): void => {
-    if (found !== undefined) return
-    if (Array.isArray(n)) {
-      for (const v of n) scan(v)
-      return
-    }
-    if (!isObj(n)) return
-    if (typeof n['screen_name'] === 'string') {
-      found = n['screen_name']
-      return
-    }
-    for (const [key, v] of Object.entries(n)) {
-      if (NESTED_TWEET_KEYS.has(key)) continue
-      scan(v)
-      if (found !== undefined) return
-    }
-  }
-  scan(node)
-  return found
-}
-
 /**
- * Extract MediaItems from a captured X GraphQL response by finding every tweet
- * node carrying `legacy.extended_entities.media`, regardless of endpoint shape.
+ * Extract MediaItems from a captured X GraphQL response by visiting every tweet
+ * node via the shared {@link forEachTweetNode} traversal (one walk, one identity
+ * authority) and resolving each node's `legacy.extended_entities.media`. Nodes
+ * with no media or no id contribute nothing; tweetIds are de-duplicated.
  */
 export function detectFromJson(json: unknown): MediaItem[] {
   const out: MediaItem[] = []
   const seen = new Set<string>()
-  walk(json, (obj) => {
-    const legacy = obj['legacy']
-    const ee = isObj(legacy) ? legacy['extended_entities'] : undefined
-    const media = isObj(ee) ? ee['media'] : undefined
-    if (!Array.isArray(media)) return
-    /* v8 ignore next -- media[] exists only when `legacy` is an object (checked at line 62), so the else arm is dead */
-    const idStr = isObj(legacy) ? legacy['id_str'] : undefined
-    const tweetId = String(obj['rest_id'] ?? idStr ?? '')
-    if (tweetId === '' || seen.has(tweetId)) return
+  forEachTweetNode(json, ({ tweetId, handle, mediaRaw }) => {
+    if (mediaRaw.length === 0 || tweetId === '' || seen.has(tweetId)) return
     seen.add(tweetId)
-    const handle = findScreenName(obj) ?? ''
-    out.push(...resolveTweetMedia({ tweetId, handle, media: media as ReadonlyArray<RawMedia> }))
+    out.push(...resolveTweetMedia({ tweetId, handle, media: mediaRaw }))
   })
   return out
 }

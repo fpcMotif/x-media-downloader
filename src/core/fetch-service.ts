@@ -37,7 +37,10 @@ export const makeFetchServiceLive = (fetchImpl: typeof fetch): Layer.Layer<Fetch
   const doFetch = bindFetch(fetchImpl)
   return Layer.succeed(FetchService, {
     fetch: (url, init) =>
-      Effect.tryPromise({ try: () => doFetch(url, init), catch: (cause) => new FetchError({ url, cause }) }),
+      Effect.tryPromise({
+        try: () => doFetch(url, init),
+        catch: (cause) => new FetchError({ url, cause }),
+      }),
     fetchPromise: doFetch,
   })
 }

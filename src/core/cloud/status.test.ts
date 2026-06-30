@@ -53,10 +53,13 @@ describe('classifyUploadError', () => {
     [429, /rate-limited/],
     [500, /retrying shortly/],
     [503, /retrying shortly/],
-  ])('dispatches a tagged provider status %i structurally, ignoring the message', (status, expected) => {
-    // With a numeric status (from CloudHttpError) the opaque message is irrelevant.
-    expect(classifyUploadError('opaque provider error', status)).toMatch(expected)
-  })
+  ])(
+    'dispatches a tagged provider status %i structurally, ignoring the message',
+    (status, expected) => {
+      // With a numeric status (from CloudHttpError) the opaque message is irrelevant.
+      expect(classifyUploadError('opaque provider error', status)).toMatch(expected)
+    },
+  )
 
   it('falls back to the message rules for a status it does not special-case (404)', () => {
     expect(classifyUploadError('source HTTP 404', 404)).toMatch(/link expired/)

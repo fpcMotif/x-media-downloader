@@ -13,8 +13,30 @@ describe('CONTENT_SCRIPT_TAGS', () => {
         'DownloadTraceEvent',
         'RecoverTweetMediaRequest',
         'SweepEnqueueRequest',
+        'CaptureTweets',
       ].toSorted(),
     )
+  })
+})
+
+describe('Tweet Harvest capture tags', () => {
+  const cs = { id: OWN, tab: { id: 1 }, origin: 'https://x.com' }
+  const ui = { id: OWN }
+
+  it('allows the overlay content script to push CaptureTweets', () => {
+    expect(isMessageAllowed('CaptureTweets', cs, OWN)).toBe(true)
+  })
+
+  it('forbids a content script from triggering export/clear/summary (UI-only)', () => {
+    for (const tag of ['ExportCaptureRequest', 'ClearCaptureRequest', 'CaptureSummaryRequest']) {
+      expect(isMessageAllowed(tag, cs, OWN)).toBe(false)
+    }
+  })
+
+  it('allows the options page (no tab) to drive export/clear/summary', () => {
+    for (const tag of ['ExportCaptureRequest', 'ClearCaptureRequest', 'CaptureSummaryRequest']) {
+      expect(isMessageAllowed(tag, ui, OWN)).toBe(true)
+    }
   })
 })
 

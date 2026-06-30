@@ -136,11 +136,19 @@ const postToken = (
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams(body).toString(),
       })
-      .pipe(Effect.catchTag('FetchError', (e) => new OAuthError({ message: e.message, context: 'token-endpoint' })))
+      .pipe(
+        Effect.catchTag(
+          'FetchError',
+          (e) => new OAuthError({ message: e.message, context: 'token-endpoint' }),
+        ),
+      )
     const json = yield* Effect.tryPromise({
       try: () => res.json() as Promise<TokenResponse>,
       catch: () =>
-        new OAuthError({ message: `token endpoint returned non-JSON (HTTP ${res.status})`, context: 'non-json' }),
+        new OAuthError({
+          message: `token endpoint returned non-JSON (HTTP ${res.status})`,
+          context: 'non-json',
+        }),
     })
     if (!res.ok || json.error !== undefined)
       return yield* new OAuthError({
@@ -191,7 +199,11 @@ export function refreshAccessToken(input: {
   readonly clientId: string
   readonly refreshToken: string
   readonly now: number
-}): Effect.Effect<{ readonly accessToken: string; readonly expiresAt: number }, OAuthError, FetchService> {
+}): Effect.Effect<
+  { readonly accessToken: string; readonly expiresAt: number },
+  OAuthError,
+  FetchService
+> {
   return Effect.gen(function* () {
     const json = yield* postToken(input.cfg, {
       client_id: input.clientId,

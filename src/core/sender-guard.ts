@@ -23,6 +23,10 @@ export const CONTENT_SCRIPT_TAGS: ReadonlySet<string> = new Set([
   'DownloadTraceEvent',
   'RecoverTweetMediaRequest',
   'SweepEnqueueRequest',
+  // Tweet Harvest: the overlay flushes harvested tweet records off the tee. The
+  // privileged capture tags (Summary/Export/Clear) stay UI-only — a content
+  // script may PUSH captures but never trigger an export or wipe the store.
+  'CaptureTweets',
 ])
 
 const ALLOWED_CONTENT_SCRIPT_ORIGINS: ReadonlySet<string> = new Set([

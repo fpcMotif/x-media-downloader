@@ -40,7 +40,11 @@ function asciiArg(obj: unknown): string {
 const commitInfo = (path: string) => ({ path, mode: 'add', autorename: true, mute: false })
 
 /** Build the success outcome from Dropbox metadata, falling back to local values. */
-const dropboxSuccess = (meta: FileMetadata, fallbackBytes: number, path: string): UploadOutcome => ({
+const dropboxSuccess = (
+  meta: FileMetadata,
+  fallbackBytes: number,
+  path: string,
+): UploadOutcome => ({
   kind: 'success',
   bytes: meta.size ?? fallbackBytes,
   remotePath: meta.path_display ?? path,
@@ -92,7 +96,9 @@ export const DropboxUploaderLive = Layer.effect(
         const res = yield* Effect.tryPromise({
           try: () => rpc(accessToken, 'files/upload', commitInfo(path), bytes),
           catch: (e) =>
-            e instanceof CloudHttpError ? e : new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
+            e instanceof CloudHttpError
+              ? e
+              : new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
         })
         if (!res.ok) return yield* dropboxFail(res)
         return yield* okJson<FileMetadata>(res)
@@ -118,9 +124,18 @@ export const DropboxUploaderLive = Layer.effect(
 
           const total = await streamInChunks(body, SESSION_CHUNK, async (chunk, info) => {
             if (sessionId === null) {
-              const res = await rpc(accessToken, 'files/upload_session/start', { close: info.isLast }, chunk)
+              const res = await rpc(
+                accessToken,
+                'files/upload_session/start',
+                { close: info.isLast },
+                chunk,
+              )
               if (!res.ok)
-                throw new CloudHttpError({ provider: 'dropbox', status: res.status, body: await errText(res) })
+                throw new CloudHttpError({
+                  provider: 'dropbox',
+                  status: res.status,
+                  body: await errText(res),
+                })
               sessionId = ((await res.json()) as { session_id: string }).session_id
               cursorOffset = chunk.length
               startedClosed = info.isLast
@@ -128,16 +143,34 @@ export const DropboxUploaderLive = Layer.effect(
             }
             const cursor = { session_id: sessionId, offset: cursorOffset }
             if (info.isLast) {
-              const res = await rpc(accessToken, 'files/upload_session/finish', { cursor, commit: commitInfo(path) }, chunk)
+              const res = await rpc(
+                accessToken,
+                'files/upload_session/finish',
+                { cursor, commit: commitInfo(path) },
+                chunk,
+              )
               if (!res.ok)
-                throw new CloudHttpError({ provider: 'dropbox', status: res.status, body: await errText(res) })
+                throw new CloudHttpError({
+                  provider: 'dropbox',
+                  status: res.status,
+                  body: await errText(res),
+                })
               meta = (await res.json()) as FileMetadata
               cursorOffset += chunk.length
               return
             }
-            const res = await rpc(accessToken, 'files/upload_session/append_v2', { cursor, close: false }, chunk)
+            const res = await rpc(
+              accessToken,
+              'files/upload_session/append_v2',
+              { cursor, close: false },
+              chunk,
+            )
             if (!res.ok)
-              throw new CloudHttpError({ provider: 'dropbox', status: res.status, body: await errText(res) })
+              throw new CloudHttpError({
+                provider: 'dropbox',
+                status: res.status,
+                body: await errText(res),
+              })
             cursorOffset += chunk.length
           })
 
@@ -150,7 +183,11 @@ export const DropboxUploaderLive = Layer.effect(
               new Uint8Array(0),
             )
             if (!res.ok)
-              throw new CloudHttpError({ provider: 'dropbox', status: res.status, body: await errText(res) })
+              throw new CloudHttpError({
+                provider: 'dropbox',
+                status: res.status,
+                body: await errText(res),
+              })
             meta = (await res.json()) as FileMetadata
           }
           /* v8 ignore next -- streamInChunks always emits a final chunk, so meta is set */
@@ -158,7 +195,9 @@ export const DropboxUploaderLive = Layer.effect(
           return { meta, bytes: total }
         },
         catch: (e) =>
-          e instanceof CloudHttpError ? e : new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
+          e instanceof CloudHttpError
+            ? e
+            : new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
       })
 
     const upload = (args: DropboxArgs, input: UploadInput): Effect.Effect<UploadOutcome> => {
@@ -170,7 +209,10 @@ export const DropboxUploaderLive = Layer.effect(
           ),
         streamed: (body) =>
           sessionUpload(args.accessToken, body, path).pipe(
-            Effect.map(({ meta, bytes }) => ({ outcome: dropboxSuccess(meta, bytes, path), bytes })),
+            Effect.map(({ meta, bytes }) => ({
+              outcome: dropboxSuccess(meta, bytes, path),
+              bytes,
+            })),
           ),
       })
     }

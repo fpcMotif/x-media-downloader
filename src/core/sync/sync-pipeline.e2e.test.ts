@@ -57,10 +57,15 @@ function fakeDeployment(opts: { secret?: string; failTimes?: number; http503?: b
       if (opts.http503) return new Response('', { status: 503 })
       return new Response('', { status: 200 }) // network ok but...
     }
-    const { args } = JSON.parse(String(init?.body)) as { args: { events: SyncEvent[]; secret?: string } }
+    const { args } = JSON.parse(String(init?.body)) as {
+      args: { events: SyncEvent[]; secret?: string }
+    }
     if (requiredSecret !== undefined && args.secret !== requiredSecret) {
       return new Response(
-        JSON.stringify({ status: 'error', errorMessage: 'unauthorized: bad or missing sync secret' }),
+        JSON.stringify({
+          status: 'error',
+          errorMessage: 'unauthorized: bad or missing sync secret',
+        }),
         { status: 200 },
       )
     }
@@ -84,7 +89,9 @@ const sendBatch = (
   events: unknown[],
   secret: string,
 ): Promise<unknown> =>
-  Effect.runPromise(port.mutation('sync:recordEvents', { events, secret }).pipe(Effect.provide(layer)))
+  Effect.runPromise(
+    port.mutation('sync:recordEvents', { events, secret }).pipe(Effect.provide(layer)),
+  )
 
 /** One drain attempt against the port; updates outbox + returns what happened. */
 async function drainOnce(
@@ -99,7 +106,13 @@ async function drainOnce(
   if (batch.length === 0) return { state, ok: true }
   try {
     await sendBatch(port, layer, batch as unknown[], secret)
-    return { state: markDrained(state, batch.map((e) => e.eventId)), ok: true }
+    return {
+      state: markDrained(
+        state,
+        batch.map((e) => e.eventId),
+      ),
+      ok: true,
+    }
   } catch (error) {
     return { state: markFailed(state, now), ok: false, error }
   }

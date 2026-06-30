@@ -182,10 +182,18 @@ export const DriveUploaderLive = Layer.effect(
               const res = await doFetch(sessionUrl, reqInit)
               if (info.isLast) {
                 if (res.status !== 200 && res.status !== 201)
-                  throw new CloudHttpError({ provider: 'drive', status: res.status, body: await errText(res) })
+                  throw new CloudHttpError({
+                    provider: 'drive',
+                    status: res.status,
+                    body: await errText(res),
+                  })
                 fileId = ((await res.json()) as { id?: string }).id ?? null
               } else if (res.status !== 308) {
-                throw new CloudHttpError({ provider: 'drive', status: res.status, body: await errText(res) })
+                throw new CloudHttpError({
+                  provider: 'drive',
+                  status: res.status,
+                  body: await errText(res),
+                })
               }
             }),
           catch: (e) =>

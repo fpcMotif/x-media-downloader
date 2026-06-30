@@ -150,6 +150,21 @@ export function GeneralPanel({ settings, update }: PanelProps) {
             onCheckedChange={(checked: boolean) => void update({ authFallbackEnabled: checked })}
           />
         </Field>
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="showSavedStatus">Show “Saved” on downloaded posts</FieldLabel>
+            <FieldDescription>
+              Mark timeline posts you’ve already downloaded (on any device) with a “Saved ✓” chip
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="showSavedStatus"
+            aria-label="Show Saved status on already-downloaded posts"
+            checked={settings.showSavedStatus}
+            onCheckedChange={(checked: boolean) => void update({ showSavedStatus: checked })}
+          />
+        </Field>
       </SettingGroup>
     </>
   )

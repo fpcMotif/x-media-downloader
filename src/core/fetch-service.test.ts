@@ -12,14 +12,18 @@ describe('makeFetchServiceLive', () => {
       return Promise.resolve(new Response('ok', { status: 200 }))
     } as typeof fetch
     const program = Effect.flatMap(FetchService, (h) => h.fetch('https://x/'))
-    const res = await Effect.runPromise(program.pipe(Effect.provide(makeFetchServiceLive(brandChecked))))
+    const res = await Effect.runPromise(
+      program.pipe(Effect.provide(makeFetchServiceLive(brandChecked))),
+    )
     expect(res.status).toBe(200)
   })
 
   it('surfaces a fetch rejection as a tagged FetchError, not a defect', async () => {
     const failing = (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch
     const exit = await Effect.runPromiseExit(
-      Effect.flatMap(FetchService, (h) => h.fetch('https://x/')).pipe(Effect.provide(makeFetchServiceLive(failing))),
+      Effect.flatMap(FetchService, (h) => h.fetch('https://x/')).pipe(
+        Effect.provide(makeFetchServiceLive(failing)),
+      ),
     )
     expect(Exit.isFailure(exit)).toBe(true)
   })
@@ -30,7 +34,9 @@ describe('makeFetchServiceLive', () => {
       called = true
       return new Response('', { status: 204 })
     }) as typeof fetch
-    const program = Effect.flatMap(FetchService, (h) => Effect.promise(() => h.fetchPromise('https://x/')))
+    const program = Effect.flatMap(FetchService, (h) =>
+      Effect.promise(() => h.fetchPromise('https://x/')),
+    )
     const res = await Effect.runPromise(program.pipe(Effect.provide(makeFetchServiceLive(f))))
     expect(called).toBe(true)
     expect(res.status).toBe(204)

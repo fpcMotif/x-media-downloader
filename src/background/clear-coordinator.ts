@@ -199,7 +199,7 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
       clearLedger.delete(tweetId)
       trace('clear-deferred', {
         tweetId,
-        detail: 'not mounted; dropped (v1 has no re-trigger)',
+        detail: 'not mounted; handed to in-page scroll-drain (watch for `clear` traces)',
       })
       return
     }
@@ -218,7 +218,13 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
     clearLedger.set(tweetId, after)
     trace('clear-resolve', {
       tweetId,
-      detail: results.map((r) => `${r.scope}:${r.ok ? 'ok' : 'fail'}`).join(' '),
+      // `ok` alone hid a no-op (a scope that didn't fire — off-page/not-a-member —
+      // reports ok:true so the ledger settles) behind the same token as a REAL flip,
+      // so a log reading `like:ok` could mean "un-liked" OR "skipped". Split them:
+      // ok = verified flip, noop = deliberately not fired, fail = clicked but no flip.
+      detail: results
+        .map((r) => `${r.scope}:${r.ok ? (r.noop ? 'noop' : 'ok') : 'fail'}`)
+        .join(' '),
     })
     if (prunable(after)) clearLedger.delete(tweetId)
   }

@@ -45,7 +45,10 @@ export const parseSource = (input: UploadInput): Effect.Effect<ParsedSource, nev
     const lenHeader = response.headers.get('content-length')
     const size = lenHeader !== null && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null
     if (size === 0)
-      return { ok: false, outcome: { kind: 'failure', reason: 'empty source' } } satisfies ParsedSource
+      return {
+        ok: false,
+        outcome: { kind: 'failure', reason: 'empty source' },
+      } satisfies ParsedSource
     return { ok: true, body: response.body, size, contentType } satisfies ParsedSource
   }).pipe(
     Effect.catchTag('FetchError', (e) =>

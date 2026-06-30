@@ -42,5 +42,6 @@ export function renderFilename(template: string, item: MediaItem, date?: string)
   // SAME pipeline so a degenerate tweetId can't reintroduce a `..`, an illegal char,
   // or a `/` and break the relative-path contract; a final default covers all-empty.
   const fallback = toRelPath(`${item.tweetId}_${item.index}.${item.ext}`)
+  /* v8 ignore next -- `_${index}.` always survives sanitization (digits/`_`/`.` are legal), so fallback is never empty; the `media_${index}` default is unreachable defensive code */
   return fallback.length > 0 ? fallback : `media_${item.index}`
 }

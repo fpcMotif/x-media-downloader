@@ -16,5 +16,8 @@ export class SourceFetch extends Context.Service<
 export const makeSourceFetchLive = (fetchImpl: typeof fetch): Layer.Layer<SourceFetch> =>
   Layer.succeed(SourceFetch, {
     fetch: (url) =>
-      Effect.tryPromise({ try: () => guardedFetch(url, {}, fetchImpl), catch: (cause) => new FetchError({ url, cause }) }),
+      Effect.tryPromise({
+        try: () => guardedFetch(url, {}, fetchImpl),
+        catch: (cause) => new FetchError({ url, cause }),
+      }),
   })

@@ -15,6 +15,11 @@ import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { DownloadIcon, EraserIcon, GearIcon, LayersIcon } from '@/components/icons'
+import {
+  fetchCaptureSummary,
+  runCaptureExport,
+  type CaptureSummary,
+} from '@/components/capture-export'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
@@ -94,6 +99,8 @@ export function App() {
   const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
   const [onXTab, setOnXTab] = useState(false)
   const [clearFeedback, setClearFeedback] = useState(false)
+  const [captureSummary, setCaptureSummary] = useState<CaptureSummary | null>(null)
+  const [captureMsg, setCaptureMsg] = useState<string | null>(null)
 
   // Whether a worklist action will ALSO clear: "Clear after download" is on AND
   // the strategy is byte-verifiable (aria2 hand-offs are excluded). Drives the
@@ -182,6 +189,16 @@ export function App() {
   useEffect(() => {
     void fetchHistory().then(setHistory)
   }, [])
+
+  useEffect(() => {
+    void fetchCaptureSummary().then(setCaptureSummary)
+  }, [])
+
+  const exportHarvest = async (): Promise<void> => {
+    const outcome = await runCaptureExport('jsonl')
+    setCaptureMsg(outcome.detail)
+    setTimeout(() => setCaptureMsg(null), 5000)
+  }
 
   useEffect(() => {
     let handle: ReturnType<typeof setTimeout>
@@ -468,6 +485,33 @@ export function App() {
             )}
           </CardContent>
         </Card>
+
+        {(settings.captureEnabled || (captureSummary?.tweets ?? 0) > 0) && (
+          <Card size="sm" aria-label="Knowledge Capture">
+            <CardHeader className="gap-0.5">
+              <CardTitle className="text-[13px] font-semibold">Knowledge Capture</CardTitle>
+              <CardDescription className="text-xs leading-snug">
+                {captureSummary?.tweets ?? 0} tweets · {captureSummary?.conversations ?? 0}{' '}
+                conversations harvested locally
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-9 w-full gap-2"
+                disabled={(captureSummary?.tweets ?? 0) === 0}
+                onClick={() => void exportHarvest()}
+              >
+                <DownloadIcon className="size-4" />
+                Export all (JSONL)
+              </Button>
+              {captureMsg && (
+                <p className="text-xs leading-snug text-muted-foreground">{captureMsg}</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {recent.length > 0 && (
           <Card size="sm" aria-label="Recent downloads">

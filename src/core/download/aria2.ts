@@ -80,8 +80,8 @@ export function makeAria2Strategy(
     save: (req) =>
       port.addUri([req.url], buildAria2Options(req, opts)).pipe(
         Effect.map((gid) => ({ kind: 'aria2' as const, gid })),
-        Effect.catchCause((cause) =>
-          new DownloadError({ id: req.id, reason: errorReason(Cause.squash(cause)) }),
+        Effect.catchCause(
+          (cause) => new DownloadError({ id: req.id, reason: errorReason(Cause.squash(cause)) }),
         ),
         Effect.provide(fetch),
       ),
@@ -89,7 +89,10 @@ export function makeAria2Strategy(
 }
 
 /** Build an Aria2RpcPort backed by HTTP JSON-RPC against a running aria2c. */
-export function makeAria2RpcPort(cfg: { readonly rpcUrl: string; readonly secret: string }): Aria2RpcPort {
+export function makeAria2RpcPort(cfg: {
+  readonly rpcUrl: string
+  readonly secret: string
+}): Aria2RpcPort {
   return {
     addUri: (urls, options) =>
       Effect.gen(function* () {
@@ -102,7 +105,8 @@ export function makeAria2RpcPort(cfg: { readonly rpcUrl: string; readonly secret
           })
           .pipe(Effect.catchTag('FetchError', (e) => new Aria2RpcError({ message: e.message })))
         const body = yield* Effect.tryPromise({
-          try: () => res.json() as Promise<{ result?: string; error?: { code?: number; message?: string } }>,
+          try: () =>
+            res.json() as Promise<{ result?: string; error?: { code?: number; message?: string } }>,
           catch: () => new Aria2RpcError({ message: 'aria2: malformed JSON-RPC response' }),
         })
         if (body.error)

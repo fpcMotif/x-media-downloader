@@ -1,6 +1,8 @@
 import { Schema, Effect } from 'effect'
+import { TweetRecord } from '../capture/record'
 
 export const MediaType = Schema.Literals(['photo', 'video', 'gif'])
+export type MediaType = typeof MediaType.Type
 
 export const MediaItem = Schema.Struct({
   id: Schema.String,
@@ -20,7 +22,7 @@ export type MediaItem = typeof MediaItem.Type
 export const DownloadStrategyName = Schema.Literals(['direct', 'fetched', 'aria2'])
 export const Theme = Schema.Literals(['light', 'dark', 'system'])
 export const QuickGrabModifier = Schema.Literals(['alt', 'shift', 'ctrl', 'meta'])
-export const DownloadTraceSource = Schema.Literals(['quickgrab', 'badge', 'background'])
+export const DownloadTraceSource = Schema.Literals(['quickgrab', 'badge', 'background', 'clear'])
 
 const traceFields = {
   source: DownloadTraceSource,
@@ -58,6 +60,9 @@ export const Settings = Schema.Struct({
   downloadDockEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   // Render the dock as translucent "liquid glass" instead of the solid dark pill.
   dockGlassEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  // Timeline "Saved" status (Overlay): mark already-downloaded tweets in the
+  // feed so you can see at a glance what's been grabbed. Default on.
+  showSavedStatus: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   // Auto-show sensitive-content covers (opt-in, default off): when X hides media
   // behind a "Content warning" cover, click its reveal control so the media
   // renders inline. The GraphQL tee already captures sensitive media for bulk
@@ -76,8 +81,9 @@ export const Settings = Schema.Struct({
   aria2Dir: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   aria2Split: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(8))),
   // Cloud Sync (ADR-0009): opt-in Convex control plane mirroring download
-  // metadata only — never bytes, captures, or auth. Default off: the
-  // local-only posture holds until the user explicitly enables it.
+  // media metadata only — never bytes, captures, or auth. Default off: the
+  // local-only posture holds until the user explicitly enables it. (Tweet TEXT
+  // rides its own separate opt-in mirror — see ADR-0018.)
   cloudSyncEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   convexUrl: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   convexSyncSecret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
@@ -132,6 +138,30 @@ export const Settings = Schema.Struct({
   dropboxRefreshToken: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   dropboxTokenExpiry: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   dropboxAccount: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  // Download Admission Gate (opt-in; all default off/zero → gate is a pass-through):
+  // a pre-scheduling gate that skips duplicates and filtered / over-budget media.
+  // See docs/superpowers/specs/2026-06-27-download-admission-gate-design.md.
+  // Per-tweet duplicate prevention; the options UI auto-enables downloadHistoryEnabled
+  // (its data source) when this is turned on.
+  preventDuplicateDownloads: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+  ),
+  // Skip these media types entirely (e.g. ['video']). Empty = no type filter.
+  skipTypes: Schema.Array(MediaType).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  // Min-resolution filter; 0 = off. Skips media below either dimension when known.
+  minWidth: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  minHeight: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  // Per-file size cap in MB (HEAD-probed content-length); 0 = off.
+  maxFileSizeMB: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  // Daily budget caps (local calendar day; hard-stop once either is reached); 0 = off.
+  dailyMaxMB: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  dailyMaxCount: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  // Knowledge Capture (Tweet Harvest, spec §12): harvest tweet TEXT/metadata off
+  // the GraphQL tee into a local store, with an opt-in Convex mirror. All default
+  // off — the master gate keeps the capture pipeline dormant until opted in.
+  captureEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  captureAllScrolled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  captureMirrorEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 })
 export type Settings = typeof Settings.Type
 
@@ -173,9 +203,23 @@ export const DownloadRequest = Schema.TaggedStruct('DownloadRequest', {
     Schema.Array(Schema.Struct({ tweetId: Schema.String, ids: Schema.Array(Schema.String) })),
   ),
 })
+// Why a download was dropped by the admission gate (mirrors the SkipReason union
+// in src/core/download/admission.ts; keep the two literal lists in sync).
+export const SkipReason = Schema.Literals([
+  'duplicate',
+  'filtered-type',
+  'too-small',
+  'too-big',
+  'daily-budget',
+])
+export type SkipReason = typeof SkipReason.Type
 export const QueueUpdate = Schema.TaggedStruct('QueueUpdate', {
   completed: Schema.Number,
   total: Schema.Number,
+  // Admission-gate drops aggregated by reason (omitted when nothing was skipped).
+  skipped: Schema.optional(
+    Schema.Array(Schema.Struct({ reason: SkipReason, count: Schema.Number })),
+  ),
 })
 export const MetricsRequest = Schema.TaggedStruct('MetricsRequest', {})
 export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {
@@ -365,6 +409,41 @@ export const TransferOutcome = Schema.TaggedStruct('TransferOutcome', {
 })
 export type TransferOutcome = typeof TransferOutcome.Type
 
+/** content → background: which of these tweets are already downloaded? Used by
+ *  the timeline "Saved" status overlay to mark grabbed posts in the feed. */
+export const SavedStatusRequest = Schema.TaggedStruct('SavedStatusRequest', {
+  tweetIds: Schema.Array(Schema.String),
+})
+export type SavedStatusRequest = typeof SavedStatusRequest.Type
+
+/** background → content: the subset of the queried tweetIds that are saved. */
+export const SavedStatusResponse = Schema.TaggedStruct('SavedStatusResponse', {
+  saved: Schema.Array(Schema.String),
+})
+export type SavedStatusResponse = typeof SavedStatusResponse.Type
+
+/** content → background: harvested tweet records off the GraphQL tee, mirrored
+ *  into the local capture store (+ opt-in Convex). `{ stored }` rides back. */
+export const CaptureTweets = Schema.TaggedStruct('CaptureTweets', {
+  records: Schema.Array(TweetRecord),
+})
+export type CaptureTweets = typeof CaptureTweets.Type
+
+/** panel → background: capture-store counts. `{ tweets, conversations, recent }` back. */
+export const CaptureSummaryRequest = Schema.TaggedStruct('CaptureSummaryRequest', {})
+export type CaptureSummaryRequest = typeof CaptureSummaryRequest.Type
+
+/** panel → background: build + deliver an export. `{ ok, filename }` back. */
+export const ExportCaptureRequest = Schema.TaggedStruct('ExportCaptureRequest', {
+  kind: Schema.Literals(['jsonl', 'tree', 'markdown']),
+  conversationId: Schema.optional(Schema.String),
+})
+export type ExportCaptureRequest = typeof ExportCaptureRequest.Type
+
+/** panel → background: wipe the local capture store. `{ cleared }` back. */
+export const ClearCaptureRequest = Schema.TaggedStruct('ClearCaptureRequest', {})
+export type ClearCaptureRequest = typeof ClearCaptureRequest.Type
+
 export const Message = Schema.Union([
   DetectRequest,
   MediaDetected,
@@ -387,5 +466,11 @@ export const Message = Schema.Union([
   SweepEnqueueRequest,
   RecoverTweetMediaRequest,
   TransferOutcome,
+  SavedStatusRequest,
+  SavedStatusResponse,
+  CaptureTweets,
+  CaptureSummaryRequest,
+  ExportCaptureRequest,
+  ClearCaptureRequest,
 ])
 export type Message = typeof Message.Type

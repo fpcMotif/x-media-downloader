@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { Effect, Layer, Option } from 'effect'
-import { buildFunctionCall, convexOriginPattern, makeConvexHttpPort, type ConvexPort } from './convex'
+import {
+  buildFunctionCall,
+  convexOriginPattern,
+  makeConvexHttpPort,
+  queryDownloadedAmong,
+  type ConvexPort,
+} from './convex'
 import { classifySyncError } from './status'
 import { FetchService, FetchError } from '../fetch-service'
 
@@ -9,9 +15,13 @@ const recordingFetch = (respond: (url: string, init?: RequestInit) => Response) 
   const layer = Layer.succeed(FetchService, {
     fetch: (url, init) => {
       calls.push({ url, init })
-      return Effect.tryPromise({ try: async () => respond(url, init), catch: (cause) => new FetchError({ url, cause }) })
+      return Effect.tryPromise({
+        try: async () => respond(url, init),
+        catch: (cause) => new FetchError({ url, cause }),
+      })
     },
-    fetchPromise: (async (u: string | URL, i?: RequestInit) => respond(String(u), i)) as typeof fetch,
+    fetchPromise: (async (u: string | URL, i?: RequestInit) =>
+      respond(String(u), i)) as typeof fetch,
   })
   return { layer, calls }
 }
@@ -20,7 +30,15 @@ const run = (
   port: ConvexPort,
   layer: Layer.Layer<FetchService>,
   args: Record<string, unknown> = {},
-): Promise<unknown> => Effect.runPromise(port.mutation('sync:recordEvents', args).pipe(Effect.provide(layer)))
+): Promise<unknown> =>
+  Effect.runPromise(port.mutation('sync:recordEvents', args).pipe(Effect.provide(layer)))
+
+const runQuery = (
+  port: ConvexPort,
+  layer: Layer.Layer<FetchService>,
+  path: string,
+  args: Record<string, unknown> = {},
+): Promise<unknown> => Effect.runPromise(port.query(path, args).pipe(Effect.provide(layer)))
 
 describe('buildFunctionCall', () => {
   it('builds the documented /api/mutation envelope', () => {
@@ -47,7 +65,11 @@ describe('convexOriginPattern', () => {
 describe('makeConvexHttpPort', () => {
   it('POSTs the envelope to /api/mutation and unwraps the success value', async () => {
     const { layer, calls } = recordingFetch(
-      () => ({ ok: true, json: async () => ({ status: 'success', value: { inserted: 2 } }) }) as Response,
+      () =>
+        ({
+          ok: true,
+          json: async () => ({ status: 'success', value: { inserted: 2 } }),
+        }) as Response,
     )
     const port = makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud/' })
     expect(await run(port, layer, { events: [] })).toEqual({ inserted: 2 })
@@ -61,23 +83,40 @@ describe('makeConvexHttpPort', () => {
   })
 
   it('fails with the server errorMessage on a function error', async () => {
-    const { layer } = recordingFetch(() => ({ ok: true, json: async () => ({ status: 'error', errorMessage: 'boom' }) }) as Response)
-    await expect(run(makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }), layer)).rejects.toThrow('boom')
+    const { layer } = recordingFetch(
+      () =>
+        ({ ok: true, json: async () => ({ status: 'error', errorMessage: 'boom' }) }) as Response,
+    )
+    await expect(
+      run(makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }), layer),
+    ).rejects.toThrow('boom')
   })
 
   it('fails on a non-2xx response', async () => {
-    const { layer } = recordingFetch(() => ({ ok: false, status: 503, json: async () => ({}) }) as Response)
-    await expect(run(makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }), layer)).rejects.toThrow('503')
+    const { layer } = recordingFetch(
+      () => ({ ok: false, status: 503, json: async () => ({}) }) as Response,
+    )
+    await expect(
+      run(makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }), layer),
+    ).rejects.toThrow('503')
   })
 
   it('uses a default message when a function error omits errorMessage', async () => {
-    const { layer } = recordingFetch(() => ({ ok: true, json: async () => ({ status: 'error' }) }) as Response)
-    await expect(run(makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }), layer)).rejects.toThrow('convex: function error')
+    const { layer } = recordingFetch(
+      () => ({ ok: true, json: async () => ({ status: 'error' }) }) as Response,
+    )
+    await expect(
+      run(makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }), layer),
+    ).rejects.toThrow('convex: function error')
   })
 
   it('fails on a malformed body with neither success nor error', async () => {
-    const { layer } = recordingFetch(() => ({ ok: true, json: async () => ({ unexpected: true }) }) as Response)
-    await expect(run(makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }), layer)).rejects.toThrow('malformed')
+    const { layer } = recordingFetch(
+      () => ({ ok: true, json: async () => ({ unexpected: true }) }) as Response,
+    )
+    await expect(
+      run(makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }), layer),
+    ).rejects.toThrow('malformed')
   })
 
   // Real-world: the deployment URL points at a host that ISN'T a Convex deployment
@@ -104,14 +143,20 @@ describe('makeConvexHttpPort', () => {
   // succeeds — model the sequence as two mutation() calls.
   it('classifies a transient 5xx then accepts the resend of the same batch', async () => {
     const batch = {
-      events: [{ eventId: 'dev-1/req-1/completed', kind: 'outcome', url: 'https://video.twimg.com/x.mp4' }],
+      events: [
+        { eventId: 'dev-1/req-1/completed', kind: 'outcome', url: 'https://video.twimg.com/x.mp4' },
+      ],
     }
     let calls = 0
     const { layer } = recordingFetch(() => {
       calls += 1
       return calls === 1
         ? ({ ok: false, status: 502, json: async () => ({}) } as Response)
-        : ({ ok: true, status: 200, json: async () => ({ status: 'success', value: { received: 1, inserted: 1 } }) } as Response)
+        : ({
+            ok: true,
+            status: 200,
+            json: async () => ({ status: 'success', value: { received: 1, inserted: 1 } }),
+          } as Response)
     })
     const port = makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' })
 
@@ -122,5 +167,90 @@ describe('makeConvexHttpPort', () => {
 
     expect(await run(port, layer, batch)).toEqual({ received: 1, inserted: 1 })
     expect(calls).toBe(2)
+  })
+
+  it('POSTs the envelope to /api/query and unwraps the success value', async () => {
+    const { layer, calls } = recordingFetch(
+      () => ({ ok: true, json: async () => ({ status: 'success', value: ['T1'] }) }) as Response,
+    )
+    const port = makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud/' })
+    const value = await runQuery(port, layer, 'sync:downloadedAmong', {
+      secret: 's',
+      tweetIds: ['T1', 'T2'],
+    })
+    expect(value).toEqual(['T1'])
+    expect(calls[0]!.url).toBe('https://x.convex.cloud/api/query')
+    expect(calls[0]!.init?.method).toBe('POST')
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      path: 'sync:downloadedAmong',
+      args: { secret: 's', tweetIds: ['T1', 'T2'] },
+      format: 'json',
+    })
+  })
+
+  it('query fails on a non-2xx response', async () => {
+    const { layer } = recordingFetch(
+      () => ({ ok: false, status: 500, json: async () => ({}) }) as Response,
+    )
+    await expect(
+      runQuery(
+        makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }),
+        layer,
+        'sync:downloadedAmong',
+      ),
+    ).rejects.toThrow('500')
+  })
+
+  it('query fails with the server errorMessage on a function error', async () => {
+    const { layer } = recordingFetch(
+      () =>
+        ({ ok: true, json: async () => ({ status: 'error', errorMessage: 'boom' }) }) as Response,
+    )
+    await expect(
+      runQuery(
+        makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' }),
+        layer,
+        'sync:downloadedAmong',
+      ),
+    ).rejects.toThrow('boom')
+  })
+
+  it('query surfaces a malformed failure on an HTML body', async () => {
+    const { layer } = recordingFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError('Unexpected token <')
+          },
+        }) as unknown as Response,
+    )
+    await expect(
+      runQuery(
+        makeConvexHttpPort({ deploymentUrl: 'https://parked.example.com' }),
+        layer,
+        'sync:downloadedAmong',
+      ),
+    ).rejects.toThrow(/convex: malformed response/)
+  })
+})
+
+describe('queryDownloadedAmong', () => {
+  it('shapes the sync:downloadedAmong call and narrows the value', async () => {
+    const { layer, calls } = recordingFetch(
+      () => ({ ok: true, json: async () => ({ status: 'success', value: ['T1'] }) }) as Response,
+    )
+    const port = makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' })
+    const downloaded = await Effect.runPromise(
+      queryDownloadedAmong(port, 'secret', ['T1', 'T2']).pipe(Effect.provide(layer)),
+    )
+    expect(downloaded).toEqual(['T1'])
+    expect(calls[0]!.url).toBe('https://x.convex.cloud/api/query')
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      path: 'sync:downloadedAmong',
+      args: { secret: 'secret', tweetIds: ['T1', 'T2'] },
+      format: 'json',
+    })
   })
 })

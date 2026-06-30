@@ -8,6 +8,8 @@ import {
   X_HOST_MATCH,
 } from '../../core/adapters/x'
 import { makeDetectionStore } from '../../core/adapters/x/detection-store'
+import { harvestTweets } from '../../core/capture/harvest'
+import type { Source, TweetRecord } from '../../core/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
 import {
   mediaKeyFromUrl,
@@ -68,10 +70,25 @@ import {
   isForYouHome,
   isMember,
   notInterestedConfirmed,
+  tweetIdOfArticle,
+  TWEET_ARTICLE_SEL,
 } from '../../core/clear/clearer'
 import { Option } from 'effect'
-import { messageHandlers, type HandlerDeps } from './handlers'
-import type { ClearScope, MediaItem, Settings } from '../../core/schema'
+import {
+  clearMountedTweet,
+  messageHandlers,
+  sweepSavedStatus,
+  savedStatusVisible,
+  type HandlerDeps,
+} from './handlers'
+import { makeScrollDrain } from '../../core/clear/scroll-drain'
+import type {
+  CaptureTweets,
+  ClearScope,
+  MediaItem,
+  Settings,
+  SavedStatusResponse,
+} from '../../core/schema'
 
 interface Rect {
   readonly top: number
@@ -133,7 +150,11 @@ async function clearScope(tweetId: string, scope: ClearScope): Promise<boolean> 
   const ctrl = clearControl(article.value, scope)
   if (ctrl === null) {
     if (import.meta.env.DEV)
-      clearLog(scope, '→ member but control not found (selector rot?)', actionTestids(article.value))
+      clearLog(
+        scope,
+        '→ member but control not found (selector rot?)',
+        actionTestids(article.value),
+      )
     return false
   }
   // Click the actionable button, not the bare testid node — X may put the testid
@@ -258,6 +279,81 @@ async function dismissFeedbackStub(cell: Element | null): Promise<void> {
   // oxlint-enable no-await-in-loop
 }
 
+// ── Auto-scroll drain for not-mounted clears ──
+// The bounded scroll-pass loop lives in `core/clear/scroll-drain`; this entrypoint
+// wires the live window/document/timer ports + the real clear and trace sinks into it
+// (see `scrollDrain` below).
+// Debounce for the cross-device "Saved" status sweep: a burst of scroll/render
+// mutations collapses into one overlay→background round-trip + chip pass.
+const SAVED_SWEEP_DEBOUNCE_MS = 500
+
+/** Ask the background which of these tweetIds are already downloaded (cross-device).
+ *  Fail-safe: a context-invalidated / errored / malformed reply yields no marks. */
+const requestSavedStatus = async (tweetIds: string[]): Promise<string[]> => {
+  const out = await safeSend(() =>
+    browser.runtime.sendMessage({ _tag: 'SavedStatusRequest', tweetIds }),
+  )
+  if (out.status !== 'ok') return []
+  const reply = out.reply
+  return reply !== null && typeof reply === 'object' && 'saved' in reply
+    ? [...(reply as SavedStatusResponse).saved]
+    : []
+}
+/** Numeric tweetIds of every tweet article mounted right now. */
+const mountedTweetIds = (): string[] => {
+  const out: string[] = []
+  for (const a of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
+    const id = tweetIdOfArticle(a)
+    if (Option.isSome(id)) out.push(id.value)
+  }
+  return out
+}
+
+const drainDeps = (): Pick<HandlerDeps, 'document' | 'location' | 'clearScope' | 'clearLog'> => ({
+  document,
+  location,
+  clearScope,
+  clearLog,
+})
+
+/** One-line drain trace to the BACKGROUND console (production-visible — `clearLog` is
+ *  DEV-only and goes to the X PAGE console). Renders as `[XMD] clear <stage> …`. */
+const reportClear = (stage: string, detail: string, tweetId?: string): void => {
+  void safeSend(() =>
+    browser.runtime.sendMessage({
+      _tag: 'DownloadTraceEvent',
+      source: 'clear',
+      stage,
+      t: Date.now(),
+      ...(tweetId !== undefined ? { itemId: tweetId } : {}),
+      detail,
+    }),
+  )
+}
+
+// The bounded scroll-pass loop is `core/clear/scroll-drain`; here we inject the live
+// window/document/timer ports + the real clear and trace sinks.
+const scrollDrain = makeScrollDrain({
+  scroll: {
+    position: () => window.scrollY,
+    to: (y) => window.scrollTo(0, y),
+    by: (dy) => window.scrollBy(0, dy),
+    viewport: () => window.innerHeight,
+  },
+  clock: {
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    after: (ms, fn) => {
+      const h = setTimeout(fn, ms)
+      return () => clearTimeout(h)
+    },
+  },
+  path: () => location.pathname,
+  liveMountedIds: mountedTweetIds,
+  clearMounted: (id, scopes, allLists) => clearMountedTweet(drainDeps(), id, scopes, allLists),
+  report: reportClear,
+})
+const queueDrain = scrollDrain.queue
+
 // Page-level grab-cursor CSS for eligible twimg media previews, built once at
 // module load. The video poster sections come from `VIDEO_PREVIEW_SECTIONS` in
 // core/adapters/x/dom.ts — the same constant `isGrabbableMediaPreviewUrl` tests —
@@ -365,6 +461,26 @@ const postEvent = (msg: unknown): void => {
  *  grab never hides the whole post (1 of 4 photos must not "Not interested" it). */
 type ClearExpect = ReadonlyArray<{ readonly tweetId: string; readonly ids: ReadonlyArray<string> }>
 
+type SkipSummary = ReadonlyArray<{ readonly reason: string; readonly count: number }>
+
+// Friendly labels for admission-gate skip reasons (mirrors SkipReason).
+const SKIP_LABELS: Record<string, string> = {
+  duplicate: 'already saved',
+  'filtered-type': 'filtered',
+  'too-small': 'too small',
+  'too-big': 'too big',
+  'daily-budget': 'daily limit',
+}
+
+/** Surface why media was dropped by the gate. The overlay has no toast surface,
+ *  so — like notifyContextLost — this goes to the console. */
+const reportSkipped = (skipped?: SkipSummary): void => {
+  if (!skipped || skipped.length === 0) return
+  const total = skipped.reduce((n, s) => n + s.count, 0)
+  const parts = skipped.map((s) => `${s.count} ${SKIP_LABELS[s.reason] ?? s.reason}`)
+  console.info(`[XMD] ${total} skipped — ${parts.join(', ')}`)
+}
+
 /** Send one tracked request; false on a background start failure OR a dead
  *  channel (a stale tab — the user is told to reload rather than failing mutely).
  *  `clearExpect` (For You only) widens the clear gate to the whole post. */
@@ -384,7 +500,8 @@ const sendTracked = (
       return false
     }
     if (out.status === 'error') return false
-    const r = out.reply as { completed?: number; total?: number } | undefined
+    const r = out.reply as { completed?: number; total?: number; skipped?: SkipSummary } | undefined
+    reportSkipped(r?.skipped)
     return r?.completed !== undefined && r.completed === r.total
   })
 
@@ -739,6 +856,31 @@ export default defineContentScript({
       }
     }
 
+    // Cross-device "Saved ✓" status: a debounced observer paints a chip on
+    // already-downloaded posts as the timeline churns / on SPA navigation. The
+    // request is network-bounded (overlay → background → maybe Convex), so it is
+    // debounced; the chip is injected idempotently and only on a positive reply.
+    // Scope-gated to the home + List timelines, and gated on the `showSavedStatus`
+    // setting (applySettings keeps `savedStatusOn` live).
+    let savedStatusOn = false
+    // Tweet-text harvest gate + breadth flag (§7); applySettings keeps them live.
+    let captureEnabled = false
+    let captureAllScrolled = false
+    let savedSweepTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleSavedSweep = (): void => {
+      if (savedSweepTimer !== null) clearTimeout(savedSweepTimer)
+      savedSweepTimer = setTimeout(() => {
+        savedSweepTimer = null
+        void sweepSavedStatus({
+          document,
+          inScope: () => savedStatusVisible(location.pathname, savedStatusOn),
+          requestSavedStatus,
+        })
+      }, SAVED_SWEEP_DEBOUNCE_MS)
+    }
+    const savedSweepObserver = new MutationObserver(scheduleSavedSweep)
+    savedSweepObserver.observe(document.body, { childList: true, subtree: true })
+
     const clearDwell = (): void => {
       if (dwell !== null) {
         clearTimeout(dwell)
@@ -1085,6 +1227,13 @@ export default defineContentScript({
       // Hide the cleared-post feedback stub only when the For-You "Not interested"
       // clear is actually active (master + the per-scope toggle on).
       setStubCollapse(s.clearOnSave && s.autoNotInterestedOnSave)
+      // Cross-device "Saved" status: gate the sweep on the toggle; a flip re-paints.
+      savedStatusOn = s.showSavedStatus
+      scheduleSavedSweep()
+      // Tweet-text harvest (§7): default OFF. `captureAllScrolled` widens breadth
+      // from media/thread tweets to every scrolled text-only tweet.
+      captureEnabled = s.captureEnabled
+      captureAllScrolled = s.captureAllScrolled
       // Surface clear-on-save state in the PAGE console (the one you can see here),
       // so "why didn't it un-like?" is answerable without the SW console: if
       // clearOnSave is false, nothing ever clears — turn it on in the popup.
@@ -1230,14 +1379,87 @@ export default defineContentScript({
     })
     ui.mount()
 
+    // Tweet-text harvest producer (§7): the only state is this bounded pending
+    // buffer plus one debounce timer — no per-session identity Set. Re-sending a
+    // tweet is a cheap no-op at the durable merge (§6.4), which is what lets a
+    // later rich TweetDetail sighting upgrade an earlier thin timeline one.
+    const MAX_CAPTURE_BATCH = 64
+    const CAPTURE_FLUSH_DEBOUNCE_MS = 750
+    let captureBuffer: TweetRecord[] = []
+    let captureFlushTimer: ReturnType<typeof setTimeout> | null = null
+    let captureStateLogged = false
+
+    // Ship the pending buffer in CaptureTweets messages capped at MAX_CAPTURE_BATCH
+    // records each, draining fully so nothing is dropped. Fire-and-forget via
+    // safeSend: a stale context is a refresh hint, not a harvest failure.
+    const flushCaptures = (): void => {
+      if (captureFlushTimer !== null) {
+        clearTimeout(captureFlushTimer)
+        captureFlushTimer = null
+      }
+      while (captureBuffer.length > 0) {
+        const records = captureBuffer.slice(0, MAX_CAPTURE_BATCH)
+        captureBuffer = captureBuffer.slice(MAX_CAPTURE_BATCH)
+        console.info(`[XMD] capture flush → sending ${records.length} record(s)`)
+        void safeSend(() =>
+          browser.runtime.sendMessage({ _tag: 'CaptureTweets', records } satisfies CaptureTweets),
+        )
+      }
+    }
+
+    const harvestFrom = (json: unknown, path: string): void => {
+      if (!captureEnabled) {
+        if (!captureStateLogged) {
+          console.info(
+            '[XMD] capture DISABLED in this tab — toggle "Harvest tweets" ON, then RELOAD the x.com tab',
+          )
+          captureStateLogged = true
+        }
+        return
+      }
+      const source: Source = path.includes('/TweetDetail') ? 'tweetDetail' : 'timeline'
+      try {
+        const records = harvestTweets(json, {
+          source,
+          includeTextOnly: captureAllScrolled,
+          capturedAt: Date.now(),
+        })
+        console.info(
+          `[XMD] capture harvest path=${path} source=${source} all=${captureAllScrolled} → got ${records.length} record(s)`,
+        )
+        if (records.length === 0) return
+        captureBuffer.push(...records)
+        if (captureBuffer.length >= MAX_CAPTURE_BATCH) {
+          flushCaptures()
+          return
+        }
+        if (captureFlushTimer !== null) clearTimeout(captureFlushTimer)
+        captureFlushTimer = setTimeout(flushCaptures, CAPTURE_FLUSH_DEBOUNCE_MS)
+      } catch (err) {
+        console.warn('[XMD] capture harvest THREW (not a media failure):', err)
+      }
+    }
+
     document.addEventListener('xmd:media-response', (event) => {
       const detail = (event as CustomEvent<{ path: string; body: string }>).detail
+      let json: unknown
       try {
-        const json: unknown = JSON.parse(detail.body)
+        json = JSON.parse(detail.body)
+      } catch {
+        return /* non-JSON tee body */
+      }
+      try {
         if (store.addDetected(detectFromJson(json)).length > 0) rerender()
       } catch {
-        /* ignore non-JSON / unexpected shapes */
+        /* media detection is best-effort */
       }
+      harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
+    })
+
+    // Don't lose a sub-debounce batch when the tab is navigated away or unloaded.
+    ctx.addEventListener(window, 'pagehide', flushCaptures)
+    ctx.addEventListener(document, 'visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushCaptures()
     })
 
     // Quick Grab hover tracking: hold the configured modifier and hover a real
@@ -1397,6 +1619,7 @@ export default defineContentScript({
       notifyContextLost,
       clearLog,
       clearScope,
+      queueDrain,
     }
 
     const handleRuntimeMessage = (

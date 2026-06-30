@@ -7,6 +7,8 @@ import {
   ClearDetectedMediaRequest,
   ClearDownloadMonitorRequest,
   DownloadTraceEntry,
+  SavedStatusRequest,
+  SavedStatusResponse,
 } from './index'
 
 const validMediaRaw = {
@@ -74,6 +76,22 @@ describe('Settings schema', () => {
     expect(s.downloadHistoryEnabled).toBe(false)
   })
 
+  it('defaults showSavedStatus on when the key is absent', () => {
+    const s = Schema.decodeUnknownSync(Settings)({})
+    expect(s.showSavedStatus).toBe(true)
+  })
+
+  it('defaults the admission-gate filter keys off/zero when absent', () => {
+    const s = Schema.decodeUnknownSync(Settings)({})
+    expect(s.preventDuplicateDownloads).toBe(false)
+    expect(s.skipTypes).toEqual([])
+    expect(s.minWidth).toBe(0)
+    expect(s.minHeight).toBe(0)
+    expect(s.maxFileSizeMB).toBe(0)
+    expect(s.dailyMaxMB).toBe(0)
+    expect(s.dailyMaxCount).toBe(0)
+  })
+
   it('rejects an unknown quick-grab modifier', () => {
     const result = Schema.decodeUnknownResult(Settings)({ quickGrabModifier: 'space' })
     expect(Result.isFailure(result)).toBe(true)
@@ -119,6 +137,28 @@ describe('Message schema', () => {
     expect(Schema.decodeUnknownSync(Message)({ _tag: 'ClearHistoryRequest' })._tag).toBe(
       'ClearHistoryRequest',
     )
+  })
+
+  it('round-trips SavedStatusRequest and SavedStatusResponse', () => {
+    const req = Schema.decodeUnknownSync(SavedStatusRequest)({
+      _tag: 'SavedStatusRequest',
+      tweetIds: ['T1', 'T2'],
+    })
+    expect(req._tag).toBe('SavedStatusRequest')
+    expect(req.tweetIds).toEqual(['T1', 'T2'])
+
+    const res = Schema.decodeUnknownSync(SavedStatusResponse)({
+      _tag: 'SavedStatusResponse',
+      saved: ['T1'],
+    })
+    expect(res._tag).toBe('SavedStatusResponse')
+    expect(res.saved).toEqual(['T1'])
+
+    const msgReq = Schema.decodeUnknownSync(Message)({
+      _tag: 'SavedStatusRequest',
+      tweetIds: ['T1', 'T2'],
+    })
+    expect(msgReq._tag).toBe('SavedStatusRequest')
   })
 
   it('decodes a local download trace event for monitor diagnostics', () => {

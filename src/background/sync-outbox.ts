@@ -51,7 +51,8 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
     port: ReturnType<typeof makeConvexHttpPort>,
     path: string,
     args: Record<string, unknown>,
-  ): Promise<unknown> => Effect.runPromise(port.mutation(path, args).pipe(Effect.provide(fetchLayer)))
+  ): Promise<unknown> =>
+    Effect.runPromise(port.mutation(path, args).pipe(Effect.provide(fetchLayer)))
 
   // Latest drain outcome, so the popup can show whether sync is actually landing
   // instead of inferring it from the silent "Cloud sync on" footer. Session-scoped
@@ -125,7 +126,10 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
     // Persist the verdict through the same chain the drain uses, so a Test press
     // and a concurrent download-driven drain can't clobber each other's status.
     try {
-      await runMutation(port, 'sync:recordEvents', { events: [], secret: settings.convexSyncSecret })
+      await runMutation(port, 'sync:recordEvents', {
+        events: [],
+        secret: settings.convexSyncSecret,
+      })
       const status: SyncStatus = { ok: true, detail: describeSyncOk(pending), pending }
       outboxQueue.push(() => syncStatusItem.setValue(status))
       return status

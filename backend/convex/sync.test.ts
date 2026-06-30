@@ -83,6 +83,39 @@ describe('sync:recordEvents', () => {
     expect(state?.media).toMatchObject({ tweetId: '100' })
   })
 
+  it('populates a top-level tweetId from queued media and indexes it (by_tweet)', async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(api.sync.recordEvents, {
+      events: [evt({ media: media({ tweetId: 'T1' }) })],
+      secret: SECRET,
+    })
+    const byIndex = await t.run((ctx) =>
+      ctx.db
+        .query('media_state')
+        .withIndex('by_tweet', (q) => q.eq('tweetId', 'T1'))
+        .first(),
+    )
+    expect(byIndex).toMatchObject({ tweetId: 'T1', requestId: 'req-1', deviceId: 'dev-1' })
+  })
+
+  it('preserves the top-level tweetId across an outcome event carrying no media', async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(api.sync.recordEvents, {
+      events: [
+        evt({ eventId: 'dev-1/req-1/queued', kind: 'queued', at: 1_000, media: media({ tweetId: 'T1' }) }),
+        evt({ eventId: 'dev-1/req-1/completed', kind: 'completed', at: 2_000, media: undefined }),
+      ],
+      secret: SECRET,
+    })
+    const state = await t.run((ctx) =>
+      ctx.db
+        .query('media_state')
+        .withIndex('by_device_request', (q) => q.eq('deviceId', 'dev-1').eq('requestId', 'req-1'))
+        .first(),
+    )
+    expect(state).toMatchObject({ tweetId: 'T1', lastKind: 'completed', at: 2_000 })
+  })
+
   it('does NOT regress media_state on an out-of-order (older `at`) event', async () => {
     const t = convexTest(schema, modules)
     await t.mutation(api.sync.recordEvents, {
@@ -186,5 +219,94 @@ describe('sync:recentEvents', () => {
         secret: 'x',
       }),
     ).rejects.toThrow(/bad or missing sync secret/)
+  })
+})
+
+describe('sync:downloadedAmong', () => {
+  // Seed media_state rows for three tweets: T1 completed, T2 queued, T3 failed.
+  const seedStates = async (t: ReturnType<typeof convexTest>) => {
+    await t.mutation(api.sync.recordEvents, {
+      events: [
+        evt({ eventId: 'dev-1/t1/queued', requestId: 't1', media: media({ tweetId: 'T1' }), at: 1_000 }),
+        evt({ eventId: 'dev-1/t1/completed', kind: 'completed', requestId: 't1', at: 2_000, media: undefined }),
+        evt({ eventId: 'dev-1/t2/queued', requestId: 't2', media: media({ tweetId: 'T2' }), at: 1_000 }),
+        evt({ eventId: 'dev-1/t3/queued', requestId: 't3', media: media({ tweetId: 'T3' }), at: 1_000 }),
+        evt({ eventId: 'dev-1/t3/failed', kind: 'failed', requestId: 't3', at: 2_000, media: undefined }),
+      ],
+      secret: SECRET,
+    })
+  }
+
+  it('returns only the tweetIds with a completed row', async () => {
+    const t = convexTest(schema, modules)
+    await seedStates(t)
+    const out = await t.query(api.sync.downloadedAmong, {
+      secret: SECRET,
+      tweetIds: ['T1', 'T2', 'T3', 'T4'],
+    })
+    expect(out).toEqual(['T1'])
+  })
+
+  it('matches a completed row regardless of which device saved it (cross-device)', async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(api.sync.recordEvents, {
+      events: [
+        evt({ eventId: 'dev-A/t5/queued', requestId: 't5', deviceId: 'dev-A', media: media({ tweetId: 'T5' }), at: 1_000 }),
+        evt({ eventId: 'dev-A/t5/completed', kind: 'completed', requestId: 't5', deviceId: 'dev-A', at: 2_000, media: undefined }),
+      ],
+      secret: SECRET,
+    })
+    const out = await t.query(api.sync.downloadedAmong, { secret: SECRET, tweetIds: ['T5'] })
+    expect(out).toEqual(['T5'])
+  })
+
+  it('rejects an unauthenticated read (bad/missing secret)', async () => {
+    const t = convexTest(schema, modules)
+    await expect(
+      t.query(api.sync.downloadedAmong, { secret: 'WRONG', tweetIds: ['T1'] }),
+    ).rejects.toThrow(/bad or missing sync secret/)
+  })
+
+  it('rejects an oversized batch', async () => {
+    const t = convexTest(schema, modules)
+    const tweetIds = Array.from({ length: 129 }, (_, i) => `t${i}`)
+    await expect(
+      t.query(api.sync.downloadedAmong, { secret: SECRET, tweetIds }),
+    ).rejects.toThrow(/batch too large/)
+  })
+})
+
+describe('sync:backfillTweetId', () => {
+  it('fills a missing top-level tweetId from the nested media', async () => {
+    const t = convexTest(schema, modules)
+    // A legacy row written before the tweetId column existed: empty tweetId,
+    // but the provenance media still carries it.
+    await t.run(async (ctx) => {
+      await ctx.db.insert('media_state', {
+        requestId: 'r-old',
+        deviceId: 'dev-1',
+        lastKind: 'completed',
+        at: 1_000,
+        tweetId: '',
+        media: media({ tweetId: 'T6' }),
+      })
+    })
+    const res = await t.mutation(api.sync.backfillTweetId, { secret: SECRET })
+    expect(res).toEqual({ patched: 1 })
+
+    const row = await t.run((ctx) =>
+      ctx.db
+        .query('media_state')
+        .withIndex('by_tweet', (q) => q.eq('tweetId', 'T6'))
+        .first(),
+    )
+    expect(row).toMatchObject({ tweetId: 'T6', requestId: 'r-old' })
+  })
+
+  it('rejects an unauthenticated caller', async () => {
+    const t = convexTest(schema, modules)
+    await expect(t.mutation(api.sync.backfillTweetId, { secret: 'WRONG' })).rejects.toThrow(
+      /bad or missing sync secret/,
+    )
   })
 })

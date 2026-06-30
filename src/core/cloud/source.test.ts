@@ -24,9 +24,8 @@ const sourceResponse = (
   })
 }
 
-const sourceLayer = (
-  fetch: () => Effect.Effect<Response, FetchError>,
-): Layer.Layer<SourceFetch> => Layer.succeed(SourceFetch, { fetch })
+const sourceLayer = (fetch: () => Effect.Effect<Response, FetchError>): Layer.Layer<SourceFetch> =>
+  Layer.succeed(SourceFetch, { fetch })
 
 const run = (layer: Layer.Layer<SourceFetch>, inp: UploadInput): Promise<ParsedSource> =>
   Effect.runPromise(parseSource(inp).pipe(Effect.provide(layer)))
@@ -39,19 +38,24 @@ const ok = (s: ParsedSource): Extract<ParsedSource, { ok: true }> => {
 describe('parseSource', () => {
   it('maps a transport error to a (retryable) failure', async () => {
     const out = await run(
-      sourceLayer(() => Effect.fail(new FetchError({ url: 'x', cause: new Error('econnrefused') }))),
+      sourceLayer(() =>
+        Effect.fail(new FetchError({ url: 'x', cause: new Error('econnrefused') })),
+      ),
       input(),
     )
     expect(out).toMatchObject({ ok: false, outcome: { kind: 'failure' } })
   })
 
-  it.each([403, 404, 410])('maps a %d source to sourceGone (link-rot, never a fault)', async (s) => {
-    const out = await run(
-      sourceLayer(() => Effect.succeed(sourceResponse(new Uint8Array(0), { status: s }))),
-      input(),
-    )
-    expect(out).toMatchObject({ ok: false, outcome: { kind: 'sourceGone' } })
-  })
+  it.each([403, 404, 410])(
+    'maps a %d source to sourceGone (link-rot, never a fault)',
+    async (s) => {
+      const out = await run(
+        sourceLayer(() => Effect.succeed(sourceResponse(new Uint8Array(0), { status: s }))),
+        input(),
+      )
+      expect(out).toMatchObject({ ok: false, outcome: { kind: 'sourceGone' } })
+    },
+  )
 
   it('maps a 500 source to a failure', async () => {
     const out = await run(
@@ -72,7 +76,9 @@ describe('parseSource', () => {
   it('returns body + parsed size + response content-type on a healthy source', async () => {
     const out = await run(
       sourceLayer(() =>
-        Effect.succeed(sourceResponse(new Uint8Array(1024), { contentType: 'image/png; charset=binary' })),
+        Effect.succeed(
+          sourceResponse(new Uint8Array(1024), { contentType: 'image/png; charset=binary' }),
+        ),
       ),
       input(),
     )
@@ -92,7 +98,9 @@ describe('parseSource', () => {
 
   it('treats a missing content-length as unknown size (null), not zero', async () => {
     const out = await run(
-      sourceLayer(() => Effect.succeed(sourceResponse(new Uint8Array(300), { contentLength: null }))),
+      sourceLayer(() =>
+        Effect.succeed(sourceResponse(new Uint8Array(300), { contentLength: null })),
+      ),
       input(),
     )
     expect(ok(out).size).toBeNull()
