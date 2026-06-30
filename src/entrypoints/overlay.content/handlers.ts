@@ -13,6 +13,7 @@ import { resolveOutcomeAll, type LauncherPhase } from '../../core/launcher'
 import { detectRenderedImageElements } from '../../core/adapters/x'
 import { safeSend } from '../../core/messaging'
 import { findFreshMediaItem } from '../../core/download/media-url-refresh'
+import { makeListClear } from '../../core/clear/list-clear'
 import {
   TWEET_ARTICLE_SEL,
   clearControl,
@@ -242,6 +243,44 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
   return true
 }
 
+// "Clear entire list" (popup): auto-scroll the whole Likes/Bookmarks list and click
+// every post's clear control as it mounts — a list-scoped, download-free bulk clear.
+// The bounded scroll loop lives in core/clear/list-clear; here we wire the live
+// window/document/timer ports + the shared per-pass clear.
+export const handleClearWholeList: MessageHandler = (_message, deps, sendResponse) => {
+  const scope = pageScope(deps.location.pathname)
+  if (Option.isNone(scope)) {
+    sendResponse({ _tag: 'ClearWholeListResponse', cleared: 0, reason: 'not-list-page' })
+    return true
+  }
+  const view = deps.document.defaultView ?? window
+  const listClear = makeListClear({
+    scroll: {
+      position: () => view.scrollY,
+      to: (y) => view.scrollTo(0, y),
+      by: (dy) => view.scrollBy(0, dy),
+      viewport: () => view.innerHeight,
+    },
+    clock: {
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      after: (ms, fn) => {
+        const h = setTimeout(fn, ms)
+        return () => clearTimeout(h)
+      },
+    },
+    path: () => deps.location.pathname,
+    clearVisibleForPage: () => clearMountedForScope(deps.document, scope.value, 350),
+    report: (stage, detail) => {
+      if (import.meta.env.DEV) deps.clearLog(stage, detail)
+    },
+  })
+  void (async () => {
+    const result = await listClear.run()
+    sendResponse({ _tag: 'ClearWholeListResponse', ...result })
+  })()
+  return true
+}
+
 // "Drain this page" (popup): hand every detected item to the download queue;
 // clear-on-save then un-likes/un-bookmarks each post (list-scoped) as its
 // media truly completes — the list self-empties. Scroll + repeat for more.
@@ -430,6 +469,7 @@ export const messageHandlers: Record<string, MessageHandler> = {
   TransferOutcome: handleTransferOutcome,
   RefreshMediaUrlRequest: handleRefreshMediaUrl,
   ClearVisibleRequest: handleClearVisible,
+  ClearWholeListRequest: handleClearWholeList,
   DrainPageRequest: handleDrainPage,
   SweepPageRequest: handleSweepPage,
   ClearTweetRequest: handleClearTweet,
