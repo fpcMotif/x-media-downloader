@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { DropboxUploader, DropboxUploaderLive } from './dropbox'
+import { CloudHttpError } from './http'
 import { FetchService } from '../fetch-service'
 import { SourceFetch } from './source-fetch'
 import type { UploadInput } from './types'
@@ -94,6 +95,19 @@ const routeErrTextRejects: Route = () =>
     text: () => Promise.reject(new Error('read failed')),
     headers: new Headers(),
   }) as unknown as Response
+// A rejected fetch surfaced as a plain (non-CloudHttpError) error in the simple path.
+const routeSimpleThrows: Route = () => {
+  throw new TypeError('socket reset')
+}
+// A rejected fetch that is already a CloudHttpError in the simple path (preserved as-is).
+const routeSimpleThrowsCloud: Route = () => {
+  throw new CloudHttpError({ provider: 'dropbox', status: 429, body: 'rate limited' })
+}
+// Session start returns 200 with a non-JSON body → `res.json()` throws a plain error.
+const routeSessionStartBadJson: Route = (endpoint) =>
+  endpoint.endsWith('upload_session/start')
+    ? new Response('not json', { status: 200 })
+    : new Response('{}', { status: 200 })
 
 interface Call {
   readonly endpoint: string
@@ -307,5 +321,33 @@ describe('DropboxUploader — empty-body edges', () => {
       }),
     )
     expect(await h.upload(input())).toMatchObject({ kind: 'failure', reason: 'empty source' })
+  })
+})
+
+describe('DropboxUploader — fetch-rejection & non-JSON edges', () => {
+  it('simple upload: a non-CloudHttpError fetch rejection is wrapped (status 0) → failure', async () => {
+    const h = harness(
+      routeSimpleThrows,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+    )
+    const out = await h.upload(input())
+    expect(out).toMatchObject({ kind: 'failure' })
+    expect((out as { reason: string }).reason).toMatch(/dropbox HTTP 0/)
+  })
+
+  it('simple upload: a CloudHttpError fetch rejection is preserved (its status survives)', async () => {
+    const h = harness(
+      routeSimpleThrowsCloud,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+    )
+    expect(await h.upload(input())).toMatchObject({ kind: 'failure', status: 429 })
+  })
+
+  it('session start returning non-JSON → a non-CloudHttpError is wrapped → failure', async () => {
+    const h = harness(
+      routeSessionStartBadJson,
+      sourceStub(() => sourceResponse(new Uint8Array(20 * 1024 * 1024), { contentLength: null })),
+    )
+    expect((await h.upload(input('alice/big.mp4'))).kind).toBe('failure')
   })
 })

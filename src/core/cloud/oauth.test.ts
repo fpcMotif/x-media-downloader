@@ -347,6 +347,22 @@ describe('exchangeCode', () => {
     ).rejects.toThrow(/non-JSON/)
   })
 
+  it('maps a transport-level FetchError from the token endpoint to an OAuthError', async () => {
+    const fetchImpl = (async () => {
+      throw new TypeError('network down')
+    }) as unknown as typeof fetch
+    await expect(
+      runExchange(fetchImpl, {
+        cfg: GDRIVE_OAUTH,
+        clientId: 'cid',
+        code: 'c',
+        codeVerifier: 'v',
+        redirectUri: REDIRECT,
+        now: 0,
+      }),
+    ).rejects.toThrow(/network down/)
+  })
+
   it('ignores a single-segment id_token (no payload) and falls back to no account', async () => {
     const fetchImpl = (async () =>
       jsonResponse({

@@ -113,6 +113,33 @@ const routeErrTextRejects: Route = (url, init) =>
         text: () => Promise.reject(new Error('read failed')),
         headers: new Headers(),
       } as unknown as Response)
+// Folder LIST GET fails (non-2xx) but the folder CREATE POST succeeds: the
+// `if (found.ok)` FALSE path resolves the handle folder via create instead.
+const routeListFailsCreateOk: Route = (url, init) => {
+  if (url.includes('uploadType=multipart'))
+    return new Response(JSON.stringify({ id: 'file-mp' }), { status: 200 })
+  if (url.includes('/drive/v3/files?') && isGet(init)) return new Response('boom', { status: 500 })
+  return new Response(JSON.stringify({ id: 'folder-created' }), { status: 200 }) // folder create POST
+}
+// Root LIST returns empty, then root CREATE returns an id — exercises ensureFolder's
+// create body with a null parent (the `parentId !== null ? … : {}` empty/false arm).
+const routeRootCreate: Route = (url, init) =>
+  isGet(init)
+    ? new Response(JSON.stringify({ files: [] }), { status: 200 })
+    : new Response(JSON.stringify({ id: 'root-new' }), { status: 200 })
+// Folder LIST empty, then folder CREATE returns ok with no id → ensureFolder dies.
+const routeFolderCreateNoId: Route = (url, init) =>
+  isGet(init)
+    ? new Response(JSON.stringify({ files: [] }), { status: 200 })
+    : new Response(JSON.stringify({}), { status: 200 })
+// Resumable final PUT returns 200 with a non-JSON body → `res.json()` throws a plain
+// error (not a CloudHttpError) → the resumable `catch`'s non-CloudHttpError arm.
+const routeFinalPutBadJson: Route = (url, init) => {
+  if (url.includes('uploadType=resumable'))
+    return new Response(null, { status: 200, headers: { location: 'https://s/put' } })
+  if (url === 'https://s/put') return new Response('not json', { status: 200 })
+  return folderResolved(url, init)
+}
 
 interface Call {
   readonly url: string
@@ -378,5 +405,44 @@ describe('DriveUploader — error & resumable edge paths', () => {
     const out = await h.upload(input())
     expect(out).toMatchObject({ kind: 'failure' })
     expect((out as { reason: string }).reason).toBe('drive HTTP 500') // body '' ⇒ no `: <body>` suffix
+  })
+})
+
+describe('DriveUploader — ensureFolder create paths', () => {
+  it('a failed folder LIST falls through to a successful folder CREATE', async () => {
+    const h = harness(
+      routeListFailsCreateOk,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+    )
+    const out = await h.upload(input())
+    expect(out).toMatchObject({ kind: 'success', remoteId: 'file-mp' })
+    expect(folderCreates(h.calls).length).toBe(1) // list 500 ⇒ created the folder anyway
+  })
+
+  it('ensureRoot creates the top-level root folder (null parent) when none exists', async () => {
+    const h = harness(
+      routeRootCreate,
+      sourceStub(() => sourceResponse(new Uint8Array(1))),
+    )
+    expect(await h.ensureRoot()).toBe('root-new')
+    // A top-level create: the lookup query carries no `in parents` clause.
+    const q = decodeURIComponent(new URL(h.calls[0]!.url).searchParams.get('q') ?? '')
+    expect(q).not.toContain('in parents')
+  })
+
+  it('a folder CREATE returning no id → upload failure (never a fake save)', async () => {
+    const h = harness(
+      routeFolderCreateNoId,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+    )
+    expect((await h.upload(input())).kind).toBe('failure')
+  })
+
+  it('resumable final PUT returning non-JSON → wrapped failure (non-CloudHttpError catch)', async () => {
+    const h = harness(
+      routeFinalPutBadJson,
+      sourceStub(() => sourceResponse(new Uint8Array(64), { contentLength: null })),
+    )
+    expect((await h.upload(input())).kind).toBe('failure')
   })
 })
