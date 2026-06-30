@@ -298,6 +298,7 @@ export function App() {
   const monitorPct = monitor ? Math.min(100, Math.round((monitorDone / monitor.total) * 100)) : 0
   const canClearMonitor = monitor !== null && monitor.active === 0
   const recent = settings.downloadHistoryEnabled ? history.slice(0, 3) : []
+  const harvested = captureSummary?.recent ?? []
 
   return (
     <div className="xmd-popup">
@@ -561,9 +562,9 @@ export function App() {
               />
             </Field>
 
-            {(captureSummary?.recent ?? []).length > 0 && (
+            {harvested.length > 0 && (
               <ol className="grid gap-1.5" aria-label="Harvested conversations">
-                {(captureSummary?.recent ?? []).map((c) => (
+                {harvested.map((c) => (
                   <li
                     key={c.conversationId}
                     className="flex items-center justify-between gap-2 text-xs"
