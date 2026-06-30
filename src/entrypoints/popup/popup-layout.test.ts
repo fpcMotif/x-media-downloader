@@ -77,3 +77,11 @@ describe('settings controls live on the options page', () => {
     expect(generalSource).toContain('checked={settings.downloadBadgeEnabled}')
   })
 })
+
+describe('popup hosts whole-list clear', () => {
+  it('offers a list-page-gated whole-list clear that messages the new handler', () => {
+    expect(popupSource).toContain('ClearWholeListRequest')
+    expect(popupSource).toContain('Clear entire list')
+    expect(popupSource).toContain('onListPage')
+  })
+})

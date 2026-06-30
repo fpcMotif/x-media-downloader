@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'preact/hooks'
+import { Option } from 'effect'
 import { getSettings, setSettings } from '@/core/settings'
 import { DOWNLOAD_MODES } from '@/core/download/strategy'
 import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
+import { pageScope } from '@/core/clear/clearer'
 import { isXUrl } from '@/core/adapters/x'
 import type { MetricsSnapshot, Settings } from '@/core/schema'
 import type { DownloadRecord } from '@/core/history/record'
@@ -98,6 +100,7 @@ export function App() {
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
   const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
   const [onXTab, setOnXTab] = useState(false)
+  const [onListPage, setOnListPage] = useState(false)
   const [clearFeedback, setClearFeedback] = useState(false)
   const [captureSummary, setCaptureSummary] = useState<CaptureSummary | null>(null)
   const [captureMsg, setCaptureMsg] = useState<string | null>(null)
@@ -122,6 +125,23 @@ export function App() {
     confirm: 'Un-like / un-bookmark every post currently on this page? This cannot be undone.',
     request: { _tag: 'ClearVisibleRequest' },
     format: (res) => `Cleared ${plural(res?.cleared ?? 0, 'post')} on this page.`,
+  })
+
+  // Whole-list clear: auto-scroll the entire Likes/Bookmarks list and un-like /
+  // un-bookmark every post — heavier and irreversible, so it carries the strongest
+  // confirm and is gated to list pages.
+  const clearWholeList = usePageAction<{ cleared?: number; reason?: string }>({
+    confirm:
+      'Un-like / un-bookmark EVERY post on this list by scrolling through all of it? ' +
+      'This can affect hundreds of posts and cannot be undone.',
+    request: { _tag: 'ClearWholeListRequest' },
+    format: (res) => {
+      if (res?.reason === 'not-list-page') return 'Open a Likes or Bookmarks list to clear it.'
+      const n = res?.cleared ?? 0
+      return n === 0
+        ? 'No posts to clear on this list.'
+        : `Cleared ${plural(n, 'post')} across the list.`
+    },
   })
 
   // "Download this page (all at once)": fire every detected post into the queue.
@@ -179,7 +199,13 @@ export function App() {
         })
         const tab = tabs[0]
         if (!tab) return
-        setOnXTab(isXUrl(tab.url ?? ''))
+        const url = tab.url ?? ''
+        setOnXTab(isXUrl(url))
+        try {
+          setOnListPage(isXUrl(url) && Option.isSome(pageScope(new URL(url).pathname)))
+        } catch {
+          setOnListPage(false)
+        }
       } catch {
         /* permission unavailable; the action stays disabled */
       }
@@ -413,9 +439,21 @@ export function App() {
               <EraserIcon className="size-3.5" />
               {clearVisible.busy ? 'Clearing…' : 'Clear this page now (no download)'}
             </Button>
-            {(drain.msg || sweep.msg || clearVisible.msg) && (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              className="w-full gap-1.5"
+              disabled={!onListPage || clearWholeList.busy}
+              title={!onListPage ? 'Open a Likes or Bookmarks list' : undefined}
+              onClick={() => void clearWholeList.run()}
+            >
+              <EraserIcon className="size-3.5" />
+              {clearWholeList.busy ? 'Clearing entire list…' : 'Clear entire list (no download)'}
+            </Button>
+            {(drain.msg || sweep.msg || clearVisible.msg || clearWholeList.msg) && (
               <p className="text-xs leading-snug text-muted-foreground">
-                {drain.msg ?? sweep.msg ?? clearVisible.msg}
+                {drain.msg ?? sweep.msg ?? clearVisible.msg ?? clearWholeList.msg}
               </p>
             )}
           </CardContent>
