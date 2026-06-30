@@ -1,15 +1,11 @@
 /**
  * Minimal port over Convex's public HTTP API: `POST {deployment}/api/mutation`
- * with `{path, args, format: 'json'}` → `{status: 'success'|'error', …}`.
- * fetch-injected like the aria2 RPC port (ADR-0006) — no convex SDK and no
- * WebSocket client inside the MV3 service worker (ADR-0009).
+ * with `{path, args, format: 'json'}` → `{status: 'success'|'error', …}`. Reads
+ * the shared `FetchService` from `R` (ADR-0017) — no `fetchImpl` thread, no
+ * convex SDK and no WebSocket client inside the MV3 service worker (ADR-0009).
  */
-import { Data, Option } from 'effect'
-import { bindFetch } from '../fetch'
-
-export interface ConvexPort {
-  readonly mutation: (path: string, args: Record<string, unknown>) => Promise<unknown>
-}
+import { Data, Effect, Option } from 'effect'
+import { FetchService, FetchError } from '../fetch-service'
 
 /**
  * A non-2xx answer from the deployment edge. `status` is the HTTP code so the
@@ -46,6 +42,20 @@ export class ConvexMalformedError extends Data.TaggedError('ConvexMalformedError
   }
 }
 
+/** The failure channel of {@link ConvexPort.mutation}. */
+export type ConvexMutationError =
+  | ConvexHttpError
+  | ConvexFunctionError
+  | ConvexMalformedError
+  | FetchError
+
+export interface ConvexPort {
+  readonly mutation: (
+    path: string,
+    args: Record<string, unknown>,
+  ) => Effect.Effect<unknown, ConvexMutationError, FetchService>
+}
+
 export interface ConvexFunctionCall {
   readonly path: string
   readonly args: Record<string, unknown>
@@ -71,39 +81,31 @@ export function convexOriginPattern(deploymentUrl: string): Option.Option<string
 }
 
 /** Build a ConvexPort backed by HTTP against a Convex deployment. */
-export function makeConvexHttpPort(cfg: {
-  readonly deploymentUrl: string
-  readonly fetchImpl: typeof fetch
-}): ConvexPort {
+export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): ConvexPort {
   const base = cfg.deploymentUrl.replace(/\/+$/, '')
-  // Detach fetch from `cfg` or the MV3 SW rejects it with "Illegal invocation".
-  const doFetch = bindFetch(cfg.fetchImpl)
   return {
-    mutation: async (path, args) => {
-      const res = await doFetch(`${base}/api/mutation`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(buildFunctionCall(path, args)),
-      })
-      if (!res.ok) throw new ConvexHttpError({ status: res.status })
-      // A 200 from a non-Convex host (parked domain, corp proxy, SPA index.html)
-      // serves HTML, so `res.json()` throws a raw SyntaxError. Wrap it into the
-      // same vocabulary as the other failures so the drain loop classifies it as a
-      // sync error instead of surfacing an opaque parser stack trace.
-      let body: { status?: string; value?: unknown; errorMessage?: string }
-      try {
-        body = (await res.json()) as { status?: string; value?: unknown; errorMessage?: string }
-      } catch {
-        throw new ConvexMalformedError({ detail: 'convex: malformed response (invalid JSON body)' })
-      }
-      if (body.status === 'error') {
-        throw new ConvexFunctionError({
-          errorMessage: body.errorMessage ?? 'convex: function error',
+    mutation: (path, args) =>
+      Effect.gen(function* () {
+        const http = yield* FetchService
+        const res = yield* http.fetch(`${base}/api/mutation`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(buildFunctionCall(path, args)),
         })
-      }
-      if (body.status !== 'success')
-        throw new ConvexMalformedError({ detail: 'convex: malformed response' })
-      return body.value
-    },
+        if (!res.ok) return yield* new ConvexHttpError({ status: res.status })
+        // A 200 from a non-Convex host (parked domain, corp proxy, SPA index.html)
+        // serves HTML, so `res.json()` throws. Wrap it into the same vocabulary as
+        // the other failures so the drain loop classifies it as a sync error instead
+        // of surfacing an opaque parser stack trace.
+        const body = yield* Effect.tryPromise({
+          try: () => res.json() as Promise<{ status?: string; value?: unknown; errorMessage?: string }>,
+          catch: () => new ConvexMalformedError({ detail: 'convex: malformed response (invalid JSON body)' }),
+        })
+        if (body.status === 'error')
+          return yield* new ConvexFunctionError({ errorMessage: body.errorMessage ?? 'convex: function error' })
+        if (body.status !== 'success')
+          return yield* new ConvexMalformedError({ detail: 'convex: malformed response' })
+        return body.value
+      }),
   }
 }

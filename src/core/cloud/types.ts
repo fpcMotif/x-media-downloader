@@ -59,7 +59,13 @@ export type UploadOutcome =
       readonly remoteId?: string
     }
   | { readonly kind: 'sourceGone'; readonly reason: string }
-  | { readonly kind: 'failure'; readonly reason: string }
+  | {
+      readonly kind: 'failure'
+      readonly reason: string
+      /** Provider HTTP status when the failure was a `CloudHttpError` — lets the
+       *  popup classifier dispatch structurally instead of regexing `reason`. */
+      readonly status?: number
+    }
 
 /** A provider-agnostic byte sink. The Drive/Dropbox adapters each satisfy this
  *  via a factory that captures provider deps (token, fetch, folder cache) in a

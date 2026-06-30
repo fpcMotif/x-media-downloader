@@ -1,12 +1,16 @@
-import { Effect, Option } from 'effect'
-import { bindFetch } from '../fetch'
+import { Cause, Effect, Layer, Option } from 'effect'
+import { FetchService } from '../fetch-service'
 import { DownloadError, Aria2RpcError } from '../errors'
 import { errorReason } from '../error'
 import type { DownloadStrategy, SaveRequest } from './strategy'
 
-/** Minimal port over aria2's JSON-RPC `aria2.addUri`; resolves to the new gid. */
+/** Minimal port over aria2's JSON-RPC `aria2.addUri`; resolves to the new gid.
+ *  Reads the shared `FetchService` from `R` (ADR-0017) — no `fetchImpl` thread. */
 export interface Aria2RpcPort {
-  readonly addUri: (urls: ReadonlyArray<string>, options: Record<string, string>) => Promise<string>
+  readonly addUri: (
+    urls: ReadonlyArray<string>,
+    options: Record<string, string>,
+  ) => Effect.Effect<string, Aria2RpcError, FetchService>
 }
 
 /** Tunables for the aria2 backend. `split` drives parallel connections per file. */
@@ -63,45 +67,52 @@ export function buildJsonRpcBody(
 
 /**
  * aria2 strategy (opt-in): hand the URL to a running aria2c daemon over
- * JSON-RPC for fast, resumable, multi-connection transfers to an arbitrary dir.
+ * JSON-RPC. The port reads `FetchService` from `R`; this strategy provides it
+ * once at construction (the composition edge), so `save` stays `R = never` and
+ * satisfies {@link DownloadStrategy} like the other strategies.
  */
-export function makeAria2Strategy(port: Aria2RpcPort, opts: Aria2Options): DownloadStrategy {
+export function makeAria2Strategy(
+  port: Aria2RpcPort,
+  opts: Aria2Options,
+  fetch: Layer.Layer<FetchService>,
+): DownloadStrategy {
   return {
     save: (req) =>
-      Effect.tryPromise({
-        try: () => port.addUri([req.url], buildAria2Options(req, opts)),
-        catch: (cause) => new DownloadError({ id: req.id, reason: errorReason(cause) }),
-      }).pipe(Effect.map((gid) => ({ kind: 'aria2' as const, gid }))),
+      port.addUri([req.url], buildAria2Options(req, opts)).pipe(
+        Effect.map((gid) => ({ kind: 'aria2' as const, gid })),
+        Effect.catchCause((cause) =>
+          new DownloadError({ id: req.id, reason: errorReason(Cause.squash(cause)) }),
+        ),
+        Effect.provide(fetch),
+      ),
   }
 }
 
 /** Build an Aria2RpcPort backed by HTTP JSON-RPC against a running aria2c. */
-export function makeAria2RpcPort(cfg: {
-  readonly rpcUrl: string
-  readonly secret: string
-  readonly fetchImpl: typeof fetch
-}): Aria2RpcPort {
-  // Detach fetch from `cfg` or the MV3 SW rejects it with "Illegal invocation".
-  const doFetch = bindFetch(cfg.fetchImpl)
+export function makeAria2RpcPort(cfg: { readonly rpcUrl: string; readonly secret: string }): Aria2RpcPort {
   return {
-    addUri: async (urls, options) => {
-      const res = await doFetch(cfg.rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(buildJsonRpcBody('aria2.addUri', [urls, options], cfg.secret)),
-      })
-      const body = (await res.json()) as {
-        result?: string
-        error?: { code?: number; message?: string }
-      }
-      if (body.error)
-        throw new Aria2RpcError({
-          message: body.error.message ?? `aria2 error ${body.error.code ?? '?'}`,
-          ...(body.error.code !== undefined ? { code: body.error.code } : {}),
+    addUri: (urls, options) =>
+      Effect.gen(function* () {
+        const http = yield* FetchService
+        const res = yield* http
+          .fetch(cfg.rpcUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(buildJsonRpcBody('aria2.addUri', [urls, options], cfg.secret)),
+          })
+          .pipe(Effect.catchTag('FetchError', (e) => new Aria2RpcError({ message: e.message })))
+        const body = yield* Effect.tryPromise({
+          try: () => res.json() as Promise<{ result?: string; error?: { code?: number; message?: string } }>,
+          catch: () => new Aria2RpcError({ message: 'aria2: malformed JSON-RPC response' }),
         })
-      if (typeof body.result !== 'string')
-        throw new Aria2RpcError({ message: 'aria2: malformed JSON-RPC response' })
-      return body.result
-    },
+        if (body.error)
+          return yield* new Aria2RpcError({
+            message: body.error.message ?? `aria2 error ${body.error.code ?? '?'}`,
+            ...(body.error.code !== undefined ? { code: body.error.code } : {}),
+          })
+        if (typeof body.result !== 'string')
+          return yield* new Aria2RpcError({ message: 'aria2: malformed JSON-RPC response' })
+        return body.result
+      }),
   }
 }

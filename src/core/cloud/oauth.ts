@@ -1,5 +1,5 @@
-import { Data } from 'effect'
-import { bindFetch } from '../fetch'
+import { Data, Effect } from 'effect'
+import { FetchService } from '../fetch-service'
 import type { OAuthConfig, OAuthTokens } from './types'
 
 /**
@@ -117,93 +117,90 @@ function emailFromIdToken(idToken: string | undefined): string | undefined {
   }
 }
 
-/** Return the non-empty `access_token` from a token response, or throw with `ctx`. */
-function requireAccessToken(json: TokenResponse, ctx: string): string {
-  if (json.access_token === undefined || json.access_token === '') {
-    throw new OAuthError({ message: `${ctx} had no access_token`, context: 'no-token' })
-  }
-  return json.access_token
-}
+/** The non-empty `access_token` from a token response, or fail with `ctx`. */
+const requireAccessToken = (json: TokenResponse, ctx: string): Effect.Effect<string, OAuthError> =>
+  json.access_token === undefined || json.access_token === ''
+    ? new OAuthError({ message: `${ctx} had no access_token`, context: 'no-token' })
+    : Effect.succeed(json.access_token)
 
-async function postToken(
+/** POST a token grant and validate the envelope (ADR-0017: reads `FetchService`). */
+const postToken = (
   cfg: OAuthConfig,
-  fetchImpl: typeof fetch,
   body: Record<string, string>,
-): Promise<TokenResponse> {
-  const doFetch = bindFetch(fetchImpl)
-  const res = await doFetch(cfg.tokenEndpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(body).toString(),
+): Effect.Effect<TokenResponse, OAuthError, FetchService> =>
+  Effect.gen(function* () {
+    const http = yield* FetchService
+    const res = yield* http
+      .fetch(cfg.tokenEndpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(body).toString(),
+      })
+      .pipe(Effect.catchTag('FetchError', (e) => new OAuthError({ message: e.message, context: 'token-endpoint' })))
+    const json = yield* Effect.tryPromise({
+      try: () => res.json() as Promise<TokenResponse>,
+      catch: () =>
+        new OAuthError({ message: `token endpoint returned non-JSON (HTTP ${res.status})`, context: 'non-json' }),
+    })
+    if (!res.ok || json.error !== undefined)
+      return yield* new OAuthError({
+        message: json.error_description ?? json.error ?? `token endpoint HTTP ${res.status}`,
+        context: 'token-endpoint',
+      })
+    return json
   })
-  let json: TokenResponse
-  try {
-    json = (await res.json()) as TokenResponse
-  } catch {
-    throw new OAuthError({
-      message: `token endpoint returned non-JSON (HTTP ${res.status})`,
-      context: 'non-json',
-    })
-  }
-  if (!res.ok || json.error !== undefined) {
-    throw new OAuthError({
-      message: json.error_description ?? json.error ?? `token endpoint HTTP ${res.status}`,
-      context: 'token-endpoint',
-    })
-  }
-  return json
-}
 
 /** Exchange an authorization code for tokens (PKCE: code_verifier, no secret). */
-export async function exchangeCode(input: {
+export function exchangeCode(input: {
   readonly cfg: OAuthConfig
   readonly clientId: string
   readonly code: string
   readonly codeVerifier: string
   readonly redirectUri: string
-  readonly fetchImpl: typeof fetch
   readonly now: number
-}): Promise<OAuthTokens> {
-  const json = await postToken(input.cfg, input.fetchImpl, {
-    client_id: input.clientId,
-    code: input.code,
-    code_verifier: input.codeVerifier,
-    grant_type: 'authorization_code',
-    redirect_uri: input.redirectUri,
-  })
-  const accessToken = requireAccessToken(json, 'token response')
-  if (json.refresh_token === undefined || json.refresh_token === '') {
-    // Without a refresh token the connection dies in ~1 hour; treat as a setup
-    // error (Google: needs access_type=offline+prompt=consent; Dropbox: offline).
-    throw new OAuthError({
-      message: 'no refresh_token — reconnect and grant offline access',
-      context: 'no-offline-grant',
+}): Effect.Effect<OAuthTokens, OAuthError, FetchService> {
+  return Effect.gen(function* () {
+    const json = yield* postToken(input.cfg, {
+      client_id: input.clientId,
+      code: input.code,
+      code_verifier: input.codeVerifier,
+      grant_type: 'authorization_code',
+      redirect_uri: input.redirectUri,
     })
-  }
-  const account = emailFromIdToken(json.id_token) ?? json.account_id
-  return {
-    accessToken,
-    refreshToken: json.refresh_token,
-    expiresAt: input.now + (json.expires_in ?? 3600) * 1000,
-    ...(account !== undefined ? { account } : {}),
-  }
+    const accessToken = yield* requireAccessToken(json, 'token response')
+    if (json.refresh_token === undefined || json.refresh_token === '')
+      // Without a refresh token the connection dies in ~1 hour; treat as a setup
+      // error (Google: needs access_type=offline+prompt=consent; Dropbox: offline).
+      return yield* new OAuthError({
+        message: 'no refresh_token — reconnect and grant offline access',
+        context: 'no-offline-grant',
+      })
+    const account = emailFromIdToken(json.id_token) ?? json.account_id
+    return {
+      accessToken,
+      refreshToken: json.refresh_token,
+      expiresAt: input.now + (json.expires_in ?? 3600) * 1000,
+      ...(account !== undefined ? { account } : {}),
+    }
+  })
 }
 
 /** Refresh an access token from the stored refresh token (no new refresh token). */
-export async function refreshAccessToken(input: {
+export function refreshAccessToken(input: {
   readonly cfg: OAuthConfig
   readonly clientId: string
   readonly refreshToken: string
-  readonly fetchImpl: typeof fetch
   readonly now: number
-}): Promise<{ readonly accessToken: string; readonly expiresAt: number }> {
-  const json = await postToken(input.cfg, input.fetchImpl, {
-    client_id: input.clientId,
-    refresh_token: input.refreshToken,
-    grant_type: 'refresh_token',
+}): Effect.Effect<{ readonly accessToken: string; readonly expiresAt: number }, OAuthError, FetchService> {
+  return Effect.gen(function* () {
+    const json = yield* postToken(input.cfg, {
+      client_id: input.clientId,
+      refresh_token: input.refreshToken,
+      grant_type: 'refresh_token',
+    })
+    const accessToken = yield* requireAccessToken(json, 'refresh response')
+    return { accessToken, expiresAt: input.now + (json.expires_in ?? 3600) * 1000 }
   })
-  const accessToken = requireAccessToken(json, 'refresh response')
-  return { accessToken, expiresAt: input.now + (json.expires_in ?? 3600) * 1000 }
 }
 
 /** Whether a token expires within `skewMs` of `now` (refresh proactively). */

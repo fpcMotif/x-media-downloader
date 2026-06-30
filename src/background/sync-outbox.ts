@@ -1,5 +1,6 @@
-import { Option } from 'effect'
+import { Effect, Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
+import { makeFetchServiceLive } from '../core/fetch-service'
 import type { Settings } from '../core/schema'
 import type { SyncEvent } from '../core/sync/events'
 import {
@@ -41,6 +42,17 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
   // Cloud Sync outbox (ADR-0009) — metadata-only events, durable until drained.
   const outboxItem = storage.defineItem<unknown>('local:syncOutbox', { fallback: null })
 
+  // The Convex port reads `FetchService` from R (ADR-0017); the bound fetch is
+  // provided once here. The drain loop stays Promise (durable RMW); each mutation
+  // crosses the Effect boundary at this airlock, where its tagged error reverts to
+  // a rejection the existing try/catch hands to `classifySyncError`.
+  const fetchLayer = makeFetchServiceLive(deps.fetchImpl)
+  const runMutation = (
+    port: ReturnType<typeof makeConvexHttpPort>,
+    path: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> => Effect.runPromise(port.mutation(path, args).pipe(Effect.provide(fetchLayer)))
+
   // Latest drain outcome, so the popup can show whether sync is actually landing
   // instead of inferring it from the silent "Cloud sync on" footer. Session-scoped
   // (ADR-0005): a diagnostic, not durable state.
@@ -57,10 +69,7 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
    *  Each outcome is recorded to `syncStatusItem` so a stuck sync is visible in
    *  the popup rather than failing silently into the backoff. */
   const drainOutbox = async (settings: Settings): Promise<void> => {
-    const port = makeConvexHttpPort({
-      deploymentUrl: settings.convexUrl,
-      fetchImpl: deps.fetchImpl,
-    })
+    const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl })
     // oxlint-disable no-await-in-loop -- FIFO: each batch depends on the previous outcome
     for (;;) {
       const state = decodeOutbox(await outboxItem.getValue())
@@ -68,7 +77,7 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
       const batch = takeBatch(state)
       if (batch.length === 0) return
       try {
-        await port.mutation('sync:recordEvents', {
+        await runMutation(port, 'sync:recordEvents', {
           events: batch,
           secret: settings.convexSyncSecret,
         })
@@ -112,14 +121,11 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
       .catch(() => false)
     if (!granted)
       return { ok: false, detail: 'Grant access to the deployment first (button above).', pending }
-    const port = makeConvexHttpPort({
-      deploymentUrl: settings.convexUrl,
-      fetchImpl: deps.fetchImpl,
-    })
+    const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl })
     // Persist the verdict through the same chain the drain uses, so a Test press
     // and a concurrent download-driven drain can't clobber each other's status.
     try {
-      await port.mutation('sync:recordEvents', { events: [], secret: settings.convexSyncSecret })
+      await runMutation(port, 'sync:recordEvents', { events: [], secret: settings.convexSyncSecret })
       const status: SyncStatus = { ok: true, detail: describeSyncOk(pending), pending }
       outboxQueue.push(() => syncStatusItem.setValue(status))
       return status
