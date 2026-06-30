@@ -56,41 +56,44 @@ const POLL_IDLE_MS = 3000
 const PAGE_UNREACHABLE = 'Could not reach the page — reload the X tab and try again.'
 
 /** A worklist button that messages the active tab's content script and turns the
- *  reply into a status line. Owns its own busy/message state and the shared
- *  confirm → query-tab → send → format → error skeleton; each caller supplies
- *  only the optional confirm copy, the message tag, and a result→string mapper. */
+ *  reply into a status line. Owns its own busy state and the shared confirm →
+ *  query-tab → send → format → error skeleton, writing the result into a shared
+ *  `setMsg` slot so siblings never leave a stale line; each caller supplies the
+ *  optional confirm copy, the message tag, the result→string mapper, and setMsg. */
 function usePageAction<R>(config: {
   /** Confirm prompt to show before running; omit (undefined) to skip the gate. */
   confirm?: string | undefined
   request: { _tag: string }
   format: (res: R | null) => string
-}): { busy: boolean; msg: string | null; run: () => Promise<void> } {
+  /** Shared status-line setter — cleared on run start, set on completion/error, so
+   *  only the most recent action's message shows (never a stale sibling button's). */
+  setMsg: (m: string | null) => void
+}): { busy: boolean; run: () => Promise<void> } {
   const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState<string | null>(null)
 
   const run = async (): Promise<void> => {
     if (config.confirm !== undefined && !confirm(config.confirm)) return
     setBusy(true)
-    setMsg(null)
+    config.setMsg(null)
     try {
       const [tab] = await browser.tabs.query({
         active: true,
         currentWindow: true,
       })
       if (tab?.id === undefined) {
-        setMsg('No active tab.')
+        config.setMsg('No active tab.')
         return
       }
       const res = (await browser.tabs.sendMessage(tab.id, config.request)) as R | null
-      setMsg(config.format(res))
+      config.setMsg(config.format(res))
     } catch {
-      setMsg(PAGE_UNREACHABLE)
+      config.setMsg(PAGE_UNREACHABLE)
     } finally {
       setBusy(false)
     }
   }
 
-  return { busy, msg, run }
+  return { busy, run }
 }
 
 const openOptions = (): void => void browser.runtime.openOptionsPage()
@@ -102,6 +105,9 @@ export function App() {
   const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
   const [onXTab, setOnXTab] = useState(false)
   const [onListPage, setOnListPage] = useState(false)
+  // One shared status line for the page actions, so the most recent action's
+  // result always shows instead of an earlier action's stale message.
+  const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [clearFeedback, setClearFeedback] = useState(false)
   const [captureSummary, setCaptureSummary] = useState<CaptureSummary | null>(null)
   const [captureMsg, setCaptureMsg] = useState<string | null>(null)
@@ -126,6 +132,7 @@ export function App() {
     confirm: 'Un-like / un-bookmark every post currently on this page? This cannot be undone.',
     request: { _tag: 'ClearVisibleRequest' },
     format: (res) => `Cleared ${plural(res?.cleared ?? 0, 'post')} on this page.`,
+    setMsg: setActionMsg,
   })
 
   // Whole-list clear: auto-scroll the entire Likes/Bookmarks list and un-like /
@@ -143,6 +150,7 @@ export function App() {
         ? 'No posts to clear on this list.'
         : `Cleared ${plural(n, 'post')} across the list.`
     },
+    setMsg: setActionMsg,
   })
 
   // "Download this page (all at once)": fire every detected post into the queue.
@@ -159,6 +167,7 @@ export function App() {
           ? `Downloading ${plural(n, 'item')} — each post clears as it finishes.`
           : `Downloading ${plural(n, 'item')}.`
     },
+    setMsg: setActionMsg,
   })
 
   // Durable one-by-one sweep: hand this list's posts to the background, which
@@ -172,6 +181,7 @@ export function App() {
       ? 'Go down this page one post at a time — download each, then remove it from THIS list (un-like on Likes, un-bookmark on Bookmarks) once its media truly finishes?'
       : undefined,
     request: { _tag: 'SweepPageRequest' },
+    setMsg: setActionMsg,
     format: (res) => {
       if (res?.reason === 'not-list-page')
         return 'Open a Likes or Bookmarks page — the sweep only runs on a list.'
@@ -289,6 +299,7 @@ export function App() {
     if (!confirm('Delete the entire harvested-tweet archive? This cannot be undone.')) return
     await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
     setCaptureSummary({ tweets: 0, conversations: 0, recent: [] })
+    setCaptureMsg(null)
   }
 
   // Only surface the monitor for a real download batch — not for stray hover/UI
@@ -454,11 +465,7 @@ export function App() {
               <EraserIcon className="size-3.5" />
               {clearWholeList.busy ? 'Clearing entire list…' : 'Clear entire list (no download)'}
             </Button>
-            {(drain.msg || sweep.msg || clearVisible.msg || clearWholeList.msg) && (
-              <p className="text-xs leading-snug text-muted-foreground">
-                {drain.msg ?? sweep.msg ?? clearVisible.msg ?? clearWholeList.msg}
-              </p>
-            )}
+            {actionMsg && <p className="text-xs leading-snug text-muted-foreground">{actionMsg}</p>}
           </CardContent>
         </Card>
 
