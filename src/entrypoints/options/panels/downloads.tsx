@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
+import { Option } from 'effect'
 import type { Settings } from '@/core/schema'
 import { aria2OriginPattern } from '@/core/download/aria2'
 import { DOWNLOAD_MODES } from '@/core/download/strategy'
@@ -18,17 +19,17 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
   useEffect(() => {
     if (strategy !== 'aria2') return
     const pattern = aria2OriginPattern(rpcUrl)
-    if (pattern === null) {
+    if (Option.isNone(pattern)) {
       setAria2Granted(null)
       return
     }
-    void browser.permissions.contains({ origins: [pattern] }).then(setAria2Granted)
+    void browser.permissions.contains({ origins: [pattern.value] }).then(setAria2Granted)
   }, [strategy, rpcUrl])
 
   const requestAria2Access = async (): Promise<void> => {
     const pattern = aria2OriginPattern(settings.aria2RpcUrl)
-    if (pattern === null) return
-    setAria2Granted(await browser.permissions.request({ origins: [pattern] }))
+    if (Option.isNone(pattern)) return
+    setAria2Granted(await browser.permissions.request({ origins: [pattern.value] }))
   }
 
   const activeMode = DOWNLOAD_MODES.find((option) => option.value === settings.downloadStrategy)

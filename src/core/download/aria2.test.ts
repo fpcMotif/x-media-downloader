@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { Effect, Exit } from 'effect'
+import { Effect, Exit, Option } from 'effect'
 import {
   buildAria2Options,
   buildJsonRpcBody,
@@ -32,12 +32,12 @@ describe('buildAria2Options', () => {
 
 describe('aria2OriginPattern', () => {
   it('derives a host-only match pattern (drops the port)', () => {
-    expect(aria2OriginPattern('http://localhost:6800/jsonrpc')).toBe('http://localhost/*')
-    expect(aria2OriginPattern('https://aria.example.com/rpc')).toBe('https://aria.example.com/*')
+    expect(Option.getOrNull(aria2OriginPattern('http://localhost:6800/jsonrpc'))).toBe('http://localhost/*')
+    expect(Option.getOrNull(aria2OriginPattern('https://aria.example.com/rpc'))).toBe('https://aria.example.com/*')
   })
 
-  it('returns null for an unparseable url', () => {
-    expect(aria2OriginPattern('not a url')).toBe(null)
+  it('returns none for an unparseable url', () => {
+    expect(Option.getOrNull(aria2OriginPattern('not a url'))).toBe(null)
   })
 })
 
@@ -188,9 +188,9 @@ const makeErrorMappingPort = (body: unknown) =>
 
 describe('makeAria2RpcPort error mapping', () => {
   it('throws Aria2RpcError with code on an error envelope', async () => {
-    await expect(makeErrorMappingPort({ error: { code: 1, message: 'bad uri' } }).addUri(['u'], {})).rejects.toMatchObject(
-      { _tag: 'Aria2RpcError', message: 'bad uri', code: 1 },
-    )
+    await expect(
+      makeErrorMappingPort({ error: { code: 1, message: 'bad uri' } }).addUri(['u'], {}),
+    ).rejects.toMatchObject({ _tag: 'Aria2RpcError', message: 'bad uri', code: 1 })
   })
 
   it('throws Aria2RpcError on a malformed response', async () => {

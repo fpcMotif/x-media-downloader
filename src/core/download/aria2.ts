@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import { bindFetch } from '../fetch'
 import { DownloadError, Aria2RpcError } from '../errors'
 import { errorReason } from '../error'
@@ -18,15 +18,15 @@ export interface Aria2Options {
 /**
  * Chrome match-pattern for an aria2 RPC URL's origin, suitable for a runtime
  * `permissions.request({ origins })` call. Host-only — match patterns omit the
- * port (`http://localhost:6800/jsonrpc` → `http://localhost/*`). Null if the URL
+ * port (`http://localhost:6800/jsonrpc` → `http://localhost/*`). None if the URL
  * is unparseable.
  */
-export function aria2OriginPattern(rpcUrl: string): string | null {
+export function aria2OriginPattern(rpcUrl: string): Option.Option<string> {
   try {
     const u = new URL(rpcUrl)
-    return `${u.protocol}//${u.hostname}/*`
+    return Option.some(`${u.protocol}//${u.hostname}/*`)
   } catch {
-    return null
+    return Option.none()
   }
 }
 
