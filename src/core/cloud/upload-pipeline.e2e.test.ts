@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { makeDriveDestination, type DriveDeps } from './drive'
-import { makeDropboxDestination, type DropboxDeps } from './dropbox'
-import { guessMime, type CloudDestination, type CloudProviderId } from './types'
+import { Effect, Layer, ManagedRuntime } from 'effect'
+import { DriveUploader, DriveUploaderLive } from './drive'
+import { DropboxUploader, DropboxUploaderLive } from './dropbox'
+import { makeFetchServiceLive } from '../fetch-service'
+import { makeSourceFetchLive } from './source-fetch'
+import { FolderCacheLive } from './folder-cache'
+import { guessMime, type CloudProviderId, type UploadInput, type UploadOutcome } from './types'
 import {
   claim,
   enqueue,
@@ -13,13 +17,13 @@ import {
   type JobLedger,
   type UploadJobSpec,
 } from './upload-job'
-import { guardedFetch } from '../sync/url-guard'
 
 /**
- * End-to-end byte-path drain (ADR-0013): exercises the REAL modules wired the way
- * the background orchestrator wires them — UploadJob ledger (enqueue → claim →
- * record), the SSRF guard as the source fetcher, the provider adapter, and the
- * chunk streamer. Only `fetch` (provider + twimg) and the clock are injected.
+ * End-to-end byte-path drain (ADR-0013, ADR-0017): exercises the REAL modules
+ * wired the way the background orchestrator wires them — the UploadJob ledger
+ * (enqueue → claim → record), the provider uploader services on a shared
+ * `ManagedRuntime`, the SSRF-guarded `SourceFetch`, and the chunk streamer. Only
+ * `fetch` (provider + twimg) and the clock are injected.
  */
 
 type MediaItem = {
@@ -68,7 +72,7 @@ const video = (over: Partial<MediaItem> = {}): MediaItem =>
     ...over,
   })
 
-/** twimg CDN mock; `bodyFor`/`statusFor` decide what each media URL returns. */
+/** twimg CDN mock; `body`/`status` decide what each media URL returns. */
 function makeTwimgFetch(opts: {
   body?: Uint8Array<ArrayBuffer>
   status?: number
@@ -80,8 +84,7 @@ function makeTwimgFetch(opts: {
     if (status >= 400) return new Response(null, { status })
     const headers: Record<string, string> = { 'content-type': 'image/jpeg' }
     const body = opts.body ?? new Uint8Array(1024)
-    if (opts.contentLength !== null)
-      headers['content-length'] = String(opts.contentLength ?? body.length)
+    if (opts.contentLength !== null) headers['content-length'] = String(opts.contentLength ?? body.length)
     return new Response(body, { status, headers })
   }) as unknown as typeof fetch
 }
@@ -92,8 +95,7 @@ function makeDriveProviderFetch() {
   const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
     const u = String(url)
     const method = init?.method ?? 'GET'
-    if (u.includes('uploadType=multipart'))
-      return new Response(JSON.stringify({ id: 'drive-mp' }), { status: 200 })
+    if (u.includes('uploadType=multipart')) return new Response(JSON.stringify({ id: 'drive-mp' }), { status: 200 })
     if (u.includes('uploadType=resumable'))
       return new Response(null, { status: 200, headers: { location: 'https://drive.sess/put' } })
     if (u === 'https://drive.sess/put') {
@@ -103,10 +105,8 @@ function makeDriveProviderFetch() {
         ? new Response(null, { status: 308 })
         : new Response(JSON.stringify({ id: 'drive-rs' }), { status: 200 })
     }
-    if (u.includes('/drive/v3/files?') && method === 'GET')
-      return new Response(JSON.stringify({ files: [] }), { status: 200 })
-    if (u.includes('/drive/v3/files?') && method === 'POST')
-      return new Response(JSON.stringify({ id: 'folder-x' }), { status: 200 })
+    if (u.includes('/drive/v3/files?') && method === 'GET') return new Response(JSON.stringify({ files: [] }), { status: 200 })
+    if (u.includes('/drive/v3/files?') && method === 'POST') return new Response(JSON.stringify({ id: 'folder-x' }), { status: 200 })
     return new Response('unexpected', { status: 500 })
   }) as unknown as typeof fetch
   return { fetchImpl, putCount: () => putCount }
@@ -117,55 +117,44 @@ function makeDropboxProviderFetch() {
   const fetchImpl = (async (url: string | URL) => {
     const u = String(url)
     if (u.endsWith('files/upload'))
-      return new Response(JSON.stringify({ id: 'db-simple', size: 1024, path_display: '/p' }), {
-        status: 200,
-      })
-    if (u.endsWith('upload_session/start'))
-      return new Response(JSON.stringify({ session_id: 'sess' }), { status: 200 })
+      return new Response(JSON.stringify({ id: 'db-simple', size: 1024, path_display: '/p' }), { status: 200 })
+    if (u.endsWith('upload_session/start')) return new Response(JSON.stringify({ session_id: 'sess' }), { status: 200 })
     if (u.endsWith('upload_session/append_v2')) return new Response('', { status: 200 })
     if (u.endsWith('upload_session/finish'))
-      return new Response(JSON.stringify({ id: 'db-session', size: 999, path_display: '/big' }), {
-        status: 200,
-      })
+      return new Response(JSON.stringify({ id: 'db-session', size: 999, path_display: '/big' }), { status: 200 })
     return new Response('unexpected', { status: 500 })
   }) as unknown as typeof fetch
   return { fetchImpl }
 }
 
-function driveDest(providerFetch: typeof fetch, twimgFetch: typeof fetch): CloudDestination {
-  const deps: DriveDeps = {
-    accessToken: 'AT',
-    rootFolderId: 'root',
-    fetchImpl: providerFetch,
-    fetchSource: (url) => guardedFetch(url, {}, twimgFetch),
-    folderCache: new Map(),
-  }
-  return makeDriveDestination(deps)
-}
+type Upload = (provider: CloudProviderId, input: UploadInput) => Promise<UploadOutcome>
 
-function dropboxDest(providerFetch: typeof fetch, twimgFetch: typeof fetch): CloudDestination {
-  const deps: DropboxDeps = {
-    accessToken: 'AT',
-    fetchImpl: providerFetch,
-    fetchSource: (url) => guardedFetch(url, {}, twimgFetch),
-  }
-  return makeDropboxDestination(deps)
+/** Build the provider uploaders on one runtime — production's exact wiring, but
+ *  with the provider REST fetch and the twimg fetch injected separately. */
+function makeUploader(providerFetch: typeof fetch, twimgFetch: typeof fetch): Upload {
+  const services = Layer.mergeAll(
+    makeFetchServiceLive(providerFetch),
+    makeSourceFetchLive(twimgFetch), // the REAL SSRF guard wraps this
+    FolderCacheLive,
+  )
+  const app = Layer.mergeAll(DriveUploaderLive, DropboxUploaderLive).pipe(Layer.provide(services))
+  const rt = ManagedRuntime.make(app)
+  return (provider, input) =>
+    provider === 'gdrive'
+      ? rt.runPromise(Effect.flatMap(DriveUploader, (u) => u.upload({ accessToken: 'AT', rootFolderId: 'root' }, input)))
+      : rt.runPromise(Effect.flatMap(DropboxUploader, (u) => u.upload({ accessToken: 'AT' }, input)))
 }
 
 /** The orchestration drain loop, distilled: claim each ready job, upload, record. */
-async function drainOnce(
-  ledger: JobLedger,
-  destFor: (provider: CloudProviderId) => CloudDestination,
-  now: number,
-): Promise<JobLedger> {
+async function drainOnce(ledger: JobLedger, upload: Upload, now: number): Promise<JobLedger> {
   let next = ledger
   for (const ready of readyJobs(next, now)) {
     const c = claim(next, ready.jobId, now)
     next = c.ledger
     if (!c.claimed) continue
     const job = next.find((j) => j.jobId === ready.jobId)!
-    // oxlint-disable-next-line no-await-in-loop -- a drain is sequential by design (claim → upload → record, in order)
-    const outcome = await destFor(job.provider).upload({ url: job.url, target: job.target })
+    // oxlint-disable-next-line no-await-in-loop -- a drain is sequential by design (claim → upload → record)
+    const outcome = await upload(job.provider, { url: job.url, target: job.target })
     if (outcome.kind === 'success') {
       next = recordSuccess(next, job.jobId, c.token!, now, {
         bytes: outcome.bytes,
@@ -182,59 +171,42 @@ async function drainOnce(
 
 describe('upload pipeline (e2e: ledger × SSRF guard × provider adapter)', () => {
   it('drives a small photo to Drive: enqueue → claim → guarded fetch → multipart → succeeded', async () => {
-    const twimg = makeTwimgFetch({ body: new Uint8Array(1024).fill(7) })
-    const { fetchImpl: drive } = makeDriveProviderFetch()
+    const upload = makeUploader(makeDriveProviderFetch().fetchImpl, makeTwimgFetch({ body: new Uint8Array(1024).fill(7) }))
     let ledger = enqueue([], specFromItem(photo(), 'gdrive'), 0)
-    ledger = await drainOnce(ledger, () => driveDest(drive, twimg), 0)
-    expect(ledger[0]).toMatchObject({
-      status: 'succeeded',
-      bytes: 1024,
-      remoteId: 'drive-mp',
-      verifiedAt: 0,
-    })
+    ledger = await drainOnce(ledger, upload, 0)
+    expect(ledger[0]).toMatchObject({ status: 'succeeded', bytes: 1024, remoteId: 'drive-mp', verifiedAt: 0 })
   })
 
   it('streams a large video to Dropbox via an upload session → succeeded', async () => {
-    const twimg = makeTwimgFetch({
-      body: new Uint8Array(20 * 1024 * 1024).fill(3),
-      contentLength: null, // unknown size ⇒ session path
-    })
-    const { fetchImpl: db } = makeDropboxProviderFetch()
+    const twimg = makeTwimgFetch({ body: new Uint8Array(20 * 1024 * 1024).fill(3), contentLength: null })
+    const upload = makeUploader(makeDropboxProviderFetch().fetchImpl, twimg)
     let ledger = enqueue([], specFromItem(video(), 'dropbox'), 0)
-    ledger = await drainOnce(ledger, () => dropboxDest(db, twimg), 0)
+    ledger = await drainOnce(ledger, upload, 0)
     expect(ledger[0]).toMatchObject({ status: 'succeeded', remoteId: 'db-session' })
   })
 
   it('streams an unknown-size video to Drive via a resumable session (>1 chunk) → succeeded', async () => {
-    const twimg = makeTwimgFetch({
-      body: new Uint8Array(9 * 1024 * 1024),
-      contentLength: null,
-    })
+    const twimg = makeTwimgFetch({ body: new Uint8Array(9 * 1024 * 1024), contentLength: null })
     const drive = makeDriveProviderFetch()
+    const upload = makeUploader(drive.fetchImpl, twimg)
     let ledger = enqueue([], specFromItem(video({ id: 'req-rs' }), 'gdrive'), 0)
-    ledger = await drainOnce(ledger, () => driveDest(drive.fetchImpl, twimg), 0)
+    ledger = await drainOnce(ledger, upload, 0)
     expect(ledger[0]).toMatchObject({ status: 'succeeded', remoteId: 'drive-rs' })
     expect(drive.putCount()).toBe(2) // one 8 MiB chunk (308) + one 1 MiB final (200)
   })
 
   it('marks a 403-from-twimg job as skipped (link-rot), never a fake success', async () => {
-    const twimg = makeTwimgFetch({ status: 403 })
-    const { fetchImpl: drive } = makeDriveProviderFetch()
+    const upload = makeUploader(makeDriveProviderFetch().fetchImpl, makeTwimgFetch({ status: 403 }))
     let ledger = enqueue([], specFromItem(photo(), 'gdrive'), 0)
-    ledger = await drainOnce(ledger, () => driveDest(drive, twimg), 0)
+    ledger = await drainOnce(ledger, upload, 0)
     expect(ledger[0]!.status).toBe('skipped')
   })
 
   it('blocks an SSRF source URL at the guard and records a (retryable) failure', async () => {
-    const twimg = makeTwimgFetch({})
-    const { fetchImpl: drive } = makeDriveProviderFetch()
+    const upload = makeUploader(makeDriveProviderFetch().fetchImpl, makeTwimgFetch({}))
     // A job whose source URL is NOT an X media CDN — the guard must refuse it.
-    let ledger = enqueue(
-      [],
-      specFromItem(photo({ url: 'https://169.254.169.254/latest/meta-data/' }), 'gdrive'),
-      0,
-    )
-    ledger = await drainOnce(ledger, () => driveDest(drive, twimg), 0)
+    let ledger = enqueue([], specFromItem(photo({ url: 'https://169.254.169.254/latest/meta-data/' }), 'gdrive'), 0)
+    ledger = await drainOnce(ledger, upload, 0)
     expect(ledger[0]!.status).toBe('failed')
     expect(ledger[0]!.error).toMatch(/UnsafeUrlError|private\/link-local/)
   })
@@ -253,9 +225,10 @@ describe('upload pipeline (e2e: ledger × SSRF guard × provider adapter)', () =
         return new Response(JSON.stringify({ files: [{ id: 'f' }] }), { status: 200 })
       return new Response('x', { status: 500 })
     }) as unknown as typeof fetch
+    const upload = makeUploader(flaky, twimg)
 
     let ledger = enqueue([], specFromItem(photo(), 'gdrive'), 0)
-    ledger = await drainOnce(ledger, () => driveDest(flaky, twimg), 0)
+    ledger = await drainOnce(ledger, upload, 0)
     expect(ledger[0]!.status).toBe('failed')
     expect(ledger[0]!.attempts).toBe(1)
 
@@ -263,22 +236,24 @@ describe('upload pipeline (e2e: ledger × SSRF guard × provider adapter)', () =
     provider500 = false
     const due = ledger[0]!.nextAttemptAt
     expect(readyJobs(ledger, due - 1)).toHaveLength(0) // still backing off
-    ledger = await drainOnce(ledger, () => driveDest(flaky, twimg), due)
+    ledger = await drainOnce(ledger, upload, due)
     expect(ledger[0]).toMatchObject({ status: 'succeeded', remoteId: 'drive-mp' })
   })
 
   it('drains a mixed multi-provider batch in one pass', async () => {
     const twimg = makeTwimgFetch({ body: new Uint8Array(2048) })
-    const { fetchImpl: drive } = makeDriveProviderFetch()
-    const { fetchImpl: db } = makeDropboxProviderFetch()
-    const destFor = (p: CloudProviderId) =>
-      p === 'gdrive' ? driveDest(drive, twimg) : dropboxDest(db, twimg)
+    const drive = makeDriveProviderFetch().fetchImpl
+    const db = makeDropboxProviderFetch().fetchImpl
+    // One fetch capability routes by host (Drive vs Dropbox), as the SW's fetch would.
+    const providerFetch = (async (url: string | URL, init?: RequestInit) =>
+      String(url).includes('dropboxapi.com') ? db(String(url), init) : drive(String(url), init)) as unknown as typeof fetch
+    const upload = makeUploader(providerFetch, twimg)
 
     let ledger: JobLedger = []
     ledger = enqueue(ledger, specFromItem(photo({ id: 'a' }), 'gdrive'), 0)
     ledger = enqueue(ledger, specFromItem(photo({ id: 'b' }), 'dropbox'), 0)
     ledger = enqueue(ledger, specFromItem(photo({ id: 'a' }), 'dropbox'), 0) // same media, 2nd provider
-    ledger = await drainOnce(ledger, destFor, 0)
+    ledger = await drainOnce(ledger, upload, 0)
 
     expect(summarize(ledger)).toMatchObject({ succeeded: 3, pending: 0, failed: 0 })
   })

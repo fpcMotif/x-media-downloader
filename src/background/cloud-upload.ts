@@ -1,8 +1,11 @@
 import { storage } from 'wxt/utils/storage'
 import { CLOUD_PROVIDERS, type Settings } from '../core/schema'
 import { setSettings } from '../core/settings'
+import { Effect, Layer, ManagedRuntime } from 'effect'
 import { makeConvexHttpPort } from '../core/sync/convex'
-import { guardedFetch } from '../core/sync/url-guard'
+import { makeCloudServicesLive } from '../core/cloud/cloud-services'
+import { DriveUploader, DriveUploaderLive, type DriveArgs } from '../core/cloud/drive'
+import { DropboxUploader, DropboxUploaderLive } from '../core/cloud/dropbox'
 import {
   guessMime,
   type CloudProviderId,
@@ -159,10 +162,24 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   // (Drive/Dropbox) directly; nothing here transits Convex.
   const uploadJobsItem = storage.defineItem<unknown>('local:cloudUploadJobs', { fallback: null })
   const uploadQueue = makeSerialQueue(deps.queueError('upload'))
-  // handle → Drive subfolder id, cached across the SW life (re-resolved on recycle).
-  const driveFolderCache = new Map<string, string>()
-  // The only sanctioned media-byte egress: SSRF-guarded fetch of the twimg source.
-  const cloudFetchSource = (url: string): Promise<Response> => guardedFetch(url, {}, fetchImpl)
+  // The cloud byte path runs on one runtime built per SW life (ADR-0017): FetchService
+  // (binds fetch once), SourceFetch (the SSRF-guarded twimg fetch), and a Ref FolderCache
+  // (handle → subfolder id) that persists across uploads. An SW recycle rebuilds the
+  // runtime = a fresh cache, matching the prior in-memory Map.
+  // `provideMerge` wires the services into the uploaders AND keeps FetchService in
+  // the runtime's context, so the Convex/OAuth ports (which read FetchService) run
+  // on this same runtime.
+  const runtime = ManagedRuntime.make(
+    Layer.mergeAll(DriveUploaderLive, DropboxUploaderLive).pipe(
+      Layer.provideMerge(makeCloudServicesLive(fetchImpl)),
+    ),
+  )
+  const uploadDrive = (args: DriveArgs, input: UploadInput): Promise<UploadOutcome> =>
+    runtime.runPromise(Effect.flatMap(DriveUploader, (u) => u.upload(args, input)))
+  const uploadDropbox = (accessToken: string, input: UploadInput): Promise<UploadOutcome> =>
+    runtime.runPromise(Effect.flatMap(DropboxUploader, (u) => u.upload({ accessToken }, input)))
+  const resolveDriveRoot = (accessToken: string): Promise<string> =>
+    runtime.runPromise(Effect.flatMap(DriveUploader, (u) => u.ensureRoot(accessToken)))
   // Last non-skip failure, for the popup's status line (diagnostic; resets on recycle).
   let lastUploadError: string | null = null
 
@@ -198,13 +215,14 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   ): Promise<string> => {
     const t = providerTokens(s, p)
     if (t.accessToken !== '' && !isTokenExpired(t.expiry, now)) return t.accessToken
-    const refreshed = await refreshAccessToken({
-      cfg: PROVIDERS[p].oauth,
-      clientId: t.clientId,
-      refreshToken: t.refreshToken,
-      fetchImpl,
-      now,
-    })
+    const refreshed = await runtime.runPromise(
+      refreshAccessToken({
+        cfg: PROVIDERS[p].oauth,
+        clientId: t.clientId,
+        refreshToken: t.refreshToken,
+        now,
+      }),
+    )
     await persistAccessToken(p, refreshed.accessToken, refreshed.expiresAt)
     return refreshed.accessToken
   }
@@ -229,25 +247,23 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     })
   }
 
-  /** Dispatch one job to its destination via the Cloud Provider record. The
-   *  provider's `makeDestination` folds in any provider-specific init (e.g. Drive's
-   *  root-folder resolution); the call site never forks on the provider. */
+  /** Dispatch one job to its provider uploader on the cloud runtime. Drive resolves
+   *  (and persists) its app root folder once; Dropbox needs only the access token. */
   const runUpload = async (
     job: UploadJob,
     accessToken: string,
     settings: Settings,
-    fetchSource: (url: string) => Promise<Response>,
   ): Promise<UploadOutcome> => {
     const input: UploadInput = { url: job.url, target: job.target }
-    const destination = await PROVIDERS[job.provider].makeDestination({
-      accessToken,
-      fetchImpl,
-      fetchSource,
-      settings,
-      writeSettings: writeCloudSettings,
-      caches: { driveFolders: driveFolderCache },
-    })
-    return destination.upload(input)
+    if (job.provider === 'gdrive') {
+      let rootId = settings.gdriveFolderId
+      if (rootId === '') {
+        rootId = await resolveDriveRoot(accessToken)
+        await writeCloudSettings({ gdriveFolderId: rootId })
+      }
+      return uploadDrive({ accessToken, rootFolderId: rootId }, input)
+    }
+    return uploadDropbox(accessToken, input)
   }
 
   /** Best-effort mirror of a job's state to the Convex control plane (ADR-0013).
@@ -255,11 +271,13 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const mirrorUploadJob = async (settings: Settings, job: UploadJob): Promise<void> => {
     if (!isSyncConfigured(settings) || settings.cloudDeviceId === '') return
     try {
-      const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl, fetchImpl })
-      await port.mutation('uploads:recordUploadJobs', {
-        jobs: [toWireUploadJob(job, settings.cloudDeviceId, Date.now())],
-        secret: settings.convexSyncSecret,
-      })
+      const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl })
+      await runtime.runPromise(
+        port.mutation('uploads:recordUploadJobs', {
+          jobs: [toWireUploadJob(job, settings.cloudDeviceId, Date.now())],
+          secret: settings.convexSyncSecret,
+        }),
+      )
     } catch {
       /* control-plane mirror is best-effort; the local ledger is the source of truth */
     }
@@ -320,7 +338,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       try {
         const accessToken = await ensureAccessToken(settings, job.provider, now)
         settings = await getSettings() // re-read after a possible token write
-        outcome = await runUpload(job, accessToken, settings, cloudFetchSource)
+        outcome = await runUpload(job, accessToken, settings)
       } catch (err) {
         outcome = { kind: 'failure', reason: err instanceof Error ? err.message : String(err) }
       }
@@ -337,7 +355,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
         next = recordSourceGone(after, job.jobId, token, outcome.reason).ledger
       } else {
         next = recordFailure(after, job.jobId, token, tnow, outcome.reason).ledger
-        lastUploadError = classifyUploadError(outcome.reason)
+        lastUploadError = classifyUploadError(outcome.reason, outcome.status)
       }
       const settled = next.find((j) => j.jobId === job.jobId)
       await uploadJobsItem.setValue(capLedger(next))
@@ -379,15 +397,16 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       if (redirect === undefined || redirect === '')
         return { ok: false, detail: 'Authorization was cancelled.' }
       const { code } = parseAuthRedirect(redirect, state)
-      const tokens = await exchangeCode({
-        cfg,
-        clientId,
-        code,
-        codeVerifier: verifier,
-        redirectUri,
-        fetchImpl,
-        now: Date.now(),
-      })
+      const tokens = await runtime.runPromise(
+        exchangeCode({
+          cfg,
+          clientId,
+          code,
+          codeVerifier: verifier,
+          redirectUri,
+          now: Date.now(),
+        }),
+      )
       const f = PROVIDERS[provider].fields
       await writeCloudSettings({
         [f.clientId]: clientId,

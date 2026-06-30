@@ -19,15 +19,10 @@
   "rules": {
     "react/react-in-jsx-scope": "off",
     "no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
-    "import/no-unassigned-import": ["warn", { "allow": ["**/*.css"] }]
+    "import/no-unassigned-import": ["warn", { "allow": ["**/*.css"] }],
+    "vitest/expect-expect": ["error", { "assertFunctionNames": ["expect", "fc.assert"] }]
   },
   "overrides": [
-    {
-      "files": ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"],
-      "rules": {
-        "no-magic-numbers": "off"
-      }
-    },
     {
       "files": ["**/inject.content.ts"],
       "rules": {

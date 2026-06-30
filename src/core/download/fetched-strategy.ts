@@ -106,9 +106,7 @@ export function makeFetchedStrategy(opts: {
           catch: (cause) => new DownloadError({ id: req.id, reason: String(cause) }),
         })
         if (!granted) {
-          return yield* Effect.fail(
-            new DownloadError({ id: req.id, reason: 'fetched permissions denied' }),
-          )
+          return yield* new DownloadError({ id: req.id, reason: 'fetched permissions denied' })
         }
 
         const response = yield* Effect.tryPromise({
@@ -117,21 +115,17 @@ export function makeFetchedStrategy(opts: {
         })
 
         if (!response.ok) {
-          return yield* Effect.fail(
-            new DownloadError({
-              id: req.id,
-              reason: `fetch failed: HTTP ${response.status}`,
-            }),
-          )
+          return yield* new DownloadError({
+            id: req.id,
+            reason: `fetch failed: HTTP ${response.status}`,
+          })
         }
 
         if (!isAllowedContentType(response.contentType)) {
-          return yield* Effect.fail(
-            new DownloadError({
-              id: req.id,
-              reason: `disallowed content-type: ${response.contentType ?? 'none'}`,
-            }),
-          )
+          return yield* new DownloadError({
+            id: req.id,
+            reason: `disallowed content-type: ${response.contentType ?? 'none'}`,
+          })
         }
 
         // Size guard (OOM): a declared length over the cap — or a video with no

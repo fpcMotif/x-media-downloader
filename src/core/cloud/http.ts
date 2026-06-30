@@ -1,5 +1,7 @@
+import { Cause, Data, Effect } from 'effect'
 import { errorReason } from '../error'
 import { readAll } from './chunk'
+import { FetchError } from '../fetch-service'
 import type { ParsedSource } from './source'
 import { SIMPLE_MAX_BYTES, type UploadOutcome } from './types'
 
@@ -17,47 +19,79 @@ export const authHeader = (token: string): Record<string, string> => ({
 /** Best-effort error body; a mid-read failure (dropped connection) yields ''. */
 export const errText = (res: Response): Promise<string> => res.text().catch(() => '')
 
+/** Parse a JSON response body as `T`. A malformed body rejects → a defect that
+ *  `runUpload`'s `catchCause` maps to a failure outcome (as the old `await` did). */
+export const okJson = <T>(res: Response): Effect.Effect<T> =>
+  Effect.promise(() => res.json() as Promise<T>)
+
 /** `<provider> HTTP <status>[: <body first 200 chars>]` — the shared error format. */
-export const httpErr = (provider: string, res: Response, body: string): string =>
-  `${provider} HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`
+export const httpErr = (provider: string, status: number, body: string): string =>
+  `${provider} HTTP ${status}${body ? `: ${body.slice(0, 200)}` : ''}`
+
+/**
+ * A non-2xx response from a provider's upload API. Carries the numeric `status`
+ * as a real field — not buried in a message string — so the upload-status
+ * classifier can dispatch on it structurally instead of regexing the text. The
+ * `message` getter reproduces the exact `<provider> HTTP <status>[: body]` text
+ * the adapters used to throw, so every `.message` / `errorReason` reader (and the
+ * byte-stable `UploadOutcome.reason`) is unchanged.
+ */
+export class CloudHttpError extends Data.TaggedError('CloudHttpError')<{
+  readonly provider: string
+  readonly status: number
+  readonly body: string
+}> {
+  get message(): string {
+    return httpErr(this.provider, this.status, this.body)
+  }
+}
 
 /** The single 'empty source' failure outcome (the source had no bytes). */
 const EMPTY_SOURCE: UploadOutcome = { kind: 'failure', reason: 'empty source' }
 
 /**
- * Provider-agnostic upload skeleton (template method): own the parsed-source
- * early-return, the simple-vs-streamed size dispatch, both empty-source guards,
- * and the catch→failure mapping. Each adapter supplies only its two byte sinks.
+ * Provider-agnostic upload skeleton (template method), Effect-shaped (ADR-0017):
+ * own the parsed-source early-return, the simple-vs-streamed size dispatch, both
+ * empty-source guards, and the failure→outcome mapping. Each adapter supplies only
+ * its two byte sinks.
  *
- * - `simple(bytes, contentType)` runs for known-small media (≤ SIMPLE_MAX_BYTES),
- *   after the buffer is read and confirmed non-empty.
- * - `streamed(body, size, contentType)` runs for larger/unknown-size media and
- *   returns its success outcome plus the streamed byte count (so the runner can
- *   replace a zero-byte result with the shared empty-source failure).
+ * `R` flows from `source` (`SourceFetch`) and the sinks (`FetchService`/etc.). `E`
+ * collapses to `never`: an expected `CloudHttpError` maps to an outcome carrying
+ * its `status`; anything else (a `FetchError`, a stream-sink rejection surfaced as
+ * a defect, a JSON-parse failure) maps via the byte-stable `reason` string.
  */
-export async function runUpload(
-  source: ParsedSource,
+export const runUpload = <R>(
+  source: Effect.Effect<ParsedSource, never, R>,
   sinks: {
-    readonly simple: (bytes: Uint8Array<ArrayBuffer>, contentType: string) => Promise<UploadOutcome>
+    readonly simple: (
+      bytes: Uint8Array<ArrayBuffer>,
+      contentType: string,
+    ) => Effect.Effect<UploadOutcome, CloudHttpError | FetchError, R>
     readonly streamed: (
       body: ReadableStream<Uint8Array>,
       size: number | null,
       contentType: string,
-    ) => Promise<{ outcome: UploadOutcome; bytes: number }>
+    ) => Effect.Effect<{ outcome: UploadOutcome; bytes: number }, CloudHttpError | FetchError, R>
   },
-): Promise<UploadOutcome> {
-  if (!source.ok) return source.outcome
-  const { body, size, contentType } = source
-  try {
-    if (size !== null && size <= SIMPLE_MAX_BYTES) {
-      const bytes = await readAll(body)
-      if (bytes.length === 0) return EMPTY_SOURCE
-      return await sinks.simple(bytes, contentType)
-    }
-    const { outcome, bytes } = await sinks.streamed(body, size, contentType)
-    if (bytes === 0) return EMPTY_SOURCE
-    return outcome
-  } catch (err) {
-    return { kind: 'failure', reason: errorReason(err) }
-  }
-}
+): Effect.Effect<UploadOutcome, never, R> =>
+  Effect.gen(function* () {
+    const s = yield* source
+    if (!s.ok) return s.outcome
+    const run =
+      s.size !== null && s.size <= SIMPLE_MAX_BYTES
+        ? Effect.gen(function* () {
+            const bytes = yield* Effect.promise(() => readAll(s.body))
+            return bytes.length === 0 ? EMPTY_SOURCE : yield* sinks.simple(bytes, s.contentType)
+          })
+        : sinks
+            .streamed(s.body, s.size, s.contentType)
+            .pipe(Effect.map(({ outcome, bytes }) => (bytes === 0 ? EMPTY_SOURCE : outcome)))
+    return yield* run.pipe(
+      Effect.catchTag('CloudHttpError', (e) =>
+        Effect.succeed<UploadOutcome>({ kind: 'failure', reason: e.message, status: e.status }),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.succeed<UploadOutcome>({ kind: 'failure', reason: errorReason(Cause.squash(cause)) }),
+      ),
+    )
+  })

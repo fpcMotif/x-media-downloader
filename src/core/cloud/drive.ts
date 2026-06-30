@@ -1,196 +1,239 @@
-import { bindFetch } from '../fetch'
+import { Context, Effect, Layer, Option } from 'effect'
 import { streamInChunks } from './chunk'
-import { authHeader, errText, httpErr, runUpload } from './http'
-import { parseSourceResponse } from './source'
-import { type CloudDestination, type UploadInput, type UploadOutcome } from './types'
+import { authHeader, CloudHttpError, errText, okJson, runUpload } from './http'
+import { FetchService, type FetchError } from '../fetch-service'
+import { FolderCache } from './folder-cache'
+import { SourceFetch } from './source-fetch'
+import { parseSource } from './source'
+import { type UploadInput, type UploadOutcome } from './types'
 
 /**
- * Google Drive v3 upload adapter (ADR-0013 §5). Small media (≤ SIMPLE_MAX_BYTES)
- * goes via one multipart request; larger/unknown-size media streams through a
- * resumable session in 256 KiB-multiple chunks — never buffering a whole video.
- * Files land in a per-handle subfolder under an app root folder. The caller
- * (background orchestrator) supplies a valid access token, the SSRF-guarded
- * source fetch, the root folder id, and an in-memory subfolder cache.
+ * Google Drive v3 upload adapter (ADR-0013 §5, ADR-0017). Small media
+ * (≤ SIMPLE_MAX_BYTES) goes via one multipart request; larger/unknown-size media
+ * streams through a resumable session in 256 KiB-multiple chunks — never buffering
+ * a whole video. Files land in a per-handle subfolder under an app root folder.
+ *
+ * Decomposed as a `DriveUploader` service whose layer depends on `FetchService`,
+ * `SourceFetch`, and `FolderCache`; per-upload `accessToken`/`rootFolderId` are
+ * method args. The services are resolved once when the layer is built, so
+ * `upload`/`ensureRoot` are `R = never` and run on the shared cloud runtime.
  */
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
 const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3/files'
 const FILES_BASE = 'https://www.googleapis.com/drive/v3/files'
-/** A valid Drive resumable chunk must be a 256 KiB multiple; 32 × 256 KiB = 8 MiB.
- *  Equals SIMPLE_MAX_BYTES only by coincidence — the streaming path is entered on
- *  size cutoff (see types.ts), not on this chunk size. */
-const KIB256 = 256 * 1024
-const RESUMABLE_CHUNK = 32 * KIB256
+/** A valid Drive resumable chunk is a 256 KiB multiple; 32 × 256 KiB = 8 MiB. */
+const RESUMABLE_CHUNK = 32 * 256 * 1024
+/** The app root folder; the resolved id is persisted by the caller. */
+const ROOT_FOLDER_NAME = 'X Media Downloader'
 
-export interface DriveDeps {
+export interface DriveArgs {
   readonly accessToken: string
   readonly rootFolderId: string
-  readonly fetchImpl: typeof fetch
-  /** SSRF-guarded fetch of the twimg source (e.g. `guardedFetch` bound). */
-  readonly fetchSource: (url: string) => Promise<Response>
-  /** handle → subfolder id, cached across the SW life. */
-  readonly folderCache: Map<string, string>
 }
 
-const driveError = (res: Response, body: string): string => httpErr('drive', res, body)
-
-/** Lookup-or-create a folder named `name` under `parentId`. With full Drive scope
- *  the list query finds a pre-existing folder so re-runs don't duplicate it. */
-export async function ensureFolder(
-  name: string,
-  parentId: string | null,
-  deps: Pick<DriveDeps, 'accessToken' | 'fetchImpl'>,
-): Promise<string> {
-  const doFetch = bindFetch(deps.fetchImpl)
-  // Escape backslash BEFORE single-quote so a trailing `\` can't break out of the
-  // q= string literal (defense-in-depth; the handle is also sanitized upstream).
-  const safeName = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-  const q = [
-    `name='${safeName}'`,
-    `mimeType='${FOLDER_MIME}'`,
-    'trashed=false',
-    ...(parentId !== null ? [`'${parentId}' in parents`] : []),
-  ].join(' and ')
-  const listUrl = `${FILES_BASE}?q=${encodeURIComponent(q)}&fields=files(id)&pageSize=1`
-  const found = await doFetch(listUrl, { headers: authHeader(deps.accessToken) })
-  if (found.ok) {
-    const json = (await found.json()) as { files?: { id: string }[] }
-    const id = json.files?.[0]?.id
-    if (id !== undefined) return id
-  }
-  const created = await doFetch(`${FILES_BASE}?fields=id`, {
-    method: 'POST',
-    headers: { ...authHeader(deps.accessToken), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      name,
-      mimeType: FOLDER_MIME,
-      ...(parentId !== null ? { parents: [parentId] } : {}),
-    }),
-  })
-  if (!created.ok) throw new Error(driveError(created, await errText(created)))
-  const json = (await created.json()) as { id?: string }
-  if (json.id === undefined) throw new Error('drive: folder create returned no id')
-  return json.id
-}
-
-/** Resolve the app root folder ("X Media Downloader"); the id is persisted by the caller. */
-export const ensureRootFolder = (
-  name: string,
-  deps: Pick<DriveDeps, 'accessToken' | 'fetchImpl'>,
-): Promise<string> => ensureFolder(name, null, deps)
-
-async function resolveHandleFolder(deps: DriveDeps, handle: string): Promise<string> {
-  const cached = deps.folderCache.get(handle)
-  if (cached !== undefined) return cached
-  const id = await ensureFolder(handle, deps.rootFolderId, deps)
-  deps.folderCache.set(handle, id)
-  return id
-}
-
-/** One multipart request (media + metadata): sets name + parent in a single call. */
-async function multipartUpload(
-  deps: DriveDeps,
-  doFetch: typeof fetch,
-  bytes: Uint8Array,
-  meta: { name: string; parentId: string; contentType: string },
-): Promise<{ id: string }> {
-  // High-entropy boundary: a data-derived one could (astronomically rarely) occur
-  // inside the binary media body and silently truncate the part (RFC 2046/2387).
-  const boundary = `xmd${crypto.randomUUID().replace(/-/g, '')}`
-  const enc = new TextEncoder()
-  const head = enc.encode(
-    `--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n` +
-      `${JSON.stringify({ name: meta.name, parents: [meta.parentId] })}\r\n` +
-      `--${boundary}\r\ncontent-type: ${meta.contentType}\r\n\r\n`,
+/** Read the error body, then fail with a tagged Drive HTTP error. */
+const driveFail = (res: Response): Effect.Effect<never, CloudHttpError> =>
+  Effect.promise(() => errText(res)).pipe(
+    Effect.flatMap((body) => new CloudHttpError({ provider: 'drive', status: res.status, body })),
   )
-  const tail = enc.encode(`\r\n--${boundary}--`)
-  const body = new Uint8Array(head.length + bytes.length + tail.length)
-  body.set(head, 0)
-  body.set(bytes, head.length)
-  body.set(tail, head.length + bytes.length)
-  const res = await doFetch(`${UPLOAD_BASE}?uploadType=multipart&fields=id`, {
-    method: 'POST',
-    headers: {
-      ...authHeader(deps.accessToken),
-      'content-type': `multipart/related; boundary=${boundary}`,
-    },
-    body,
-  })
-  if (!res.ok) throw new Error(driveError(res, await errText(res)))
-  return (await res.json()) as { id: string }
-}
 
-/** Resumable upload: initiate a session, then PUT 256 KiB-multiple chunks. */
-async function resumableUpload(
-  deps: DriveDeps,
-  doFetch: typeof fetch,
-  body: ReadableStream<Uint8Array>,
-  meta: { name: string; parentId: string; contentType: string; totalBytes: number | null },
-): Promise<{ id: string; bytes: number }> {
-  const initiate = await doFetch(`${UPLOAD_BASE}?uploadType=resumable&fields=id`, {
-    method: 'POST',
-    headers: {
-      ...authHeader(deps.accessToken),
-      'content-type': 'application/json; charset=UTF-8',
-      'x-upload-content-type': meta.contentType,
-      ...(meta.totalBytes !== null ? { 'x-upload-content-length': String(meta.totalBytes) } : {}),
-    },
-    body: JSON.stringify({ name: meta.name, parents: [meta.parentId] }),
-  })
-  if (!initiate.ok) throw new Error(driveError(initiate, await errText(initiate)))
-  const sessionUrl = initiate.headers.get('location')
-  if (sessionUrl === null) throw new Error('drive: resumable initiate returned no session url')
-
-  let fileId: string | null = null
-  const total = await streamInChunks(body, RESUMABLE_CHUNK, async (chunk, info) => {
-    const end = info.offset + chunk.length - 1
-    const totalStr = info.isLast ? String(info.offset + chunk.length) : '*'
-    // A zero-length final chunk (offset 0) means an empty source — caller guards that.
-    const range =
-      chunk.length === 0 ? `bytes */${info.offset}` : `bytes ${info.offset}-${end}/${totalStr}`
-    const init: RequestInit = { method: 'PUT', headers: { 'content-range': range } }
-    if (chunk.length > 0) init.body = chunk
-    const res = await doFetch(sessionUrl, init)
-    if (info.isLast) {
-      if (res.status !== 200 && res.status !== 201) {
-        throw new Error(driveError(res, await errText(res)))
-      }
-      fileId = ((await res.json()) as { id?: string }).id ?? null
-    } else if (res.status !== 308) {
-      throw new Error(driveError(res, await errText(res)))
-    }
-  })
-  if (fileId === null) throw new Error('drive: resumable upload did not return a file id')
-  return { id: fileId, bytes: total }
-}
-
-/** Upload one media item to Drive. Never throws — maps every failure to an outcome. */
-export async function driveUpload(input: UploadInput, deps: DriveDeps): Promise<UploadOutcome> {
-  const source = await parseSourceResponse(input, deps.fetchSource)
-  const doFetch = bindFetch(deps.fetchImpl)
-  const buildMeta = async (contentType: string) => {
-    const parentId = await resolveHandleFolder(deps, input.target.handle)
-    return { name: input.target.filename, parentId, contentType }
+export class DriveUploader extends Context.Service<
+  DriveUploader,
+  {
+    readonly upload: (args: DriveArgs, input: UploadInput) => Effect.Effect<UploadOutcome>
+    /** Lookup-or-create the app root folder; the id is persisted by the caller. */
+    readonly ensureRoot: (accessToken: string) => Effect.Effect<string, CloudHttpError | FetchError>
   }
-  return runUpload(source, {
-    simple: async (bytes, contentType) => {
-      const { id } = await multipartUpload(deps, doFetch, bytes, await buildMeta(contentType))
-      return { kind: 'success', bytes: bytes.length, remotePath: input.target.path, remoteId: id }
-    },
-    streamed: async (body, size, contentType) => {
-      const { id, bytes } = await resumableUpload(deps, doFetch, body, {
-        ...(await buildMeta(contentType)),
-        totalBytes: size,
-      })
-      return {
-        outcome: { kind: 'success', bytes, remotePath: input.target.path, remoteId: id },
-        bytes,
-      }
-    },
-  })
-}
+>()('cloud/DriveUploader') {}
 
-/** Drive as a provider-agnostic `CloudDestination`; deps captured in the closure. */
-export const makeDriveDestination = (deps: DriveDeps): CloudDestination => ({
-  upload: (input) => driveUpload(input, deps),
-})
+export const DriveUploaderLive = Layer.effect(
+  DriveUploader,
+  Effect.gen(function* () {
+    const http = yield* FetchService
+    const source = yield* SourceFetch
+    const cache = yield* FolderCache
+
+    /** Lookup-or-create a folder named `name` under `parentId`. With full Drive
+     *  scope the list query finds a pre-existing folder so re-runs don't duplicate it. */
+    const ensureFolder = (
+      accessToken: string,
+      name: string,
+      parentId: string | null,
+    ): Effect.Effect<string, CloudHttpError | FetchError> =>
+      Effect.gen(function* () {
+        // Escape backslash BEFORE single-quote so a trailing `\` can't break out of
+        // the q= string literal (defense-in-depth; the handle is sanitized upstream).
+        const safe = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+        const q = [
+          `name='${safe}'`,
+          `mimeType='${FOLDER_MIME}'`,
+          'trashed=false',
+          ...(parentId !== null ? [`'${parentId}' in parents`] : []),
+        ].join(' and ')
+        const listUrl = `${FILES_BASE}?q=${encodeURIComponent(q)}&fields=files(id)&pageSize=1`
+        const found = yield* http.fetch(listUrl, { headers: authHeader(accessToken) })
+        if (found.ok) {
+          const id = (yield* okJson<{ files?: { id: string }[] }>(found)).files?.[0]?.id
+          if (id !== undefined) return id
+        }
+        const created = yield* http.fetch(`${FILES_BASE}?fields=id`, {
+          method: 'POST',
+          headers: { ...authHeader(accessToken), 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            mimeType: FOLDER_MIME,
+            ...(parentId !== null ? { parents: [parentId] } : {}),
+          }),
+        })
+        if (!created.ok) return yield* driveFail(created)
+        const id = (yield* okJson<{ id?: string }>(created)).id
+        if (id === undefined)
+          return yield* Effect.die(new Error('drive: folder create returned no id'))
+        return id
+      })
+
+    const resolveHandleFolder = (
+      args: DriveArgs,
+      handle: string,
+    ): Effect.Effect<string, CloudHttpError | FetchError> =>
+      Effect.gen(function* () {
+        const cached = yield* cache.get(handle)
+        if (Option.isSome(cached)) return cached.value
+        const id = yield* ensureFolder(args.accessToken, handle, args.rootFolderId)
+        yield* cache.set(handle, id)
+        return id
+      })
+
+    /** One multipart request (media + metadata): sets name + parent in one call. */
+    const multipart = (
+      accessToken: string,
+      bytes: Uint8Array,
+      meta: { name: string; parentId: string; contentType: string },
+    ): Effect.Effect<{ id: string }, CloudHttpError | FetchError> =>
+      Effect.gen(function* () {
+        // High-entropy boundary: a data-derived one could (astronomically rarely)
+        // occur inside the binary body and silently truncate the part (RFC 2046).
+        const boundary = `xmd${crypto.randomUUID().replace(/-/g, '')}`
+        const enc = new TextEncoder()
+        const head = enc.encode(
+          `--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n` +
+            `${JSON.stringify({ name: meta.name, parents: [meta.parentId] })}\r\n` +
+            `--${boundary}\r\ncontent-type: ${meta.contentType}\r\n\r\n`,
+        )
+        const tail = enc.encode(`\r\n--${boundary}--`)
+        const body = new Uint8Array(head.length + bytes.length + tail.length)
+        body.set(head, 0)
+        body.set(bytes, head.length)
+        body.set(tail, head.length + bytes.length)
+        const res = yield* http.fetch(`${UPLOAD_BASE}?uploadType=multipart&fields=id`, {
+          method: 'POST',
+          headers: {
+            ...authHeader(accessToken),
+            'content-type': `multipart/related; boundary=${boundary}`,
+          },
+          body,
+        })
+        if (!res.ok) return yield* driveFail(res)
+        return yield* okJson<{ id: string }>(res)
+      })
+
+    /** Resumable: initiate the session in Effect, then PUT 256 KiB-multiple chunks.
+     *  The PUT loop runs inside `streamInChunks`' Promise sink using the bound
+     *  Promise fetch — the chunker is reused verbatim, bounding memory; a provider
+     *  error throws `CloudHttpError`, mapped back to the Effect channel by `catch`. */
+    const resumable = (
+      accessToken: string,
+      body: ReadableStream<Uint8Array>,
+      meta: { name: string; parentId: string; contentType: string; totalBytes: number | null },
+    ): Effect.Effect<{ id: string; bytes: number }, CloudHttpError | FetchError> =>
+      Effect.gen(function* () {
+        const init = yield* http.fetch(`${UPLOAD_BASE}?uploadType=resumable&fields=id`, {
+          method: 'POST',
+          headers: {
+            ...authHeader(accessToken),
+            'content-type': 'application/json; charset=UTF-8',
+            'x-upload-content-type': meta.contentType,
+            ...(meta.totalBytes !== null
+              ? { 'x-upload-content-length': String(meta.totalBytes) }
+              : {}),
+          },
+          body: JSON.stringify({ name: meta.name, parents: [meta.parentId] }),
+        })
+        if (!init.ok) return yield* driveFail(init)
+        const sessionUrl = init.headers.get('location')
+        if (sessionUrl === null)
+          return yield* Effect.die(new Error('drive: resumable initiate returned no session url'))
+
+        const doFetch = http.fetchPromise
+        let fileId: string | null = null
+        const total = yield* Effect.tryPromise({
+          try: () =>
+            streamInChunks(body, RESUMABLE_CHUNK, async (chunk, info) => {
+              const end = info.offset + chunk.length - 1
+              const totalStr = info.isLast ? String(info.offset + chunk.length) : '*'
+              // A zero-length final chunk (offset 0) means an empty source — guarded upstream.
+              const range =
+                chunk.length === 0
+                  ? `bytes */${info.offset}`
+                  : `bytes ${info.offset}-${end}/${totalStr}`
+              const reqInit: RequestInit = { method: 'PUT', headers: { 'content-range': range } }
+              if (chunk.length > 0) reqInit.body = chunk
+              const res = await doFetch(sessionUrl, reqInit)
+              if (info.isLast) {
+                if (res.status !== 200 && res.status !== 201)
+                  throw new CloudHttpError({ provider: 'drive', status: res.status, body: await errText(res) })
+                fileId = ((await res.json()) as { id?: string }).id ?? null
+              } else if (res.status !== 308) {
+                throw new CloudHttpError({ provider: 'drive', status: res.status, body: await errText(res) })
+              }
+            }),
+          catch: (e) =>
+            e instanceof CloudHttpError
+              ? e
+              : new CloudHttpError({ provider: 'drive', status: 0, body: String(e) }),
+        })
+        if (fileId === null)
+          return yield* Effect.die(new Error('drive: resumable upload did not return a file id'))
+        return { id: fileId, bytes: total }
+      })
+
+    const upload = (args: DriveArgs, input: UploadInput): Effect.Effect<UploadOutcome> =>
+      runUpload(parseSource(input).pipe(Effect.provideService(SourceFetch, source)), {
+        simple: (bytes, contentType) =>
+          Effect.gen(function* () {
+            const parentId = yield* resolveHandleFolder(args, input.target.handle)
+            const { id } = yield* multipart(args.accessToken, bytes, {
+              name: input.target.filename,
+              parentId,
+              contentType,
+            })
+            return {
+              kind: 'success',
+              bytes: bytes.length,
+              remotePath: input.target.path,
+              remoteId: id,
+            }
+          }),
+        streamed: (body, size, contentType) =>
+          Effect.gen(function* () {
+            const parentId = yield* resolveHandleFolder(args, input.target.handle)
+            const { id, bytes } = yield* resumable(args.accessToken, body, {
+              name: input.target.filename,
+              parentId,
+              contentType,
+              totalBytes: size,
+            })
+            return {
+              outcome: { kind: 'success', bytes, remotePath: input.target.path, remoteId: id },
+              bytes,
+            }
+          }),
+      })
+
+    const ensureRoot = (accessToken: string): Effect.Effect<string, CloudHttpError | FetchError> =>
+      ensureFolder(accessToken, ROOT_FOLDER_NAME, null)
+
+    return { upload, ensureRoot }
+  }),
+)

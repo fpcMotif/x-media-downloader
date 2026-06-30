@@ -1,28 +1,25 @@
-import { bindFetch } from '../fetch'
+import { Context, Effect, Layer } from 'effect'
 import { streamInChunks } from './chunk'
-import { authHeader, errText, httpErr, runUpload } from './http'
-import { parseSourceResponse } from './source'
-import { type CloudDestination, type UploadInput, type UploadOutcome } from './types'
+import { authHeader, CloudHttpError, errText, okJson, runUpload } from './http'
+import { FetchService } from '../fetch-service'
+import { SourceFetch } from './source-fetch'
+import { parseSource } from './source'
+import { type UploadInput, type UploadOutcome } from './types'
 
 /**
- * Dropbox v2 upload adapter (ADR-0013 §5). Small media (≤ SIMPLE_MAX_BYTES) goes
- * via `/2/files/upload`; larger/unknown-size media streams through an upload
- * session (`start` → `append_v2` → `finish`) in 4 MiB-multiple chunks — never
- * buffering a whole video. App-folder access type: paths are relative to
- * `Apps/<App>/`. The caller supplies a valid access token + SSRF-guarded source.
+ * Dropbox v2 upload adapter (ADR-0013 §5, ADR-0017). Small media
+ * (≤ SIMPLE_MAX_BYTES) goes via `/2/files/upload`; larger/unknown-size media
+ * streams through an upload session (`start` → `append_v2` → `finish`) in 4 MiB-
+ * multiple chunks — never buffering a whole video. A `DropboxUploader` service
+ * whose layer depends on `FetchService` + `SourceFetch` (no folder cache).
  */
 
 const CONTENT = 'https://content.dropboxapi.com/2'
-/** A valid Dropbox session chunk is a 4 MiB multiple; 2 × 4 MiB = 8 MiB, each
- *  request body staying well under 150 MB. Equals SIMPLE_MAX_BYTES only by
- *  coincidence — the streaming path is entered on size cutoff (see types.ts). */
-const MIB4 = 4 * 1024 * 1024
-const SESSION_CHUNK = 2 * MIB4
+/** A valid Dropbox session chunk is a 4 MiB multiple; 2 × 4 MiB = 8 MiB. */
+const SESSION_CHUNK = 2 * 4 * 1024 * 1024
 
-export interface DropboxDeps {
+export interface DropboxArgs {
   readonly accessToken: string
-  readonly fetchImpl: typeof fetch
-  readonly fetchSource: (url: string) => Promise<Response>
 }
 
 interface FileMetadata {
@@ -40,146 +37,144 @@ function asciiArg(obj: unknown): string {
   })
 }
 
-const dropboxError = (res: Response, body: string): string => httpErr('dropbox', res, body)
-
 const commitInfo = (path: string) => ({ path, mode: 'add', autorename: true, mute: false })
 
-async function rpc(
-  deps: DropboxDeps,
-  doFetch: typeof fetch,
-  endpoint: string,
-  arg: unknown,
-  body: Uint8Array<ArrayBuffer>,
-): Promise<Response> {
-  return doFetch(`${CONTENT}/${endpoint}`, {
-    method: 'POST',
-    headers: {
-      ...authHeader(deps.accessToken),
-      'dropbox-api-arg': asciiArg(arg),
-      'content-type': 'application/octet-stream',
-    },
-    body,
-  })
-}
-
-async function simpleUpload(
-  deps: DropboxDeps,
-  doFetch: typeof fetch,
-  bytes: Uint8Array<ArrayBuffer>,
-  path: string,
-): Promise<FileMetadata> {
-  const res = await rpc(deps, doFetch, 'files/upload', commitInfo(path), bytes)
-  if (!res.ok) throw new Error(dropboxError(res, await errText(res)))
-  return (await res.json()) as FileMetadata
-}
-
-/**
- * Streamed upload session. Always ≥ 2 chunks in practice (only entered when the
- * source exceeds SIMPLE_MAX_BYTES or its size is unknown), but the single-chunk
- * edge (unknown size that turns out small) is handled: start with close=true then
- * finish with an empty commit body at the final offset.
- */
-async function sessionUpload(
-  deps: DropboxDeps,
-  doFetch: typeof fetch,
-  body: ReadableStream<Uint8Array>,
-  path: string,
-): Promise<{ meta: FileMetadata; bytes: number }> {
-  let sessionId: string | null = null
-  let cursorOffset = 0
-  let meta: FileMetadata | null = null
-  let startedClosed = false
-
-  const total = await streamInChunks(body, SESSION_CHUNK, async (chunk, info) => {
-    if (sessionId === null) {
-      const res = await rpc(
-        deps,
-        doFetch,
-        'files/upload_session/start',
-        { close: info.isLast },
-        chunk,
-      )
-      if (!res.ok) throw new Error(dropboxError(res, await errText(res)))
-      sessionId = ((await res.json()) as { session_id: string }).session_id
-      cursorOffset = chunk.length
-      startedClosed = info.isLast
-      return
-    }
-    const cursor = { session_id: sessionId, offset: cursorOffset }
-    if (info.isLast) {
-      const res = await rpc(
-        deps,
-        doFetch,
-        'files/upload_session/finish',
-        { cursor, commit: commitInfo(path) },
-        chunk,
-      )
-      if (!res.ok) throw new Error(dropboxError(res, await errText(res)))
-      meta = (await res.json()) as FileMetadata
-      cursorOffset += chunk.length
-      return
-    }
-    const res = await rpc(
-      deps,
-      doFetch,
-      'files/upload_session/append_v2',
-      { cursor, close: false },
-      chunk,
-    )
-    if (!res.ok) throw new Error(dropboxError(res, await errText(res)))
-    cursorOffset += chunk.length
-  })
-
-  // Single-chunk session: start(close:true) ran but finish never did — commit now.
-  if (meta === null && sessionId !== null && startedClosed) {
-    const res = await rpc(
-      deps,
-      doFetch,
-      'files/upload_session/finish',
-      { cursor: { session_id: sessionId, offset: cursorOffset }, commit: commitInfo(path) },
-      new Uint8Array(0),
-    )
-    if (!res.ok) throw new Error(dropboxError(res, await errText(res)))
-    meta = (await res.json()) as FileMetadata
-  }
-  // Unreachable invariant: streamInChunks always emits a final chunk, so either the
-  // in-loop finish or the single-chunk finish above sets `meta`. Guards against a
-  // future refactor breaking that contract.
-  /* v8 ignore next */
-  if (meta === null) throw new Error('dropbox: session finished without metadata')
-  return { meta, bytes: total }
-}
-
 /** Build the success outcome from Dropbox metadata, falling back to local values. */
-const dropboxSuccess = (
-  meta: FileMetadata,
-  fallbackBytes: number,
-  path: string,
-): UploadOutcome => ({
+const dropboxSuccess = (meta: FileMetadata, fallbackBytes: number, path: string): UploadOutcome => ({
   kind: 'success',
   bytes: meta.size ?? fallbackBytes,
   remotePath: meta.path_display ?? path,
   ...(meta.id !== undefined ? { remoteId: meta.id } : {}),
 })
 
-/** Upload one media item to Dropbox. Never throws — maps every failure to an outcome. */
-export async function dropboxUpload(input: UploadInput, deps: DropboxDeps): Promise<UploadOutcome> {
-  const source = await parseSourceResponse(input, deps.fetchSource)
-  const doFetch = bindFetch(deps.fetchImpl)
-  const path = `/${input.target.path.replace(/^\/+/, '')}`
-  return runUpload(source, {
-    simple: async (bytes) => {
-      const meta = await simpleUpload(deps, doFetch, bytes, path)
-      return dropboxSuccess(meta, bytes.length, path)
-    },
-    streamed: async (body) => {
-      const { meta, bytes } = await sessionUpload(deps, doFetch, body, path)
-      return { outcome: dropboxSuccess(meta, bytes, path), bytes }
-    },
-  })
-}
+const targetPath = (input: UploadInput): string => `/${input.target.path.replace(/^\/+/, '')}`
 
-/** Dropbox as a provider-agnostic `CloudDestination`; deps captured in the closure. */
-export const makeDropboxDestination = (deps: DropboxDeps): CloudDestination => ({
-  upload: (input) => dropboxUpload(input, deps),
-})
+/** Read the error body, then fail with a tagged Dropbox HTTP error. */
+const dropboxFail = (res: Response): Effect.Effect<never, CloudHttpError> =>
+  Effect.promise(() => errText(res)).pipe(
+    Effect.flatMap((body) => new CloudHttpError({ provider: 'dropbox', status: res.status, body })),
+  )
+
+export class DropboxUploader extends Context.Service<
+  DropboxUploader,
+  { readonly upload: (args: DropboxArgs, input: UploadInput) => Effect.Effect<UploadOutcome> }
+>()('cloud/DropboxUploader') {}
+
+export const DropboxUploaderLive = Layer.effect(
+  DropboxUploader,
+  Effect.gen(function* () {
+    const http = yield* FetchService
+    const source = yield* SourceFetch
+
+    /** Promise RPC for the session loop (reused inside streamInChunks' sink). */
+    const rpc = (
+      accessToken: string,
+      endpoint: string,
+      arg: unknown,
+      body: Uint8Array<ArrayBuffer>,
+    ): Promise<Response> =>
+      http.fetchPromise(`${CONTENT}/${endpoint}`, {
+        method: 'POST',
+        headers: {
+          ...authHeader(accessToken),
+          'dropbox-api-arg': asciiArg(arg),
+          'content-type': 'application/octet-stream',
+        },
+        body,
+      })
+
+    const simpleUpload = (
+      accessToken: string,
+      bytes: Uint8Array<ArrayBuffer>,
+      path: string,
+    ): Effect.Effect<FileMetadata, CloudHttpError> =>
+      Effect.gen(function* () {
+        const res = yield* Effect.tryPromise({
+          try: () => rpc(accessToken, 'files/upload', commitInfo(path), bytes),
+          catch: (e) =>
+            e instanceof CloudHttpError ? e : new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
+        })
+        if (!res.ok) return yield* dropboxFail(res)
+        return yield* okJson<FileMetadata>(res)
+      })
+
+    /**
+     * Streamed upload session, the proven loop reused verbatim inside one
+     * tryPromise. Always ≥ 2 chunks in practice, but the single-chunk edge
+     * (unknown size that turns out small) is handled: start with close=true then
+     * finish with an empty commit body at the final offset.
+     */
+    const sessionUpload = (
+      accessToken: string,
+      body: ReadableStream<Uint8Array>,
+      path: string,
+    ): Effect.Effect<{ meta: FileMetadata; bytes: number }, CloudHttpError> =>
+      Effect.tryPromise({
+        try: async () => {
+          let sessionId: string | null = null
+          let cursorOffset = 0
+          let meta: FileMetadata | null = null
+          let startedClosed = false
+
+          const total = await streamInChunks(body, SESSION_CHUNK, async (chunk, info) => {
+            if (sessionId === null) {
+              const res = await rpc(accessToken, 'files/upload_session/start', { close: info.isLast }, chunk)
+              if (!res.ok)
+                throw new CloudHttpError({ provider: 'dropbox', status: res.status, body: await errText(res) })
+              sessionId = ((await res.json()) as { session_id: string }).session_id
+              cursorOffset = chunk.length
+              startedClosed = info.isLast
+              return
+            }
+            const cursor = { session_id: sessionId, offset: cursorOffset }
+            if (info.isLast) {
+              const res = await rpc(accessToken, 'files/upload_session/finish', { cursor, commit: commitInfo(path) }, chunk)
+              if (!res.ok)
+                throw new CloudHttpError({ provider: 'dropbox', status: res.status, body: await errText(res) })
+              meta = (await res.json()) as FileMetadata
+              cursorOffset += chunk.length
+              return
+            }
+            const res = await rpc(accessToken, 'files/upload_session/append_v2', { cursor, close: false }, chunk)
+            if (!res.ok)
+              throw new CloudHttpError({ provider: 'dropbox', status: res.status, body: await errText(res) })
+            cursorOffset += chunk.length
+          })
+
+          // Single-chunk session: start(close:true) ran but finish never did — commit now.
+          if (meta === null && sessionId !== null && startedClosed) {
+            const res = await rpc(
+              accessToken,
+              'files/upload_session/finish',
+              { cursor: { session_id: sessionId, offset: cursorOffset }, commit: commitInfo(path) },
+              new Uint8Array(0),
+            )
+            if (!res.ok)
+              throw new CloudHttpError({ provider: 'dropbox', status: res.status, body: await errText(res) })
+            meta = (await res.json()) as FileMetadata
+          }
+          /* v8 ignore next -- streamInChunks always emits a final chunk, so meta is set */
+          if (meta === null) throw new Error('dropbox: session finished without metadata')
+          return { meta, bytes: total }
+        },
+        catch: (e) =>
+          e instanceof CloudHttpError ? e : new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
+      })
+
+    const upload = (args: DropboxArgs, input: UploadInput): Effect.Effect<UploadOutcome> => {
+      const path = targetPath(input)
+      return runUpload(parseSource(input).pipe(Effect.provideService(SourceFetch, source)), {
+        simple: (bytes) =>
+          simpleUpload(args.accessToken, bytes, path).pipe(
+            Effect.map((meta) => dropboxSuccess(meta, bytes.length, path)),
+          ),
+        streamed: (body) =>
+          sessionUpload(args.accessToken, body, path).pipe(
+            Effect.map(({ meta, bytes }) => ({ outcome: dropboxSuccess(meta, bytes, path), bytes })),
+          ),
+      })
+    }
+
+    return { upload }
+  }),
+)

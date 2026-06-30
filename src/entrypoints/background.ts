@@ -22,6 +22,7 @@ import {
   type DownloadStrategy,
 } from '../core/download/strategy'
 import { makeAria2Strategy, makeAria2RpcPort } from '../core/download/aria2'
+import { makeFetchServiceLive } from '../core/fetch-service'
 import {
   makeFetchedStrategy,
   makeFetchPort,
@@ -306,18 +307,15 @@ function chooseStrategy(settings: Settings): DownloadStrategy {
     )
   }
   if (settings.downloadStrategy === 'aria2') {
-    const port = makeAria2RpcPort({
-      rpcUrl: settings.aria2RpcUrl,
-      secret: settings.aria2Secret,
-      fetchImpl: fetch,
-    })
+    const port = makeAria2RpcPort({ rpcUrl: settings.aria2RpcUrl, secret: settings.aria2Secret })
     // Sidecar data: URLs go to the browser even under aria2 (which can't fetch
     // them); they land in the browser download dir when aria2Dir points elsewhere.
     return makeSchemeRoutingStrategy(
-      makeAria2Strategy(port, {
-        split: settings.aria2Split,
-        ...(settings.aria2Dir ? { dir: settings.aria2Dir } : {}),
-      }),
+      makeAria2Strategy(
+        port,
+        { split: settings.aria2Split, ...(settings.aria2Dir ? { dir: settings.aria2Dir } : {}) },
+        makeFetchServiceLive(fetch),
+      ),
       direct,
     )
   }

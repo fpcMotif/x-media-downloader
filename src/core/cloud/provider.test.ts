@@ -1,9 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
-import type { Settings } from '../schema'
+import { describe, expect, it } from 'vitest'
 import { PROVIDERS, revokeViaRecipe } from './provider'
 import { DROPBOX_HOST_PATTERNS, DROPBOX_OAUTH, GDRIVE_HOST_PATTERNS, GDRIVE_OAUTH } from './types'
-
-const settingsWith = (patch: Partial<Settings>): Settings => patch as unknown as Settings
 
 describe('PROVIDERS registry', () => {
   it('describes Google Drive as a record (oauth, host patterns, label, fields)', () => {
@@ -92,65 +89,5 @@ describe('revokeViaRecipe', () => {
         fetchImpl,
       ),
     ).resolves.toBeUndefined()
-  })
-})
-
-describe('CloudProvider.makeDestination', () => {
-  it('gdrive resolves + persists the root folder when none is stored, then builds a destination', async () => {
-    // ensureRootFolder lists the folder; a found id short-circuits the create path.
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ files: [{ id: 'root123' }] }), {
-        status: 200,
-      })) as unknown as typeof fetch
-    const writeSettings = vi.fn<(patch: Partial<Settings>) => Promise<Settings>>(async (patch) =>
-      settingsWith(patch),
-    )
-    const dest = await PROVIDERS.gdrive.makeDestination({
-      accessToken: 'AT',
-      fetchImpl,
-      fetchSource: fetchImpl,
-      settings: settingsWith({ gdriveFolderId: '' }),
-      writeSettings,
-      caches: { driveFolders: new Map() },
-    })
-    expect(writeSettings).toHaveBeenCalledWith({ gdriveFolderId: 'root123' })
-    expect(typeof dest.upload).toBe('function')
-  })
-
-  it('gdrive skips root resolution when a folder id is already stored', async () => {
-    const fetchImpl = vi.fn<() => Promise<Response>>(
-      async () => new Response('', { status: 200 }),
-    ) as unknown as typeof fetch
-    const writeSettings = vi.fn<(patch: Partial<Settings>) => Promise<Settings>>(async (patch) =>
-      settingsWith(patch),
-    )
-    const dest = await PROVIDERS.gdrive.makeDestination({
-      accessToken: 'AT',
-      fetchImpl,
-      fetchSource: fetchImpl,
-      settings: settingsWith({ gdriveFolderId: 'existing' }),
-      writeSettings,
-      caches: { driveFolders: new Map() },
-    })
-    expect(writeSettings).not.toHaveBeenCalled()
-    expect(fetchImpl).not.toHaveBeenCalled()
-    expect(typeof dest.upload).toBe('function')
-  })
-
-  it('dropbox builds a destination without touching settings', async () => {
-    const fetchImpl = (async () => new Response('', { status: 200 })) as unknown as typeof fetch
-    const writeSettings = vi.fn<(patch: Partial<Settings>) => Promise<Settings>>(async (patch) =>
-      settingsWith(patch),
-    )
-    const dest = await PROVIDERS.dropbox.makeDestination({
-      accessToken: 'AT',
-      fetchImpl,
-      fetchSource: fetchImpl,
-      settings: settingsWith({}),
-      writeSettings,
-      caches: { driveFolders: new Map() },
-    })
-    expect(writeSettings).not.toHaveBeenCalled()
-    expect(typeof dest.upload).toBe('function')
   })
 })

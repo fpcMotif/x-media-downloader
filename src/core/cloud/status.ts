@@ -11,28 +11,48 @@ export interface CloudUploadStatus {
   readonly lastError: string | null
 }
 
+const AUTH = 'Authorization expired — reconnect the provider.'
+const ACCESS = 'Provider refused the upload — re-grant access (check the scope).'
+const RATE = 'Provider rate-limited the upload — retrying with backoff.'
+const SERVER = 'Provider error — retrying shortly.'
+const LINK = 'The media link expired before it could be uploaded.'
+const STORAGE = 'Provider storage is full.'
+
 /** Error-message rules in priority order; the first matching regex wins. The
- *  regexes are compiled once here rather than per `classifyUploadError` call. */
+ *  regexes are compiled once here rather than per `classifyUploadError` call.
+ *  These cover the error sources that genuinely arrive as text — the source-fetch
+ *  path (`source HTTP <n>`), OAuth messages, and provider body codes
+ *  (`quotaExceeded`). Provider *upload* HTTP errors instead arrive as a tagged
+ *  `CloudHttpError`, dispatched on their numeric `status` by `classifyStatus`. */
 const UPLOAD_ERROR_RULES: ReadonlyArray<readonly [RegExp, string]> = [
-  [
-    /HTTP 401|invalid_grant|unauthorized|no refresh_token/i,
-    'Authorization expired — reconnect the provider.',
-  ],
-  [
-    /HTTP 403|insufficient|insufficientScopes|access_denied/i,
-    'Provider refused the upload — re-grant access (check the scope).',
-  ],
-  [
-    /HTTP 429|rateLimit|too_many_requests/i,
-    'Provider rate-limited the upload — retrying with backoff.',
-  ],
-  [/HTTP 5\d\d/, 'Provider error — retrying shortly.'],
-  [/source HTTP|sourceGone|link/i, 'The media link expired before it could be uploaded.'],
-  [/insufficient.*storage|quotaExceeded|storageQuota/i, 'Provider storage is full.'],
+  [/HTTP 401|invalid_grant|unauthorized|no refresh_token/i, AUTH],
+  [/HTTP 403|insufficient|insufficientScopes|access_denied/i, ACCESS],
+  [/HTTP 429|rateLimit|too_many_requests/i, RATE],
+  [/HTTP 5\d\d/, SERVER],
+  [/source HTTP|sourceGone|link/i, LINK],
+  [/insufficient.*storage|quotaExceeded|storageQuota/i, STORAGE],
 ]
 
-/** Map a provider/upload error message to one human-actionable line. */
-export function classifyUploadError(reason: string): string {
+/** Structural dispatch on a provider HTTP status (carried by `CloudHttpError`),
+ *  mirroring the message rules' precedence (auth > access > rate > server). A
+ *  status the rules don't special-case (e.g. 400/404) returns null, so the
+ *  message still decides. */
+function classifyStatus(status: number): string | null {
+  if (status === 401) return AUTH
+  if (status === 403) return ACCESS
+  if (status === 429) return RATE
+  if (status >= 500) return SERVER
+  return null
+}
+
+/** Map a provider/upload error to one human-actionable line. Prefers the tagged
+ *  HTTP `status` when present (errors-as-values), falling back to the message
+ *  rules for the text-only error sources. */
+export function classifyUploadError(reason: string, status?: number): string {
+  if (status !== undefined) {
+    const byStatus = classifyStatus(status)
+    if (byStatus !== null) return byStatus
+  }
   for (const [pattern, message] of UPLOAD_ERROR_RULES) {
     if (pattern.test(reason)) return message
   }

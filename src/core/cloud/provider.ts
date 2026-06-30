@@ -1,27 +1,21 @@
 import { bindFetch } from '../fetch'
 import type { Settings } from '../schema'
-import { ensureRootFolder, makeDriveDestination } from './drive'
-import { makeDropboxDestination } from './dropbox'
 import { authHeader } from './http'
 import {
   DROPBOX_HOST_PATTERNS,
   DROPBOX_OAUTH,
   GDRIVE_HOST_PATTERNS,
   GDRIVE_OAUTH,
-  type CloudDestination,
   type CloudProviderId,
   type OAuthConfig,
-  type UploadInput,
 } from './types'
 
 /**
  * The **Cloud Provider** record (CONTEXT.md): one cloud byte-upload destination
- * service (ADR-0013). The single place provider identity is encoded — every
- * dispatch site reads a record from {@link PROVIDERS} instead of forking on
- * `'gdrive' vs 'dropbox'`. The remote-path sibling of the **Download Strategy**
- * seam (`core/download/strategy.ts`). The byte adapters themselves
- * (`drive.ts` / `dropbox.ts`) are genuinely different APIs and stay behind the
- * provider-agnostic {@link CloudDestination} interface they already satisfy.
+ * (ADR-0013). The single place provider identity is encoded — every dispatch site
+ * reads a record from {@link PROVIDERS} instead of forking on `'gdrive' vs
+ * 'dropbox'`. The byte adapters themselves are the `DriveUploader`/`DropboxUploader`
+ * services (ADR-0017); the orchestrator runs them on the shared cloud runtime.
  */
 
 /** The per-provider flat-`Settings` field layout — every token read/write,
@@ -46,22 +40,9 @@ export interface RevokeRecipe {
   readonly via: 'formToken' | 'authHeader'
 }
 
-/** The uniform deps the orchestrator hands a provider to build its destination.
- *  Each provider uses only what it needs: Drive resolves+persists a root folder
- *  (via `settings`/`writeSettings`) and caches per-handle subfolders (`caches`);
- *  Dropbox ignores all three. `writeSettings`/`caches` are shell-owned and
- *  injected, so this module never touches storage directly. */
-export interface DestinationDeps {
-  readonly accessToken: string
-  readonly fetchImpl: typeof fetch
-  readonly fetchSource: (url: string) => Promise<Response>
-  readonly settings: Settings
-  readonly writeSettings: (patch: Partial<Settings>) => Promise<Settings>
-  readonly caches: { readonly driveFolders: Map<string, string> }
-}
-
-/** One cloud byte-upload destination service. Mostly data; the one behavior is
- *  `makeDestination`, which folds in any provider-specific init. */
+/** One cloud byte-upload destination — its identity only. The byte sink is the
+ *  provider's uploader service (`DriveUploader`/`DropboxUploader`), dispatched by
+ *  the orchestrator on the shared cloud runtime (ADR-0017). */
 export interface CloudProvider {
   readonly id: CloudProviderId
   readonly label: string
@@ -69,7 +50,6 @@ export interface CloudProvider {
   readonly hostPatterns: ReadonlyArray<string>
   readonly fields: ProviderFields
   readonly revoke: RevokeRecipe
-  readonly makeDestination: (deps: DestinationDeps) => Promise<CloudDestination>
 }
 
 const GDRIVE_PROVIDER: CloudProvider = {
@@ -90,25 +70,6 @@ const GDRIVE_PROVIDER: CloudProvider = {
     credential: 'refreshToken',
     via: 'formToken',
   },
-  makeDestination: async (d) => {
-    // Resolve the app root folder once, then persist its id so a SW recycle
-    // doesn't re-resolve it; the per-handle subfolder cache lives for the SW life.
-    let rootId = d.settings.gdriveFolderId
-    if (rootId === '') {
-      rootId = await ensureRootFolder('X Media Downloader', {
-        accessToken: d.accessToken,
-        fetchImpl: d.fetchImpl,
-      })
-      await d.writeSettings({ gdriveFolderId: rootId })
-    }
-    return makeDriveDestination({
-      accessToken: d.accessToken,
-      rootFolderId: rootId,
-      fetchImpl: d.fetchImpl,
-      fetchSource: d.fetchSource,
-      folderCache: d.caches.driveFolders,
-    })
-  },
 }
 
 const DROPBOX_PROVIDER: CloudProvider = {
@@ -128,12 +89,6 @@ const DROPBOX_PROVIDER: CloudProvider = {
     credential: 'accessToken',
     via: 'authHeader',
   },
-  makeDestination: async (d) =>
-    makeDropboxDestination({
-      accessToken: d.accessToken,
-      fetchImpl: d.fetchImpl,
-      fetchSource: d.fetchSource,
-    }),
 }
 
 /** The provider registry — the single source of provider identity, keyed by id. */
@@ -166,6 +121,3 @@ export async function revokeViaRecipe(
     /* best-effort; local clear proceeds regardless */
   }
 }
-
-/** Re-export for callers that build an upload at the registry seam. */
-export type { CloudDestination, UploadInput }
