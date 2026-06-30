@@ -105,3 +105,12 @@ describe('popup hosts local-data wipes', () => {
     expect(popupSource).toContain('Clear harvest archive')
   })
 })
+
+describe('popup hosts harvest controls', () => {
+  it('lets harvesting be toggled and exported per conversation from the popup', () => {
+    expect(popupSource).toContain('captureEnabled')
+    expect(popupSource).toContain('exportConvo')
+    expect(popupSource).toContain("exportConvo('tree'")
+    expect(popupSource).toContain("exportConvo('markdown'")
+  })
+})

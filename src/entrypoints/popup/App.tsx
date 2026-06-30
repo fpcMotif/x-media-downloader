@@ -20,6 +20,7 @@ import { DownloadIcon, EraserIcon, GearIcon, LayersIcon } from '@/components/ico
 import {
   fetchCaptureSummary,
   runCaptureExport,
+  type CaptureExportKind,
   type CaptureSummary,
 } from '@/components/capture-export'
 
@@ -222,6 +223,12 @@ export function App() {
 
   const exportHarvest = async (): Promise<void> => {
     const outcome = await runCaptureExport('jsonl')
+    setCaptureMsg(outcome.detail)
+    setTimeout(() => setCaptureMsg(null), 5000)
+  }
+
+  const exportConvo = async (kind: CaptureExportKind, conversationId: string): Promise<void> => {
+    const outcome = await runCaptureExport(kind, conversationId)
     setCaptureMsg(outcome.detail)
     setTimeout(() => setCaptureMsg(null), 5000)
   }
@@ -532,32 +539,77 @@ export function App() {
           </CardContent>
         </Card>
 
-        {(settings.captureEnabled || (captureSummary?.tweets ?? 0) > 0) && (
-          <Card size="sm" aria-label="Knowledge Capture">
-            <CardHeader className="gap-0.5">
-              <CardTitle className="text-[13px] font-semibold">Knowledge Capture</CardTitle>
-              <CardDescription className="text-xs leading-snug">
-                {captureSummary?.tweets ?? 0} tweets · {captureSummary?.conversations ?? 0}{' '}
-                conversations harvested locally
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                className="h-9 w-full gap-2"
-                disabled={(captureSummary?.tweets ?? 0) === 0}
-                onClick={() => void exportHarvest()}
-              >
-                <DownloadIcon className="size-4" />
-                Export all (JSONL)
-              </Button>
-              {captureMsg && (
-                <p className="text-xs leading-snug text-muted-foreground">{captureMsg}</p>
-              )}
-            </CardContent>
-          </Card>
-        )}
+        <Card size="sm" aria-label="Knowledge Capture">
+          <CardHeader className="gap-0.5">
+            <CardTitle className="text-[13px] font-semibold">Knowledge Capture</CardTitle>
+            <CardDescription className="text-xs leading-snug">
+              {captureSummary?.tweets ?? 0} tweets · {captureSummary?.conversations ?? 0}{' '}
+              conversations harvested locally
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2.5">
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="captureEnabled">Harvest tweets</FieldLabel>
+                <FieldDescription>Save the text and metadata of tweets you view</FieldDescription>
+              </FieldContent>
+              <Switch
+                id="captureEnabled"
+                aria-label="Harvest tweets"
+                checked={settings.captureEnabled}
+                onCheckedChange={(checked: boolean) => void update({ captureEnabled: checked })}
+              />
+            </Field>
+
+            {(captureSummary?.recent ?? []).length > 0 && (
+              <ol className="grid gap-1.5" aria-label="Harvested conversations">
+                {(captureSummary?.recent ?? []).map((c) => (
+                  <li
+                    key={c.conversationId}
+                    className="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="grid min-w-0 gap-0.5">
+                      <span className="truncate font-medium">@{c.rootHandle}</span>
+                      <span className="truncate text-muted-foreground">{c.rootText}</span>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void exportConvo('tree', c.conversationId)}
+                      >
+                        Tree
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void exportConvo('markdown', c.conversationId)}
+                      >
+                        MD
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 w-full gap-2"
+              disabled={(captureSummary?.tweets ?? 0) === 0}
+              onClick={() => void exportHarvest()}
+            >
+              <DownloadIcon className="size-4" />
+              Export all (JSONL)
+            </Button>
+            {captureMsg && (
+              <p className="text-xs leading-snug text-muted-foreground">{captureMsg}</p>
+            )}
+          </CardContent>
+        </Card>
 
         <Card size="sm" aria-label="Local data">
           <CardHeader className="gap-0.5">
