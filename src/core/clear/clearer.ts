@@ -210,17 +210,14 @@ const NOT_INTERESTED_ICON = /^M12 13\.6c1\.64/
  *  broader actions the user did not consent to; (2) the frowning-face icon — covers
  *  every localized UI. Null when neither matches, so a rename/redesign makes the
  *  clear inert (re-claimable) rather than firing the wrong item. */
-export function findNotInterestedItem(menuRoot: ParentNode): HTMLElement | null {
+export function findNotInterestedItem(menuRoot: ParentNode): Option.Option<HTMLElement> {
   const items = [...menuRoot.querySelectorAll<HTMLElement>('[role="menuitem"]')]
   const byText = items.find((el) => /not interested in this post/i.test(elementText(el)))
-  if (byText !== undefined) return byText
-  return (
-    items.find((el) =>
-      [...el.querySelectorAll('svg path')].some((p) =>
-        NOT_INTERESTED_ICON.test(p.getAttribute('d') ?? ''),
-      ),
-    ) ?? null
+  if (byText !== undefined) return Option.some(byText)
+  const byIcon = items.find((el) =>
+    [...el.querySelectorAll('svg path')].some((p) => NOT_INTERESTED_ICON.test(p.getAttribute('d') ?? '')),
   )
+  return Option.fromUndefinedOr(byIcon)
 }
 
 /** The action took effect when the post left the feed: X replaces the tweet with a
@@ -259,16 +256,18 @@ const UNDO_TEXT = /^\s*(undo|復原|复原|元に戻す)\s*$/i
  *  the post-level "isn't relevant", then "Show fewer", then position; NEVER Undo.
  *  Null when no stub button is present. (Mirrors xtimelinefilter's live-verified
  *  findNotInterestedFeedback.) */
-export function findFeedbackButton(cell: Element): HTMLElement | null {
+export function findFeedbackButton(cell: Element): Option.Option<HTMLElement> {
   const outside = [...cell.querySelectorAll<HTMLElement>('button,[role="button"]')].filter(
     (b) => b.closest(TWEET_ARTICLE_SEL) === null,
   )
   const byPost = outside.find((b) => POST_NOT_RELEVANT_TEXT.test(elementText(b)))
-  if (byPost !== undefined) return byPost
+  if (byPost !== undefined) return Option.some(byPost)
   const byFewer = outside.find((b) => SHOW_FEWER_TEXT.test(elementText(b)))
-  if (byFewer !== undefined) return byFewer
+  if (byFewer !== undefined) return Option.some(byFewer)
   const positional = outside.length >= 3 ? outside[2] : outside.length >= 2 ? outside[1] : undefined
-  return positional !== undefined && !UNDO_TEXT.test(elementText(positional)) ? positional : null
+  return positional !== undefined && !UNDO_TEXT.test(elementText(positional))
+    ? Option.some(positional)
+    : Option.none()
 }
 
 /** The "Thanks. X will use this to make your timeline better" headline of the

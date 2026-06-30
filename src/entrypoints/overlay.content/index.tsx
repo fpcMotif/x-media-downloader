@@ -205,7 +205,7 @@ async function clearNotInterested(article: Element, tweetId: string): Promise<bo
     const opened = [...document.querySelectorAll('[role="menu"]')].filter((m) => !before.has(m))
     if (opened.length > 1) break
     const [sole] = opened
-    if (sole) item = findNotInterestedItem(sole)
+    if (sole) item = Option.getOrNull(findNotInterestedItem(sole))
   }
   if (item === null) {
     if (import.meta.env.DEV) clearLog('notInterested', '→ own menu/item not found; dismissing')
@@ -247,10 +247,10 @@ async function dismissFeedbackStub(cell: Element | null): Promise<void> {
   // oxlint-disable no-await-in-loop -- short bounded poll for the follow-up panel
   for (let i = 1; i <= FLIP_POLL_ATTEMPTS; i++) {
     const fb = findFeedbackButton(cell)
-    if (fb !== null) {
+    if (Option.isSome(fb)) {
       if (import.meta.env.DEV)
-        clearLog('notInterested', '→ dismissing feedback stub:', fb.textContent?.trim())
-      ;((fb.closest('button,[role="button"]') as HTMLElement | null) ?? fb).click()
+        clearLog('notInterested', '→ dismissing feedback stub:', fb.value.textContent?.trim())
+      ;((fb.value.closest('button,[role="button"]') as HTMLElement | null) ?? fb.value).click()
       return
     }
     await new Promise((r) => setTimeout(r, FLIP_POLL_INTERVAL_MS))

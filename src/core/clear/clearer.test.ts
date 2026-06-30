@@ -317,7 +317,7 @@ describe('clearer — timeline "Not interested" (For You feed clear)', () => {
       <div role="menuitem">Not interested in this post</div>
       <div role="menuitem">Mute @alice</div>
     `
-    expect(findNotInterestedItem(menu)?.textContent?.trim()).toBe('Not interested in this post')
+    expect(Option.getOrNull(findNotInterestedItem(menu))?.textContent?.trim()).toBe('Not interested in this post')
   })
 
   it('findNotInterestedItem: matches a LOCALIZED item by its frowning-face icon', () => {
@@ -327,7 +327,7 @@ describe('clearer — timeline "Not interested" (For You feed clear)', () => {
       <div role="menuitem"><svg viewBox="0 0 24 24"><path d="${NI_ICON}"></path></svg><span>對此貼文不感興趣</span></div>
       <div role="menuitem"><svg><path d="M3 3h18"></path></svg><span>封鎖</span></div>
     `
-    expect(findNotInterestedItem(menu)?.textContent?.includes('不感興趣')).toBe(true)
+    expect(Option.getOrNull(findNotInterestedItem(menu))?.textContent?.includes('不感興趣')).toBe(true)
   })
 
   it('findNotInterestedItem: null when neither text nor icon matches (fail-safe)', () => {
@@ -337,8 +337,8 @@ describe('clearer — timeline "Not interested" (For You feed clear)', () => {
       <div role="menuitem"><svg><path></path></svg><span>檢舉貼文</span></div>
       <div role="menuitem"><svg><path d="M9 9l6 6"></path></svg><span>靜音</span></div>
     `
-    expect(findNotInterestedItem(menu)).toBe(null)
-    expect(findNotInterestedItem(document.createElement('div'))).toBe(null)
+    expect(Option.getOrNull(findNotInterestedItem(menu))).toBe(null)
+    expect(Option.getOrNull(findNotInterestedItem(document.createElement('div')))).toBe(null)
   })
 
   it('findNotInterestedItem: requires the POST phrasing — a "topic" item is NOT a match', () => {
@@ -346,7 +346,7 @@ describe('clearer — timeline "Not interested" (For You feed clear)', () => {
     // no POST text and no not-interested icon → must be null.
     const menu = document.createElement('div')
     menu.innerHTML = `<div role="menuitem">Not interested in this topic</div>`
-    expect(findNotInterestedItem(menu)).toBe(null)
+    expect(Option.getOrNull(findNotInterestedItem(menu))).toBe(null)
   })
 
   it('notInterestedConfirmed: true on detach OR caret gone, false while intact', () => {
@@ -397,29 +397,29 @@ describe('clearer — full-hide of a cleared post (feedback stub)', () => {
 
   it('findFeedbackButton: prefers "isn’t relevant", then "show fewer", never Undo', () => {
     expect(
-      findFeedbackButton(stubCell(['Undo', 'Show fewer posts from @x', 'This post isn’t relevant']))
+      Option.getOrNull(findFeedbackButton(stubCell(['Undo', 'Show fewer posts from @x', 'This post isn’t relevant'])))
         ?.textContent,
     ).toBe('This post isn’t relevant')
     // No relevance text → fall back to "Show fewer".
     expect(
-      findFeedbackButton(stubCell(['Undo', 'Show fewer posts from @x']))?.textContent,
+      Option.getOrNull(findFeedbackButton(stubCell(['Undo', 'Show fewer posts from @x'])))?.textContent,
     ).toContain('Show fewer')
   })
 
   it('findFeedbackButton: positional fallback ([2] of 3, [1] of 2), never the Undo slot', () => {
     // 3 unlabelled-ish buttons → take index 2.
-    const b3 = findFeedbackButton(stubCell(['一', '二', '三']))
+    const b3 = Option.getOrNull(findFeedbackButton(stubCell(['一', '二', '三'])))
     expect(b3?.textContent).toBe('三')
     // 2 buttons → take index 1 (when it isn't Undo).
-    expect(findFeedbackButton(stubCell(['一', '二']))?.textContent).toBe('二')
+    expect(Option.getOrNull(findFeedbackButton(stubCell(['一', '二'])))?.textContent).toBe('二')
     // index-1 slot is Undo → refuse (never click Undo).
-    expect(findFeedbackButton(stubCell(['something', 'Undo']))).toBe(null)
+    expect(Option.getOrNull(findFeedbackButton(stubCell(['something', 'Undo'])))).toBe(null)
     // < 2 buttons → null.
-    expect(findFeedbackButton(stubCell(['only one']))).toBe(null)
+    expect(Option.getOrNull(findFeedbackButton(stubCell(['only one'])))).toBe(null)
   })
 
   it('findFeedbackButton: ignores buttons inside a REAL tweet (only the stub counts)', () => {
-    expect(findFeedbackButton(realCell())).toBe(null)
+    expect(Option.getOrNull(findFeedbackButton(realCell()))).toBe(null)
   })
 
   it('isClearedStub: matches by TEXT (rows may be buttons OR divs), never a real post', () => {
