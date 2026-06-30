@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { Option } from 'effect'
 import {
   alreadyCleared,
   caretControl,
@@ -82,12 +83,12 @@ describe('clearer DOM helpers', () => {
     expect(clearControl(el, 'bookmark')).toBe(null)
   })
 
-  it('pageScope is list-specific (Likes→like, Bookmarks→bookmark, else null)', () => {
-    expect(pageScope('/lambda_functor/likes')).toBe('like')
-    expect(pageScope('/i/bookmarks')).toBe('bookmark')
-    expect(pageScope('/i/bookmarks/all')).toBe('bookmark')
-    expect(pageScope('/home')).toBe(null)
-    expect(pageScope('/jack/status/123')).toBe(null)
+  it('pageScope is list-specific (Likes→like, Bookmarks→bookmark, else none)', () => {
+    expect(Option.getOrNull(pageScope('/lambda_functor/likes'))).toBe('like')
+    expect(Option.getOrNull(pageScope('/i/bookmarks'))).toBe('bookmark')
+    expect(Option.getOrNull(pageScope('/i/bookmarks/all'))).toBe('bookmark')
+    expect(Option.getOrNull(pageScope('/home'))).toBe(null)
+    expect(Option.getOrNull(pageScope('/jack/status/123'))).toBe(null)
   })
 
   it('prefers the timestamp permalink over a bare status anchor', () => {

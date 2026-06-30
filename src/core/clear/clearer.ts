@@ -6,6 +6,7 @@
  * authenticated replay (deferred). Selector rot is the main risk — every path
  * fails safe: no verified flip ⇒ `ok: false`, never a silent "cleared".
  */
+import { Option } from 'effect'
 import type { ClearScope } from '../schema'
 
 /** The two membership scopes cleared by a single button-flip (un-bookmark /
@@ -32,10 +33,10 @@ export const TWEET_ARTICLE_SEL = 'article[data-testid="tweet"]'
  *  viewing — never un-liked AND un-bookmarked in one action. This drives the
  *  manual Drain/Sweep buttons, which are list-only; the download hook uses the
  *  wider `clearableScope` (which also recognizes the For You feed). */
-export function pageScope(pathname: string): MembershipScope | null {
-  if (/\/likes\/?$/.test(pathname)) return 'like'
-  if (/\/bookmarks(\/|$)/.test(pathname)) return 'bookmark'
-  return null
+export function pageScope(pathname: string): Option.Option<MembershipScope> {
+  if (/\/likes\/?$/.test(pathname)) return Option.some('like')
+  if (/\/bookmarks(\/|$)/.test(pathname)) return Option.some('bookmark')
+  return Option.none()
 }
 
 /** An element's trimmed text. The `?? ''` only satisfies the DOM lib's
@@ -72,7 +73,9 @@ export function isForYouHome(pathname: string, root: ParentNode): boolean {
  *  self-empties the feed; the manual mass-clear buttons deliberately do NOT use
  *  this, so a button press can never "Not interested" the whole For You feed. */
 export function clearableScope(pathname: string, root: ParentNode): ClearScope | null {
-  return pageScope(pathname) ?? (isForYouHome(pathname, root) ? 'notInterested' : null)
+  return Option.getOrElse(pageScope(pathname), () =>
+    isForYouHome(pathname, root) ? 'notInterested' : null,
+  )
 }
 
 /**

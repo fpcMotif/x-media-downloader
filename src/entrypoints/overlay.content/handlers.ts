@@ -7,6 +7,7 @@
 // `handleClearDetectedMedia` still read AND write the same live state they did
 // when inlined. The dispatch table at the bottom maps each message `_tag` to its
 // handler; the router in index.tsx collapses to a single table lookup.
+import { Option } from 'effect'
 import { resolveOutcome, type BadgeState } from '../../core/badge'
 import { resolveOutcomeAll, type LauncherPhase } from '../../core/launcher'
 import { detectRenderedImageElements } from '../../core/adapters/x'
@@ -142,16 +143,19 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
   // Bookmarks page un-bookmarks. Never both at once.
   const scope = pageScope(deps.location.pathname)
   if (import.meta.env.DEV)
-    deps.clearLog('clear-visible request · page scope =', scope ?? '(not a Likes/Bookmarks page)')
+    deps.clearLog(
+      'clear-visible request · page scope =',
+      Option.getOrElse(scope, () => '(not a Likes/Bookmarks page)'),
+    )
   void (async () => {
-    if (scope === null) {
+    if (Option.isNone(scope)) {
       sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
       return
     }
     let cleared = 0
     // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
     for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
-      const ctrl = clearControl(article, scope)
+      const ctrl = clearControl(article, scope.value)
       if (ctrl === null) continue
       const target = (ctrl.closest('button,[role="button"]') as HTMLElement | null) ?? ctrl
       target.click()
@@ -159,7 +163,7 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       await new Promise((r) => setTimeout(r, 350))
     }
     // oxlint-enable no-await-in-loop
-    if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope)
+    if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
     sendResponse({ _tag: 'ClearVisibleResponse', cleared })
   })()
   return true
@@ -175,7 +179,7 @@ export const handleDrainPage: MessageHandler = (_message, deps, sendResponse) =>
       'drain-page · downloading',
       items.length,
       'items · scope',
-      pageScope(deps.location.pathname),
+      Option.getOrNull(pageScope(deps.location.pathname)),
     )
   void deps.sendTracked(items)
   sendResponse({ _tag: 'DrainPageResponse', count: items.length })
@@ -193,8 +197,11 @@ export const handleDrainPage: MessageHandler = (_message, deps, sendResponse) =>
 export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) => {
   const scope = pageScope(deps.location.pathname)
   if (import.meta.env.DEV)
-    deps.clearLog('sweep request · page scope =', scope ?? '(not a Likes/Bookmarks page)')
-  if (scope === null) {
+    deps.clearLog(
+      'sweep request · page scope =',
+      Option.getOrElse(scope, () => '(not a Likes/Bookmarks page)'),
+    )
+  if (Option.isNone(scope)) {
     sendResponse({
       _tag: 'SweepPageResponse',
       ok: false,
@@ -207,7 +214,7 @@ export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) =>
   const posts: { tweetId: string; items: MediaItem[] }[] = []
   const seen = new Set<string>()
   for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
-    if (!isMember(article, scope)) continue
+    if (!isMember(article, scope.value)) continue
     const tweetId = tweetIdOfArticle(article)
     if (tweetId === null || seen.has(tweetId)) continue
     const items = deps.store.valuesForTweet(tweetId)
@@ -216,10 +223,10 @@ export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) =>
     posts.push({ tweetId, items })
   }
   if (import.meta.env.DEV)
-    deps.clearLog('sweep · handing', posts.length, 'posts to background on', scope)
+    deps.clearLog('sweep · handing', posts.length, 'posts to background on', scope.value)
   void (async () => {
     const out = await safeSend(() =>
-      browser.runtime.sendMessage({ _tag: 'SweepEnqueueRequest', scope, posts }),
+      browser.runtime.sendMessage({ _tag: 'SweepEnqueueRequest', scope: scope.value, posts }),
     )
     if (out.status === 'context-invalidated') {
       deps.notifyContextLost()
