@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { Option } from 'effect'
 import { upgradePhotoUrl, pickVideoVariant, resolveTweetMedia } from './index'
 
 describe('upgradePhotoUrl', () => {
@@ -27,18 +28,18 @@ describe('pickVideoVariant', () => {
       { content_type: 'video/mp4', bitrate: 2176000, url: 'high.mp4' },
       { content_type: 'video/mp4', bitrate: 832000, url: 'mid.mp4' },
     ]
-    expect(pickVideoVariant(variants)?.url).toBe('high.mp4')
+    expect(Option.getOrNull(pickVideoVariant(variants))?.url).toBe('high.mp4')
   })
 
   it('returns null when there is no mp4 variant', () => {
-    expect(pickVideoVariant([{ content_type: 'application/x-mpegURL', url: 'p.m3u8' }])).toBeNull()
+    expect(Option.getOrNull(pickVideoVariant([{ content_type: 'application/x-mpegURL', url: 'p.m3u8' }]))).toBeNull()
   })
 
   it('treats missing bitrate as zero on both sides of the reduce comparison', () => {
-    const picked = pickVideoVariant([
+    const picked = Option.getOrNull(pickVideoVariant([
       { content_type: 'video/mp4', url: 'a.mp4' },
       { content_type: 'video/mp4', url: 'b.mp4' },
-    ])
+    ]))
     // Both lack a bitrate → neither beats the other; the first stays best.
     expect(picked?.url).toBe('a.mp4')
     expect(picked?.bitrate).toBeUndefined()

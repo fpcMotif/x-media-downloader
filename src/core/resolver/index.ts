@@ -1,3 +1,4 @@
+import { Option } from 'effect'
 import type { MediaItem } from '../schema'
 
 export interface Variant {
@@ -64,9 +65,9 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
       })
       return
     }
-    const variant = m.video_info ? pickVideoVariant(m.video_info.variants) : null
-    if (!variant) return
-    const id = basenameId(variant.url)
+    const variant = m.video_info ? pickVideoVariant(m.video_info.variants) : Option.none()
+    if (Option.isNone(variant)) return
+    const id = basenameId(variant.value.url)
     if (seen.has(id)) return
     seen.add(id)
     out.push({
@@ -74,24 +75,24 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
       tweetId: tweet.tweetId,
       handle: tweet.handle,
       type: m.type === 'animated_gif' ? 'gif' : 'video',
-      url: variant.url,
+      url: variant.value.url,
       previewUrl: m.media_url_https,
-      ext: extFromUrl(variant.url, 'mp4'),
+      ext: extFromUrl(variant.value.url, 'mp4'),
       index: out.length,
-      ...(variant.bitrate !== undefined ? { bitrate: variant.bitrate } : {}),
+      ...(variant.value.bitrate !== undefined ? { bitrate: variant.value.bitrate } : {}),
     })
   })
   return out
 }
 
 /**
- * Select the highest-bitrate MP4 variant; ignore HLS/non-mp4. Returns null if
- * no MP4 variant exists. Mirrors gallery-dl's max-bitrate selection.
+ * Select the highest-bitrate MP4 variant; ignore HLS/non-mp4. None if no MP4
+ * variant exists. Mirrors gallery-dl's max-bitrate selection.
  */
-export function pickVideoVariant(variants: ReadonlyArray<Variant>): Variant | null {
+export function pickVideoVariant(variants: ReadonlyArray<Variant>): Option.Option<Variant> {
   const mp4 = variants.filter((v) => v.content_type === 'video/mp4')
-  if (mp4.length === 0) return null
-  return mp4.reduce((best, v) => ((v.bitrate ?? 0) > (best.bitrate ?? 0) ? v : best))
+  if (mp4.length === 0) return Option.none()
+  return Option.some(mp4.reduce((best, v) => ((v.bitrate ?? 0) > (best.bitrate ?? 0) ? v : best)))
 }
 
 /**
