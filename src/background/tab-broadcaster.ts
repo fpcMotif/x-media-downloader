@@ -36,16 +36,32 @@ export interface TabBroadcaster {
   }>
 }
 
-const queryXTabs = async (): Promise<number[]> => {
-  const tabs = await browser.tabs.query({ url: [...X_HOST_MATCH] })
-  return tabs.flatMap((t) => (t.id !== undefined ? [t.id] : []))
+/** The `browser.tabs` seam every X-tab fan-out routes through. Defaults to the live
+ *  binding; a test injects a fake to drive the clear-targeting + fan-out logic (the
+ *  fake-browser package implements neither tabs.query's url-pattern match nor
+ *  tabs.sendMessage, so the seam — not a global stub — is how this is testable). */
+export interface TabsPort {
+  /** The numeric ids of every open X tab. */
+  queryXTabs(): Promise<number[]>
+  /** Send a message to one tab; resolves to its response (or undefined). */
+  sendTabMessage(tabId: number, message: unknown): Promise<unknown>
 }
 
-export const makeTabBroadcaster = (): TabBroadcaster => {
+const defaultTabsPort = (): TabsPort => ({
+  queryXTabs: async () => {
+    const tabs = await browser.tabs.query({ url: [...X_HOST_MATCH] })
+    return tabs.flatMap((t) => (t.id !== undefined ? [t.id] : []))
+  },
+  sendTabMessage: (tabId, message) => browser.tabs.sendMessage(tabId, message),
+})
+
+export const makeTabBroadcaster = (tabs: TabsPort = defaultTabsPort()): TabBroadcaster => {
+  const queryXTabs = (): Promise<number[]> => tabs.queryXTabs()
+
   const makeTabMessagingPort = (): TabMessagingPort => ({
     queryTabs: async () => (await queryXTabs()).map((id) => ({ id })),
     sendTabMessage: (tabId, message) =>
-      browser.tabs.sendMessage(tabId, message) as Promise<{ readonly url?: string } | undefined>,
+      tabs.sendTabMessage(tabId, message) as Promise<{ readonly url?: string } | undefined>,
   })
 
   /** Broadcast a fire-and-forget message to every open X tab. A dead tab (no
@@ -53,7 +69,7 @@ export const makeTabBroadcaster = (): TabBroadcaster => {
    *  treatment `refreshMediaUrlFromTabs` gives a missing receiver: not a failure. */
   const broadcastToXTabs = async (message: Message): Promise<void> => {
     const ids = await queryXTabs()
-    await Promise.all(ids.map((id) => browser.tabs.sendMessage(id, message).catch(() => {})))
+    await Promise.all(ids.map((id) => tabs.sendTabMessage(id, message).catch(() => {})))
   }
 
   /** The single seam every terminal transfer site routes through: announce a
@@ -96,7 +112,7 @@ export const makeTabBroadcaster = (): TabBroadcaster => {
     // oxlint-disable no-await-in-loop -- stop at the first tab that has the mounted article
     for (const id of ordered) {
       try {
-        const res = (await browser.tabs.sendMessage(id, {
+        const res = (await tabs.sendTabMessage(id, {
           _tag: 'ClearTweetRequest',
           tweetId,
           scopes,
