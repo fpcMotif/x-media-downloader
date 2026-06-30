@@ -10,6 +10,7 @@ import {
 } from 'convex/server'
 import { v } from 'convex/values'
 import schema from './schema'
+import { assertSecret } from './auth'
 
 type DataModel = DataModelFromSchemaDefinition<typeof schema>
 const mutation = mutationGeneric as MutationBuilder<DataModel, 'public'>
@@ -37,21 +38,6 @@ const job = v.object({
   bytes: v.optional(v.number()),
   error: v.optional(v.string()),
 })
-
-/**
- * Fail-closed shared-secret authorization (ADR-0009 hardening), shared by the
- * write mutation and the read query. The deployment MUST set `SYNC_SHARED_SECRET`
- * and the caller MUST present a matching `secret`.
- */
-function assertSecret(secret: string): void {
-  const required = process.env.SYNC_SHARED_SECRET
-  if (required === undefined || required === '') {
-    throw new Error('unauthorized: deployment has no SYNC_SHARED_SECRET configured')
-  }
-  if (secret !== required) {
-    throw new Error('unauthorized: bad or missing sync secret')
-  }
-}
 
 const uploadJobDoc = v.object({
   _id: v.id('upload_jobs'),

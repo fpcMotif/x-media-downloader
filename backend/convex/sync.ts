@@ -12,6 +12,7 @@ import {
 } from 'convex/server'
 import { v, type Infer } from 'convex/values'
 import schema, { syncEventFields } from './schema'
+import { assertSecret } from './auth'
 
 type DataModel = DataModelFromSchemaDefinition<typeof schema>
 type Ctx = GenericMutationCtx<DataModel>
@@ -29,20 +30,6 @@ const syncEventDoc = v.object({
   _creationTime: v.number(),
   ...syncEventFields,
 })
-
-/**
- * Fail-closed shared-secret authorization (ADR-0009 hardening). The deployment
- * MUST set `SYNC_SHARED_SECRET` and the caller MUST present a matching `secret`.
- */
-function assertSecret(secret: string): void {
-  const required = process.env.SYNC_SHARED_SECRET
-  if (required === undefined || required === '') {
-    throw new Error('unauthorized: deployment has no SYNC_SHARED_SECRET configured')
-  }
-  if (secret !== required) {
-    throw new Error('unauthorized: bad or missing sync secret')
-  }
-}
 
 // Materialize the latest state per request (URL/state cache), last-write-wins
 // by `at`. Media is only carried forward when the event supplies it.

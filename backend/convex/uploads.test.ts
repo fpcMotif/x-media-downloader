@@ -93,6 +93,23 @@ describe('uploads:recordUploadJobs', () => {
   })
 })
 
+describe('uploads:recordUploadJobs fails closed', () => {
+  it('rejects a bad secret', async () => {
+    const t = convexTest(schema, modules)
+    await expect(
+      t.mutation(api.uploads.recordUploadJobs, { jobs: [], secret: 'wrong' }),
+    ).rejects.toThrow('bad or missing sync secret')
+  })
+
+  it('rejects when no secret is configured', async () => {
+    vi.stubEnv('SYNC_SHARED_SECRET', '')
+    const t = convexTest(schema, modules)
+    await expect(
+      t.mutation(api.uploads.recordUploadJobs, { jobs: [], secret: 'anything' }),
+    ).rejects.toThrow('no SYNC_SHARED_SECRET configured')
+  })
+})
+
 describe('uploads:recentUploadJobs', () => {
   it('returns jobs newest-first, cursor-paginated', async () => {
     const t = convexTest(schema, modules)
