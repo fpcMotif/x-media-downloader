@@ -21,7 +21,7 @@ const BOTTOM_STALLS = 3
 export interface ListClearDeps {
   readonly scroll: ScrollPort
   readonly clock: Clock
-  /** Live pathname, read once at run start — a non-list page ends before any scroll. */
+  /** Live pathname, read each pass — a mid-sweep navigation off the list ends the run. */
   readonly path: () => string
   /** Click the clear control on every mounted clearable post for the page's scope,
    *  paced one at a time; returns how many were clicked this pass. */
@@ -56,6 +56,9 @@ export function makeListClear(deps: ListClearDeps): ListClear {
       await deps.clock.sleep(SETTLE_MS)
       // oxlint-disable no-await-in-loop -- a paced scroll pass, one viewport at a time
       for (let step = 0; step < MAX_STEPS; step++) {
+        // Bail if the user navigated off the Likes/Bookmarks list mid-sweep — never
+        // keep hijacking scroll on a page that has no clear scope.
+        if (Option.isNone(pageScope(deps.path()))) break
         const clearedThisStep = await deps.clearVisibleForPage()
         cleared += clearedThisStep
         await deps.clock.sleep(SETTLE_MS)

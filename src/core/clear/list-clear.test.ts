@@ -11,18 +11,18 @@ const clamp = (v: number, maxY: number): number => Math.max(0, Math.min(maxY, v)
  * and returns the count — exactly what the real per-pass click sweep does.
  */
 function harness(opts: { layout?: Record<string, number>; maxY?: number; path?: string }) {
-  const layout: Record<string, number> = { ...(opts.layout ?? {}) }
+  const layout: Record<string, number> = { ...opts.layout }
   const maxY = opts.maxY ?? 4000
   const scroll = { y: 0 }
   const scrollCalls = { to: [] as number[], by: [] as number[] }
-  const path = opts.path ?? '/someone/likes'
+  let path = opts.path ?? '/someone/likes'
 
   const mounted = (): string[] =>
     Object.entries(layout)
       .filter(([, y]) => y >= scroll.y && y < scroll.y + VIEWPORT)
       .map(([id]) => id)
 
-  const clearVisibleForPage = vi.fn(async (): Promise<number> => {
+  const clearVisibleForPage = vi.fn<ListClearDeps['clearVisibleForPage']>(async () => {
     const ids = mounted()
     for (const id of ids) delete layout[id]
     return ids.length
@@ -53,7 +53,16 @@ function harness(opts: { layout?: Record<string, number>; maxY?: number; path?: 
     clearVisibleForPage,
     report,
   }
-  return { deps, scroll, scrollCalls, clearVisibleForPage, report }
+  return {
+    deps,
+    scroll,
+    scrollCalls,
+    clearVisibleForPage,
+    report,
+    setPath: (p: string) => {
+      path = p
+    },
+  }
 }
 
 const stagesOf = (report: ReturnType<typeof harness>['report']): string[] =>
@@ -109,5 +118,21 @@ describe('makeListClear', () => {
 
     expect(h.clearVisibleForPage).toHaveBeenCalledTimes(400) // MAX_STEPS backstop
     expect(res.cleared).toBe(400)
+  })
+
+  it('aborts the sweep when the user navigates off the list mid-run', async () => {
+    const h = harness({ layout: { a: 0, b: 1500, c: 3000 }, maxY: 3200 })
+    // The first clear pass simulates the user leaving the Likes list.
+    h.clearVisibleForPage.mockImplementationOnce(async () => {
+      h.setPath('/home')
+      return 1
+    })
+    const resP = makeListClear(h.deps).run()
+    await vi.runAllTimersAsync()
+    const res = await resP
+
+    expect(res.cleared).toBe(1) // only the first pass ran before the bail
+    expect(h.clearVisibleForPage).toHaveBeenCalledTimes(1)
+    expect(h.scroll.y).toBe(0) // scroll position restored
   })
 })
