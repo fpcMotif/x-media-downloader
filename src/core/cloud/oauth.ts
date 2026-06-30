@@ -1,3 +1,4 @@
+import { Data } from 'effect'
 import { bindFetch } from '../fetch'
 import type { OAuthConfig, OAuthTokens } from './types'
 
@@ -8,13 +9,18 @@ import type { OAuthConfig, OAuthTokens } from './types'
  * (the aria2/convex port convention) so they test without the network. No
  * client secret anywhere — PKCE replaces it; an extension bundle can't keep one.
  */
-export class OAuthError extends Error {
-  readonly _tag = 'OAuthError'
-  constructor(reason: string) {
-    super(reason)
-    this.name = 'OAuthError'
-  }
-}
+export class OAuthError extends Data.TaggedError('OAuthError')<{
+  readonly message: string
+  readonly context?:
+    | 'malformed-url'
+    | 'consent-failed'
+    | 'state-mismatch'
+    | 'no-code'
+    | 'no-token'
+    | 'non-json'
+    | 'token-endpoint'
+    | 'no-offline-grant'
+}> {}
 
 /** base64url (no padding) of raw bytes. */
 export function base64UrlEncode(bytes: Uint8Array): string {
@@ -69,16 +75,16 @@ export function parseAuthRedirect(redirectUrl: string, expectedState: string): {
   try {
     u = new URL(redirectUrl)
   } catch {
-    throw new OAuthError('malformed redirect url')
+    throw new OAuthError({ message: 'malformed redirect url', context: 'malformed-url' })
   }
   // Providers return params on the query string for the code flow.
   const p = u.searchParams
   const err = p.get('error')
-  if (err !== null) throw new OAuthError(`consent failed: ${err}`)
+  if (err !== null) throw new OAuthError({ message: `consent failed: ${err}`, context: 'consent-failed' })
   const state = p.get('state')
-  if (state !== expectedState) throw new OAuthError('state mismatch (possible CSRF)')
+  if (state !== expectedState) throw new OAuthError({ message: 'state mismatch (possible CSRF)', context: 'state-mismatch' })
   const code = p.get('code')
-  if (code === null || code === '') throw new OAuthError('no authorization code in redirect')
+  if (code === null || code === '') throw new OAuthError({ message: 'no authorization code in redirect', context: 'no-code' })
   return { code }
 }
 
@@ -111,7 +117,7 @@ function emailFromIdToken(idToken: string | undefined): string | undefined {
 /** Return the non-empty `access_token` from a token response, or throw with `ctx`. */
 function requireAccessToken(json: TokenResponse, ctx: string): string {
   if (json.access_token === undefined || json.access_token === '') {
-    throw new OAuthError(`${ctx} had no access_token`)
+    throw new OAuthError({ message: `${ctx} had no access_token`, context: 'no-token' })
   }
   return json.access_token
 }
@@ -131,12 +137,13 @@ async function postToken(
   try {
     json = (await res.json()) as TokenResponse
   } catch {
-    throw new OAuthError(`token endpoint returned non-JSON (HTTP ${res.status})`)
+    throw new OAuthError({ message: `token endpoint returned non-JSON (HTTP ${res.status})`, context: 'non-json' })
   }
   if (!res.ok || json.error !== undefined) {
-    throw new OAuthError(
-      json.error_description ?? json.error ?? `token endpoint HTTP ${res.status}`,
-    )
+    throw new OAuthError({
+      message: json.error_description ?? json.error ?? `token endpoint HTTP ${res.status}`,
+      context: 'token-endpoint',
+    })
   }
   return json
 }
@@ -162,7 +169,7 @@ export async function exchangeCode(input: {
   if (json.refresh_token === undefined || json.refresh_token === '') {
     // Without a refresh token the connection dies in ~1 hour; treat as a setup
     // error (Google: needs access_type=offline+prompt=consent; Dropbox: offline).
-    throw new OAuthError('no refresh_token — reconnect and grant offline access')
+    throw new OAuthError({ message: 'no refresh_token — reconnect and grant offline access', context: 'no-offline-grant' })
   }
   const account = emailFromIdToken(json.id_token) ?? json.account_id
   return {

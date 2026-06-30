@@ -12,6 +12,8 @@ import {
   OAuthError,
 } from './oauth'
 import { GDRIVE_OAUTH, DROPBOX_OAUTH } from './types'
+import { classifyUploadError } from './status'
+import { errorReason } from '../error'
 
 const REDIRECT = 'https://abcdef.chromiumapp.org/'
 
@@ -117,6 +119,34 @@ describe('parseAuthRedirect', () => {
 
   it('rejects a malformed redirect url', () => {
     expect(() => parseAuthRedirect('::: not a url', 'xyz')).toThrow(/malformed redirect/)
+  })
+
+  it('throws OAuthError with _tag and exact message on malformed input', () => {
+    let caught: unknown
+    try {
+      parseAuthRedirect('::: not a url', 'xyz')
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(OAuthError)
+    const e = caught as OAuthError
+    expect(e._tag).toBe('OAuthError')
+    expect(e.message).toBe('malformed redirect url')
+    expect(e.context).toBe('malformed-url')
+  })
+})
+
+describe('OAuthError classification regression', () => {
+  it('no-offline-grant message classifies identically to the raw string', () => {
+    const raw = 'no refresh_token — reconnect and grant offline access'
+    const e = new OAuthError({ message: raw, context: 'no-offline-grant' })
+    expect(classifyUploadError(errorReason(e))).toBe(classifyUploadError(raw))
+  })
+
+  it('non-json message classifies identically to the raw string', () => {
+    const raw = 'token endpoint returned non-JSON (HTTP 502)'
+    const e = new OAuthError({ message: raw, context: 'non-json' })
+    expect(classifyUploadError(errorReason(e))).toBe(classifyUploadError(raw))
   })
 })
 
