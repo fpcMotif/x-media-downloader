@@ -1,3 +1,4 @@
+import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import type { Settings } from '../core/schema'
 import type { SyncEvent } from '../core/sync/events'
@@ -104,9 +105,11 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
     if (settings.convexSyncSecret === '')
       return { ok: false, detail: 'Enter the sync secret first.', pending }
     const pattern = convexOriginPattern(settings.convexUrl)
-    if (pattern === null)
+    if (Option.isNone(pattern))
       return { ok: false, detail: "That doesn't look like a valid URL.", pending }
-    const granted = await browser.permissions.contains({ origins: [pattern] }).catch(() => false)
+    const granted = await browser.permissions
+      .contains({ origins: [pattern.value] })
+      .catch(() => false)
     if (!granted)
       return { ok: false, detail: 'Grant access to the deployment first (button above).', pending }
     const port = makeConvexHttpPort({

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { Option } from 'effect'
 import { buildFunctionCall, convexOriginPattern, makeConvexHttpPort } from './convex'
 import { classifySyncError } from './status'
 
@@ -14,13 +15,13 @@ describe('buildFunctionCall', () => {
 
 describe('convexOriginPattern', () => {
   it('derives a host match pattern from a deployment URL', () => {
-    expect(convexOriginPattern('https://happy-otter-123.convex.cloud')).toBe(
-      'https://happy-otter-123.convex.cloud/*',
+    expect(convexOriginPattern('https://happy-otter-123.convex.cloud')).toEqual(
+      Option.some('https://happy-otter-123.convex.cloud/*'),
     )
   })
 
-  it('returns null for an unparseable url', () => {
-    expect(convexOriginPattern('not a url')).toBe(null)
+  it('returns none for an unparseable url', () => {
+    expect(convexOriginPattern('not a url')).toEqual(Option.none())
   })
 })
 

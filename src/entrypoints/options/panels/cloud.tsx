@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
+import { Option } from 'effect'
 import { cn } from '@/lib/utils'
 import { convexOriginPattern } from '@/core/sync/convex'
 import type { SyncStatus } from '@/core/sync/status'
@@ -32,11 +33,11 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
   useEffect(() => {
     if (!cloudOn || convexUrl === '') return
     const pattern = convexOriginPattern(convexUrl)
-    if (pattern === null) {
+    if (Option.isNone(pattern)) {
       setConvexGranted(null)
       return
     }
-    void browser.permissions.contains({ origins: [pattern] }).then(setConvexGranted)
+    void browser.permissions.contains({ origins: [pattern.value] }).then(setConvexGranted)
   }, [cloudOn, convexUrl])
   useEffect(() => {
     if (!cloudOn) {
@@ -71,8 +72,8 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
 
   const requestConvexAccess = async (): Promise<void> => {
     const pattern = convexOriginPattern(settings.convexUrl)
-    if (pattern === null) return
-    setConvexGranted(await browser.permissions.request({ origins: [pattern] }))
+    if (Option.isNone(pattern)) return
+    setConvexGranted(await browser.permissions.request({ origins: [pattern.value] }))
   }
 
   const testConvexConnection = async (): Promise<void> => {

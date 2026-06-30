@@ -4,7 +4,7 @@
  * fetch-injected like the aria2 RPC port (ADR-0006) — no convex SDK and no
  * WebSocket client inside the MV3 service worker (ADR-0009).
  */
-import { Data } from 'effect'
+import { Data, Option } from 'effect'
 import { bindFetch } from '../fetch'
 
 export interface ConvexPort {
@@ -58,15 +58,15 @@ export function buildFunctionCall(path: string, args: Record<string, unknown>): 
 
 /**
  * Chrome match-pattern for a deployment URL's origin, for a runtime
- * `permissions.request({ origins })` call (aria2 precedent). Null if the URL
- * is unparseable.
+ * `permissions.request({ origins })` call (aria2 precedent). Option of the
+ * pattern; None if the URL is unparseable.
  */
-export function convexOriginPattern(deploymentUrl: string): string | null {
+export function convexOriginPattern(deploymentUrl: string): Option.Option<string> {
   try {
     const u = new URL(deploymentUrl)
-    return `${u.protocol}//${u.hostname}/*`
+    return Option.some(`${u.protocol}//${u.hostname}/*`)
   } catch {
-    return null
+    return Option.none()
   }
 }
 
