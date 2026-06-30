@@ -1,4 +1,4 @@
-import { Effect, Result, Schema } from 'effect'
+import { Effect, Option, Result, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import {
   Message,
@@ -236,9 +236,9 @@ const { uploadQueue, drainUploadJobs, recordCloudUploads } = cloudUpload
 // the raw JSON body for the content script to parse, or null on any failure.
 async function recoverSyndicationBody(tweetId: string): Promise<string | null> {
   const url = syndicationUrl(tweetId)
-  if (url === null) return null
+  if (Option.isNone(url)) return null
   try {
-    const res = await fetch(url)
+    const res = await fetch(url.value)
     return res.ok ? await res.text() : null
   } catch {
     return null

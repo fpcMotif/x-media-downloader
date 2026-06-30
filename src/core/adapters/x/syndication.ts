@@ -1,3 +1,4 @@
+import { Option } from 'effect'
 import { resolveTweetMedia, type RawMedia } from '../../resolver'
 import type { MediaItem } from '../../schema'
 
@@ -28,15 +29,15 @@ export function syndicationToken(tweetId: string): string {
   return ((Number(tweetId) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '')
 }
 
-/** The syndication `tweet-result` URL for `tweetId`, or null if it isn't a tweet id. */
-export function syndicationUrl(tweetId: string): string | null {
-  if (!isTweetId(tweetId)) return null
+/** The syndication `tweet-result` URL for `tweetId`, or None if it isn't a tweet id. */
+export function syndicationUrl(tweetId: string): Option.Option<string> {
+  if (!isTweetId(tweetId)) return Option.none()
   const u = new URL('https://cdn.syndication.twimg.com/tweet-result')
   u.searchParams.set('id', tweetId)
   u.searchParams.set('token', syndicationToken(tweetId))
   // `lang` mirrors X's own widget call and keeps the response shape stable.
   u.searchParams.set('lang', 'en')
-  return u.toString()
+  return Option.some(u.toString())
 }
 
 type Obj = Record<string, unknown>

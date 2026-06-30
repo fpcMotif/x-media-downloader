@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { Option } from 'effect'
 import { isTweetId, syndicationToken, syndicationUrl, parseSyndicationTweet } from './syndication'
 
 describe('isTweetId', () => {
@@ -26,7 +27,7 @@ describe('syndicationToken', () => {
 
 describe('syndicationUrl', () => {
   it('builds the tweet-result URL with id + token + lang', () => {
-    const url = syndicationUrl('2068286123399676218')
+    const url = Option.getOrNull(syndicationUrl('2068286123399676218'))
     expect(url).not.toBeNull()
     const u = new URL(url!)
     expect(u.host).toBe('cdn.syndication.twimg.com')
@@ -35,8 +36,8 @@ describe('syndicationUrl', () => {
     expect(u.searchParams.get('token')).toBe('5hpndyxr8f')
     expect(u.searchParams.get('lang')).toBe('en')
   })
-  it('returns null for a non-tweet id', () => {
-    expect(syndicationUrl('not-an-id')).toBeNull()
+  it('returns none for a non-tweet id', () => {
+    expect(Option.getOrNull(syndicationUrl('not-an-id'))).toBe(null)
   })
 })
 
