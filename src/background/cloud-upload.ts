@@ -9,6 +9,8 @@ import { DropboxUploader, DropboxUploaderLive } from '../core/cloud/dropbox'
 import {
   guessMime,
   type CloudProviderId,
+  type OAuthConfig,
+  type OAuthTokens,
   type UploadInput,
   type UploadOutcome,
   type UploadTarget,
@@ -64,6 +66,67 @@ export interface BackfillRecord {
   readonly media: { readonly url: string; readonly handle: string; readonly ext: string }
 }
 
+/** Durable UploadJob-ledger storage seam — the wxt `local:cloudUploadJobs` item in
+ *  the SW, an in-memory box in tests. The stored payload is opaque (`decodeLedger`
+ *  validates it on read), so this carries `unknown`. */
+export interface LedgerStore {
+  get(): Promise<unknown>
+  set(value: unknown): Promise<void>
+}
+
+/** Everything that executes on the ONE per-SW-life cloud runtime (ADR-0017): the
+ *  provider byte uploaders, Drive's root-folder resolve, the OAuth token grants, and
+ *  the best-effort Convex mirror. Folding them behind one port keeps the single
+ *  shared ManagedRuntime invariant (FetchService/SourceFetch/FolderCache) — and lets
+ *  a test substitute a plain-async fake with no Effect/Layer ceremony. */
+export interface CloudRuntimePort {
+  uploadDrive(args: DriveArgs, input: UploadInput): Promise<UploadOutcome>
+  uploadDropbox(accessToken: string, input: UploadInput): Promise<UploadOutcome>
+  resolveDriveRoot(accessToken: string): Promise<string>
+  exchangeCode(input: {
+    readonly cfg: OAuthConfig
+    readonly clientId: string
+    readonly code: string
+    readonly codeVerifier: string
+    readonly redirectUri: string
+    readonly now: number
+  }): Promise<OAuthTokens>
+  refreshAccessToken(input: {
+    readonly cfg: OAuthConfig
+    readonly clientId: string
+    readonly refreshToken: string
+    readonly now: number
+  }): Promise<{ readonly accessToken: string; readonly expiresAt: number }>
+  /** Run the control-plane mirror mutation. The gate + the best-effort swallow stay
+   *  on the SHELL side (mirrorUploadJob), so a test injects a throwing mirror to
+   *  prove the drain survives. */
+  mirror(input: {
+    readonly deploymentUrl: string
+    readonly jobs: ReadonlyArray<ReturnType<typeof toWireUploadJob>>
+    readonly secret: string
+  }): Promise<unknown>
+}
+
+/** Durable wake-up alarm seam (one backoff alarm; the entrypoint owns the listener). */
+export interface AlarmPort {
+  create(name: string, when: number): Promise<void>
+  clear(name: string): Promise<void>
+}
+
+/** Toolbar badge seam (the dead-upload count). */
+export interface BadgePort {
+  set(text: string): Promise<void>
+  setColor(color: string): Promise<void>
+}
+
+/** Interactive OAuth seam. `launchFlow` is genuinely browser-bound (the consent
+ *  popup) and CANNOT be unit-tested end to end; a test fakes it to a canned redirect
+ *  string (or undefined for cancel) to cover only the parse→exchange→persist tail. */
+export interface AuthFlowPort {
+  getRedirectUrl(): string
+  launchFlow(url: string): Promise<string | undefined>
+}
+
 export interface CloudUpload {
   /** The serialized upload chain — boot resume + alarm wake push onto it. */
   readonly uploadQueue: SerialQueue
@@ -97,10 +160,32 @@ export interface CloudUploadDeps {
   readonly queueError: (label: string) => (err: unknown) => void
   /** Read the current settings blob. */
   readonly getSettings: () => Promise<Settings>
-  /** The fetch the provider/Convex ports use (bound for the MV3 SW; see fetch.ts). */
+  /** The fetch the provider/Convex ports use (bound for the MV3 SW; see fetch.ts).
+   *  Only consumed to build the default cloud runtime; ignored when `runtime` is injected. */
   readonly fetchImpl: typeof fetch
   /** Past downloads eligible for backfill (from the durable history store). */
   readonly getBackfillRecords: () => Promise<ReadonlyArray<BackfillRecord>>
+  // Injectable side-effect seams. Each defaults to its live binding, so the entrypoint
+  // passes NONE of them; a test passes only the few ports its path exercises.
+  /** The durable UploadJob ledger (default: the `local:cloudUploadJobs` wxt item). */
+  readonly ledger?: LedgerStore
+  /** The per-SW-life cloud runtime operations (default: a real ManagedRuntime). */
+  readonly runtime?: CloudRuntimePort
+  /** The backoff wake-up alarm (default: `browser.alarms`). */
+  readonly alarms?: AlarmPort
+  /** The dead-upload toolbar badge (default: `browser.action`). */
+  readonly badge?: BadgePort
+  /** The interactive OAuth flow (default: `browser.identity`). */
+  readonly authFlow?: AuthFlowPort
+  /** The settings writer (default: the core `setSettings`). Always re-serialized
+   *  through the SW-side settingsQueue inside, so ADR-0005 single-writer holds. */
+  readonly setSettings?: (patch: Partial<Settings>) => Promise<Settings>
+  /** The clock (default: `Date.now`). Injected so backoff/expiry assertions are deterministic. */
+  readonly now?: () => number
+  /** Jobs drained per pass before yielding to a fresh serialized task (default
+   *  {@link MAX_DRAIN_JOBS_PER_PASS}). Injected only so the re-kick is testable without
+   *  seeding a thousand jobs. */
+  readonly maxDrainPerPass?: number
 }
 
 const UPLOAD_ALARM = 'cloud-upload-drain'
@@ -125,6 +210,64 @@ interface ProviderTokens {
   readonly account: string
 }
 
+/** The live UploadJob-ledger store: the durable `local:cloudUploadJobs` wxt item. */
+const defaultLedgerStore = (): LedgerStore => {
+  const item = storage.defineItem<unknown>('local:cloudUploadJobs', { fallback: null })
+  return { get: () => item.getValue(), set: (value) => item.setValue(value) }
+}
+
+/** The live cloud runtime (ADR-0017): one ManagedRuntime per SW life wiring FetchService
+ *  (binds fetch once), SourceFetch (the SSRF-guarded twimg fetch), and a Ref FolderCache
+ *  (handle → subfolder id) that persists across uploads. `provideMerge` keeps FetchService
+ *  in the runtime's context so the Convex/OAuth ports (which read FetchService) run on it. */
+const defaultRuntimePort = (fetchImpl: typeof fetch): CloudRuntimePort => {
+  const runtime = ManagedRuntime.make(
+    Layer.mergeAll(DriveUploaderLive, DropboxUploaderLive).pipe(
+      Layer.provideMerge(makeCloudServicesLive(fetchImpl)),
+    ),
+  )
+  return {
+    uploadDrive: (args, input) =>
+      runtime.runPromise(Effect.flatMap(DriveUploader, (u) => u.upload(args, input))),
+    uploadDropbox: (accessToken, input) =>
+      runtime.runPromise(Effect.flatMap(DropboxUploader, (u) => u.upload({ accessToken }, input))),
+    resolveDriveRoot: (accessToken) =>
+      runtime.runPromise(Effect.flatMap(DriveUploader, (u) => u.ensureRoot(accessToken))),
+    exchangeCode: (input) => runtime.runPromise(exchangeCode(input)),
+    refreshAccessToken: (input) => runtime.runPromise(refreshAccessToken(input)),
+    mirror: ({ deploymentUrl, jobs, secret }) => {
+      const port = makeConvexHttpPort({ deploymentUrl })
+      return runtime.runPromise(port.mutation('uploads:recordUploadJobs', { jobs, secret }))
+    },
+  }
+}
+
+/** The live backoff wake-up alarm (`browser.alarms`). */
+const defaultAlarmPort = (): AlarmPort => ({
+  create: async (name, when) => {
+    await browser.alarms.create(name, { when })
+  },
+  clear: async (name) => {
+    await browser.alarms.clear(name)
+  },
+})
+
+/** The live dead-upload toolbar badge (`browser.action`). */
+const defaultBadgePort = (): BadgePort => ({
+  set: async (text) => {
+    await browser.action.setBadgeText({ text })
+  },
+  setColor: async (color) => {
+    await browser.action.setBadgeBackgroundColor({ color })
+  },
+})
+
+/** The live interactive OAuth flow (`browser.identity`). */
+const defaultAuthFlowPort = (): AuthFlowPort => ({
+  getRedirectUrl: () => browser.identity.getRedirectURL(),
+  launchFlow: (url) => browser.identity.launchWebAuthFlow({ url, interactive: true }),
+})
+
 // Narrowed to the structural subset it reads so both the live queue (MediaItem)
 // and the backfill (a history record's SyncMediaMeta) share one constructor.
 const cloudTargetFor = (
@@ -139,10 +282,6 @@ const cloudTargetFor = (
   contentType: guessMime(m.ext),
 })
 
-const clearUploadBadge = (): void => {
-  void browser.action.setBadgeText({ text: '' }).catch(() => {})
-}
-
 const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
   const f = PROVIDERS[p].fields
   return {
@@ -156,30 +295,21 @@ const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
 
 export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const { getSettings, fetchImpl } = deps
+  // Resolve each side-effect seam to its live binding unless a test injected one.
+  // Internal names avoid colliding with the `ledger`/`now` locals in the drain loop.
+  const nowFn = deps.now ?? (() => Date.now())
+  const writeSettingsImpl = deps.setSettings ?? setSettings
+  const store = deps.ledger ?? defaultLedgerStore()
+  const rt = deps.runtime ?? defaultRuntimePort(fetchImpl)
+  const alarms = deps.alarms ?? defaultAlarmPort()
+  const badge = deps.badge ?? defaultBadgePort()
+  const authFlow = deps.authFlow ?? defaultAuthFlowPort()
+  const maxDrainPerPass = deps.maxDrainPerPass ?? MAX_DRAIN_JOBS_PER_PASS
 
   // Durable local UploadJob ledger (the source of truth) — drained FIFO through a
   // serialized chain like the metadata outbox. Bytes go extension → provider
   // (Drive/Dropbox) directly; nothing here transits Convex.
-  const uploadJobsItem = storage.defineItem<unknown>('local:cloudUploadJobs', { fallback: null })
   const uploadQueue = makeSerialQueue(deps.queueError('upload'))
-  // The cloud byte path runs on one runtime built per SW life (ADR-0017): FetchService
-  // (binds fetch once), SourceFetch (the SSRF-guarded twimg fetch), and a Ref FolderCache
-  // (handle → subfolder id) that persists across uploads. An SW recycle rebuilds the
-  // runtime = a fresh cache, matching the prior in-memory Map.
-  // `provideMerge` wires the services into the uploaders AND keeps FetchService in
-  // the runtime's context, so the Convex/OAuth ports (which read FetchService) run
-  // on this same runtime.
-  const runtime = ManagedRuntime.make(
-    Layer.mergeAll(DriveUploaderLive, DropboxUploaderLive).pipe(
-      Layer.provideMerge(makeCloudServicesLive(fetchImpl)),
-    ),
-  )
-  const uploadDrive = (args: DriveArgs, input: UploadInput): Promise<UploadOutcome> =>
-    runtime.runPromise(Effect.flatMap(DriveUploader, (u) => u.upload(args, input)))
-  const uploadDropbox = (accessToken: string, input: UploadInput): Promise<UploadOutcome> =>
-    runtime.runPromise(Effect.flatMap(DropboxUploader, (u) => u.upload({ accessToken }, input)))
-  const resolveDriveRoot = (accessToken: string): Promise<string> =>
-    runtime.runPromise(Effect.flatMap(DriveUploader, (u) => u.ensureRoot(accessToken)))
   // Last non-skip failure, for the popup's status line (diagnostic; resets on recycle).
   let lastUploadError: string | null = null
 
@@ -196,7 +326,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   // fields — those flow through messages — so this closes the SW-side races).
   const settingsQueue = makeSerialQueue(deps.queueError('cloudSettings'))
   const writeCloudSettings = (patch: Partial<Settings>): Promise<Settings> =>
-    settingsQueue.run(() => setSettings(patch))
+    settingsQueue.run(() => writeSettingsImpl(patch))
 
   const persistAccessToken = (
     p: CloudProviderId,
@@ -211,18 +341,16 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const ensureAccessToken = async (
     s: Settings,
     p: CloudProviderId,
-    now: number,
+    nowMs: number,
   ): Promise<string> => {
     const t = providerTokens(s, p)
-    if (t.accessToken !== '' && !isTokenExpired(t.expiry, now)) return t.accessToken
-    const refreshed = await runtime.runPromise(
-      refreshAccessToken({
-        cfg: PROVIDERS[p].oauth,
-        clientId: t.clientId,
-        refreshToken: t.refreshToken,
-        now,
-      }),
-    )
+    if (t.accessToken !== '' && !isTokenExpired(t.expiry, nowMs)) return t.accessToken
+    const refreshed = await rt.refreshAccessToken({
+      cfg: PROVIDERS[p].oauth,
+      clientId: t.clientId,
+      refreshToken: t.refreshToken,
+      now: nowMs,
+    })
     await persistAccessToken(p, refreshed.accessToken, refreshed.expiresAt)
     return refreshed.accessToken
   }
@@ -233,16 +361,16 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     if (!settings.cloudUploadEnabled || items.length === 0) return
     const providers = connectedProviders(settings)
     if (providers.length === 0) return
-    const now = Date.now()
+    const now = nowFn()
     uploadQueue.push(async () => {
-      let ledger = decodeLedger(await uploadJobsItem.getValue())
+      let ledger = decodeLedger(await store.get())
       for (const { item, filename } of items) {
         const target = cloudTargetFor(item, filename)
         for (const p of providers) {
           ledger = enqueue(ledger, { mediaId: item.id, provider: p, url: item.url, target }, now)
         }
       }
-      await uploadJobsItem.setValue(ledger)
+      await store.set(ledger)
       await drainUploadJobs()
     })
   }
@@ -258,12 +386,12 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     if (job.provider === 'gdrive') {
       let rootId = settings.gdriveFolderId
       if (rootId === '') {
-        rootId = await resolveDriveRoot(accessToken)
+        rootId = await rt.resolveDriveRoot(accessToken)
         await writeCloudSettings({ gdriveFolderId: rootId })
       }
-      return uploadDrive({ accessToken, rootFolderId: rootId }, input)
+      return rt.uploadDrive({ accessToken, rootFolderId: rootId }, input)
     }
-    return uploadDropbox(accessToken, input)
+    return rt.uploadDropbox(accessToken, input)
   }
 
   /** Best-effort mirror of a job's state to the Convex control plane (ADR-0013).
@@ -271,13 +399,11 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const mirrorUploadJob = async (settings: Settings, job: UploadJob): Promise<void> => {
     if (!isSyncConfigured(settings) || settings.cloudDeviceId === '') return
     try {
-      const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl })
-      await runtime.runPromise(
-        port.mutation('uploads:recordUploadJobs', {
-          jobs: [toWireUploadJob(job, settings.cloudDeviceId, Date.now())],
-          secret: settings.convexSyncSecret,
-        }),
-      )
+      await rt.mirror({
+        deploymentUrl: settings.convexUrl,
+        jobs: [toWireUploadJob(job, settings.cloudDeviceId, nowFn())],
+        secret: settings.convexSyncSecret,
+      })
     } catch {
       /* control-plane mirror is best-effort; the local ledger is the source of truth */
     }
@@ -286,14 +412,14 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   /** Arm a durable wake-up at the soonest backoff deadline so failed jobs retry
    *  autonomously even after the SW suspends (setTimeout would not survive). */
   const scheduleUploadWake = async (): Promise<void> => {
-    const ledger = decodeLedger(await uploadJobsItem.getValue())
-    const now = Date.now()
+    const ledger = decodeLedger(await store.get())
+    const now = nowFn()
     const due = ledger
       .filter((j) => !isTerminal(j) && j.attempts < MAX_ATTEMPTS)
       .map((j) => j.nextAttemptAt)
       .filter((t) => t > now)
-    if (due.length > 0) await browser.alarms.create(UPLOAD_ALARM, { when: Math.min(...due) })
-    else await browser.alarms.clear(UPLOAD_ALARM)
+    if (due.length > 0) await alarms.create(UPLOAD_ALARM, Math.min(...due))
+    else await alarms.clear(UPLOAD_ALARM)
   }
 
   /** Drain ready upload jobs FIFO: claim (persist the lease) → upload → record the
@@ -305,9 +431,9 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     if (!settings.cloudUploadEnabled) return
     let ranOut = false
     // oxlint-disable no-await-in-loop -- FIFO: each job is processed sequentially
-    for (let guard = 0; guard < MAX_DRAIN_JOBS_PER_PASS; guard += 1) {
-      const now = Date.now()
-      const ledger = decodeLedger(await uploadJobsItem.getValue())
+    for (let guard = 0; guard < maxDrainPerPass; guard += 1) {
+      const now = nowFn()
+      const ledger = decodeLedger(await store.get())
       const job = readyJobs(ledger, now)[0]
       if (job === undefined) {
         ranOut = true
@@ -321,17 +447,17 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
         const failed = c.claimed
           ? recordFailure(c.ledger, job.jobId, c.token!, now, `${job.provider} disconnected`).ledger
           : c.ledger
-        await uploadJobsItem.setValue(capLedger(failed))
+        await store.set(capLedger(failed))
         lastUploadError = `${PROVIDERS[job.provider].label} is not connected.`
         continue
       }
 
       const c = claim(ledger, job.jobId, now)
       if (!c.claimed) {
-        await uploadJobsItem.setValue(capLedger(c.ledger)) // 'exhausted' → dead persisted
+        await store.set(capLedger(c.ledger)) // 'exhausted' → dead persisted
         continue
       }
-      await uploadJobsItem.setValue(c.ledger) // persist 'uploading' + lease BEFORE the slow upload
+      await store.set(c.ledger) // persist 'uploading' + lease BEFORE the slow upload
       const token = c.token!
 
       let outcome: UploadOutcome
@@ -343,8 +469,8 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
         outcome = { kind: 'failure', reason: err instanceof Error ? err.message : String(err) }
       }
 
-      const after = decodeLedger(await uploadJobsItem.getValue())
-      const tnow = Date.now()
+      const after = decodeLedger(await store.get())
+      const tnow = nowFn()
       let next: JobLedger
       if (outcome.kind === 'success') {
         next = recordSuccess(after, job.jobId, token, tnow, {
@@ -358,7 +484,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
         lastUploadError = classifyUploadError(outcome.reason, outcome.status)
       }
       const settled = next.find((j) => j.jobId === job.jobId)
-      await uploadJobsItem.setValue(capLedger(next))
+      await store.set(capLedger(next))
       if (settled !== undefined) await mirrorUploadJob(settings, settled)
     }
     // oxlint-enable no-await-in-loop
@@ -388,25 +514,23 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       return { ok: false, detail: `Enter the ${PROVIDERS[provider].label} client ID first.` }
     try {
       const cfg = PROVIDERS[provider].oauth
-      const redirectUri = browser.identity.getRedirectURL()
+      const redirectUri = authFlow.getRedirectUrl()
       const verifier = generateCodeVerifier()
       const challenge = await computeCodeChallenge(verifier)
       const state = randomState()
       const authUrl = buildAuthUrl(cfg, { clientId, redirectUri, codeChallenge: challenge, state })
-      const redirect = await browser.identity.launchWebAuthFlow({ url: authUrl, interactive: true })
+      const redirect = await authFlow.launchFlow(authUrl)
       if (redirect === undefined || redirect === '')
         return { ok: false, detail: 'Authorization was cancelled.' }
       const { code } = parseAuthRedirect(redirect, state)
-      const tokens = await runtime.runPromise(
-        exchangeCode({
-          cfg,
-          clientId,
-          code,
-          codeVerifier: verifier,
-          redirectUri,
-          now: Date.now(),
-        }),
-      )
+      const tokens = await rt.exchangeCode({
+        cfg,
+        clientId,
+        code,
+        codeVerifier: verifier,
+        redirectUri,
+        now: nowFn(),
+      })
       const f = PROVIDERS[provider].fields
       await writeCloudSettings({
         [f.clientId]: clientId,
@@ -452,19 +576,19 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   }
 
   const cloudUploadStatus = async (): Promise<CloudUploadStatus> => {
-    const ledger = decodeLedger(await uploadJobsItem.getValue())
+    const ledger = decodeLedger(await store.get())
     return { summary: summarize(ledger), lastError: lastUploadError }
   }
 
   const retryDeadUploads = async (): Promise<{ ok: boolean }> => {
     uploadQueue.push(async () => {
-      let ledger = decodeLedger(await uploadJobsItem.getValue())
-      const now = Date.now()
+      let ledger = decodeLedger(await store.get())
+      const now = nowFn()
       for (const j of ledger) {
         if (j.status === 'dead' || j.status === 'failed')
           ledger = retryUploadJob(ledger, j.jobId, now).ledger
       }
-      await uploadJobsItem.setValue(ledger)
+      await store.set(ledger)
       await drainUploadJobs()
     })
     return { ok: true }
@@ -473,13 +597,13 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   /** Reflect permanently-failed (dead) uploads on the toolbar badge so the user
    *  notices without opening the popup — restrained, no notifications permission. */
   const refreshUploadBadge = async (): Promise<void> => {
-    const dead = decodeLedger(await uploadJobsItem.getValue()).reduce(
+    const dead = decodeLedger(await store.get()).reduce(
       (n, j) => (j.status === 'dead' ? n + 1 : n),
       0,
     )
     try {
-      await browser.action.setBadgeText({ text: dead > 0 ? String(dead) : '' })
-      if (dead > 0) await browser.action.setBadgeBackgroundColor({ color: '#dc2626' })
+      await badge.set(dead > 0 ? String(dead) : '')
+      if (dead > 0) await badge.setColor('#dc2626')
     } catch {
       /* the action API may be unavailable in some contexts */
     }
@@ -512,9 +636,9 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     // queue's onError observer), so the reply still lands.
     const queued = await uploadQueue
       .run(async () => {
-        let ledger = decodeLedger(await uploadJobsItem.getValue())
+        let ledger = decodeLedger(await store.get())
         const before = ledger.length
-        const now = Date.now()
+        const now = nowFn()
         for (const r of records) {
           const target = cloudTargetFor(r.media, r.filename)
           for (const p of providers) {
@@ -525,7 +649,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
             )
           }
         }
-        await uploadJobsItem.setValue(ledger)
+        await store.set(ledger)
         return ledger.length - before
       })
       .catch(() => 0)
@@ -542,9 +666,13 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
   const resumeOnBoot = (): void => {
     uploadQueue.push(async () => {
-      await uploadJobsItem.setValue(capLedger(decodeLedger(await uploadJobsItem.getValue())))
+      await store.set(capLedger(decodeLedger(await store.get())))
       await drainUploadJobs()
     })
+  }
+
+  const clearUploadBadge = (): void => {
+    void badge.set('').catch(() => {})
   }
 
   return {
