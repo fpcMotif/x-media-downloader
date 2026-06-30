@@ -87,9 +87,12 @@ describe('popup hosts whole-list clear', () => {
 })
 
 describe('popup hosts per-surface clear toggles', () => {
-  it('binds the three clear-on-save surface toggles', () => {
-    expect(popupSource).toContain('autoUnbookmarkOnSave')
-    expect(popupSource).toContain('autoUnlikeOnSave')
-    expect(popupSource).toContain('autoNotInterestedOnSave')
+  it('binds the three clear-on-save surface toggles via ScopeToggle', () => {
+    // Assert the live two-way bindings (not just the setting keys, which also
+    // appeared in the now-removed clearSurfaces summary) so this pins the toggles.
+    expect(popupSource).toContain('ScopeToggle')
+    expect(popupSource).toContain('update({ autoUnbookmarkOnSave: v })')
+    expect(popupSource).toContain('update({ autoUnlikeOnSave: v })')
+    expect(popupSource).toContain('update({ autoNotInterestedOnSave: v })')
   })
 })
