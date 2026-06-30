@@ -74,8 +74,8 @@ import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator, hookScopes } from '../background/clear-coordinator'
 import { isClearableTweetId } from '../core/clear/clearer'
-import * as captureDb from '../background/capture-db'
-import { mirrorCaptures } from '../background/capture-outbox'
+import { makeCaptureDb } from '../background/capture-db'
+import { makeCaptureOutbox } from '../background/capture-outbox'
 import { recentConversations, selectConversation, summarize } from '../core/capture/store'
 import { buildTree } from '../core/capture/tree'
 import { toJsonl, toMarkdown, toTreeJson } from '../core/capture/export'
@@ -351,6 +351,12 @@ const admissionGate = makeAdmissionGate({
   sizeProbe: makeSizeProbe({ fetch: (url, init) => headFetch(url, init) }),
   readTodayBudget: () => budgetStore.readToday(),
 })
+
+// Tweet harvest (spec §8–9): the durable IndexedDB store of harvested tweets and
+// its opt-in, fire-and-forget Convex mirror. Both default to their real adapters;
+// the seams exist so the merge-on-write and mirror gate are unit-tested.
+const captureDb = makeCaptureDb()
+const captureOutbox = makeCaptureOutbox()
 
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
@@ -1146,7 +1152,7 @@ const messageHandlers: MessageHandlers = {
     await captureDb.putRecords(msg.records)
     const total = await captureDb.count()
     console.info(`[XMD] capture received ${msg.records.length} record(s); store total=${total}`)
-    mirrorCaptures(msg.records)
+    captureOutbox.mirrorCaptures(msg.records)
     return { stored: msg.records.length }
   }),
   CaptureSummaryRequest: async () => {

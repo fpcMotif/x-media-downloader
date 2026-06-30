@@ -1,0 +1,156 @@
+import { describe, it, expect, vi } from 'vitest'
+import { Schema } from 'effect'
+import { makeCaptureOutbox, type LedgerStorage } from './capture-outbox'
+import { Settings as SettingsSchema, type Settings } from '../core/schema'
+import { decodeLedger, readyJobs } from '../core/sync/captures'
+import type { TweetRecord } from '../core/capture/record'
+
+const baseSettings: Settings = Schema.decodeUnknownSync(SettingsSchema)({})
+
+/** A fully configured + mirror-enabled Settings, with overrides for the gate tests. */
+const cfg = (over: Partial<Settings> = {}): Settings => ({
+  ...baseSettings,
+  cloudSyncEnabled: true,
+  convexUrl: 'https://x.convex.cloud',
+  convexSyncSecret: 'sek',
+  cloudDeviceId: 'dev-1',
+  captureMirrorEnabled: true,
+  ...over,
+})
+
+const mk = (tweetId: string): TweetRecord => ({
+  tweetId,
+  conversationId: tweetId,
+  author: { handle: 'alice' },
+  text: 'hi',
+  rawText: 'hi',
+  links: [],
+  media: [],
+  mentions: [],
+  hashtags: [],
+  source: 'timeline',
+  sourceRank: 1,
+  capturedAt: 1000,
+})
+
+function fakeLedger(initial: unknown = null): LedgerStorage & { value: unknown } {
+  const box = {
+    value: initial,
+    async get() {
+      return box.value
+    },
+    async set(value: unknown) {
+      box.value = value
+    },
+  }
+  return box
+}
+
+const tick = () => new Promise<void>((r) => setTimeout(r, 0))
+const records = [mk('1'), mk('2')]
+
+describe('makeCaptureOutbox — ADR-0017 gate (default OFF, separate from media sync)', () => {
+  it('sends nothing when the capture mirror is disabled', async () => {
+    const ledger = fakeLedger()
+    const getSettings = vi.fn<() => Promise<Settings>>(async () =>
+      cfg({ captureMirrorEnabled: false }),
+    )
+    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const outbox = makeCaptureOutbox({
+      getSettings,
+      ledger,
+      connect: () => ({ mutation }),
+      now: () => 1000,
+    })
+
+    outbox.mirrorCaptures(records)
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalled())
+    await tick()
+
+    expect(mutation).not.toHaveBeenCalled()
+    expect(ledger.value).toBeNull()
+  })
+
+  it('sends nothing when Cloud Sync is not configured', async () => {
+    const ledger = fakeLedger()
+    const getSettings = vi.fn<() => Promise<Settings>>(async () => cfg({ cloudSyncEnabled: false }))
+    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const outbox = makeCaptureOutbox({
+      getSettings,
+      ledger,
+      connect: () => ({ mutation }),
+      now: () => 1000,
+    })
+
+    outbox.mirrorCaptures(records)
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalled())
+    await tick()
+
+    expect(mutation).not.toHaveBeenCalled()
+    expect(ledger.value).toBeNull()
+  })
+
+  it('sends nothing for an empty batch even when fully enabled', async () => {
+    const ledger = fakeLedger()
+    const getSettings = vi.fn<() => Promise<Settings>>(async () => cfg())
+    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const outbox = makeCaptureOutbox({
+      getSettings,
+      ledger,
+      connect: () => ({ mutation }),
+      now: () => 1000,
+    })
+
+    outbox.mirrorCaptures([])
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalled())
+    await tick()
+
+    expect(mutation).not.toHaveBeenCalled()
+    expect(ledger.value).toBeNull()
+  })
+})
+
+describe('makeCaptureOutbox — drain', () => {
+  it('enqueues and sends the batch once to captures:recordCaptures, then stops', async () => {
+    const ledger = fakeLedger()
+    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const outbox = makeCaptureOutbox({
+      getSettings: async () => cfg(),
+      ledger,
+      connect: () => ({ mutation }),
+      now: () => 1000,
+    })
+
+    outbox.mirrorCaptures(records)
+    await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
+    await tick()
+
+    expect(mutation).toHaveBeenCalledTimes(1)
+    const [name, args] = mutation.mock.calls[0] as [string, { captures: unknown[]; secret: string }]
+    expect(name).toBe('captures:recordCaptures')
+    expect(args.secret).toBe('sek')
+    expect(args.captures).toHaveLength(2)
+    // Drained events are claimed, so a re-drain at the same instant finds nothing.
+    expect(readyJobs(decodeLedger(ledger.value), 1000)).toHaveLength(0)
+  })
+
+  it('best-effort: a control-plane error is swallowed and events stay for retry', async () => {
+    const ledger = fakeLedger()
+    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => {
+      throw new Error('503')
+    })
+    const outbox = makeCaptureOutbox({
+      getSettings: async () => cfg(),
+      ledger,
+      connect: () => ({ mutation }),
+      now: () => 1000,
+    })
+
+    outbox.mirrorCaptures(records)
+    await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
+    await tick()
+
+    // The mirror failed, but the enqueued events remain ready — nothing was lost.
+    expect(readyJobs(decodeLedger(ledger.value), 1000)).toHaveLength(2)
+  })
+})
