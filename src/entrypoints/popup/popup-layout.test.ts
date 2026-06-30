@@ -85,3 +85,11 @@ describe('popup hosts whole-list clear', () => {
     expect(popupSource).toContain('onListPage')
   })
 })
+
+describe('popup hosts per-surface clear toggles', () => {
+  it('binds the three clear-on-save surface toggles', () => {
+    expect(popupSource).toContain('autoUnbookmarkOnSave')
+    expect(popupSource).toContain('autoUnlikeOnSave')
+    expect(popupSource).toContain('autoNotInterestedOnSave')
+  })
+})

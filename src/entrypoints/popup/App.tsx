@@ -253,24 +253,6 @@ export function App() {
   }
 
   const activeMode = DOWNLOAD_MODES.find((m) => m.value === settings.downloadStrategy)
-  // Surface which surfaces the clear actually touches — the per-scope toggles
-  // live in Settings, so enabling clear-on-save from the popup would otherwise
-  // commit to hidden sub-settings silently. aria2 never clears (the action copy
-  // already says so), so skip the note there.
-  const clearSurfaces = [
-    settings.autoUnbookmarkOnSave && 'Bookmarks',
-    settings.autoUnlikeOnSave && 'Likes',
-    settings.autoNotInterestedOnSave && 'the For You feed',
-  ].filter((s): s is string => s !== false)
-  const clearScopeNote = !willClear
-    ? null
-    : clearSurfaces.length === 0
-      ? 'No surface selected in Settings — nothing will be removed.'
-      : `Removes saved posts from ${
-          clearSurfaces.length === 1
-            ? clearSurfaces[0]
-            : `${clearSurfaces.slice(0, -1).join(', ')} and ${clearSurfaces.at(-1)}`
-        }.`
 
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
@@ -509,17 +491,30 @@ export function App() {
                 onCheckedChange={(checked: boolean) => void update({ clearOnSave: checked })}
               />
             </Field>
-            {clearScopeNote && (
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                {clearScopeNote}{' '}
-                <button
-                  type="button"
-                  onClick={openOptions}
-                  className="font-medium text-primary hover:underline"
-                >
-                  Manage in settings
-                </button>
-              </p>
+            {settings.clearOnSave && (
+              <div className="grid gap-2">
+                <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
+                  CLEAR FROM
+                </span>
+                <ScopeToggle
+                  id="autoUnbookmarkOnSave"
+                  label="Bookmarks (un-bookmark)"
+                  checked={settings.autoUnbookmarkOnSave}
+                  onChange={(v) => void update({ autoUnbookmarkOnSave: v })}
+                />
+                <ScopeToggle
+                  id="autoUnlikeOnSave"
+                  label="Likes (un-like)"
+                  checked={settings.autoUnlikeOnSave}
+                  onChange={(v) => void update({ autoUnlikeOnSave: v })}
+                />
+                <ScopeToggle
+                  id="autoNotInterestedOnSave"
+                  label="For You (Not interested)"
+                  checked={settings.autoNotInterestedOnSave}
+                  onChange={(v) => void update({ autoNotInterestedOnSave: v })}
+                />
+              </div>
             )}
           </CardContent>
         </Card>
@@ -612,5 +607,26 @@ function Stat({ label, value }: { label: string; value: string }) {
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="font-medium tabular-nums">{value}</dd>
     </div>
+  )
+}
+
+function ScopeToggle({
+  id,
+  label,
+  checked,
+  onChange,
+}: {
+  id: string
+  label: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <Field orientation="horizontal">
+      <FieldContent>
+        <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      </FieldContent>
+      <Switch id={id} aria-label={label} checked={checked} onCheckedChange={onChange} />
+    </Field>
   )
 }
