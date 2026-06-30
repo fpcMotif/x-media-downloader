@@ -230,3 +230,75 @@ allocation in batch/streaming hot paths.
 - No `effect` dependency added to the Convex backend.
 - No blanket `Option`-ification of DOM queries, wire types, React state, or hot loops.
 - No control-flow restructuring — same branches, expressed over `Option`/tagged errors.
+
+## Appendix A — Effect-TS primer
+
+The refactor leans on three constructs from `effect`. Each replaces an ad-hoc
+pattern already in the code.
+
+### The `Option` railway (mental model)
+
+A nullable value enters `Option.fromNullable`, which routes a present value onto a
+**Some** track and an absent value onto a **None** track. The Some track runs your
+transforms (`map`, `flatMap`, `orElse`); the None track **short-circuits** — none of
+those transforms run. Both tracks rejoin at `Option.match` (handle each side) or at
+`Option.getOrThrowWith` (turn absence into a typed error). The absence case is handled
+once, by the type, instead of by a `=== null` check the caller can forget.
+
+```
+string | null ─▶ fromNullable ─┬─▶ Some<string> ─(map · orElse)─┐
+                               │                                 ├─▶ match / getOrThrowWith
+                               └─▶ None ───(short-circuits)──────┘
+```
+
+### `Option<T>` — replaces `T | null` on resolve/parse functions
+
+```ts
+// before
+function mediaKeyFromUrl(url: string): string | null {
+  return parseKey(url) ?? null
+}
+const k = mediaKeyFromUrl(u)
+if (k === null) return            // easy to forget
+use(k)
+
+// after
+const mediaKeyFromUrl = (url: string): Option.Option<string> =>
+  Option.fromNullable(parseKey(url))
+Option.match(mediaKeyFromUrl(u), {
+  onNone: () => skip(),
+  onSome: (k) => use(k),          // absence is typed
+})
+```
+
+### `Data.TaggedError` — replaces raw `throw new Error`
+
+```ts
+// before
+class OAuthError extends Error {
+  readonly _tag = 'OAuthError'
+  constructor(reason: string) { super(reason) }
+}
+throw new OAuthError('state mismatch (CSRF)')
+
+// after — _tag + structured fields; `message` keeps errorReason()/classifyUploadError working
+class OAuthError extends Data.TaggedError('OAuthError')<{
+  readonly message: string
+  readonly context?: 'state-mismatch'
+}> {}
+throw new OAuthError({ message: 'state mismatch (CSRF)', context: 'state-mismatch' })
+```
+
+### `Option.getOrThrowWith` — the bridge (debug info)
+
+```ts
+// before
+const item = resolveImageElement(img)
+if (item === null) throw new Error('no media')   // where? why?
+
+// after — None becomes a named, contextual error
+const item = Option.getOrThrowWith(
+  resolveImageElement(img),
+  () => new DetectError({ reason: `no media: ${img.src}` }),
+)
+```
