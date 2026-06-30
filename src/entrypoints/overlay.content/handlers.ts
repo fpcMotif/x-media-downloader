@@ -216,11 +216,11 @@ export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) =>
   for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
     if (!isMember(article, scope.value)) continue
     const tweetId = tweetIdOfArticle(article)
-    if (tweetId === null || seen.has(tweetId)) continue
-    const items = deps.store.valuesForTweet(tweetId)
+    if (Option.isNone(tweetId) || seen.has(tweetId.value)) continue
+    const items = deps.store.valuesForTweet(tweetId.value)
     if (items.length === 0) continue
-    seen.add(tweetId)
-    posts.push({ tweetId, items })
+    seen.add(tweetId.value)
+    posts.push({ tweetId: tweetId.value, items })
   }
   if (import.meta.env.DEV)
     deps.clearLog('sweep · handing', posts.length, 'posts to background on', scope.value)
@@ -266,7 +266,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
     // Not mounted in THIS tab → empty results, so the background defers (and
     // tries another tab) instead of recording a false failure (spec §4.5).
     const article = findArticle(deps.document, req.tweetId)
-    if (article === null) {
+    if (Option.isNone(article)) {
       if (import.meta.env.DEV) {
         const n = deps.document.querySelectorAll('article[data-testid="tweet"]').length
         deps.clearLog('article not mounted here → defer.', n, 'articles on page')
@@ -301,7 +301,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
       // false-negative a real membership and silently drop a clear with no retry
       // (the durable worklist has no re-trigger in v1). Gone now → nothing to do.
       const live = findArticle(deps.document, req.tweetId)
-      const member = scope === 'notInterested' || live === null ? false : isMember(live, scope)
+      const member = scope === 'notInterested' || Option.isNone(live) ? false : isMember(live.value, scope)
       if (shouldClickScope({ scope, onScope, member, allLists })) {
         results.push({ scope, ok: await deps.clearScope(req.tweetId, scope) })
       } else {

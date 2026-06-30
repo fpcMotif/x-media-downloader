@@ -69,6 +69,7 @@ import {
   isMember,
   notInterestedConfirmed,
 } from '../../core/clear/clearer'
+import { Option } from 'effect'
 import { messageHandlers, type HandlerDeps } from './handlers'
 import type { ClearScope, MediaItem, Settings } from '../../core/schema'
 
@@ -111,28 +112,28 @@ const FLIP_CONFIRM_TIMEOUT_MS = FLIP_POLL_ATTEMPTS * FLIP_POLL_INTERVAL_MS
 // blind "cleared" on selector rot).
 async function clearScope(tweetId: string, scope: ClearScope): Promise<boolean> {
   const article = findArticle(document, tweetId)
-  if (article === null) {
+  if (Option.isNone(article)) {
     if (import.meta.env.DEV) clearLog(scope, tweetId, '→ no matching article on page')
     return false
   }
   // The timeline feed clear is a caret-menu interaction, not a button flip.
-  if (scope === 'notInterested') return clearNotInterested(article, tweetId)
-  if (!isMember(article, scope)) {
-    const ac = alreadyCleared(article, scope)
+  if (scope === 'notInterested') return clearNotInterested(article.value, tweetId)
+  if (!isMember(article.value, scope)) {
+    const ac = alreadyCleared(article.value, scope)
     if (import.meta.env.DEV)
       clearLog(
         scope,
         '→ not a member; alreadyCleared =',
         ac,
         '· testids present:',
-        actionTestids(article),
+        actionTestids(article.value),
       )
     return ac
   }
-  const ctrl = clearControl(article, scope)
+  const ctrl = clearControl(article.value, scope)
   if (ctrl === null) {
     if (import.meta.env.DEV)
-      clearLog(scope, '→ member but control not found (selector rot?)', actionTestids(article))
+      clearLog(scope, '→ member but control not found (selector rot?)', actionTestids(article.value))
     return false
   }
   // Click the actionable button, not the bare testid node — X may put the testid
@@ -148,7 +149,7 @@ async function clearScope(tweetId: string, scope: ClearScope): Promise<boolean> 
   // oxlint-disable no-await-in-loop -- sequential poll with a fixed cap
   for (let i = 1; i <= FLIP_POLL_ATTEMPTS; i++) {
     await new Promise((r) => setTimeout(r, FLIP_POLL_INTERVAL_MS))
-    if (flipConfirmed(article, scope)) {
+    if (flipConfirmed(article.value, scope)) {
       if (import.meta.env.DEV)
         clearLog(scope, `→ flip confirmed after ${i * FLIP_POLL_INTERVAL_MS}ms`)
       return true
@@ -159,7 +160,7 @@ async function clearScope(tweetId: string, scope: ClearScope): Promise<boolean> 
     clearLog(
       scope,
       `→ NO flip after ${FLIP_CONFIRM_TIMEOUT_MS / 1000}s · testids now:`,
-      actionTestids(article),
+      actionTestids(article.value),
     )
   return false
 }

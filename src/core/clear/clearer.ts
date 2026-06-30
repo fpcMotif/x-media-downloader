@@ -119,7 +119,7 @@ const QUOTE_CARD_SEL = 'div[role="link"]'
  * could return a nested/quoted/analytics id and match the WRONG post for an
  * irreversible clear. Null if no own permalink is mounted yet.
  */
-export function tweetIdOfArticle(article: Element): string | null {
+export function tweetIdOfArticle(article: Element): Option.Option<string> {
   const anchors = [...article.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]')].filter(
     (a) => a.closest(QUOTE_CARD_SEL) === null,
   )
@@ -133,18 +133,19 @@ export function tweetIdOfArticle(article: Element): string | null {
     // is never null. Kept for the `string | null` type; the branch can't be hit.
     /* v8 ignore next */
     const m = /\/status\/(\d+)/.exec(a.getAttribute('href') ?? '')
-    if (m?.[1]) return m[1]
+    if (m?.[1]) return Option.some(m[1])
   }
-  return null
+  return Option.none()
 }
 
 /** The mounted `<article>` whose resolved tweetId matches — the id-match guard
  *  (spec §4.4) against virtualization momentarily resolving the wrong post. */
-export function findArticle(root: ParentNode, tweetId: string): Element | null {
+export function findArticle(root: ParentNode, tweetId: string): Option.Option<Element> {
   for (const article of root.querySelectorAll(TWEET_ARTICLE_SEL)) {
-    if (tweetIdOfArticle(article) === tweetId) return article
+    const id = tweetIdOfArticle(article)
+    if (Option.isSome(id) && id.value === tweetId) return Option.some(article)
   }
-  return null
+  return Option.none()
 }
 
 /** A control with this testid in the article's OWN action bar — never one nested

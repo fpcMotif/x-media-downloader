@@ -38,14 +38,13 @@ describe('clearer DOM helpers', () => {
   })
 
   it('resolves tweetId from the permalink', () => {
-    expect(tweetIdOfArticle(article({ tweetId: '1900000000000000001' }))).toBe(
+    expect(Option.getOrNull(tweetIdOfArticle(article({ tweetId: '1900000000000000001' })))).toBe(
       '1900000000000000001',
     )
   })
 
-  it('returns null when no status link is present', () => {
-    const el = document.createElement('article')
-    expect(tweetIdOfArticle(el)).toBe(null)
+  it('returns none when no status link is present', () => {
+    expect(Option.getOrNull(tweetIdOfArticle(document.createElement('article')))).toBe(null)
   })
 
   it('detects membership from the active un-control', () => {
@@ -58,8 +57,10 @@ describe('clearer DOM helpers', () => {
 
   it('findArticle id-match guard: only returns the matching tweetId', () => {
     document.body.append(article({ tweetId: '11' }), article({ tweetId: '22', bookmarked: true }))
-    expect(tweetIdOfArticle(findArticle(document, '22')!)).toBe('22')
-    expect(findArticle(document, '999')).toBe(null)
+    const found = findArticle(document, '22')
+    expect(Option.getOrNull(found)).not.toBe(null)
+    expect(Option.getOrNull(tweetIdOfArticle(Option.getOrNull(found)!))).toBe('22')
+    expect(Option.getOrNull(findArticle(document, '999'))).toBe(null)
   })
 
   it('ignores a quoted tweet: resolves the OUTER id and the OUTER action bar', () => {
@@ -76,7 +77,7 @@ describe('clearer DOM helpers', () => {
       <button data-testid="bookmark"></button>
     `
     // Must resolve the OUTER tweet (100), never the quoted 200.
-    expect(tweetIdOfArticle(el)).toBe('100')
+    expect(Option.getOrNull(tweetIdOfArticle(el))).toBe('100')
     // Outer tweet is NOT bookmarked (its own control is 'bookmark'); the quoted
     // card's 'removeBookmark' must be ignored, so isMember(bookmark) is false.
     expect(isMember(el, 'bookmark')).toBe(false)
@@ -98,7 +99,7 @@ describe('clearer DOM helpers', () => {
       <a href="/i/status/999/analytics"></a>
       <a href="/alice/status/100"><time></time></a>
     `
-    expect(tweetIdOfArticle(el)).toBe('100')
+    expect(Option.getOrNull(tweetIdOfArticle(el))).toBe('100')
   })
 
   it('flipConfirmed only when the active control is gone (or detached)', () => {
@@ -139,7 +140,7 @@ describe('clearer DOM helpers', () => {
     el.setAttribute('data-testid', 'tweet')
     // Anchor matches a[href*="/status/"] but the id is non-numeric → no regex match.
     el.innerHTML = `<a href="/i/status/foo"><time></time></a>`
-    expect(tweetIdOfArticle(el)).toBe(null)
+    expect(Option.getOrNull(tweetIdOfArticle(el))).toBe(null)
   })
 })
 
