@@ -17,12 +17,7 @@ import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { DownloadIcon, EraserIcon, GearIcon, LayersIcon } from '@/components/icons'
-import {
-  fetchCaptureSummary,
-  runCaptureExport,
-  type CaptureExportKind,
-  type CaptureSummary,
-} from '@/components/capture-export'
+import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
@@ -110,7 +105,6 @@ export function App() {
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [clearFeedback, setClearFeedback] = useState(false)
   const [captureSummary, setCaptureSummary] = useState<CaptureSummary | null>(null)
-  const [captureMsg, setCaptureMsg] = useState<string | null>(null)
 
   // Whether a worklist action will ALSO clear: "Clear after download" is on AND
   // the strategy is byte-verifiable (aria2 hand-offs are excluded). Drives the
@@ -231,18 +225,6 @@ export function App() {
     void fetchCaptureSummary().then(setCaptureSummary)
   }, [])
 
-  const exportHarvest = async (): Promise<void> => {
-    const outcome = await runCaptureExport('jsonl')
-    setCaptureMsg(outcome.detail)
-    setTimeout(() => setCaptureMsg(null), 5000)
-  }
-
-  const exportConvo = async (kind: CaptureExportKind, conversationId: string): Promise<void> => {
-    const outcome = await runCaptureExport(kind, conversationId)
-    setCaptureMsg(outcome.detail)
-    setTimeout(() => setCaptureMsg(null), 5000)
-  }
-
   useEffect(() => {
     let handle: ReturnType<typeof setTimeout>
     const poll = (): void => {
@@ -288,20 +270,6 @@ export function App() {
     }
   }
 
-  const clearLocalHistory = async (): Promise<void> => {
-    if (!confirm('Delete the local download history? Files already saved to disk are untouched.'))
-      return
-    await browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' }).catch(() => {})
-    setHistory([])
-  }
-
-  const clearLocalHarvest = async (): Promise<void> => {
-    if (!confirm('Delete the entire harvested-tweet archive? This cannot be undone.')) return
-    await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
-    setCaptureSummary({ tweets: 0, conversations: 0, recent: [] })
-    setCaptureMsg(null)
-  }
-
   // Only surface the monitor for a real download batch — not for stray hover/UI
   // trace events that also ride the metrics snapshot.
   const monitor = metrics && metrics.total > 0 ? metrics : null
@@ -309,7 +277,6 @@ export function App() {
   const monitorPct = monitor ? Math.min(100, Math.round((monitorDone / monitor.total) * 100)) : 0
   const canClearMonitor = monitor !== null && monitor.active === 0
   const recent = settings.downloadHistoryEnabled ? history.slice(0, 3) : []
-  const harvested = captureSummary?.recent ?? []
 
   return (
     <div className="xmd-popup">
@@ -345,64 +312,58 @@ export function App() {
 
       <main className="flex flex-col gap-2.5 px-3.5 py-3">
         {monitor && (
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 w-full"
-              disabled={!canClearMonitor}
-              title={!canClearMonitor ? 'Downloads still active' : undefined}
-              onClick={() => void clearMonitor()}
-            >
-              {!canClearMonitor
-                ? 'Active — downloads running'
-                : clearFeedback
-                  ? 'Monitor cleared'
-                  : 'Clear monitor'}
-            </Button>
-
-            <Card size="sm" aria-label="Download monitor">
-              <CardHeader className="gap-0.5">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="grid min-w-0 gap-0.5">
-                    <CardDescription className="text-[11px] font-semibold text-muted-foreground">
-                      Download monitor
-                    </CardDescription>
-                    <CardTitle className="text-sm">
-                      {monitorDone}/{monitor.total} done
-                    </CardTitle>
-                  </div>
+          <Card size="sm" aria-label="Download monitor">
+            <CardHeader className="gap-0.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="grid min-w-0 gap-0.5">
+                  <CardDescription className="text-[11px] font-semibold text-muted-foreground">
+                    Download monitor
+                  </CardDescription>
+                  <CardTitle className="text-sm">
+                    {monitorDone}/{monitor.total} done
+                  </CardTitle>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="text-[11px] font-semibold text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline disabled:hover:no-underline"
+                    disabled={!canClearMonitor}
+                    title={!canClearMonitor ? 'Downloads still active' : undefined}
+                    onClick={() => void clearMonitor()}
+                  >
+                    {!canClearMonitor ? 'Active' : clearFeedback ? 'Cleared' : 'Clear'}
+                  </button>
                   <span className="text-[15px] leading-none font-bold tabular-nums text-primary">
                     {monitorPct}%
                   </span>
                 </div>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                <Progress value={monitorPct} aria-label="Download progress" className="h-1.5" />
-                <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-                  <Stat label="Active" value={`${monitor.active}/${monitor.concurrencyCap}`} />
-                  <Stat label="Speed" value={fmtRate(monitor.throughputBps)} />
-                  <Stat label="Elapsed" value={fmtDuration(monitor.elapsedMs)} />
-                  <Stat
-                    label="ETA"
-                    value={
-                      monitor.etaSeconds === undefined ? '-' : `${Math.ceil(monitor.etaSeconds)}s`
-                    }
-                  />
-                  <Stat
-                    label="Bytes"
-                    value={
-                      monitor.bytesTotal > 0
-                        ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
-                        : fmtBytes(monitor.bytesReceived)
-                    }
-                  />
-                  {monitor.failed > 0 && <Stat label="Failed" value={String(monitor.failed)} />}
-                  {monitor.retries > 0 && <Stat label="Retries" value={String(monitor.retries)} />}
-                </dl>
-              </CardContent>
-            </Card>
-          </>
+              </div>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <Progress value={monitorPct} aria-label="Download progress" className="h-1.5" />
+              <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                <Stat label="Active" value={`${monitor.active}/${monitor.concurrencyCap}`} />
+                <Stat label="Speed" value={fmtRate(monitor.throughputBps)} />
+                <Stat label="Elapsed" value={fmtDuration(monitor.elapsedMs)} />
+                <Stat
+                  label="ETA"
+                  value={
+                    monitor.etaSeconds === undefined ? '-' : `${Math.ceil(monitor.etaSeconds)}s`
+                  }
+                />
+                <Stat
+                  label="Bytes"
+                  value={
+                    monitor.bytesTotal > 0
+                      ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
+                      : fmtBytes(monitor.bytesReceived)
+                  }
+                />
+                {monitor.failed > 0 && <Stat label="Failed" value={String(monitor.failed)} />}
+                {monitor.retries > 0 && <Stat label="Retries" value={String(monitor.retries)} />}
+              </dl>
+            </CardContent>
+          </Card>
         )}
 
         <Card size="sm" aria-label="On this page">
@@ -548,18 +509,19 @@ export function App() {
         </Card>
 
         <Card size="sm" aria-label="Knowledge Capture">
-          <CardHeader className="gap-0.5">
-            <CardTitle className="text-[13px] font-semibold">Knowledge Capture</CardTitle>
-            <CardDescription className="text-xs leading-snug">
-              {captureSummary?.tweets ?? 0} tweets · {captureSummary?.conversations ?? 0}{' '}
-              conversations harvested locally
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2.5">
+          <CardContent className="flex flex-col gap-3 pt-3">
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="captureEnabled">Harvest tweets</FieldLabel>
-                <FieldDescription>Save the text and metadata of tweets you view</FieldDescription>
+                <FieldDescription>
+                  <button
+                    type="button"
+                    className="text-primary hover:underline"
+                    onClick={openOptions}
+                  >
+                    {plural(captureSummary?.tweets ?? 0, 'tweet')} · Settings ›
+                  </button>
+                </FieldDescription>
               </FieldContent>
               <Switch
                 id="captureEnabled"
@@ -568,85 +530,6 @@ export function App() {
                 onCheckedChange={(checked: boolean) => void update({ captureEnabled: checked })}
               />
             </Field>
-
-            {harvested.length > 0 && (
-              <ol className="grid gap-1.5" aria-label="Harvested conversations">
-                {harvested.map((c) => (
-                  <li
-                    key={c.conversationId}
-                    className="flex items-center justify-between gap-2 text-xs"
-                  >
-                    <div className="grid min-w-0 gap-0.5">
-                      <span className="truncate font-medium">@{c.rootHandle}</span>
-                      <span className="truncate text-muted-foreground">{c.rootText}</span>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => void exportConvo('tree', c.conversationId)}
-                      >
-                        Tree
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => void exportConvo('markdown', c.conversationId)}
-                      >
-                        MD
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
-
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 w-full gap-2"
-              disabled={(captureSummary?.tweets ?? 0) === 0}
-              onClick={() => void exportHarvest()}
-            >
-              <DownloadIcon className="size-4" />
-              Export all (JSONL)
-            </Button>
-            {captureMsg && (
-              <p className="text-xs leading-snug text-muted-foreground">{captureMsg}</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card size="sm" aria-label="Local data">
-          <CardHeader className="gap-0.5">
-            <CardTitle className="text-[13px] font-semibold">Local data</CardTitle>
-            <CardDescription className="text-xs leading-snug">
-              Wipe this extension’s stored data. Never deletes files on disk.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="w-full gap-2"
-              onClick={() => void clearLocalHistory()}
-            >
-              <EraserIcon className="size-4" />
-              Clear download history
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="w-full gap-2"
-              onClick={() => void clearLocalHarvest()}
-            >
-              <EraserIcon className="size-4" />
-              Clear harvest archive
-            </Button>
           </CardContent>
         </Card>
 

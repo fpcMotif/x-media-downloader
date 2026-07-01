@@ -31,7 +31,10 @@ export function WorklistPanel({ settings, update }: PanelProps) {
         </Field>
 
         {settings.clearOnSave && (
-          <>
+          <div className="grid gap-3 rounded-lg border border-border/60 bg-muted/30 p-4">
+            <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
+              CLEAR FROM
+            </span>
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="autoUnbookmarkOnSave">Un-bookmark</FieldLabel>
@@ -94,7 +97,7 @@ export function WorklistPanel({ settings, update }: PanelProps) {
                 }
               />
             </Field>
-          </>
+          </div>
         )}
 
         <FieldDescription>

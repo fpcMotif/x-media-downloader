@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import {
   DownloadIcon,
   SlidersIcon,
+  FunnelIcon,
   ListChecksIcon,
   CloudIcon,
   LayersIcon,
@@ -41,7 +42,7 @@ const SECTIONS = [
     icon: DownloadIcon,
     Panel: DownloadsPanel,
   },
-  { id: 'filters', label: 'Filters', icon: SlidersIcon, Panel: FiltersPanel },
+  { id: 'filters', label: 'Filters', icon: FunnelIcon, Panel: FiltersPanel },
   {
     id: 'worklist',
     label: 'Worklist & clearing',

@@ -97,20 +97,37 @@ describe('popup hosts per-surface clear toggles', () => {
   })
 })
 
-describe('popup hosts local-data wipes', () => {
-  it('offers confirm-gated wipes for download history and the harvest archive', () => {
-    expect(popupSource).toContain('ClearHistoryRequest')
-    expect(popupSource).toContain('ClearCaptureRequest')
-    expect(popupSource).toContain('Clear download history')
-    expect(popupSource).toContain('Clear harvest archive')
+describe('popup local-data wipes moved to Settings', () => {
+  it('no longer offers download-history or harvest-archive wipes from the popup', () => {
+    expect(popupSource).not.toContain('ClearHistoryRequest')
+    expect(popupSource).not.toContain('ClearCaptureRequest')
+    expect(popupSource).not.toContain('Clear download history')
+    expect(popupSource).not.toContain('Clear harvest archive')
   })
 })
 
-describe('popup hosts harvest controls', () => {
-  it('lets harvesting be toggled and exported per conversation from the popup', () => {
+describe('popup hosts a minimal harvest toggle', () => {
+  it('lets harvesting be toggled from the popup', () => {
     expect(popupSource).toContain('captureEnabled')
-    expect(popupSource).toContain('exportConvo')
-    expect(popupSource).toContain("exportConvo('tree'")
-    expect(popupSource).toContain("exportConvo('markdown'")
+    expect(popupSource).toContain('Harvest tweets')
+  })
+
+  it('no longer hosts the harvested-conversation list or per-conversation exports (moved to Settings)', () => {
+    expect(popupSource).not.toContain('exportConvo')
+    expect(popupSource).not.toContain('Export all (JSONL)')
+  })
+
+  it('surfaces the archive size as a cue linking into the Knowledge Capture settings panel', () => {
+    expect(popupSource).toContain('captureSummary?.tweets')
+    expect(popupSource).toContain('openOptions')
+  })
+})
+
+describe('popup folds monitor-clear into the monitor card', () => {
+  it('nests the clear-monitor trigger inside the Download monitor card rather than a separate button above it', () => {
+    const monitorCardIdx = popupSource.indexOf('aria-label="Download monitor"')
+    const clearTriggerIdx = popupSource.indexOf('clearMonitor()')
+    expect(monitorCardIdx).toBeGreaterThan(-1)
+    expect(clearTriggerIdx).toBeGreaterThan(monitorCardIdx)
   })
 })
