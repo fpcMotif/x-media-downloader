@@ -27,6 +27,9 @@ export const CONTENT_SCRIPT_TAGS: ReadonlySet<string> = new Set([
   // privileged capture tags (Summary/Export/Clear) stay UI-only — a content
   // script may PUSH captures but never trigger an export or wipe the store.
   'CaptureTweets',
+  // Timeline "Saved ✓" sweep: the overlay asks which mounted tweets are already
+  // downloaded. Read-only membership over the page's own tweet ids.
+  'SavedStatusRequest',
 ])
 
 const ALLOWED_CONTENT_SCRIPT_ORIGINS: ReadonlySet<string> = new Set([

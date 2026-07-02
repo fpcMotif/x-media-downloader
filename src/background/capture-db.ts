@@ -23,6 +23,9 @@ type Merge = (existing: TweetRecord | undefined, incoming: TweetRecord) => Tweet
 export interface CaptureStore {
   upsert(records: ReadonlyArray<TweetRecord>, merge: Merge): Promise<void>
   allRecords(): Promise<TweetRecord[]>
+  /** Stream every record through `step` (cursor-driven for IndexedDB) — an
+   *  aggregate pass that never materializes the whole store in memory. */
+  fold<A>(init: A, step: (acc: A, record: TweetRecord) => A): Promise<A>
   conversation(id: string): Promise<TweetRecord[]>
   count(): Promise<number>
   clear(): Promise<void>
@@ -33,6 +36,8 @@ export interface CaptureDb {
    *  Empty batches are a no-op. Serialized against every other write. */
   putRecords(records: ReadonlyArray<TweetRecord>): Promise<void>
   allRecords(): Promise<TweetRecord[]>
+  /** Stream every record through `step` without loading the store whole. */
+  fold<A>(init: A, step: (acc: A, record: TweetRecord) => A): Promise<A>
   conversation(id: string): Promise<TweetRecord[]>
   count(): Promise<number>
   clear(): Promise<void>
@@ -48,6 +53,7 @@ export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
         await store.upsert(records, mergeRecord)
       }),
     allRecords: () => store.allRecords(),
+    fold: (init, step) => store.fold(init, step),
     conversation: (id) => store.conversation(id),
     count: () => store.count(),
     clear: () => writes.run(() => store.clear()),
@@ -108,6 +114,23 @@ function makeIndexedDbStore(): CaptureStore {
     async allRecords() {
       const db = await openDb()
       return promisify(db.transaction(STORE, 'readonly').objectStore(STORE).getAll())
+    },
+    async fold(init, step) {
+      const db = await openDb()
+      const request = db.transaction(STORE, 'readonly').objectStore(STORE).openCursor()
+      let acc = init
+      return new Promise((resolve, reject) => {
+        request.addEventListener('success', () => {
+          const cursor = request.result
+          if (cursor === null) {
+            resolve(acc)
+            return
+          }
+          acc = step(acc, cursor.value as TweetRecord)
+          cursor.continue()
+        })
+        request.addEventListener('error', () => reject(request.error))
+      })
     },
     async conversation(id) {
       const db = await openDb()

@@ -14,8 +14,24 @@ describe('CONTENT_SCRIPT_TAGS', () => {
         'RecoverTweetMediaRequest',
         'SweepEnqueueRequest',
         'CaptureTweets',
+        'SavedStatusRequest',
       ].toSorted(),
     )
+  })
+})
+
+describe('Saved-status sweep', () => {
+  // Regression: the overlay's timeline sweep sends SavedStatusRequest from a
+  // content script. When the tag was missing from CONTENT_SCRIPT_TAGS the guard
+  // dropped every sweep silently (fail-safe overlay → zero chips, no error).
+  it('allows the overlay content script to ask SavedStatusRequest', () => {
+    expect(
+      isMessageAllowed(
+        'SavedStatusRequest',
+        { id: OWN, tab: { id: 1 }, origin: 'https://x.com' },
+        OWN,
+      ),
+    ).toBe(true)
   })
 })
 

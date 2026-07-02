@@ -1620,6 +1620,7 @@ export default defineContentScript({
       clearLog,
       clearScope,
       queueDrain,
+      savedStatusActive: () => savedStatusVisible(location.pathname, savedStatusOn),
     }
 
     const handleRuntimeMessage = (

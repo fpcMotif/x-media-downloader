@@ -71,6 +71,9 @@ export interface HandlerDeps {
   /** Queue a not-mounted clear for the auto-scroll drain (the post has virtualized
    *  out of the DOM; the overlay scrolls the list to surface it, then clears it). */
   readonly queueDrain: (tweetId: string, scopes: ClearScope[], allLists: boolean) => void
+  /** Whether the "Saved" status is live on THIS page right now (setting on AND an
+   *  in-scope timeline) — gates the late cross-device chip push. */
+  readonly savedStatusActive: () => boolean
 }
 
 type SendResponse = (r: unknown) => void
@@ -137,6 +140,21 @@ export async function sweepSavedStatus(deps: {
   for (const tweetId of saved) {
     const article = byTweet.get(tweetId)
     if (article !== undefined) markArticleSaved(article, deps.document)
+  }
+}
+
+/** LATE cross-device hits pushed by the background (`SavedStatusUpdate`): the sweep's
+ *  instant reply carries only the locally-known subset; once the Convex backstop
+ *  answers, the fresh hits arrive here and chip any still-mounted article. Fail-safe
+ *  like the sweep — scope-gated, positive ids only, idempotent chip injection. */
+export const handleSavedStatusUpdate: MessageHandler = (message, deps) => {
+  if (!deps.savedStatusActive()) return
+  const saved = (message as { saved?: unknown }).saved
+  if (!Array.isArray(saved) || saved.length === 0) return
+  const ids = new Set(saved.filter((x): x is string => typeof x === 'string'))
+  for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
+    const tweetId = tweetIdOfArticle(article)
+    if (Option.isSome(tweetId) && ids.has(tweetId.value)) markArticleSaved(article, deps.document)
   }
 }
 
@@ -467,6 +485,7 @@ export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResp
  *  entry) falls through to the same `undefined`/`return false` path as before. */
 export const messageHandlers: Record<string, MessageHandler> = {
   TransferOutcome: handleTransferOutcome,
+  SavedStatusUpdate: handleSavedStatusUpdate,
   RefreshMediaUrlRequest: handleRefreshMediaUrl,
   ClearVisibleRequest: handleClearVisible,
   ClearWholeListRequest: handleClearWholeList,

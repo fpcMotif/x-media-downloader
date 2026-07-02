@@ -77,7 +77,12 @@ import { makeClearCoordinator, hookScopes } from '../background/clear-coordinato
 import { isClearableTweetId } from '../core/clear/clearer'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
-import { recentConversations, selectConversation, summarize } from '../core/capture/store'
+import {
+  emptyCaptureSummary,
+  finishCaptureSummary,
+  foldCaptureSummary,
+  selectConversation,
+} from '../core/capture/store'
 import { buildTree } from '../core/capture/tree'
 import { toJsonl, toMarkdown, toTreeJson } from '../core/capture/export'
 
@@ -281,8 +286,20 @@ const recordHistory = (settings: Settings, actions: ReadonlyArray<HistoryAction>
 // originating tab where the user is looking) — a background Bookmarks/Likes tab
 // can't win the broadcast and un-bookmark a post meant only for its feed's clear.
 // In-memory; keyed by tweetId; lost on SW recycle (the clear simply falls back to
-// the broadcast then). Set at seed time, read when the clear fires.
+// the broadcast then). Set at seed time, read when the clear fires. Entries are
+// never individually retired (the clear path has no completion hook back here),
+// so the map is capped — oldest-inserted evicted first; an evicted tweet's clear
+// degrades to the broadcast, same as after a recycle.
+const CLEAR_ORIGIN_TAB_CAP = 512
 const clearOriginTab = new Map<string, number>()
+const rememberClearOrigin = (tweetId: string, tabId: number): void => {
+  clearOriginTab.delete(tweetId) // re-insert to refresh its eviction position
+  clearOriginTab.set(tweetId, tabId)
+  for (const oldest of clearOriginTab.keys()) {
+    if (clearOriginTab.size <= CLEAR_ORIGIN_TAB_CAP) break
+    clearOriginTab.delete(oldest)
+  }
+}
 
 // Clear-on-complete coordinator (worklist un-bookmark/un-like). Owns the in-memory
 // clear ledger + its serialized chain AND the durable sweep worklist; routes verified
@@ -328,6 +345,10 @@ const queryConvexSaved: QueryConvex = async (tweetIds) => {
 const savedStatusCoordinator = makeSavedStatusCoordinator({
   index: savedIndex,
   queryConvex: queryConvexSaved,
+  // Late cross-device hits (the sweep replied before the backstop answered):
+  // push them to every X tab so the chips land without waiting for a re-sweep.
+  notifyFresh: (saved) =>
+    void tabBroadcaster.broadcastToXTabs({ _tag: 'SavedStatusUpdate', saved }).catch(() => {}),
 })
 // Seed once on SW startup from the durable history's completed tweetIds.
 void (async () => {
@@ -901,7 +922,7 @@ const handleDownload = (
       // Remember which tab this download came from, so the eventual clear is sent
       // there first (the feed the user is actually looking at).
       if (originTabId !== undefined)
-        for (const tweetId of byTweet.keys()) clearOriginTab.set(tweetId, originTabId)
+        for (const tweetId of byTweet.keys()) rememberClearOrigin(tweetId, originTabId)
       clearCoordinator.seedClearLedger(byTweet, clearScopes, clearOrigin)
     }
 
@@ -1160,13 +1181,14 @@ const messageHandlers: MessageHandlers = {
     captureOutbox.mirrorCaptures(msg.records)
     return { stored: msg.records.length }
   }),
-  CaptureSummaryRequest: async () => {
-    const records = await captureDb.allRecords()
-    return {
-      ...summarize(records),
-      recent: recentConversations(records, captureRecentLimit),
-    }
-  },
+  // Streams the store through a cursor fold — the harvest can be tens of
+  // thousands of records, and `getAll()` materialized every one of them in SW
+  // memory on each popup open just to compute three aggregates.
+  CaptureSummaryRequest: async () =>
+    finishCaptureSummary(
+      await captureDb.fold(emptyCaptureSummary(), foldCaptureSummary),
+      captureRecentLimit,
+    ),
   ExportCaptureRequest: handle<'ExportCaptureRequest'>(async (msg) => {
     const built = await buildCaptureExport(msg.kind, msg.conversationId)
     if (built === null) return { ok: false, filename: '', text: '' }

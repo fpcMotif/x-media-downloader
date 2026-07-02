@@ -3,6 +3,9 @@ import type { Source, TweetRecord } from './record'
 import { sourceRank } from './record'
 import {
   decodeRecords,
+  emptyCaptureSummary,
+  finishCaptureSummary,
+  foldCaptureSummary,
   mergeRecord,
   recentConversations,
   selectConversation,
@@ -168,5 +171,61 @@ describe('recentConversations', () => {
     expect(recent).toEqual([
       { conversationId: 'c1', rootHandle: 'erin', rootText: 'the root', count: 2, lastAt: 7 },
     ])
+  })
+})
+
+describe('streaming summary (fold/finish — the popup path that never loads the store whole)', () => {
+  const records = [
+    make({ tweetId: '1', source: 'timeline', capturedAt: 100 }),
+    make({ tweetId: '2', conversationId: '1', source: 'timeline', capturedAt: 300 }),
+    make({ tweetId: '3', source: 'tweetDetail', capturedAt: 200 }),
+  ]
+
+  it('matches summarize + recentConversations exactly on keyPath-unique records', () => {
+    const acc = records.reduce(foldCaptureSummary, emptyCaptureSummary())
+    const streamed = finishCaptureSummary(acc, 20)
+
+    expect({ tweets: streamed.tweets, conversations: streamed.conversations }).toEqual(
+      summarize(records),
+    )
+    expect(streamed.recent).toEqual(recentConversations(records, 20))
+  })
+
+  it('honors the recent-list cap', () => {
+    const acc = records.reduce(foldCaptureSummary, emptyCaptureSummary())
+    expect(finishCaptureSummary(acc, 1).recent).toEqual(recentConversations(records, 1))
+    expect(finishCaptureSummary(acc, 1).recent).toHaveLength(1)
+  })
+
+  it('a late-arriving root record still overwrites the thread title, like the batch path', () => {
+    const reply = make({
+      tweetId: '9',
+      conversationId: '7',
+      handle: 'bob',
+      text: 'reply first',
+      source: 'timeline',
+      capturedAt: 50,
+    })
+    const root = make({
+      tweetId: '7',
+      conversationId: '7',
+      handle: 'alice',
+      text: 'the root',
+      source: 'timeline',
+      capturedAt: 10,
+    })
+    const acc = [reply, root].reduce(foldCaptureSummary, emptyCaptureSummary())
+    const { recent } = finishCaptureSummary(acc, 5)
+
+    expect(recent).toEqual(recentConversations([reply, root], 5))
+    expect(recent[0]).toMatchObject({ rootHandle: 'alice', rootText: 'the root', count: 2 })
+  })
+
+  it('empty store: zero counts, empty recent', () => {
+    expect(finishCaptureSummary(emptyCaptureSummary(), 20)).toEqual({
+      tweets: 0,
+      conversations: 0,
+      recent: [],
+    })
   })
 })

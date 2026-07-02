@@ -422,6 +422,15 @@ export const SavedStatusResponse = Schema.TaggedStruct('SavedStatusResponse', {
 })
 export type SavedStatusResponse = typeof SavedStatusResponse.Type
 
+/** SW → content script (broadcast): LATE cross-device "Saved" hits. The sweep's
+ *  reply carries only the locally-known subset (it must never wait on the
+ *  Convex round-trip); when the backstop answers, the fresh hits ride this
+ *  fire-and-forget push so the chips still land in one sweep. */
+export const SavedStatusUpdate = Schema.TaggedStruct('SavedStatusUpdate', {
+  saved: Schema.Array(Schema.String),
+})
+export type SavedStatusUpdate = typeof SavedStatusUpdate.Type
+
 /** content → background: harvested tweet records off the GraphQL tee, mirrored
  *  into the local capture store (+ opt-in Convex). `{ stored }` rides back. */
 export const CaptureTweets = Schema.TaggedStruct('CaptureTweets', {
@@ -468,6 +477,7 @@ export const Message = Schema.Union([
   TransferOutcome,
   SavedStatusRequest,
   SavedStatusResponse,
+  SavedStatusUpdate,
   CaptureTweets,
   CaptureSummaryRequest,
   ExportCaptureRequest,

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Option } from 'effect'
 import {
   handleClearTweet,
+  handleSavedStatusUpdate,
   sweepSavedStatus,
   isSavedStatusScope,
   savedStatusVisible,
@@ -176,6 +177,51 @@ describe('sweepSavedStatus — Saved ✓ chip', () => {
     )
 
     await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
+
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
+})
+
+describe('handleSavedStatusUpdate — late cross-device chips', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  const depsWith = (active: boolean): HandlerDeps =>
+    ({ document, savedStatusActive: () => active }) as unknown as HandlerDeps
+
+  it('chips the mounted articles named by the push, idempotently', () => {
+    document.body.append(tweetArticle({ tweetId: '1' }), tweetArticle({ tweetId: '2' }))
+    const msg = { _tag: 'SavedStatusUpdate', saved: ['1'] }
+
+    handleSavedStatusUpdate(msg, depsWith(true), () => {})
+    expect(
+      Option.getOrNull(findArticle(document, '1'))?.querySelectorAll('.xdl-saved-chip').length,
+    ).toBe(1)
+    expect(
+      Option.getOrNull(findArticle(document, '2'))?.querySelectorAll('.xdl-saved-chip').length,
+    ).toBe(0)
+
+    // Re-push (chips are idempotent, like the sweep's).
+    handleSavedStatusUpdate(msg, depsWith(true), () => {})
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(1)
+  })
+
+  it('no-ops when the Saved status is off / out of scope on this page', () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate', saved: ['1'] }, depsWith(false), () => {})
+
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
+
+  it('fail-safe: malformed or empty payloads mark nothing', () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate' }, depsWith(true), () => {})
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate', saved: [] }, depsWith(true), () => {})
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate', saved: 'nope' }, depsWith(true), () => {})
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate', saved: [42] }, depsWith(true), () => {})
 
     expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
   })

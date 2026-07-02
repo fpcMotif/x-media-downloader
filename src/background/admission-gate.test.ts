@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
-import { makeAdmissionGate } from './admission-gate'
+import { makeAdmissionGate, PROBE_CONCURRENCY } from './admission-gate'
 import { Settings, type MediaItem } from '../core/schema'
 import type { SavedIndex } from '../core/sync/saved-index'
 import type { SizeProbePort } from '../core/download/size-probe'
@@ -22,6 +22,8 @@ const item = (over: Partial<MediaItem> & Pick<MediaItem, 'id' | 'tweetId'>): Med
 const savedIndexReturning = (subset: string[]): SavedIndex => ({
   seed: () => {},
   markSaved: () => {},
+  known: () => subset,
+  refresh: async () => [],
   resolve: async () => subset,
 })
 
@@ -147,6 +149,78 @@ describe('makeAdmissionGate', () => {
 
     expect(res.admitted).toEqual([other])
     expect(res.skipped).toEqual([{ item: local, reason: 'duplicate' }])
+  })
+
+  it('HEAD-probes run in parallel, not one serial await per item (~250ms RTT each)', async () => {
+    let active = 0
+    const resolvers: Array<() => void> = []
+    const sizeProbe: SizeProbePort = {
+      probe: () => {
+        active += 1
+        return new Promise((resolve) => {
+          resolvers.push(() => {
+            active -= 1
+            resolve(10)
+          })
+        })
+      },
+    }
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ maxFileSizeMB: 1 }),
+      savedIndex: savedIndexReturning([]),
+      queryConvex,
+      sizeProbe,
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+
+    const items = ['a', 'b', 'c', 'd'].map((id, i) => item({ id, tweetId: `T${i}` }))
+    const admitP = gate.admit(items)
+    // Flush microtasks until the probes have had every chance to start. A serial
+    // implementation holds at 1 in-flight probe here; the parallel one opens all 4.
+    // oxlint-disable-next-line no-await-in-loop -- deliberate sequential microtask flushes
+    for (let i = 0; i < 20 && resolvers.length < items.length; i++) await Promise.resolve()
+    expect(resolvers.length).toBe(items.length)
+    expect(active).toBe(items.length)
+    for (const release of resolvers) release()
+    const res = await admitP
+    expect(res.admitted).toEqual(items)
+  })
+
+  it('probe parallelism is bounded — at most PROBE_CONCURRENCY in flight', async () => {
+    const resolvers: Array<() => void> = []
+    const sizeProbe: SizeProbePort = {
+      probe: () =>
+        new Promise((resolve) => {
+          resolvers.push(() => resolve(10))
+        }),
+    }
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ maxFileSizeMB: 1 }),
+      savedIndex: savedIndexReturning([]),
+      queryConvex,
+      sizeProbe,
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+
+    const items = Array.from({ length: PROBE_CONCURRENCY + 2 }, (_, i) =>
+      item({ id: `i${i}`, tweetId: `T${i}` }),
+    )
+    const admitP = gate.admit(items)
+    // oxlint-disable no-await-in-loop -- deliberate sequential microtask flushes
+    for (let i = 0; i < 20 && resolvers.length < PROBE_CONCURRENCY; i++) await Promise.resolve()
+    // The pool opens exactly the cap, never more, while none have resolved.
+    expect(resolvers.length).toBe(PROBE_CONCURRENCY)
+    resolvers.shift()!()
+    for (let i = 0; i < 20 && resolvers.length < PROBE_CONCURRENCY; i++) await Promise.resolve()
+    // Releasing one slot admits exactly the next probe.
+    expect(resolvers.length).toBe(PROBE_CONCURRENCY)
+    while (resolvers.length > 0) {
+      resolvers.shift()!()
+      for (let i = 0; i < 5; i++) await Promise.resolve()
+    }
+    // oxlint-enable no-await-in-loop
+    const res = await admitP
+    expect(res.admitted).toEqual(items)
   })
 
   it('result shape: admitted is MediaItem[] and skipped preserves input order', async () => {
