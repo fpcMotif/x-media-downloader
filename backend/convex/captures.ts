@@ -40,23 +40,44 @@ export const recordCaptures = mutation({
   returns: v.object({ received: v.number(), upserted: v.number() }),
   handler: async (ctx, { captures, secret }) => {
     assertSecret(secret)
-    let upserted = 0
+
+    // Deduplicate captures with the same captureId in memory first
+    // using the same rank-then-`at` merge logic.
+    const uniqueCaptures = new Map<string, (typeof captures)[0]>()
     for (const c of captures) {
-      const row = await ctx.db
-        .query('tweet_captures')
-        .withIndex('by_capture_id', (q) => q.eq('captureId', c.captureId))
-        .first()
-      if (row === null) {
-        await ctx.db.insert('tweet_captures', c)
-        upserted += 1
-      } else if (
-        c.sourceRank > row.sourceRank ||
-        (c.sourceRank === row.sourceRank && c.at >= row.at)
+      const existing = uniqueCaptures.get(c.captureId)
+      if (
+        !existing ||
+        c.sourceRank > existing.sourceRank ||
+        (c.sourceRank === existing.sourceRank && c.at >= existing.at)
       ) {
-        await ctx.db.patch(row._id, c)
-        upserted += 1
+        uniqueCaptures.set(c.captureId, c)
       }
     }
+
+    // Process all unique captures concurrently to avoid N+1 sequential queries
+    const results = await Promise.all(
+      Array.from(uniqueCaptures.values()).map(async (c) => {
+        const row = await ctx.db
+          .query('tweet_captures')
+          .withIndex('by_capture_id', (q) => q.eq('captureId', c.captureId))
+          .first()
+
+        if (row === null) {
+          await ctx.db.insert('tweet_captures', c)
+          return 1
+        } else if (
+          c.sourceRank > row.sourceRank ||
+          (c.sourceRank === row.sourceRank && c.at >= row.at)
+        ) {
+          await ctx.db.patch(row._id, c)
+          return 1
+        }
+        return 0
+      })
+    )
+
+    const upserted = results.reduce<number>((sum, count) => sum + count, 0)
     return { received: captures.length, upserted }
   },
 })
