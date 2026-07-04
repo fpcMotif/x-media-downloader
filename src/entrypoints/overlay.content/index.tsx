@@ -506,7 +506,15 @@ const sendTracked = (
       notifyContextLost()
       return false
     }
-    if (out.status === 'error') return false
+    if (out.status === 'error') {
+      // The send itself rejected (an async failure `safeSend` didn't classify as
+      // context-invalidation — most likely an uncaught exception inside
+      // background.ts's DownloadRequest handler, before it could even build a
+      // reply). Previously silently discarded; log it so "why did this fail?"
+      // doesn't require opening the SW's own separate devtools context.
+      console.warn('[XMD] DownloadRequest send FAILED —', out.error)
+      return false
+    }
     const r = out.reply as
       | {
           completed?: number
