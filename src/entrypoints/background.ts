@@ -951,6 +951,10 @@ const handleDownload = (
     const now = Date.now()
     const syncEvents: SyncEvent[] = []
     const historyActions: HistoryAction[] = []
+    // Per-request start failures, WITH the strategy's own reason (a 403/network/
+    // CDN error) — sent back in the reply so "why didn't this download?" is
+    // answerable from the requesting tab's own console, not just the SW's.
+    const failures: { itemId: string; reason: string }[] = []
     for (const o of res.outcomes) {
       const media = mediaById.get(o.id)
       if (!o.ok) {
@@ -959,9 +963,12 @@ const handleDownload = (
         live = recordOutcome(live, o.id, 'failed', now)
         syncEvents.push(outcomeEvent(o.id, 'failed', settings.cloudDeviceId, now))
         historyActions.push({ kind: 'failed', requestId: o.id, at: now })
+        const reason = o.error ?? 'unknown'
+        failures.push({ itemId: o.id, reason })
         traceBackground('start-failed', {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
+          detail: reason,
         })
       } else if (o.handle?.kind === 'browser') {
         requestIdByDownloadId.set(o.handle.id, o.id)
@@ -998,7 +1005,13 @@ const handleDownload = (
     persistTransfers()
     yield* Effect.promise(() => persistSnapshot(now))
 
-    return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total, skipped }
+    return {
+      _tag: 'QueueUpdate' as const,
+      completed: res.completed,
+      total: res.total,
+      skipped,
+      ...(failures.length > 0 ? { failures } : {}),
+    }
   }).pipe(Effect.provide(SettingsServiceLive))
 
 /** The durable one-by-one sweep (content → background). Skip tweets already

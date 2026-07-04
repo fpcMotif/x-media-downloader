@@ -475,6 +475,19 @@ const reportSkipped = (skipped?: SkipSummary): void => {
   console.info(`[XMD] ${total} skipped — ${parts.join(', ')}`)
 }
 
+/** Surface why a request reached the download strategy but failed to START —
+ *  the strategy's own `DownloadError.reason` (a 403/network/CDN failure), NOT
+ *  an admission-gate skip (that's `reportSkipped`). Previously this reason only
+ *  ever reached the background service worker's own (separately-inspected)
+ *  console; this is the same information, in the tab's own console. */
+const reportFailures = (failures?: ReadonlyArray<{ itemId: string; reason: string }>): void => {
+  if (!failures || failures.length === 0) return
+  console.warn(
+    `[XMD] ${failures.length} download(s) FAILED to start —`,
+    failures.map((f) => `${f.itemId}: ${f.reason}`).join('; '),
+  )
+}
+
 /** Send one tracked request; false on a background start failure OR a dead
  *  channel (a stale tab — the user is told to reload rather than failing mutely).
  *  `clearExpect` (For You only) widens the clear gate to the whole post. */
@@ -494,8 +507,16 @@ const sendTracked = (
       return false
     }
     if (out.status === 'error') return false
-    const r = out.reply as { completed?: number; total?: number; skipped?: SkipSummary } | undefined
+    const r = out.reply as
+      | {
+          completed?: number
+          total?: number
+          skipped?: SkipSummary
+          failures?: ReadonlyArray<{ itemId: string; reason: string }>
+        }
+      | undefined
     reportSkipped(r?.skipped)
+    reportFailures(r?.failures)
     return r?.completed !== undefined && r.completed === r.total
   })
 

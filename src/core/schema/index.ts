@@ -226,6 +226,13 @@ export const QueueUpdate = Schema.TaggedStruct('QueueUpdate', {
   skipped: Schema.optional(
     Schema.Array(Schema.Struct({ reason: SkipReason, count: Schema.Number })),
   ),
+  // Requests that reached the download strategy but failed to START (the
+  // strategy's own DownloadError.reason — a 403/network/CDN failure, not an
+  // admission-gate skip). Omitted when nothing failed. Without this, "why
+  // didn't this download?" was answerable only from the SW's own console.
+  failures: Schema.optional(
+    Schema.Array(Schema.Struct({ itemId: Schema.String, reason: Schema.String })),
+  ),
 })
 export const MetricsRequest = Schema.TaggedStruct('MetricsRequest', {})
 export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {

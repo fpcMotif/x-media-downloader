@@ -17,13 +17,15 @@ export const isInstagramUrl = (url: string): boolean =>
  * True for a captured response URL Instagram's own frontend plausibly used to
  * fetch post/media data.
  *
- * LIVE-VERIFIED 2026-07-04 (Chrome Canary, logged-in session, via claude-in-
- * chrome network inspection — see the as-built plan doc): Instagram's web
- * client's actual GraphQL endpoint is `POST /api/graphql` — bare, no `/query`
- * suffix. The original research-only guess (`/graphql/query`) was WRONG and
- * would have silently missed all real traffic; `/api/v1/` is kept as a
- * courtesy fallback (research mentions it for other surfaces) even though no
- * post/media-bearing call to it was observed live in this session.
+ * LIVE-VERIFIED TWICE 2026-07-05 (Chrome Canary, logged-in session, via
+ * claude-in-chrome network inspection — see the as-built plan doc), with the
+ * second pass CORRECTING the first: an initial page-load-only check saw only
+ * `POST /api/graphql` and concluded `/graphql/query` was unused. A later
+ * session doing normal feed scrolling (not just initial load) observed BOTH
+ * `/api/graphql` AND `/graphql/query` firing — Instagram uses both, exactly
+ * like Threads, just not necessarily in the same interaction. The first,
+ * narrower fix was itself an under-verification: a single interaction
+ * pattern isn't enough to rule out an endpoint. Match both.
  *
  * Deliberately loose by design, not just for lack of verification: a
  * false-positive URL match only costs one wasted JSON parse that structurally
@@ -32,10 +34,11 @@ export const isInstagramUrl = (url: string): boolean =>
  * because detection is entirely shape-driven (`forEachPostNode` +
  * `mediaNodesFromPost`), not URL-driven. A narrower filter would only reduce
  * wasted parses, at the risk of a false negative silently dropping real media
- * capture — the wrong trade for a filter this cheap to over-match.
+ * capture — the wrong trade for a filter this cheap to over-match, and
+ * exactly the mistake the first live-verification pass made.
  */
 export function isTrackedInstagramResponseUrl(url: string): boolean {
-  return url.includes('/api/graphql') || url.includes('/api/v1/')
+  return url.includes('/api/graphql') || url.includes('/graphql/query') || url.includes('/api/v1/')
 }
 
 /**

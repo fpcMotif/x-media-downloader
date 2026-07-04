@@ -29,12 +29,19 @@ describe('INSTAGRAM_HOST_MATCH / isInstagramUrl', () => {
 })
 
 describe('isTrackedInstagramResponseUrl', () => {
-  // Live-verified 2026-07-04 (Chrome Canary, logged-in session): Instagram's
-  // web client's real GraphQL endpoint is bare `/api/graphql` — no `/query`
-  // suffix. `/graphql/query` (the original research-only guess) is NOT what
-  // Instagram actually calls; deliberately NOT asserted here anymore.
+  // Live-verified 2026-07-05 (Chrome Canary, logged-in session, TWO passes):
+  // the first pass (initial page load only) saw only `/api/graphql` and
+  // wrongly concluded `/graphql/query` was unused. A second pass exercising
+  // normal feed scrolling observed BOTH firing — Instagram uses both
+  // endpoints, exactly like Threads, just not necessarily in the same
+  // interaction. Match both; a single interaction pattern isn't enough to
+  // rule an endpoint out.
   it('matches the real /api/graphql endpoint', () => {
     expect(isTrackedInstagramResponseUrl('https://www.instagram.com/api/graphql')).toBe(true)
+  })
+
+  it('matches /graphql/query too (observed during feed scrolling, not initial load)', () => {
+    expect(isTrackedInstagramResponseUrl('https://www.instagram.com/graphql/query')).toBe(true)
   })
 
   it('matches a REST-ish /api/v1/ url (kept as a courtesy fallback per research)', () => {
