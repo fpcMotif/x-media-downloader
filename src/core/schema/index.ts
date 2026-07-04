@@ -438,8 +438,11 @@ export const CaptureTweets = Schema.TaggedStruct('CaptureTweets', {
 })
 export type CaptureTweets = typeof CaptureTweets.Type
 
-/** panel → background: capture-store counts. `{ tweets, conversations, recent }` back. */
-export const CaptureSummaryRequest = Schema.TaggedStruct('CaptureSummaryRequest', {})
+/** panel → background: capture-store counts. `{ tweets, conversations, recent }` back.
+ *  `limit` caps the `recent` list (absent → the background default; 0 → counts only). */
+export const CaptureSummaryRequest = Schema.TaggedStruct('CaptureSummaryRequest', {
+  limit: Schema.optional(Schema.Number),
+})
 export type CaptureSummaryRequest = typeof CaptureSummaryRequest.Type
 
 /** panel → background: build + deliver an export. `{ ok, filename }` back. */

@@ -1184,11 +1184,12 @@ const messageHandlers: MessageHandlers = {
   // Streams the store through a cursor fold — the harvest can be tens of
   // thousands of records, and `getAll()` materialized every one of them in SW
   // memory on each popup open just to compute three aggregates.
-  CaptureSummaryRequest: async () =>
+  CaptureSummaryRequest: handle<'CaptureSummaryRequest'>(async (msg) =>
     finishCaptureSummary(
       await captureDb.fold(emptyCaptureSummary(), foldCaptureSummary),
-      captureRecentLimit,
+      msg.limit ?? captureRecentLimit,
     ),
+  ),
   ExportCaptureRequest: handle<'ExportCaptureRequest'>(async (msg) => {
     const built = await buildCaptureExport(msg.kind, msg.conversationId)
     if (built === null) return { ok: false, filename: '', text: '' }

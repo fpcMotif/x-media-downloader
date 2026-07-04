@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, SettingGroup, type PanelProps } from '../ui'
@@ -12,33 +13,64 @@ import {
   type CaptureSummary,
 } from '@/components/capture-export'
 
+// The archive browser loads the newest ARCHIVE_FETCH_LIMIT conversations in one
+// message and pages through them client-side — no per-click round-trips. Archives
+// beyond the cap stay reachable via "Export all (JSONL)"; a caption says so.
+const ARCHIVE_FETCH_LIMIT = 1000
+const PAGE_SIZE = 20
+const PAGE_STEP = 50
+
+const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
+
+const fmtDay = (ms: number): string =>
+  new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+
 export function CapturePanel({ settings, update }: PanelProps) {
   const [summary, setSummary] = useState<CaptureSummary | null>(null)
-  const [exportMsg, setExportMsg] = useState<string | null>(null)
+  const [statusMsg, setStatusMsg] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [visible, setVisible] = useState(PAGE_SIZE)
 
-  const refreshSummary = (): void => void fetchCaptureSummary().then(setSummary)
+  const refreshSummary = (): void => void fetchCaptureSummary(ARCHIVE_FETCH_LIMIT).then(setSummary)
   useEffect(refreshSummary, [])
+
+  const flashStatus = (msg: string): void => {
+    setStatusMsg(msg)
+    setTimeout(() => setStatusMsg(null), 5000)
+  }
 
   const doExport = async (kind: CaptureExportKind, conversationId?: string): Promise<void> => {
     const outcome = await runCaptureExport(kind, conversationId)
-    setExportMsg(outcome.detail)
-    setTimeout(() => setExportMsg(null), 5000)
+    flashStatus(outcome.detail)
   }
 
-  const clearHarvest = async (): Promise<void> => {
+  const clearArchive = async (): Promise<void> => {
+    const tweets = summary?.tweets ?? 0
+    if (!confirm(`Delete all ${plural(tweets, 'captured tweet')}? This cannot be undone.`)) return
     await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
     setSummary({ tweets: 0, conversations: 0, recent: [] })
-    setExportMsg(null)
+    setQuery('')
+    setVisible(PAGE_SIZE)
+    flashStatus(`Cleared ${plural(tweets, 'tweet')} from the archive.`)
   }
 
   const syncConfigured = settings.convexUrl !== '' && settings.convexSyncSecret !== ''
-  const recent = summary?.recent ?? []
+  const loaded = summary?.recent ?? []
+  const conversations = summary?.conversations ?? 0
+
+  const needle = query.trim().toLowerCase()
+  const matches =
+    needle === ''
+      ? loaded
+      : loaded.filter((c) => `@${c.rootHandle} ${c.rootText}`.toLowerCase().includes(needle))
+  const shown = matches.slice(0, visible)
+  const remaining = matches.length - shown.length
 
   return (
     <>
       <PanelHeader
         title="Knowledge Capture"
-        description="Harvest the text and metadata of tweets you scroll past into a local, searchable archive — exportable as JSONL, conversation trees, or Markdown."
+        description="Capture the text and metadata of tweets you scroll past into a local, searchable archive — export as JSONL, conversation trees, or Markdown."
       />
 
       <SettingGroup
@@ -48,12 +80,12 @@ export function CapturePanel({ settings, update }: PanelProps) {
       >
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="captureEnabled">Harvest tweets</FieldLabel>
+            <FieldLabel htmlFor="captureEnabled">Capture tweets</FieldLabel>
             <FieldDescription>Save the text and metadata of tweets you view</FieldDescription>
           </FieldContent>
           <Switch
             id="captureEnabled"
-            aria-label="Harvest tweets"
+            aria-label="Capture tweets"
             checked={settings.captureEnabled}
             onCheckedChange={(checked: boolean) => void update({ captureEnabled: checked })}
           />
@@ -63,7 +95,7 @@ export function CapturePanel({ settings, update }: PanelProps) {
           <FieldContent>
             <FieldLabel htmlFor="captureAllScrolled">Capture everything scrolled</FieldLabel>
             <FieldDescription>
-              Harvest every tweet on the timeline, not only ones you act on
+              Capture every tweet on the timeline, not only ones you act on
             </FieldDescription>
           </FieldContent>
           <Switch
@@ -95,27 +127,46 @@ export function CapturePanel({ settings, update }: PanelProps) {
       </SettingGroup>
 
       <SettingGroup
-        title="Harvest"
-        description="What's in your local archive, and how to take it with you."
+        title="Archive"
+        description="Everything captured so far — browse conversations, export them, or wipe the archive."
         icon={<DownloadIcon className="size-[18px]" />}
       >
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">{summary?.tweets ?? 0} tweets</Badge>
-          <Badge variant="outline">{summary?.conversations ?? 0} conversations</Badge>
+          <Badge variant="outline">{plural(summary?.tweets ?? 0, 'tweet')}</Badge>
+          <Badge variant="outline">{plural(conversations, 'conversation')}</Badge>
           <Button type="button" variant="ghost" size="sm" onClick={refreshSummary}>
             Refresh
           </Button>
         </div>
 
-        {recent.length > 0 ? (
-          <ol className="grid gap-1.5" aria-label="Recent conversations">
-            {recent.map((c) => (
+        {loaded.length > 0 && (
+          <Input
+            type="search"
+            aria-label="Filter conversations"
+            placeholder="Filter by @handle or text…"
+            value={query}
+            onInput={(e: Event) => {
+              setQuery((e.target as HTMLInputElement).value)
+              setVisible(PAGE_SIZE)
+            }}
+          />
+        )}
+
+        {shown.length > 0 ? (
+          <ol className="grid gap-1.5" aria-label="Captured conversations">
+            {shown.map((c) => (
               <li
                 key={c.conversationId}
                 className="flex items-center justify-between gap-3 text-sm"
               >
                 <div className="grid min-w-0 gap-0.5">
-                  <span className="truncate font-medium">@{c.rootHandle}</span>
+                  <span className="truncate">
+                    <span className="font-medium">@{c.rootHandle}</span>
+                    <span className="text-muted-foreground">
+                      {' '}
+                      · {plural(c.count, 'tweet')} · {fmtDay(c.lastAt)}
+                    </span>
+                  </span>
                   <span className="truncate text-muted-foreground">{c.rootText}</span>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -125,7 +176,7 @@ export function CapturePanel({ settings, update }: PanelProps) {
                     size="sm"
                     onClick={() => void doExport('tree', c.conversationId)}
                   >
-                    Export tree
+                    Export JSON
                   </Button>
                   <Button
                     type="button"
@@ -139,9 +190,29 @@ export function CapturePanel({ settings, update }: PanelProps) {
               </li>
             ))}
           </ol>
+        ) : loaded.length > 0 ? (
+          <FieldDescription>No conversations match “{query.trim()}”.</FieldDescription>
         ) : (
           <FieldDescription>
-            Nothing harvested yet. Turn on Harvest tweets and browse X.
+            Nothing captured yet. Turn on Capture tweets and browse X.
+          </FieldDescription>
+        )}
+
+        {remaining > 0 && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="self-start"
+            onClick={() => setVisible((v) => v + PAGE_STEP)}
+          >
+            Show {Math.min(PAGE_STEP, remaining)} more ({remaining} remaining)
+          </Button>
+        )}
+        {conversations > loaded.length && (
+          <FieldDescription>
+            Showing the newest {loaded.length} of {conversations} conversations — Export all (JSONL)
+            includes everything.
           </FieldDescription>
         )}
 
@@ -159,15 +230,17 @@ export function CapturePanel({ settings, update }: PanelProps) {
             type="button"
             variant="outline"
             size="sm"
-            className="self-start"
-            onClick={() => void clearHarvest()}
+            className="self-start text-destructive hover:text-destructive"
+            onClick={() => void clearArchive()}
           >
             <EraserIcon className="size-4" />
-            Clear harvest
+            Clear archive…
           </Button>
         </div>
 
-        {exportMsg && <FieldDescription>{exportMsg}</FieldDescription>}
+        <div aria-live="polite">
+          {statusMsg && <FieldDescription>{statusMsg}</FieldDescription>}
+        </div>
       </SettingGroup>
     </>
   )

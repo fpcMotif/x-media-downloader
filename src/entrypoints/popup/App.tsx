@@ -93,6 +93,12 @@ function usePageAction<R>(config: {
 
 const openOptions = (): void => void browser.runtime.openOptionsPage()
 
+// openOptionsPage can't carry a hash, so it always lands on General; the capture
+// card deep-links straight to the Knowledge Capture panel instead (the options
+// app reads location.hash on mount to select the section).
+const openCaptureArchive = (): void =>
+  void browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}#capture` })
+
 export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
@@ -222,7 +228,8 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    void fetchCaptureSummary().then(setCaptureSummary)
+    // limit 0: the popup shows only the tweet count — skip the recent-list payload.
+    void fetchCaptureSummary(0).then(setCaptureSummary)
   }, [])
 
   useEffect(() => {
@@ -509,23 +516,26 @@ export function App() {
         </Card>
 
         <Card size="sm" aria-label="Knowledge Capture">
-          <CardContent className="flex flex-col gap-3 pt-3">
+          <CardHeader className="gap-0.5">
+            <CardTitle className="text-[13px] font-semibold">Knowledge Capture</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldLabel htmlFor="captureEnabled">Harvest tweets</FieldLabel>
+                <FieldLabel htmlFor="captureEnabled">Capture tweets</FieldLabel>
                 <FieldDescription>
                   <button
                     type="button"
                     className="text-primary hover:underline"
-                    onClick={openOptions}
+                    onClick={openCaptureArchive}
                   >
-                    {plural(captureSummary?.tweets ?? 0, 'tweet')} · Settings ›
+                    {plural(captureSummary?.tweets ?? 0, 'tweet')} captured · View archive ›
                   </button>
                 </FieldDescription>
               </FieldContent>
               <Switch
                 id="captureEnabled"
-                aria-label="Harvest tweets"
+                aria-label="Capture tweets"
                 checked={settings.captureEnabled}
                 onCheckedChange={(checked: boolean) => void update({ captureEnabled: checked })}
               />

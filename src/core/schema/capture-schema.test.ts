@@ -51,6 +51,12 @@ describe('Capture messages', () => {
     expect(Schema.decodeUnknownSync(Message)(raw)._tag).toBe('CaptureSummaryRequest')
   })
 
+  it('decodes CaptureSummaryRequest with the optional recent-list limit', () => {
+    const raw = { _tag: 'CaptureSummaryRequest', limit: 1000 }
+    expect(Schema.decodeUnknownSync(CaptureSummaryRequest)(raw).limit).toBe(1000)
+    expect(Schema.decodeUnknownSync(Message)(raw)._tag).toBe('CaptureSummaryRequest')
+  })
+
   it('decodes ExportCaptureRequest via its tagged shape and the Message union', () => {
     const raw = { _tag: 'ExportCaptureRequest', kind: 'tree', conversationId: '123' }
     const direct = Schema.decodeUnknownSync(ExportCaptureRequest)(raw)

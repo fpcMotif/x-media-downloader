@@ -106,20 +106,23 @@ describe('popup local-data wipes moved to Settings', () => {
   })
 })
 
-describe('popup hosts a minimal harvest toggle', () => {
-  it('lets harvesting be toggled from the popup', () => {
+describe('popup hosts a minimal capture toggle', () => {
+  it('lets capturing be toggled from the popup', () => {
     expect(popupSource).toContain('captureEnabled')
-    expect(popupSource).toContain('Harvest tweets')
+    expect(popupSource).toContain('Capture tweets')
   })
 
-  it('no longer hosts the harvested-conversation list or per-conversation exports (moved to Settings)', () => {
+  it('no longer hosts the captured-conversation list or per-conversation exports (moved to Settings)', () => {
     expect(popupSource).not.toContain('exportConvo')
     expect(popupSource).not.toContain('Export all (JSONL)')
   })
 
-  it('surfaces the archive size as a cue linking into the Knowledge Capture settings panel', () => {
+  it('surfaces the archive size as a deep link into the Knowledge Capture settings panel', () => {
     expect(popupSource).toContain('captureSummary?.tweets')
-    expect(popupSource).toContain('openOptions')
+    // openOptionsPage always lands on General; the capture card must carry the
+    // #capture hash so the options app opens on the Knowledge Capture panel.
+    expect(popupSource).toContain('#capture')
+    expect(popupSource).toContain('openCaptureArchive')
   })
 })
 
