@@ -6,18 +6,14 @@ import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
 import { pageScope } from '@/core/clear/clearer'
 import { isXUrl } from '@/core/adapters/x'
 import type { MetricsSnapshot, Settings } from '@/core/schema'
-import type { DownloadRecord } from '@/core/history/record'
-import { fetchHistory, formatRecord } from './history-section'
 import { cn } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { DownloadIcon, EraserIcon, GearIcon, LayersIcon } from '@/components/icons'
+import { LayersIcon, EraserIcon, CheckIcon } from '@/components/icons'
 import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
+import { CaptureQuickActions } from './capture-quick-actions'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
@@ -32,14 +28,6 @@ function fmtBytes(bytes: number): string {
   return `${bytes} B`
 }
 
-function fmtDuration(ms: number): string {
-  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`
-  const minutes = Math.floor(ms / 60_000)
-  const seconds = Math.round((ms % 60_000) / 1000)
-  return `${minutes}m ${seconds}s`
-}
-
 const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 // Poll the download monitor briskly while a batch is live, but back off when
@@ -49,6 +37,17 @@ const POLL_ACTIVE_MS = 1000
 const POLL_IDLE_MS = 3000
 
 const PAGE_UNREACHABLE = 'Could not reach the page — reload the X tab and try again.'
+
+const CLEAR_SCOPES: ReadonlyArray<{ key: keyof Settings; label: string }> = [
+  { key: 'autoUnbookmarkOnSave', label: 'Bookmarks' },
+  { key: 'autoUnlikeOnSave', label: 'Likes' },
+  { key: 'autoNotInterestedOnSave', label: 'For You' },
+]
+
+const clearScopeSummary = (settings: Settings): string => {
+  const active = CLEAR_SCOPES.filter((s) => settings[s.key]).map((s) => s.label)
+  return active.length > 0 ? active.join(' · ') : 'No scopes selected'
+}
 
 /** A worklist button that messages the active tab's content script and turns the
  *  reply into a status line. Owns its own busy state and the shared confirm →
@@ -93,17 +92,19 @@ function usePageAction<R>(config: {
 
 const openOptions = (): void => void browser.runtime.openOptionsPage()
 
+const openOptionsSection = (hash: string): void =>
+  void browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}#${hash}` })
+
 // openOptionsPage can't carry a hash, so it always lands on General; the capture
 // card deep-links straight to the Knowledge Capture panel instead (the options
 // app reads location.hash on mount to select the section).
-const openCaptureArchive = (): void =>
-  void browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}#capture` })
+const openCaptureArchive = (): void => openOptionsSection('capture')
+const openClearingSettings = (): void => openOptionsSection('clearing')
 
 export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
-  const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
   const [onXTab, setOnXTab] = useState(false)
   const [onListPage, setOnListPage] = useState(false)
   // One shared status line for the page actions, so the most recent action's
@@ -114,14 +115,14 @@ export function App() {
 
   // Whether a worklist action will ALSO clear: "Clear after download" is on AND
   // the strategy is byte-verifiable (aria2 hand-offs are excluded). Drives the
-  // button labels, copy, and the confirm() gating — when off, the actions just
-  // download. Computed before the loading early-return so the action hooks below
-  // (which must run unconditionally) can close over it.
+  // primary button's label and the confirm() gating — when off, the actions
+  // just download. Computed before the loading early-return so the action hooks
+  // below (which must run unconditionally) can close over it.
   const willClear =
     settings !== null && settings.clearOnSave && settings.downloadStrategy !== 'aria2'
   const noClearHint = settings?.clearOnSave
     ? 'aria2 hand-offs can’t be verified — posts download but aren’t removed (use Direct or Fetched to clear).'
-    : 'Turn on “Clear after download” in Settings to also remove each from this list.'
+    : 'Turn on “Clear after download” below to also remove each from this list.'
 
   // Manual one-shot clear: un-bookmark / un-like every post currently on the X
   // page, via the content script (the same click path that works by hand).
@@ -224,12 +225,9 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    void fetchHistory().then(setHistory)
-  }, [])
-
-  useEffect(() => {
-    // limit 0: the popup shows only the tweet count — skip the recent-list payload.
-    void fetchCaptureSummary(0).then(setCaptureSummary)
+    // limit 3: enough for the popup's own trimmed recent-conversation disclosure
+    // (CaptureQuickActions) without paying for the full archive-browser payload.
+    void fetchCaptureSummary(3).then(setCaptureSummary)
   }, [])
 
   useEffect(() => {
@@ -258,8 +256,6 @@ export function App() {
     return <div className="xmd-popup xmd-popup--loading">Loading...</div>
   }
 
-  const activeMode = DOWNLOAD_MODES.find((m) => m.value === settings.downloadStrategy)
-
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
     setSaved(true)
@@ -283,174 +279,137 @@ export function App() {
   const monitorDone = monitor ? monitor.completed + monitor.failed : 0
   const monitorPct = monitor ? Math.min(100, Math.round((monitorDone / monitor.total) * 100)) : 0
   const canClearMonitor = monitor !== null && monitor.active === 0
-  const recent = settings.downloadHistoryEnabled ? history.slice(0, 3) : []
+  const metaLine = monitor
+    ? [
+        monitor.throughputBps > 0 ? fmtRate(monitor.throughputBps) : null,
+        monitor.etaSeconds !== undefined ? `${Math.ceil(monitor.etaSeconds)}s left` : null,
+        monitor.bytesTotal > 0
+          ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
+          : null,
+        monitor.failed > 0 ? `${plural(monitor.failed, 'failed')}` : null,
+        monitor.retries > 0 ? `${plural(monitor.retries, 'retry')}` : null,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(' · ')
+    : ''
 
   return (
     <div className="xmd-popup">
-      <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b bg-background/70 px-3.5 py-3 backdrop-blur-xl">
-        <div className="min-w-0">
-          <span className="block text-[15px] leading-tight font-bold tracking-tight text-balance">
-            X Media Downloader
-          </span>
-          <p className="mt-0.5 flex items-center gap-1.5 text-xs leading-snug text-muted-foreground">
-            <span
-              className={cn(
-                'size-1.5 rounded-full',
-                onXTab ? 'bg-success' : 'bg-muted-foreground/40',
-              )}
-            />
-            {onXTab ? 'Ready on this X tab' : 'Open X or Twitter to scan media'}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {saved && <Badge variant="success">Saved</Badge>}
-          <Button
-            type="button"
-            variant="outline"
-            size="icon-sm"
-            aria-label="Open settings"
-            title="Settings"
-            onClick={openOptions}
-          >
-            <GearIcon className="size-4" />
-          </Button>
-        </div>
+      <header className="sticky top-0 z-10 flex h-11 items-center justify-between gap-3 border-b border-border bg-background px-3.5">
+        <span className="truncate text-[13px] leading-tight font-semibold tracking-tight">
+          X Media Downloader
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs leading-snug text-muted-foreground">
+          <span
+            className={cn(
+              'size-1.5 rounded-full',
+              onXTab ? 'bg-success' : 'bg-muted-foreground/40',
+            )}
+          />
+          {onXTab ? 'Ready on this X tab' : 'Open X or Twitter'}
+        </span>
       </header>
 
-      <main className="flex flex-col gap-2.5 px-3.5 py-3">
+      <main className="flex flex-col gap-5 px-3.5 py-4">
         {monitor && (
-          <Card size="sm" aria-label="Download monitor">
-            <CardHeader className="gap-0.5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="grid min-w-0 gap-0.5">
-                  <CardDescription className="text-[11px] font-semibold text-muted-foreground">
-                    Download monitor
-                  </CardDescription>
-                  <CardTitle className="text-sm">
-                    {monitorDone}/{monitor.total} done
-                  </CardTitle>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="text-[11px] font-semibold text-primary hover:underline disabled:pointer-events-none disabled:text-muted-foreground disabled:no-underline disabled:hover:no-underline"
-                    disabled={!canClearMonitor}
-                    title={!canClearMonitor ? 'Downloads still active' : undefined}
-                    onClick={() => void clearMonitor()}
-                  >
-                    {!canClearMonitor ? 'Active' : clearFeedback ? 'Cleared' : 'Clear'}
-                  </button>
-                  <span className="text-[15px] leading-none font-bold tabular-nums text-primary">
-                    {monitorPct}%
-                  </span>
-                </div>
+          <section aria-label="Download monitor" className="grid gap-2 border-b border-border pb-4">
+            <div className="flex items-end justify-between gap-3">
+              <div className="flex items-baseline gap-1.5">
+                <span className="font-mono text-2xl leading-none font-semibold tabular-nums">
+                  {monitorDone}/{monitor.total}
+                </span>
+                <span className="text-xs text-muted-foreground">saved</span>
               </div>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <Progress value={monitorPct} aria-label="Download progress" className="h-1.5" />
-              <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-                <Stat label="Active" value={`${monitor.active}/${monitor.concurrencyCap}`} />
-                <Stat label="Speed" value={fmtRate(monitor.throughputBps)} />
-                <Stat label="Elapsed" value={fmtDuration(monitor.elapsedMs)} />
-                <Stat
-                  label="ETA"
-                  value={
-                    monitor.etaSeconds === undefined ? '-' : `${Math.ceil(monitor.etaSeconds)}s`
-                  }
-                />
-                <Stat
-                  label="Bytes"
-                  value={
-                    monitor.bytesTotal > 0
-                      ? `${fmtBytes(monitor.bytesReceived)} / ${fmtBytes(monitor.bytesTotal)}`
-                      : fmtBytes(monitor.bytesReceived)
-                  }
-                />
-                {monitor.failed > 0 && <Stat label="Failed" value={String(monitor.failed)} />}
-                {monitor.retries > 0 && <Stat label="Retries" value={String(monitor.retries)} />}
-              </dl>
-            </CardContent>
-          </Card>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  data-slot="button"
+                  className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50"
+                  disabled={!canClearMonitor}
+                  title={!canClearMonitor ? 'Downloads still active' : undefined}
+                  onClick={() => void clearMonitor()}
+                >
+                  {!canClearMonitor ? 'Active' : clearFeedback ? 'Cleared' : 'Clear'}
+                </button>
+                <span className="font-mono text-base leading-none font-semibold tabular-nums text-primary">
+                  {monitorPct}%
+                </span>
+              </div>
+            </div>
+            <Progress value={monitorPct} aria-label="Download progress" className="h-[3px]" />
+            {metaLine !== '' && (
+              <p className="font-mono text-xs leading-snug text-muted-foreground">{metaLine}</p>
+            )}
+          </section>
         )}
 
-        <Card size="sm" aria-label="On this page">
-          <CardHeader className="gap-0.5">
-            <CardTitle className="text-[13px] font-semibold">On this page</CardTitle>
-            <CardDescription className="text-xs leading-snug">
-              {onXTab
-                ? 'Grab the Likes or Bookmarks list you’re viewing.'
-                : 'Open an X/Twitter Likes or Bookmarks tab to use these.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2.5">
-            <Button
+        <div className="grid gap-4">
+          <div className={cn('grid gap-2', !onXTab && 'opacity-45')}>
+            <button
               type="button"
-              className="h-11 w-full gap-2"
+              data-slot="button"
+              className="h-11 w-full rounded-[var(--xmd-radius-2)] bg-primary text-sm font-semibold text-primary-foreground transition-colors active:scale-[0.97] hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
               disabled={!onXTab || drain.busy}
               onClick={() => void drain.run()}
             >
-              <DownloadIcon className="size-[18px]" />
               {drain.busy
                 ? 'Draining…'
                 : willClear
                   ? 'Download + clear this page'
                   : 'Download this page'}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-10 w-full gap-2"
-              disabled={!onXTab || sweep.busy}
-              onClick={() => void sweep.run()}
-            >
-              <LayersIcon className="size-4" />
-              {sweep.busy
-                ? 'Sweeping…'
-                : willClear
-                  ? 'Download + clear, one by one'
-                  : 'Download one by one'}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="w-full gap-1.5 text-muted-foreground"
-              disabled={!onXTab || clearVisible.busy}
-              onClick={() => void clearVisible.run()}
-            >
-              <EraserIcon className="size-3.5" />
-              {clearVisible.busy ? 'Clearing…' : 'Clear this page now (no download)'}
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              className="w-full gap-1.5"
-              disabled={!onListPage || clearWholeList.busy}
-              title={!onListPage ? 'Open a Likes or Bookmarks list' : undefined}
-              onClick={() => void clearWholeList.run()}
-            >
-              <EraserIcon className="size-3.5" />
-              {clearWholeList.busy ? 'Clearing entire list…' : 'Clear entire list (no download)'}
-            </Button>
-            {actionMsg && <p className="text-xs leading-snug text-muted-foreground">{actionMsg}</p>}
-          </CardContent>
-        </Card>
+            </button>
 
-        <Card size="sm" aria-label="What the actions above do">
-          <CardContent className="flex flex-col gap-3 pt-3">
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              These set what the buttons above do — they don’t download on their own.
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                data-slot="button"
+                className="flex h-8 items-center justify-center gap-1 rounded-[var(--xmd-radius-3)] text-xs font-medium text-foreground/80 transition-colors active:scale-[0.97] hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+                disabled={!onXTab || sweep.busy}
+                onClick={() => void sweep.run()}
+              >
+                <LayersIcon className="size-3.5" />
+                {sweep.busy ? 'Sweeping…' : 'One by one'}
+              </button>
+              <button
+                type="button"
+                data-slot="button"
+                className="flex h-8 items-center justify-center gap-1 rounded-[var(--xmd-radius-3)] text-xs font-medium text-foreground/80 transition-colors active:scale-[0.97] hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+                disabled={!onXTab || clearVisible.busy}
+                onClick={() => void clearVisible.run()}
+              >
+                <EraserIcon className="size-3.5" />
+                {clearVisible.busy ? 'Clearing…' : 'Clear page'}
+              </button>
+              <button
+                type="button"
+                data-slot="button"
+                className="flex h-8 items-center justify-center gap-1 rounded-[var(--xmd-radius-3)] text-xs font-medium text-destructive transition-colors active:scale-[0.97] hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-50"
+                disabled={!onListPage || clearWholeList.busy}
+                title={!onListPage ? 'Open a Likes or Bookmarks list' : undefined}
+                onClick={() => void clearWholeList.run()}
+              >
+                {clearWholeList.busy ? 'Clearing…' : 'Clear list…'}
+              </button>
+            </div>
+            {actionMsg && <p className="text-xs leading-snug text-muted-foreground">{actionMsg}</p>}
+          </div>
+
+          {!onXTab && (
+            <p className="text-xs leading-snug text-muted-foreground">
+              Works on Likes, Bookmarks, and list pages
             </p>
+          )}
+
+          <div className="grid gap-4 border-t border-border pt-4">
             <div className="grid gap-1.5">
               <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
-                DOWNLOAD MODE
+                Mode
               </span>
               <ToggleGroup
                 type="single"
                 variant="outline"
                 spacing={0}
-                className="w-full"
+                className="w-full rounded-[var(--xmd-radius-3)]"
                 aria-label="Download mode"
                 value={settings.downloadStrategy}
                 onValueChange={(value: string) => {
@@ -465,20 +424,33 @@ export function App() {
                     key={option.value}
                     value={option.value}
                     aria-label={`Download mode: ${option.label}`}
-                    className="h-9 flex-1 text-[13px]"
+                    title={option.hint}
+                    className="h-8 flex-1 rounded-[var(--xmd-radius-4)] text-[13px]"
                   >
                     {option.label}
                   </ToggleGroupItem>
                 ))}
               </ToggleGroup>
-              {activeMode && (
-                <p className="text-[11px] leading-snug text-muted-foreground">{activeMode.hint}</p>
-              )}
             </div>
+
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
-                <FieldDescription>{CLEAR_AFTER_DOWNLOAD.description}</FieldDescription>
+                {settings.clearOnSave ? (
+                  <FieldDescription className="font-mono">
+                    {clearScopeSummary(settings)} ·{' '}
+                    <button
+                      type="button"
+                      data-slot="button"
+                      className="font-sans text-primary transition-colors active:scale-[0.97] hover:underline"
+                      onClick={openClearingSettings}
+                    >
+                      Edit ›
+                    </button>
+                  </FieldDescription>
+                ) : (
+                  <FieldDescription>{CLEAR_AFTER_DOWNLOAD.description}</FieldDescription>
+                )}
               </FieldContent>
               <Switch
                 id="clearOnSave"
@@ -487,49 +459,19 @@ export function App() {
                 onCheckedChange={(checked: boolean) => void update({ clearOnSave: checked })}
               />
             </Field>
-            {settings.clearOnSave && (
-              <div className="grid gap-2">
-                <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
-                  CLEAR FROM
-                </span>
-                <ScopeToggle
-                  id="autoUnbookmarkOnSave"
-                  label="Bookmarks (un-bookmark)"
-                  checked={settings.autoUnbookmarkOnSave}
-                  onChange={(v) => void update({ autoUnbookmarkOnSave: v })}
-                />
-                <ScopeToggle
-                  id="autoUnlikeOnSave"
-                  label="Likes (un-like)"
-                  checked={settings.autoUnlikeOnSave}
-                  onChange={(v) => void update({ autoUnlikeOnSave: v })}
-                />
-                <ScopeToggle
-                  id="autoNotInterestedOnSave"
-                  label="For You (Not interested)"
-                  checked={settings.autoNotInterestedOnSave}
-                  onChange={(v) => void update({ autoNotInterestedOnSave: v })}
-                />
-              </div>
-            )}
-          </CardContent>
-        </Card>
 
-        <Card size="sm" aria-label="Knowledge Capture">
-          <CardHeader className="gap-0.5">
-            <CardTitle className="text-[13px] font-semibold">Knowledge Capture</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="captureEnabled">Capture tweets</FieldLabel>
-                <FieldDescription>
+                <FieldDescription className="flex items-center gap-1.5">
+                  <span className="font-mono">{plural(captureSummary?.tweets ?? 0, 'tweet')}</span>
                   <button
                     type="button"
-                    className="text-primary hover:underline"
+                    data-slot="button"
+                    className="text-primary transition-colors active:scale-[0.97] hover:underline"
                     onClick={openCaptureArchive}
                   >
-                    {plural(captureSummary?.tweets ?? 0, 'tweet')} captured · View archive ›
+                    Archive ›
                   </button>
                 </FieldDescription>
               </FieldContent>
@@ -540,47 +482,16 @@ export function App() {
                 onCheckedChange={(checked: boolean) => void update({ captureEnabled: checked })}
               />
             </Field>
-          </CardContent>
-        </Card>
 
-        {recent.length > 0 && (
-          <Card size="sm" aria-label="Recent downloads">
-            <CardHeader className="gap-0.5">
-              <CardTitle className="text-[13px] font-semibold">Recent</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ol className="grid gap-1.5" aria-label="Recent downloads">
-                {recent.map((r) => {
-                  const f = formatRecord(r)
-                  const variant =
-                    f.status === 'completed'
-                      ? 'success'
-                      : f.status === 'failed'
-                        ? 'destructive'
-                        : 'outline'
-                  return (
-                    <li key={r.requestId} className="flex items-center gap-2 text-xs">
-                      <Badge variant={variant} className="shrink-0 capitalize">
-                        {f.status}
-                      </Badge>
-                      <a
-                        className="truncate text-muted-foreground hover:text-foreground"
-                        href={f.link}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {f.title}
-                      </a>
-                    </li>
-                  )
-                })}
-              </ol>
-            </CardContent>
-          </Card>
-        )}
+            <CaptureQuickActions
+              summary={captureSummary}
+              onCleared={() => setCaptureSummary({ tweets: 0, conversations: 0, recent: [] })}
+            />
+          </div>
+        </div>
       </main>
 
-      <footer className="flex items-center justify-between gap-2 border-t px-3.5 py-3 text-xs leading-snug text-muted-foreground">
+      <footer className="flex items-center justify-between gap-2 border-t border-border px-3.5 py-3 text-xs leading-snug text-muted-foreground">
         <span>
           {settings.cloudSyncEnabled
             ? 'Cloud sync on · metadata only'
@@ -588,42 +499,26 @@ export function App() {
         </span>
         <button
           type="button"
+          data-slot="button"
           onClick={openOptions}
-          className="font-semibold text-primary hover:underline"
+          className="font-semibold text-primary transition-colors active:scale-[0.97] hover:underline"
         >
-          Open settings
+          Settings
         </button>
       </footer>
-    </div>
-  )
-}
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="font-medium tabular-nums">{value}</dd>
+      <div
+        aria-live="polite"
+        className={cn(
+          'pointer-events-none fixed right-3 bottom-3 transition-all duration-200',
+          saved ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0',
+        )}
+      >
+        <span className="flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-2.5 py-1 text-xs font-medium text-success">
+          <CheckIcon className="size-3" />
+          Saved
+        </span>
+      </div>
     </div>
-  )
-}
-
-function ScopeToggle({
-  id,
-  label,
-  checked,
-  onChange,
-}: {
-  id: string
-  label: string
-  checked: boolean
-  onChange: (v: boolean) => void
-}) {
-  return (
-    <Field orientation="horizontal">
-      <FieldContent>
-        <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      </FieldContent>
-      <Switch id={id} aria-label={label} checked={checked} onCheckedChange={onChange} />
-    </Field>
   )
 }

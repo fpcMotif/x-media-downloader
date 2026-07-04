@@ -118,12 +118,15 @@ describe('popup collapses per-surface clear scopes into a mono summary + Edit li
   })
 })
 
-describe('popup local-data wipes moved to Settings', () => {
-  it('no longer offers download-history or harvest-archive wipes from the popup', () => {
+describe('popup local data: history wipe stays in Settings, harvest wipe moves inline', () => {
+  it('does not offer a download-history wipe from the popup', () => {
     expect(popupSource).not.toContain('ClearHistoryRequest')
-    expect(popupSource).not.toContain('ClearCaptureRequest')
     expect(popupSource).not.toContain('Clear download history')
-    expect(popupSource).not.toContain('Clear harvest archive')
+  })
+
+  it('offers a harvest-archive wipe via the inline CaptureQuickActions component', () => {
+    expect(popupSource).toContain('CaptureQuickActions')
+    expect(captureQuickActionsSource).toContain('ClearCaptureRequest')
   })
 })
 
@@ -133,9 +136,12 @@ describe('popup hosts a minimal capture toggle', () => {
     expect(popupSource).toContain('Capture tweets')
   })
 
-  it('no longer hosts the captured-conversation list or per-conversation exports (moved to Settings)', () => {
-    expect(popupSource).not.toContain('exportConvo')
-    expect(popupSource).not.toContain('Export all (JSONL)')
+  it('hosts a trimmed (3-row) recent-conversation list with per-conversation exports via CaptureQuickActions', () => {
+    expect(popupSource).toContain('fetchCaptureSummary(3)')
+    expect(captureQuickActionsSource).toContain('RECENT_LIMIT')
+    expect(captureQuickActionsSource).toContain("runCaptureExport('tree'")
+    expect(captureQuickActionsSource).toContain("runCaptureExport('markdown'")
+    expect(captureQuickActionsSource).toContain('Export all')
   })
 
   it('surfaces the archive size as a deep link into the Knowledge Capture settings panel', () => {
