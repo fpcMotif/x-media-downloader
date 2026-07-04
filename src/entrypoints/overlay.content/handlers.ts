@@ -10,7 +10,7 @@
 import { Option } from 'effect'
 import { resolveOutcome, type BadgeState } from '../../core/badge'
 import { resolveOutcomeAll, type LauncherPhase } from '../../core/launcher'
-import { detectRenderedImageElements } from '../../core/adapters/x'
+import type { PlatformAdapter } from '../../core/adapters/types'
 import { safeSend } from '../../core/messaging'
 import { findFreshMediaItem } from '../../core/download/media-url-refresh'
 import { makeListClear } from '../../core/clear/list-clear'
@@ -39,6 +39,7 @@ type DetectionStore = ReturnType<typeof makeDetectionStore>
  * is something a handler must read or mutate to preserve the inlined behavior.
  */
 export interface HandlerDeps {
+  readonly adapter: PlatformAdapter
   readonly store: DetectionStore
   readonly document: Document
   readonly location: Location
@@ -204,7 +205,7 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
   let fresh = deps.store.get(req.itemId)
   if (fresh?.postId !== req.tweetId) fresh = undefined
   if (fresh === undefined && req.index !== undefined && req.type !== undefined) {
-    const domItems = detectRenderedImageElements(deps.document, deps.location.pathname)
+    const domItems = deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname)
     if (domItems.length > 0) deps.store.addDetected(domItems)
     fresh = findFreshMediaItem(
       { id: req.itemId, postId: req.tweetId, index: req.index, type: req.type },
@@ -472,7 +473,7 @@ export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResp
   const req = message as { _tag: string; rescanVisible?: boolean }
   if (req.rescanVisible) {
     rescanned = deps.store.addDetected(
-      detectRenderedImageElements(deps.document, deps.location.pathname),
+      deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname),
     ).length
     deps.recoverMissingVideos()
   }

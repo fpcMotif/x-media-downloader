@@ -42,6 +42,14 @@ export default defineConfig({
       // the passive tee missed (SPA cache hit / lazy reply). Required (not opt-in)
       // so the media count is correct out of the box; read-only, X-owned, narrow.
       'https://cdn.syndication.twimg.com/*',
+      // Instagram/Threads page origins (multi-platform adapter abstraction,
+      // docs/superpowers/specs/2026-07-04-multi-platform-adapter-design.md) —
+      // mirror the X pair above so the content scripts' widened `matches` have
+      // a matching host permission. Threads moved `threads.net` → `threads.com`
+      // in April 2025; both hosts serve the same backend, so both are listed.
+      'https://www.instagram.com/*',
+      'https://www.threads.net/*',
+      'https://www.threads.com/*',
       ...(seedsConvex ? [CONVEX_ORIGIN] : []),
     ],
     // Requested at runtime only when Download Strategy = Fetched (ADR-0003):

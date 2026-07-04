@@ -1,12 +1,6 @@
 import './style.css'
 import { render } from 'preact'
-import {
-  canResolveHoverItem,
-  detectFromJson,
-  detectRenderedImageElements,
-  resolveHoverItem,
-  X_HOST_MATCH,
-} from '../../core/adapters/x'
+import { adapterForHostname, ALL_ADAPTERS } from '../../core/adapters/registry'
 import { makeDetectionStore } from '../../core/adapters/x/detection-store'
 import { harvestTweets } from '../../core/capture/harvest'
 import type { Source, TweetRecord } from '../../core/capture/record'
@@ -653,13 +647,20 @@ const mediaStillUnderPointer = (media: HoverMediaElement, x: number, y: number):
  * need the passive GraphQL tee so their poster can map to the MP4 item.
  */
 export default defineContentScript({
-  matches: [...X_HOST_MATCH],
+  matches: [...new Set(ALL_ADAPTERS.flatMap((a) => a.hostMatch))],
   cssInjectionMode: 'ui',
   async main(ctx) {
+    // Boot-time adapter selection: resolved ONCE, closed over for the rest of
+    // main() — no per-call registry dispatch on the hover/mousemove hot path.
+    // Fail closed: an unrecognized host (shouldn't happen given `matches`
+    // scoping, but defensive for dev/test contexts) mounts nothing at all —
+    // none of the X-only clear/capture/reveal machinery below ever runs.
+    const adapter = adapterForHostname(location.hostname)
+    if (!adapter) return
     // Boot marker: if you don't see this in the X page console, the content
     // script isn't live on this tab (old build loaded, or the tab predates the
     // extension reload) — reload the extension AND refresh the tab.
-    console.info('[XMD] overlay content script loaded @', location.href)
+    console.info('[XMD] overlay content script loaded @', location.href, adapter.platform)
     const store = makeDetectionStore()
     let host: HTMLElement | null = null
 
@@ -760,7 +761,7 @@ export default defineContentScript({
     }
 
     const scanRenderedMedia = (): void => {
-      if (store.addDetected(detectRenderedImageElements(document, location.pathname)).length > 0) {
+      if (store.addDetected(adapter.detectRenderedMedia(document, location.pathname)).length > 0) {
         rerender()
       }
       recoverMissingVideos()
@@ -980,7 +981,7 @@ export default defineContentScript({
         rerender()
         return
       }
-      const item = resolveHoverItem(media, key, store.keyIndex(), location.pathname)
+      const item = adapter.resolveHoverItem(media, key, store.keyIndex(), location.pathname)
       if (!item) {
         traceQuickGrab('no-item-for-hover', { key })
         grabUi = null
@@ -1071,7 +1072,7 @@ export default defineContentScript({
     const badgeInput = (media: HoverMediaElement | null, key: string | null) => ({
       enabled: badgeEnabled,
       resolvable:
-        media !== null && key !== null && canResolveHoverItem(media, key, store.keyIndex()),
+        media !== null && key !== null && adapter.canResolveHoverItem(media, key, store.keyIndex()),
       modifierHeld: grab.active,
     })
 
@@ -1111,7 +1112,7 @@ export default defineContentScript({
         rerender()
         return
       }
-      const item = resolveHoverItem(media, key, store.keyIndex(), location.pathname)
+      const item = adapter.resolveHoverItem(media, key, store.keyIndex(), location.pathname)
       if (!item) {
         traceBadge('no-item-for-hover', { key })
         resetBadge()
@@ -1203,7 +1204,7 @@ export default defineContentScript({
       clearLauncherRevert()
       launcher = 'idle'
       store.clear()
-      store.addDetected(detectRenderedImageElements(document, location.pathname))
+      store.addDetected(adapter.detectRenderedMedia(document, location.pathname))
       recoverMissingVideos()
       rescanning = true
       rerender()
@@ -1449,7 +1450,7 @@ export default defineContentScript({
         return /* non-JSON tee body */
       }
       try {
-        if (store.addDetected(detectFromJson(json)).length > 0) rerender()
+        if (store.addDetected(adapter.detectFromResponse(detail.path, json)).length > 0) rerender()
       } catch {
         /* media detection is best-effort */
       }
@@ -1587,6 +1588,7 @@ export default defineContentScript({
     // correction in TransferOutcome and the store.clear()/grab reset in
     // ClearDetectedMediaRequest mutate the same live state they did when inlined.
     const handlerDeps: HandlerDeps = {
+      adapter,
       store,
       document,
       location,
