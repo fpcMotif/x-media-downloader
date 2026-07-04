@@ -734,7 +734,11 @@ export default defineContentScript({
     // fetch the tweet's media from X's syndication endpoint (via the background,
     // which holds the host permission) and fold the recovered video into the
     // detected set. One attempt per tweet id; a transient send error re-arms it.
+    // X-only: `store.needsRecovery` walks X's VIDEO_PLAYER_SEL/TWEET_ARTICLE_SEL
+    // (syndication recovery has no Instagram/Threads equivalent — design spec
+    // Non-goals) — skip the DOM walk entirely on other platforms.
     const recoverMissingVideos = (): void => {
+      if (adapter.platform !== 'x') return
       for (const tweetId of store.needsRecovery(document)) {
         if (!store.markAttempted(tweetId)) continue
         void (async () => {
@@ -879,8 +883,12 @@ export default defineContentScript({
         })
       }, SAVED_SWEEP_DEBOUNCE_MS)
     }
-    const savedSweepObserver = new MutationObserver(scheduleSavedSweep)
-    savedSweepObserver.observe(document.body, { childList: true, subtree: true })
+    // X-only: SavedIndex/Convex queries + TWEET_ARTICLE_SEL/tweetIdOfArticle are
+    // X-DOM-specific — never construct this observer on Instagram/Threads tabs.
+    if (adapter.platform === 'x') {
+      const savedSweepObserver = new MutationObserver(scheduleSavedSweep)
+      savedSweepObserver.observe(document.body, { childList: true, subtree: true })
+    }
 
     const clearDwell = (): void => {
       if (dwell !== null) {
@@ -1224,13 +1232,18 @@ export default defineContentScript({
       badgeEnabled = s.downloadBadgeEnabled
       dockEnabled = s.downloadDockEnabled
       dockGlass = s.dockGlassEnabled
-      setAutoReveal(s.autoRevealSensitiveEnabled)
+      // Sensitive-content auto-reveal + the "Not interested" stub-collapse are both
+      // X-only (X-specific data-testid selectors, no Instagram/Threads equivalent):
+      // gate their observer setup so no MutationObserver is even constructed there.
+      if (adapter.platform === 'x') setAutoReveal(s.autoRevealSensitiveEnabled)
       // Hide the cleared-post feedback stub only when the For-You "Not interested"
       // clear is actually active (master + the per-scope toggle on).
-      setStubCollapse(s.clearOnSave && s.autoNotInterestedOnSave)
+      if (adapter.platform === 'x') setStubCollapse(s.clearOnSave && s.autoNotInterestedOnSave)
       // Cross-device "Saved" status: gate the sweep on the toggle; a flip re-paints.
+      // X-only (SavedIndex/Convex queries + TWEET_ARTICLE_SEL are X-DOM-specific):
+      // don't even arm the debounce timer on Instagram/Threads.
       savedStatusOn = s.showSavedStatus
-      scheduleSavedSweep()
+      if (adapter.platform === 'x') scheduleSavedSweep()
       // Tweet-text harvest (§7): default OFF. `captureAllScrolled` widens breadth
       // from media/thread tweets to every scrolled text-only tweet.
       captureEnabled = s.captureEnabled
@@ -1454,7 +1467,9 @@ export default defineContentScript({
       } catch {
         /* media detection is best-effort */
       }
-      harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
+      // Knowledge Capture is X-only-forever (design spec Non-goals): harvestTweets'
+      // tree walker assumes X's tweet-node JSON shape, so never call it off-platform.
+      if (adapter.platform === 'x') harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
     })
 
     // Don't lose a sub-debounce batch when the tab is navigated away or unloaded.
