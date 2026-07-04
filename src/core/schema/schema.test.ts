@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { Schema, Result } from 'effect'
 import {
   MediaItem,
+  Platform,
   Settings,
   Message,
   ClearDetectedMediaRequest,
@@ -13,8 +14,9 @@ import {
 
 const validMediaRaw = {
   id: 'media-1',
-  tweetId: '123',
-  handle: 'alice',
+  platform: 'x',
+  postId: '123',
+  author: 'alice',
   type: 'photo',
   url: 'https://pbs.twimg.com/media/abc?format=jpg&name=orig',
   ext: 'jpg',
@@ -25,8 +27,9 @@ describe('MediaItem schema', () => {
   it('decodes a valid photo media item', () => {
     const raw = {
       id: 'media-1',
-      tweetId: '123',
-      handle: 'alice',
+      platform: 'x',
+      postId: '123',
+      author: 'alice',
       type: 'photo',
       url: 'https://pbs.twimg.com/media/abc?format=jpg&name=orig',
       previewUrl: 'https://pbs.twimg.com/media/abc?format=jpg&name=small',
@@ -34,7 +37,7 @@ describe('MediaItem schema', () => {
       index: 0,
     }
     const item = Schema.decodeUnknownSync(MediaItem)(raw)
-    expect(item.handle).toBe('alice')
+    expect(item.author).toBe('alice')
     expect(item.type).toBe('photo')
     expect(item.previewUrl).toBe('https://pbs.twimg.com/media/abc?format=jpg&name=small')
   })
@@ -42,14 +45,28 @@ describe('MediaItem schema', () => {
   it('rejects an unknown media type with a failure result', () => {
     const raw = {
       id: 'media-1',
-      tweetId: '123',
-      handle: 'alice',
+      platform: 'x',
+      postId: '123',
+      author: 'alice',
       type: 'audio',
       url: 'https://example.com/a.mp3',
       ext: 'mp3',
       index: 0,
     }
     const result = Schema.decodeUnknownResult(MediaItem)(raw)
+    expect(Result.isFailure(result)).toBe(true)
+  })
+})
+
+describe('Platform schema', () => {
+  it('decodes every supported platform literal', () => {
+    expect(Schema.decodeUnknownSync(Platform)('x')).toBe('x')
+    expect(Schema.decodeUnknownSync(Platform)('instagram')).toBe('instagram')
+    expect(Schema.decodeUnknownSync(Platform)('threads')).toBe('threads')
+  })
+
+  it('rejects an unknown platform with a failure result', () => {
+    const result = Schema.decodeUnknownResult(Platform)('foo')
     expect(Result.isFailure(result)).toBe(true)
   })
 })
@@ -105,7 +122,7 @@ describe('Message schema', () => {
     expect(msg._tag).toBe('DownloadRequest')
     const items = msg._tag === 'DownloadRequest' ? msg.items : []
     expect(items).toHaveLength(1)
-    expect(items[0]!.handle).toBe('alice')
+    expect(items[0]!.author).toBe('alice')
   })
 
   it('decodes ClearDetectedMediaRequest with optional rescanVisible', () => {

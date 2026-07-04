@@ -7,8 +7,9 @@ import { planHistory, isMirrorableRequest } from './wiring'
 
 const item: MediaItem = {
   id: '123-0',
-  tweetId: '123',
-  handle: 'alice',
+  platform: 'x',
+  postId: '123',
+  author: 'alice',
   type: 'photo',
   url: 'https://pbs.twimg.com/media/abc?format=jpg&name=orig',
   ext: 'jpg',

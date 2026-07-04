@@ -202,12 +202,12 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
     type?: MediaItem['type']
   }
   let fresh = deps.store.get(req.itemId)
-  if (fresh?.tweetId !== req.tweetId) fresh = undefined
+  if (fresh?.postId !== req.tweetId) fresh = undefined
   if (fresh === undefined && req.index !== undefined && req.type !== undefined) {
     const domItems = detectRenderedImageElements(deps.document, deps.location.pathname)
     if (domItems.length > 0) deps.store.addDetected(domItems)
     fresh = findFreshMediaItem(
-      { id: req.itemId, tweetId: req.tweetId, index: req.index, type: req.type },
+      { id: req.itemId, postId: req.tweetId, index: req.index, type: req.type },
       [...deps.store.values(), ...domItems],
     )
   }

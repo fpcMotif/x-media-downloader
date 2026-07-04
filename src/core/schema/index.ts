@@ -4,10 +4,16 @@ import { TweetRecord } from '../capture/record'
 export const MediaType = Schema.Literals(['photo', 'video', 'gif'])
 export type MediaType = typeof MediaType.Type
 
+/** Which site a MediaItem was detected on. Drives adapter dispatch
+ *  (`core/adapters/registry.ts`) and tags every Convex-mirrored row. */
+export const Platform = Schema.Literals(['x', 'instagram', 'threads'])
+export type Platform = typeof Platform.Type
+
 export const MediaItem = Schema.Struct({
   id: Schema.String,
-  tweetId: Schema.String,
-  handle: Schema.String,
+  platform: Platform,
+  postId: Schema.String,
+  author: Schema.String,
   type: MediaType,
   url: Schema.String,
   previewUrl: Schema.optional(Schema.String),

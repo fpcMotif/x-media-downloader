@@ -7,10 +7,10 @@ export function groupByAuthor(
   const groups: { handle: string; records: DownloadRecord[] }[] = []
   const index = new Map<string, { handle: string; records: DownloadRecord[] }>()
   for (const r of records) {
-    const existing = index.get(r.media.handle)
+    const existing = index.get(r.media.author)
     if (existing === undefined) {
-      const group = { handle: r.media.handle, records: [r] }
-      index.set(r.media.handle, group)
+      const group = { handle: r.media.author, records: [r] }
+      index.set(r.media.author, group)
       groups.push(group)
     } else {
       existing.records.push(r)

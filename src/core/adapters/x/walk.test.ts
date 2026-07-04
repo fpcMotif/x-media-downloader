@@ -237,7 +237,7 @@ describe('detectFromJson refactored onto forEachTweetNode', () => {
         },
       },
     })
-    expect(items.find((i) => i.tweetId === '5001')!.handle).toBe('REAL_AUTHOR')
-    expect(items.find((i) => i.tweetId === '4000')!.handle).toBe('QUOTED_AUTHOR')
+    expect(items.find((i) => i.postId === '5001')!.author).toBe('REAL_AUTHOR')
+    expect(items.find((i) => i.postId === '4000')!.author).toBe('QUOTED_AUTHOR')
   })
 })

@@ -7,9 +7,25 @@ import { v } from 'convex/values'
 // them rather than re-declaring (and silently drifting from) these validators.
 export const kind = v.union(v.literal('queued'), v.literal('completed'), v.literal('failed'))
 
+export const platform = v.union(v.literal('x'), v.literal('instagram'), v.literal('threads'))
+
+// Multi-platform generalization (docs/superpowers/specs/2026-07-04-multi-platform-adapter-design.md):
+// `postId`/`author`/`platform` are the new generalized fields the extension's
+// SyncMediaMeta now sends on EVERY write (`tweetId`/`handle` are gone from the
+// wire payload as of this change). Both old AND new fields stay OPTIONAL here —
+// not because new writes omit the new fields, but because existing STORED rows
+// (written before this change) still have only `tweetId`/`handle` and a schema
+// push validates existing documents too; a required field on either side would
+// block the push. `backfillPlatformFields` (in sync.ts) migrates old rows to
+// carry the new fields; once verified at 100%, a FOLLOW-UP change drops
+// `tweetId`/`handle` entirely and flips `postId`/`author`/`platform` to
+// required (the second of the two migration deploys).
 export const media = v.object({
-  tweetId: v.string(),
-  handle: v.string(),
+  platform: v.optional(platform),
+  postId: v.optional(v.string()),
+  author: v.optional(v.string()),
+  tweetId: v.optional(v.string()),
+  handle: v.optional(v.string()),
   type: v.string(),
   url: v.string(),
   ext: v.string(),
@@ -69,12 +85,22 @@ export default defineSchema({
     // whole schema push (and with it every other table, incl. tweet_captures). The
     // sync.ts backfill derives it from `media.tweetId`; new rows always set it.
     tweetId: v.optional(v.string()),
+    // Generalized twin of `tweetId` (multi-platform design, see the `media`
+    // comment above) — `postId` + `platform` are optional for the same reason:
+    // pre-migration rows lack them; `backfillPlatformFields` (below) fills them
+    // in, and new rows always set both. `by_tweet` stays until a follow-up
+    // change removes `tweetId` entirely; `by_post`/`by_platform_post` are the
+    // NEW indexes future queries should use.
+    postId: v.optional(v.string()),
+    platform: v.optional(platform),
     lastKind: kind,
     at: v.number(),
     media: v.optional(media),
   })
     .index('by_device_request', ['deviceId', 'requestId'])
     .index('by_tweet', ['tweetId'])
+    .index('by_post', ['postId'])
+    .index('by_platform_post', ['platform', 'postId'])
     .index('by_at', ['at']),
 
   // Cloud byte-upload ledger mirror (ADR-0013). Control plane ONLY — bytes never

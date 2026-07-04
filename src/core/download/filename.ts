@@ -15,15 +15,21 @@ export function sanitizeSegment(seg: string): string {
 
 /**
  * Render a filename from a template and a MediaItem. Tokens:
- * `{handle} {tweetId} {index} {ext} {type} {date}`. Unknown tokens render empty.
+ * `{handle} {tweetId} {index} {ext} {type} {date}`, plus the generalized
+ * `{author} {postId} {platform}` (multi-platform design) — `{handle}`/`{tweetId}`
+ * are PERMANENT aliases for `{author}`/`{postId}` so existing saved templates
+ * never break. Unknown tokens render empty.
  *
  * Output is always a RELATIVE path (no leading `/`, no `..`, never empty) —
  * `chrome.downloads.download` throws otherwise (ADR-0003, grounding §d).
  */
 export function renderFilename(template: string, item: MediaItem, date?: string): string {
   const tokens: Record<string, string> = {
-    handle: item.handle,
-    tweetId: item.tweetId,
+    handle: item.author,
+    tweetId: item.postId,
+    author: item.author,
+    postId: item.postId,
+    platform: item.platform,
     index: String(item.index),
     ext: item.ext,
     type: item.type,
@@ -39,9 +45,9 @@ export function renderFilename(template: string, item: MediaItem, date?: string)
   const path = toRelPath(template.replace(/\{(\w+)\}/g, (_, key: string) => tokens[key] ?? ''))
   if (path.length > 0) return path
   // The template sanitized away to nothing — run the id/index fallback through the
-  // SAME pipeline so a degenerate tweetId can't reintroduce a `..`, an illegal char,
+  // SAME pipeline so a degenerate postId can't reintroduce a `..`, an illegal char,
   // or a `/` and break the relative-path contract; a final default covers all-empty.
-  const fallback = toRelPath(`${item.tweetId}_${item.index}.${item.ext}`)
+  const fallback = toRelPath(`${item.postId}_${item.index}.${item.ext}`)
   /* v8 ignore next -- `_${index}.` always survives sanitization (digits/`_`/`.` are legal), so fallback is never empty; the `media_${index}` default is unreachable defensive code */
   return fallback.length > 0 ? fallback : `media_${item.index}`
 }

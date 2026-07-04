@@ -11,8 +11,9 @@ import {
 
 const item: MediaItem = {
   id: 'm1',
-  tweetId: '123',
-  handle: 'alice',
+  platform: 'x',
+  postId: '123',
+  author: 'alice',
   type: 'photo',
   url: 'https://pbs.twimg.com/media/AAA.jpg?name=orig',
   ext: 'jpg',

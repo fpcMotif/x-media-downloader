@@ -45,10 +45,7 @@ export function makeAdmissionGate(deps: {
 
     const savedTweetIds = filter.preventDuplicateDownloads
       ? new Set(
-          await deps.savedIndex.resolve(
-            [...new Set(items.map((i) => i.tweetId))],
-            deps.queryConvex,
-          ),
+          await deps.savedIndex.resolve([...new Set(items.map((i) => i.postId))], deps.queryConvex),
         )
       : new Set<string>()
 

@@ -108,7 +108,7 @@ export function makeDetectionStore(): DetectionStore {
     keyIndex: () => byKey,
     get: (id) => byId.get(id),
     values: () => [...byId.values()],
-    valuesForTweet: (tweetId) => [...byId.values()].filter((i) => i.tweetId === tweetId),
+    valuesForTweet: (tweetId) => [...byId.values()].filter((i) => i.postId === tweetId),
     get count() {
       return byId.size
     },

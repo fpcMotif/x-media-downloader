@@ -11,8 +11,9 @@ const el = (html: string): Element => {
 
 const videoItem: MediaItem = {
   id: '77-0',
-  tweetId: '77',
-  handle: 'alice',
+  platform: 'x',
+  postId: '77',
+  author: 'alice',
   type: 'video',
   url: 'https://video.twimg.com/ext_tw_video/77/pu/vid/1280x720/high.mp4',
   ext: 'mp4',
@@ -42,7 +43,7 @@ describe('resolveHoverItem', () => {
       '<img src="https://pbs.twimg.com/media/P0?format=jpg&name=small" />',
     ) as HTMLImageElement
     const item = resolveHoverItem(img, 'P0', new Map(), '/alice/status/1790')
-    expect(item).toMatchObject({ type: 'photo', tweetId: '1790', handle: 'alice' })
+    expect(item).toMatchObject({ type: 'photo', postId: '1790', author: 'alice' })
     expect(item!.url).toContain('name=orig')
   })
 

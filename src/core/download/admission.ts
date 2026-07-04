@@ -24,7 +24,7 @@ export function freeReason(
     return 'too-small'
   if (item.height !== undefined && settings.minHeight > 0 && item.height < settings.minHeight)
     return 'too-small'
-  if (settings.preventDuplicateDownloads && savedTweetIds.has(item.tweetId)) return 'duplicate'
+  if (settings.preventDuplicateDownloads && savedTweetIds.has(item.postId)) return 'duplicate'
   return null
 }
 

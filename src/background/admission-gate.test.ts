@@ -10,8 +10,9 @@ const baseSettings = (over: Partial<typeof Settings.Type>): typeof Settings.Type
   ...over,
 })
 
-const item = (over: Partial<MediaItem> & Pick<MediaItem, 'id' | 'tweetId'>): MediaItem => ({
-  handle: 'h',
+const item = (over: Partial<MediaItem> & Pick<MediaItem, 'id' | 'postId'>): MediaItem => ({
+  platform: 'x',
+  author: 'h',
   type: 'photo',
   url: `https://cdn/${over.id}`,
   ext: 'jpg',
@@ -40,7 +41,7 @@ describe('makeAdmissionGate', () => {
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
 
-    const it1 = item({ id: 'a', tweetId: 'T1', type: 'video' })
+    const it1 = item({ id: 'a', postId: 'T1', type: 'video' })
     const res = await gate.admit([it1])
 
     expect(res.admitted).toEqual([])
@@ -58,8 +59,8 @@ describe('makeAdmissionGate', () => {
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
 
-    const it1 = item({ id: 'a', tweetId: 'T1' })
-    const it2 = item({ id: 'b', tweetId: 'T2' })
+    const it1 = item({ id: 'a', postId: 'T1' })
+    const it2 = item({ id: 'b', postId: 'T2' })
     const res = await gate.admit([it1, it2])
 
     expect(res.admitted).toEqual([it1, it2])
@@ -76,9 +77,9 @@ describe('makeAdmissionGate', () => {
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
 
-    const a = item({ id: 'a', tweetId: 'T1', index: 0 })
-    const b = item({ id: 'b', tweetId: 'T1', index: 1 })
-    const c = item({ id: 'c', tweetId: 'T2' })
+    const a = item({ id: 'a', postId: 'T1', index: 0 })
+    const b = item({ id: 'b', postId: 'T1', index: 1 })
+    const c = item({ id: 'c', postId: 'T2' })
     const res = await gate.admit([a, b, c])
 
     expect(res.admitted).toEqual([c])
@@ -102,8 +103,8 @@ describe('makeAdmissionGate', () => {
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
 
-    const over = item({ id: 'big', tweetId: 'T1' })
-    const unknown = item({ id: 'unk', tweetId: 'T2' })
+    const over = item({ id: 'big', postId: 'T1' })
+    const unknown = item({ id: 'unk', postId: 'T2' })
     const res = await gate.admit([over, unknown])
 
     expect(res.admitted).toEqual([unknown])
@@ -120,9 +121,9 @@ describe('makeAdmissionGate', () => {
       readTodayBudget: async () => ({ bytes: 0, count: 2 }),
     })
 
-    const a = item({ id: 'a', tweetId: 'T1' })
-    const b = item({ id: 'b', tweetId: 'T2' })
-    const c = item({ id: 'c', tweetId: 'T3' })
+    const a = item({ id: 'a', postId: 'T1' })
+    const b = item({ id: 'b', postId: 'T2' })
+    const c = item({ id: 'c', postId: 'T3' })
     const res = await gate.admit([a, b, c])
 
     expect(res.admitted).toEqual([a])
@@ -143,8 +144,8 @@ describe('makeAdmissionGate', () => {
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
 
-    const local = item({ id: 'a', tweetId: 'T_local' })
-    const other = item({ id: 'b', tweetId: 'T_other' })
+    const local = item({ id: 'a', postId: 'T_local' })
+    const other = item({ id: 'b', postId: 'T_other' })
     const res = await gate.admit([local, other])
 
     expect(res.admitted).toEqual([other])
@@ -173,7 +174,7 @@ describe('makeAdmissionGate', () => {
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
 
-    const items = ['a', 'b', 'c', 'd'].map((id, i) => item({ id, tweetId: `T${i}` }))
+    const items = ['a', 'b', 'c', 'd'].map((id, i) => item({ id, postId: `T${i}` }))
     const admitP = gate.admit(items)
     // Flush microtasks until the probes have had every chance to start. A serial
     // implementation holds at 1 in-flight probe here; the parallel one opens all 4.
@@ -203,7 +204,7 @@ describe('makeAdmissionGate', () => {
     })
 
     const items = Array.from({ length: PROBE_CONCURRENCY + 2 }, (_, i) =>
-      item({ id: `i${i}`, tweetId: `T${i}` }),
+      item({ id: `i${i}`, postId: `T${i}` }),
     )
     const admitP = gate.admit(items)
     // oxlint-disable no-await-in-loop -- deliberate sequential microtask flushes
@@ -233,9 +234,9 @@ describe('makeAdmissionGate', () => {
       readTodayBudget: async () => ({ bytes: 0, count: 1 }),
     })
 
-    const ok = item({ id: 'a', tweetId: 'T1' })
-    const filtered = item({ id: 'b', tweetId: 'T2', type: 'gif' })
-    const overBudget = item({ id: 'c', tweetId: 'T3' })
+    const ok = item({ id: 'a', postId: 'T1' })
+    const filtered = item({ id: 'b', postId: 'T2', type: 'gif' })
+    const overBudget = item({ id: 'c', postId: 'T3' })
     const res = await gate.admit([ok, filtered, overBudget])
 
     expect(res.admitted).toEqual([ok])

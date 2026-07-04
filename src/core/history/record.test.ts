@@ -5,8 +5,9 @@ import type { MediaItem } from '../schema'
 
 const item: MediaItem = {
   id: '123-0',
-  tweetId: '123',
-  handle: 'alice',
+  platform: 'x',
+  postId: '123',
+  author: 'alice',
   type: 'photo',
   url: 'https://pbs.twimg.com/media/abc?format=jpg&name=orig',
   ext: 'jpg',
@@ -20,8 +21,9 @@ describe('recordFromMediaItem', () => {
       filename: 'alice/123_0.jpg',
       status: 'queued',
       media: {
-        tweetId: '123',
-        handle: 'alice',
+        platform: 'x',
+        postId: '123',
+        author: 'alice',
         type: 'photo',
         url: 'https://pbs.twimg.com/media/abc?format=jpg&name=orig',
         index: 0,

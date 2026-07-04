@@ -53,7 +53,7 @@ describe('pickVideoVariant', () => {
 })
 
 describe('resolveTweetMedia', () => {
-  it('produces original-quality photos and the best mp4 for video, with index + handle', () => {
+  it('produces original-quality photos and the best mp4 for video, with index + author', () => {
     const items = resolveTweetMedia({
       tweetId: '1790',
       handle: 'alice',
@@ -83,8 +83,9 @@ describe('resolveTweetMedia', () => {
     expect(items).toHaveLength(2)
     expect(items[0]).toMatchObject({
       type: 'photo',
-      handle: 'alice',
-      tweetId: '1790',
+      platform: 'x',
+      author: 'alice',
+      postId: '1790',
       index: 0,
       ext: 'jpg',
     })

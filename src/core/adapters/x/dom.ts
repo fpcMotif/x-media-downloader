@@ -139,11 +139,11 @@ export function groupByTweet(items: ReadonlyArray<MediaItem>): Registry {
   for (const item of items) {
     if (seen.has(item.id)) continue
     seen.add(item.id)
-    let group = groups.get(item.tweetId)
+    let group = groups.get(item.postId)
     if (group === undefined) {
       group = []
-      groups.set(item.tweetId, group)
-      order.push(item.tweetId)
+      groups.set(item.postId, group)
+      order.push(item.postId)
     }
     group.push(item)
   }

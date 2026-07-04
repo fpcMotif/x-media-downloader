@@ -17,10 +17,15 @@ function imgAt(html: string, n = 0): HTMLImageElement {
 }
 
 describe('detectFromJson', () => {
-  it('extracts all photos from a TweetResult with handle + tweetId', () => {
+  it('extracts all photos from a TweetResult with author + postId', () => {
     const items = detectFromJson(tweetDetail)
     expect(items).toHaveLength(2)
-    expect(items[0]).toMatchObject({ handle: 'alice', tweetId: '1790', type: 'photo' })
+    expect(items[0]).toMatchObject({
+      author: 'alice',
+      postId: '1790',
+      type: 'photo',
+      platform: 'x',
+    })
     expect(items[0]!.url).toContain('name=orig')
   })
 
@@ -67,6 +72,7 @@ describe('detectFromJson', () => {
       ext: 'mp4',
       url: 'https://video.twimg.com/ext_tw_video/77/pu/vid/1280x720/high.mp4',
       previewUrl: 'https://pbs.twimg.com/ext_tw_video_thumb/77/pu/img/V1.jpg',
+      platform: 'x',
     })
   })
 
@@ -114,12 +120,12 @@ describe('detectFromJson', () => {
       },
     })
 
-    const outer = items.find((i) => i.tweetId === '5001')
-    const quoted = items.find((i) => i.tweetId === '4000')
+    const outer = items.find((i) => i.postId === '5001')
+    const quoted = items.find((i) => i.postId === '4000')
     expect(outer).toBeDefined()
     expect(quoted).toBeDefined()
-    expect(outer!.handle).toBe('REAL_AUTHOR')
-    expect(quoted!.handle).toBe('QUOTED_AUTHOR')
+    expect(outer!.author).toBe('REAL_AUTHOR')
+    expect(quoted!.author).toBe('QUOTED_AUTHOR')
   })
 
   it('scans through array values and short-circuits once the author is found', () => {
@@ -149,10 +155,10 @@ describe('detectFromJson', () => {
       },
     })
     expect(items).toHaveLength(1)
-    expect(items[0]!.handle).toBe('ARR_AUTHOR')
+    expect(items[0]!.author).toBe('ARR_AUTHOR')
   })
 
-  it('uses legacy.id_str as the tweetId when rest_id is absent', () => {
+  it('uses legacy.id_str as the postId when rest_id is absent', () => {
     const items = detectFromJson({
       data: {
         result: {
@@ -173,7 +179,7 @@ describe('detectFromJson', () => {
       },
     })
     expect(items).toHaveLength(1)
-    expect(items[0]).toMatchObject({ tweetId: '7100', handle: 'idstr_author' })
+    expect(items[0]).toMatchObject({ postId: '7100', author: 'idstr_author' })
   })
 
   it('skips a media node carrying neither rest_id nor legacy.id_str', () => {
@@ -212,10 +218,10 @@ describe('detectFromJson', () => {
     // The same node referenced under two keys is walked twice; `seen` keeps one.
     const items = detectFromJson({ data: { a: node, b: node } })
     expect(items).toHaveLength(1)
-    expect(items[0]!.tweetId).toBe('8200')
+    expect(items[0]!.postId).toBe('8200')
   })
 
-  it('falls back to an empty handle when the tweet node has no screen_name', () => {
+  it('falls back to an empty author when the tweet node has no screen_name', () => {
     const items = detectFromJson({
       data: {
         result: {
@@ -235,7 +241,7 @@ describe('detectFromJson', () => {
       },
     })
     expect(items).toHaveLength(1)
-    expect(items[0]!.handle).toBe('')
+    expect(items[0]!.author).toBe('')
   })
 
   it('attributes both the outer and retweeted media to their OWN authors', () => {
@@ -283,12 +289,12 @@ describe('detectFromJson', () => {
       },
     })
 
-    const own = items.find((i) => i.tweetId === '9001')
-    const original = items.find((i) => i.tweetId === '8000')
+    const own = items.find((i) => i.postId === '9001')
+    const original = items.find((i) => i.postId === '8000')
     expect(own).toBeDefined()
     expect(original).toBeDefined()
-    expect(own!.handle).toBe('RETWEETER')
-    expect(original!.handle).toBe('ORIGINAL_AUTHOR')
+    expect(own!.author).toBe('RETWEETER')
+    expect(original!.author).toBe('ORIGINAL_AUTHOR')
   })
 })
 
@@ -312,7 +318,7 @@ describe('detectRenderedImageElements', () => {
 
     expect(items).toHaveLength(2)
     expect(items.map((item) => item.id)).toEqual(['A1', 'B1']) // id = media key (ADR-0016)
-    expect(items.map((item) => item.handle)).toEqual(['alice', 'bob'])
+    expect(items.map((item) => item.author)).toEqual(['alice', 'bob'])
     expect(items[0]!.url).toBe('https://pbs.twimg.com/media/A1?format=jpg&name=orig')
     expect(items[1]!.ext).toBe('png')
   })
@@ -343,7 +349,7 @@ describe('resolveImageElement', () => {
   it('resolves the exact hovered photo in a multi-image grid', () => {
     const item = resolveImageElement(imgAt(GRID, 1))
     expect(item).not.toBeNull()
-    expect(item!).toMatchObject({ type: 'photo', handle: 'alice', tweetId: '1790', index: 1 })
+    expect(item!).toMatchObject({ type: 'photo', author: 'alice', postId: '1790', index: 1 })
     expect(item!.url).toContain('name=orig')
     expect(item!.url).toContain('/media/P1')
     expect(item!.ext).toBe('png')
@@ -367,7 +373,7 @@ describe('resolveImageElement', () => {
   it('falls back to the page path for the lightbox /photo/ route (no article)', () => {
     const img = imgAt('<img src="https://pbs.twimg.com/media/L7?format=jpg&name=large" />')
     const item = resolveImageElement(img, '/bob/status/55/photo/2')
-    expect(item!).toMatchObject({ handle: 'bob', tweetId: '55', index: 1 })
+    expect(item!).toMatchObject({ author: 'bob', postId: '55', index: 1 })
     expect(item!.url).toContain('name=orig')
   })
 
@@ -382,21 +388,21 @@ describe('resolveImageElement', () => {
         </div>
       </article>`
     const item = resolveImageElement(imgAt(html, 1))
-    expect(item!).toMatchObject({ handle: 'bob', tweetId: '2000', index: 0 })
+    expect(item!).toMatchObject({ author: 'bob', postId: '2000', index: 0 })
     expect(item!.url).toContain('/media/Quoted')
   })
 
   it('drops the author for X internal /i/web/status permalinks', () => {
     const img = imgAt('<img src="https://pbs.twimg.com/media/IW?format=jpg&name=small" />')
     const item = resolveImageElement(img, '/i/web/status/999')
-    expect(item!).toMatchObject({ handle: '', tweetId: '999' })
+    expect(item!).toMatchObject({ author: '', postId: '999' })
     expect(renderFilename('{handle}/{tweetId}_{index}.{ext}', item!)).toBe('999_0.jpg')
   })
 
   it('keeps the /photo/{n} ordinal on /i/ internal permalinks', () => {
     const img = imgAt('<img src="https://pbs.twimg.com/media/IW2?format=jpg&name=small" />')
     const item = resolveImageElement(img, '/i/web/status/999/photo/2')
-    expect(item!).toMatchObject({ handle: '', tweetId: '999', index: 1, id: 'IW2' })
+    expect(item!).toMatchObject({ author: '', postId: '999', index: 1, id: 'IW2' })
   })
 
   it('ids a DOM photo by the same media key the tee would (ADR-0016)', () => {
@@ -423,7 +429,7 @@ describe('resolveImageElement', () => {
         </div>
       </article>`
     const item = resolveImageElement(imgAt(html), '/alice/status/1790')
-    expect(item!).toMatchObject({ handle: '', tweetId: 'QuotedNL', id: 'QuotedNL', index: 0 })
+    expect(item!).toMatchObject({ author: '', postId: 'QuotedNL', id: 'QuotedNL', index: 0 })
   })
 
   it("scopes the DOM-order index to the photo's own tweet when anchors lack /photo/{n}", () => {
@@ -437,14 +443,14 @@ describe('resolveImageElement', () => {
         </div>
       </article>`
     expect(resolveImageElement(imgAt(html, 1))!).toMatchObject({
-      handle: 'bob',
-      tweetId: '2000',
+      author: 'bob',
+      postId: '2000',
       index: 0,
       id: 'QuotedB',
     })
     expect(resolveImageElement(imgAt(html, 0))!).toMatchObject({
-      handle: 'alice',
-      tweetId: '1790',
+      author: 'alice',
+      postId: '1790',
       index: 0,
     })
   })
@@ -457,8 +463,8 @@ describe('resolveImageElement', () => {
         <img src="https://pbs.twimg.com/media/Bare?format=jpg&name=small" />
       </article>`
     expect(resolveImageElement(imgAt(html))!).toMatchObject({
-      handle: 'alice',
-      tweetId: '1790',
+      author: 'alice',
+      postId: '1790',
       index: 0,
     })
   })
@@ -474,13 +480,13 @@ describe('resolveImageElement', () => {
         <img src="https://pbs.twimg.com/media/IFB?format=jpg&name=small" />
       </article>`
     const item = resolveImageElement(imgAt(html))
-    expect(item!).toMatchObject({ handle: '', tweetId: '4242', index: 0 })
+    expect(item!).toMatchObject({ author: '', postId: '4242', index: 0 })
   })
 
   it('still yields a valid relative filename when no context is known', () => {
     const img = imgAt('<img src="https://pbs.twimg.com/media/Solo9?format=jpg&name=small" />')
     const item = resolveImageElement(img)
-    expect(item!).toMatchObject({ handle: '', tweetId: 'Solo9', index: 0, id: 'Solo9' })
+    expect(item!).toMatchObject({ author: '', postId: 'Solo9', index: 0, id: 'Solo9' })
     const path = renderFilename('{handle}/{tweetId}_{index}.{ext}', item!)
     expect(path.startsWith('/')).toBe(false)
     expect(path).toBe('Solo9_0.jpg')
@@ -490,7 +496,7 @@ describe('resolveImageElement', () => {
     const img = imgAt('<img src="https://pbs.twimg.com/media/Lazy?format=jpg&name=small" />')
     Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
     const item = resolveImageElement(img)
-    expect(item!).toMatchObject({ tweetId: 'Lazy', id: 'Lazy' })
+    expect(item!).toMatchObject({ postId: 'Lazy', id: 'Lazy' })
   })
 
   it('returns null for a /media/ url whose basename yields an empty key', () => {
@@ -512,7 +518,7 @@ describe('resolveImageElement', () => {
     // `el.currentSrc || el.src` falls through to `.src` during the index scan.
     Object.defineProperty(imgs[0]!, 'currentSrc', { value: '', configurable: true })
     const item = resolveImageElement(imgs[1]!)
-    expect(item!).toMatchObject({ tweetId: '1790', handle: 'alice', index: 1 })
+    expect(item!).toMatchObject({ postId: '1790', author: 'alice', index: 1 })
   })
 })
 

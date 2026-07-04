@@ -246,7 +246,14 @@ const cloudUpload = makeCloudUpload({
   queueError,
   getSettings,
   fetchImpl: fetch,
-  getBackfillRecords: async () => decodeStore(await historyItem.getValue()).records,
+  // BackfillRecord.media keeps its own `handle`-named field (cloud-upload.ts is
+  // untouched by the multi-platform rename) — map the generalized author onto it.
+  getBackfillRecords: async () =>
+    decodeStore(await historyItem.getValue()).records.map((r) => ({
+      requestId: r.requestId,
+      filename: r.filename,
+      media: { url: r.media.url, handle: r.media.author, ext: r.media.ext },
+    })),
 })
 const { uploadQueue, drainUploadJobs, recordCloudUploads } = cloudUpload
 
@@ -353,7 +360,7 @@ const savedStatusCoordinator = makeSavedStatusCoordinator({
 // Seed once on SW startup from the durable history's completed tweetIds.
 void (async () => {
   const { records } = decodeStore(await historyItem.getValue())
-  savedIndex.seed(records.filter((r) => r.status === 'completed').map((r) => r.media.tweetId))
+  savedIndex.seed(records.filter((r) => r.status === 'completed').map((r) => r.media.postId))
 })()
 
 // Download Admission Gate: a pre-scheduling check that drops duplicates and
@@ -431,7 +438,7 @@ const settleBrowserDownload = async (
   now: number,
 ): Promise<void> => {
   const complete = outcome === 'complete'
-  const tweetId = requestMetaById.get(id)?.item?.tweetId
+  const tweetId = requestMetaById.get(id)?.item?.postId
   inFlight.delete(id)
   clearInterruptRetryState(id)
   if (complete) recordClearComplete(tweetId, id, downloadId)
@@ -520,7 +527,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     transfersState = trackTransfer(transfersState, {
       id,
       downloadId,
-      ...(meta.item?.tweetId ? { tweetId: meta.item.tweetId } : {}),
+      ...(meta.item?.postId ? { tweetId: meta.item.postId } : {}),
       startedAt: Date.now(),
     })
     persistTransfers()
@@ -859,7 +866,17 @@ const handleDownload = (
       settings,
       requests.flatMap((r) => {
         const item = mediaById.get(r.id)
-        return item ? [{ item, filename: r.filename }] : []
+        // UploadCandidate.item keeps its own `handle`-named field (cloud-upload.ts
+        // is untouched by the multi-platform rename) — map the generalized
+        // MediaItem.author onto it explicitly.
+        return item
+          ? [
+              {
+                item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
+                filename: r.filename,
+              },
+            ]
+          : []
       }),
     )
 
@@ -901,11 +918,11 @@ const handleDownload = (
         // un-liking by a stray match would hit the WRONG post. Skip it: downloads
         // still run (they key off `requests`, not `byTweet`); only the doomed,
         // unsafe clear is dropped, and visibly (trace below) instead of silently.
-        if (!isClearableTweetId(item.tweetId)) {
-          unclearable.add(item.tweetId)
+        if (!isClearableTweetId(item.postId)) {
+          unclearable.add(item.postId)
           continue
         }
-        byTweet.set(item.tweetId, [...(byTweet.get(item.tweetId) ?? []), r.id])
+        byTweet.set(item.postId, [...(byTweet.get(item.postId) ?? []), r.id])
       }
       if (unclearable.size > 0)
         traceBackground('clear-skip', {
@@ -938,7 +955,7 @@ const handleDownload = (
       const media = mediaById.get(o.id)
       if (!o.ok) {
         inFlight.delete(o.id)
-        recordClearFailure(media?.tweetId, o.id)
+        recordClearFailure(media?.postId, o.id)
         live = recordOutcome(live, o.id, 'failed', now)
         syncEvents.push(outcomeEvent(o.id, 'failed', settings.cloudDeviceId, now))
         historyActions.push({ kind: 'failed', requestId: o.id, at: now })
@@ -955,7 +972,7 @@ const handleDownload = (
           transfersState = trackTransfer(transfersState, {
             id: o.id,
             downloadId: o.handle.id,
-            ...(media?.tweetId ? { tweetId: media.tweetId } : {}),
+            ...(media?.postId ? { tweetId: media.postId } : {}),
             startedAt: requestStartedAt.get(o.id) ?? startedAt,
           })
         live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })

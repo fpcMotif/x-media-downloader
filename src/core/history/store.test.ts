@@ -3,10 +3,11 @@ import type { MediaItem } from '../schema'
 import { recordFromMediaItem, applyOutcome } from './record'
 import { emptyStore, decodeStore, upsert, applyTransition } from './store'
 
-const mk = (id: string, handle = 'alice'): MediaItem => ({
+const mk = (id: string, author = 'alice'): MediaItem => ({
   id,
-  tweetId: id.split('-')[0] ?? id,
-  handle,
+  platform: 'x',
+  postId: id.split('-')[0] ?? id,
+  author,
   type: 'photo',
   url: `https://pbs.twimg.com/media/${id}?format=jpg&name=orig`,
   ext: 'jpg',

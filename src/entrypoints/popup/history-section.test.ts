@@ -7,8 +7,9 @@ const rec = (id: string, handle: string, at: number) =>
   recordFromMediaItem(
     {
       id,
-      tweetId: id.split('-')[0] ?? id,
-      handle,
+      platform: 'x',
+      postId: id.split('-')[0] ?? id,
+      author: handle,
       type: 'photo',
       url: `https://pbs.twimg.com/media/${id}?format=jpg&name=orig`,
       ext: 'jpg',

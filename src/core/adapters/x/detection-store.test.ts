@@ -5,8 +5,9 @@ import { makeDetectionStore, keysForItem } from './detection-store'
 /** twimg URLs so mediaKeyFromUrl yields a real key (final path segment, no ext). */
 const photo = (id: string, key: string, tweetId = 't1'): MediaItem => ({
   id,
-  tweetId,
-  handle: 'alice',
+  platform: 'x',
+  postId: tweetId,
+  author: 'alice',
   type: 'photo',
   url: `https://pbs.twimg.com/media/${key}.jpg?name=orig`,
   previewUrl: `https://pbs.twimg.com/media/${key}.jpg`,
@@ -16,8 +17,9 @@ const photo = (id: string, key: string, tweetId = 't1'): MediaItem => ({
 
 const video = (id: string, mp4Key: string, posterKey: string, tweetId = 't1'): MediaItem => ({
   id,
-  tweetId,
-  handle: 'alice',
+  platform: 'x',
+  postId: tweetId,
+  author: 'alice',
   type: 'video',
   url: `https://video.twimg.com/ext_tw_video/9/pu/vid/720x720/${mp4Key}.mp4?tag=12`,
   previewUrl: `https://pbs.twimg.com/ext_tw_video_thumb/9/pu/img/${posterKey}.jpg`,

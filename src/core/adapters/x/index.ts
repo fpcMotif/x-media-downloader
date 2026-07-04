@@ -146,11 +146,12 @@ export function resolveImageElement(img: HTMLImageElement, pathname = ''): Media
   const url = upgradePhotoUrl(src)
   return {
     // Identity is the media key, so this photo is the SAME item whether the tee,
-    // syndication, or this DOM resolver surfaced it (ADR-0016). `tweetId`/`index`
+    // syndication, or this DOM resolver surfaced it (ADR-0016). `postId`/`index`
     // still drive the filename.
     id: key,
-    tweetId,
-    handle: ctx?.handle ?? '',
+    platform: 'x',
+    postId: tweetId,
+    author: ctx?.handle ?? '',
     type: 'photo',
     url,
     ext: extFromImgUrl(url),

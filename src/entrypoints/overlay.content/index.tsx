@@ -532,7 +532,7 @@ const traceDownloadUi =
       stage,
       t: Date.now(),
       ...(opts.item
-        ? { itemId: opts.item.id, tweetId: opts.item.tweetId, type: opts.item.type }
+        ? { itemId: opts.item.id, tweetId: opts.item.postId, type: opts.item.type }
         : {}),
       ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}),
       ...((opts.detail ?? opts.key) ? { detail: opts.detail ?? `key ${opts.key}` } : {}),
@@ -929,7 +929,7 @@ export default defineContentScript({
     // grabbed subset gates the page's un-bookmark/un-like, unchanged.
     const forYouClearExpect = (items: ReadonlyArray<MediaItem>): ClearExpect | undefined => {
       if (!isForYouHome(location.pathname, document)) return undefined
-      const tweetIds = [...new Set(items.map((i) => i.tweetId))]
+      const tweetIds = [...new Set(items.map((i) => i.postId))]
       return tweetIds.map((tweetId) => ({
         tweetId,
         ids: store.valuesForTweet(tweetId).map((m) => m.id),

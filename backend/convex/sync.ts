@@ -49,7 +49,12 @@ async function materializeState(ctx: Ctx, e: SyncEvent): Promise<void> {
     await ctx.db.insert('media_state', {
       requestId: e.requestId,
       deviceId: e.deviceId,
-      tweetId: e.media?.tweetId ?? '',
+      // Both generalized (`postId`/`platform`) and legacy (`tweetId`) columns are
+      // seeded from whichever the incoming event carries — see the migration note
+      // on `media` in schema.ts. New events only ever carry `postId`/`platform`.
+      postId: e.media?.postId ?? e.media?.tweetId ?? '',
+      tweetId: e.media?.tweetId ?? e.media?.postId ?? '',
+      ...(e.media?.platform !== undefined ? { platform: e.media.platform } : {}),
       ...patch,
     })
   } else if (e.at >= row.at) {
@@ -162,5 +167,52 @@ export const backfillTweetId = mutation({
       }
     }
     return { patched }
+  },
+})
+
+/**
+ * Multi-platform migration, deploy 1 of 2 (see the `media`/`media_state`
+ * comments in schema.ts): fill `postId`/`platform`/`author` on `media_state`
+ * rows written before those columns existed, deriving `platform: 'x'` (every
+ * pre-migration row is X-only by construction — Instagram/Threads didn't
+ * exist yet) and `postId` from the legacy `tweetId`/`media.tweetId`.
+ * Idempotent (only patches rows missing `postId`). Secret-gated like every
+ * write. Run this, then `platformBackfillRemaining` to verify 100% coverage,
+ * BEFORE a follow-up change drops `tweetId`/`handle` and makes the new
+ * columns required (deploy 2 of 2).
+ */
+export const backfillPlatformFields = mutation({
+  args: { secret: v.string() },
+  returns: v.object({ patched: v.number() }),
+  handler: async (ctx, { secret }) => {
+    assertSecret(secret)
+    let patched = 0
+    const rows = await ctx.db.query('media_state').collect()
+    for (const row of rows) {
+      if (row.postId !== undefined) continue
+      const postId = row.tweetId ?? row.media?.tweetId ?? ''
+      const patch: Record<string, unknown> = { postId, platform: 'x' }
+      if (row.media !== undefined && row.media.postId === undefined) {
+        patch['media'] = { ...row.media, postId: row.media.tweetId, author: row.media.handle, platform: 'x' }
+      }
+      await ctx.db.patch(row._id, patch)
+      patched += 1
+    }
+    return { patched }
+  },
+})
+
+/**
+ * Verification query for the migration above: how many `media_state` rows
+ * still lack `postId`. The deploy-2 schema push (dropping `tweetId`/`handle`,
+ * requiring `postId`/`author`/`platform`) is only safe once this returns 0.
+ */
+export const platformBackfillRemaining = query({
+  args: { secret: v.string() },
+  returns: v.number(),
+  handler: async (ctx, { secret }) => {
+    assertSecret(secret)
+    const rows = await ctx.db.query('media_state').collect()
+    return rows.filter((r) => r.postId === undefined).length
   },
 })

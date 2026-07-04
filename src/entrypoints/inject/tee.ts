@@ -1,24 +1,6 @@
-/**
- * Media-bearing X GraphQL operations the passive tee should capture. Scoped to
- * tweet/thread + the timelines that carry tweet media (ADR-0001).
- */
-const MEDIA_OPS = [
-  'TweetDetail',
-  'TweetResultByRestId',
-  'TweetResultsByRestIds',
-  'UserTweets',
-  'UserMedia',
-  'HomeTimeline',
-  'HomeLatestTimeline',
-  'SearchTimeline',
-  'ListLatestTweetsTimeline',
-  'ListTweetsTimeline',
-  'Likes',
-  'Bookmarks',
-] as const
-
-/** True for an X GraphQL request whose response may contain tweet media. */
-export function isGraphqlMediaUrl(url: string): boolean {
-  if (!url.includes('/i/api/graphql/')) return false
-  return MEDIA_OPS.some((op) => url.includes(`/${op}`))
-}
+// Relocated to core/adapters/x/tracked-response.ts (the X PlatformAdapter's
+// `isTrackedResponseUrl`, part of the multi-platform adapter abstraction —
+// docs/superpowers/specs/2026-07-04-multi-platform-adapter-design.md). Re-export
+// kept here so this entrypoint's existing import path (and inject.content.ts)
+// don't need to change.
+export { isGraphqlMediaUrl } from '../../core/adapters/x/tracked-response'
