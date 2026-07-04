@@ -14,27 +14,29 @@ export const isThreadsUrl = (url: string): boolean =>
 /**
  * Whether a network response URL may carry Threads post/media data.
  *
- * Per research, Threads' internal API is a single `/api/graphql` endpoint
- * (served on both hosts) dispatched via a doc_id-keyed persisted query — the
- * same dispatch model as X's own GraphQL tee, just without a human-readable
- * operation name in the URL to filter on the way X's `isGraphqlMediaUrl` does.
+ * LIVE-VERIFIED 2026-07-04 (Chrome Canary, logged-in session, via claude-in-
+ * chrome network inspection — see the as-built plan doc): Threads' web client
+ * actually dispatches through BOTH `POST /api/graphql` AND `POST
+ * /graphql/query` in the same browsing session (unlike Instagram, which was
+ * observed using only `/api/graphql`) — match either, or real traffic is
+ * silently missed.
  *
- * Filtering on URL containing `/api/graphql` alone is deliberately loose, and
- * that looseness is safe by construction: `detectFromResponse` is entirely
- * shape-driven (it structurally walks the JSON for post-shaped nodes), never
- * URL-driven. A false-positive match here only costs one wasted JSON parse
- * that structurally finds nothing and returns `[]` — it can never cause a
- * media item to be mis-attributed to the wrong post, because the URL plays no
- * role in resolving WHICH post a media node belongs to. Compare X, where a
- * missed/looser URL filter risks parsing the wrong response shape entirely;
- * here the shape-driven walker is itself the correctness backstop.
+ * Filtering this loosely is deliberate and safe by construction:
+ * `detectFromResponse` is entirely shape-driven (it structurally walks the
+ * JSON for post-shaped nodes), never URL-driven. A false-positive match here
+ * only costs one wasted JSON parse that structurally finds nothing and
+ * returns `[]` — it can never cause a media item to be mis-attributed to the
+ * wrong post, because the URL plays no role in resolving WHICH post a media
+ * node belongs to. Compare X, where a missed/looser URL filter risks parsing
+ * the wrong response shape entirely; here the shape-driven walker is itself
+ * the correctness backstop.
  */
 export function isTrackedThreadsResponseUrl(
   url: string,
   requestHeaders?: Readonly<Record<string, string>>,
 ): boolean {
   void requestHeaders
-  return url.includes('/api/graphql')
+  return url.includes('/api/graphql') || url.includes('/graphql/query')
 }
 
 /**

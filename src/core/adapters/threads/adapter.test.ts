@@ -36,6 +36,14 @@ describe('isTrackedThreadsResponseUrl', () => {
     expect(isTrackedThreadsResponseUrl('https://www.threads.net/api/graphql?abc=1')).toBe(true)
   })
 
+  // Live-verified 2026-07-04 (Chrome Canary, logged-in session): the SAME
+  // browsing session dispatched through both /api/graphql AND /graphql/query
+  // — unlike Instagram, which was only observed using /api/graphql.
+  it('also matches the /graphql/query endpoint (observed alongside /api/graphql in the same live session)', () => {
+    expect(isTrackedThreadsResponseUrl('https://www.threads.com/graphql/query')).toBe(true)
+    expect(isTrackedThreadsResponseUrl('https://www.threads.com/graphql/query?doc_id=1')).toBe(true)
+  })
+
   it('rejects a non-graphql url', () => {
     expect(isTrackedThreadsResponseUrl('https://www.threads.net/api/v1/media/like')).toBe(false)
   })

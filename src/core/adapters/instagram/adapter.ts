@@ -15,12 +15,17 @@ export const isInstagramUrl = (url: string): boolean =>
 
 /**
  * True for a captured response URL Instagram's own frontend plausibly used to
- * fetch post/media data. Per research (docs/superpowers/specs/2026-07-04-
- * multi-platform-adapter-design.md), Instagram's web client hits BOTH a
- * GraphQL surface (`/graphql/query`) and a REST-ish surface (`/api/v1/...`)
- * depending on surface/feature — match either.
+ * fetch post/media data.
  *
- * Deliberately loose by design, not just for lack of live verification: a
+ * LIVE-VERIFIED 2026-07-04 (Chrome Canary, logged-in session, via claude-in-
+ * chrome network inspection — see the as-built plan doc): Instagram's web
+ * client's actual GraphQL endpoint is `POST /api/graphql` — bare, no `/query`
+ * suffix. The original research-only guess (`/graphql/query`) was WRONG and
+ * would have silently missed all real traffic; `/api/v1/` is kept as a
+ * courtesy fallback (research mentions it for other surfaces) even though no
+ * post/media-bearing call to it was observed live in this session.
+ *
+ * Deliberately loose by design, not just for lack of verification: a
  * false-positive URL match only costs one wasted JSON parse that structurally
  * finds nothing (`detectMediaItems` returns `[]` for a shape with no
  * post-shaped node) — it can NEVER mis-attribute media to the wrong post,
@@ -30,7 +35,7 @@ export const isInstagramUrl = (url: string): boolean =>
  * capture — the wrong trade for a filter this cheap to over-match.
  */
 export function isTrackedInstagramResponseUrl(url: string): boolean {
-  return url.includes('/graphql/query') || url.includes('/api/v1/')
+  return url.includes('/api/graphql') || url.includes('/api/v1/')
 }
 
 /**
