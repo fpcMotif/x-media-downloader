@@ -62,6 +62,13 @@ export default defineConfig({
     optional_host_permissions: [
       'https://pbs.twimg.com/*',
       'https://video.twimg.com/*',
+      // Instagram/Threads media CDN — same rationale as the twimg pair above
+      // (HEAD-probes for the size/budget filters, the 'fetched' strategy, and
+      // Cloud Upload's byte source all need fetch-level host access, on top of
+      // the page-origin host_permissions already granted for the content
+      // script). Meta serves signed media off numbered `scontent` subdomains
+      // rather than one fixed host, hence the wildcard.
+      'https://*.cdninstagram.com/*',
       'http://localhost/*',
       'https://www.googleapis.com/*',
       'https://oauth2.googleapis.com/*',

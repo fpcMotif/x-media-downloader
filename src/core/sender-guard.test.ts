@@ -82,6 +82,31 @@ describe('isMessageAllowed', () => {
     ).toBe(true)
   })
 
+  // Regression: the multi-platform adapter work (Instagram/Threads content
+  // scripts, wxt.config.ts host_permissions + manifest matches) never updated
+  // this guard's origin allow-list, so every overlay-to-background message from
+  // an Instagram/Threads tab — DownloadRequest included — was silently dropped
+  // (the listener returns false, the caller sees an unanswered `reply: undefined`,
+  // never a rejection or a decoded failure list).
+  it('allows a content-script tag from an Instagram content script', () => {
+    expect(
+      isMessageAllowed(
+        CS_TAG,
+        { id: OWN, tab: { id: 1 }, origin: 'https://www.instagram.com' },
+        OWN,
+      ),
+    ).toBe(true)
+  })
+
+  it('allows a content-script tag from a Threads content script (both hosts)', () => {
+    expect(
+      isMessageAllowed(CS_TAG, { id: OWN, tab: { id: 1 }, origin: 'https://www.threads.net' }, OWN),
+    ).toBe(true)
+    expect(
+      isMessageAllowed(CS_TAG, { id: OWN, tab: { id: 1 }, origin: 'https://www.threads.com' }, OWN),
+    ).toBe(true)
+  })
+
   it('rejects a UI-only tag arriving from a content script', () => {
     expect(
       isMessageAllowed(UI_TAG, { id: OWN, tab: { id: 1 }, origin: 'https://x.com' }, OWN),

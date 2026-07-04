@@ -10,8 +10,9 @@
  *
  * Two trust tiers, validated against the real `sendMessage` call sites:
  *  - Internal UI (popup / options): our extension id, no `tab` — may send anything.
- *  - Content script (overlay on x.com / twitter.com): our extension id, has a
- *    `tab`, on an allowed origin — may send only {@link CONTENT_SCRIPT_TAGS}.
+ *  - Content script (overlay on x.com / twitter.com / instagram / threads): our
+ *    extension id, has a `tab`, on an allowed origin — may send only
+ *    {@link CONTENT_SCRIPT_TAGS}.
  * Everything else — a foreign extension id, a content script on another origin,
  * or a privileged (UI-only) tag arriving from a content script — is rejected.
  */
@@ -32,9 +33,18 @@ export const CONTENT_SCRIPT_TAGS: ReadonlySet<string> = new Set([
   'SavedStatusRequest',
 ])
 
+// Mirrors wxt.config.ts's host_permissions page-origin list (multi-platform
+// adapter abstraction, docs/superpowers/specs/2026-07-04-multi-platform-adapter-design.md).
+// This set was NOT updated when Instagram/Threads content scripts were added,
+// which silently dropped every overlay-to-background message from those tabs
+// (DownloadRequest included) with no error signal — the listener returns
+// false, so the caller sees an unanswered `reply: undefined`, not a rejection.
 const ALLOWED_CONTENT_SCRIPT_ORIGINS: ReadonlySet<string> = new Set([
   'https://x.com',
   'https://twitter.com',
+  'https://www.instagram.com',
+  'https://www.threads.net',
+  'https://www.threads.com',
 ])
 
 /** The `chrome.runtime.MessageSender` fields this guard inspects (structural). */
