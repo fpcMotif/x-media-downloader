@@ -1,5 +1,7 @@
 import type { PlatformAdapter } from './types'
 import { xAdapter } from './x/adapter'
+import { instagramAdapter } from './instagram/adapter'
+import { threadsAdapter } from './threads/adapter'
 
 /**
  * Every registered platform adapter. Adding a platform is: implement
@@ -7,7 +9,7 @@ import { xAdapter } from './x/adapter'
  * `core/download`, `core/cloud`, `core/sync`, `core/clear`, or the UI panels
  * needs to change (docs/superpowers/specs/2026-07-04-multi-platform-adapter-design.md).
  */
-export const ALL_ADAPTERS: readonly PlatformAdapter[] = [xAdapter]
+export const ALL_ADAPTERS: readonly PlatformAdapter[] = [xAdapter, instagramAdapter, threadsAdapter]
 
 /**
  * The adapter for a tab URL, for callers that span multiple tabs/platforms

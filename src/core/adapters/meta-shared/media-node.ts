@@ -68,13 +68,21 @@ const nodeFromCandidate = (kind: 'photo' | 'video', c: MetaMediaCandidate): Meta
  * child's own media, flattened in order. `[]` for a node with none of the
  * three shapes (or a malformed one), so a caller can pass anything without
  * a defensive check of its own.
+ *
+ * A `WeakSet` of already-descended objects guards the `carousel_media`
+ * recursion against a circular reference (fails closed — returns `[]` for the
+ * repeat visit — rather than a stack overflow; mirrors the identical guard on
+ * `post-node.ts`'s `forEachPostNode`. Not reachable via the real JSON.parse
+ * call path, but this function takes arbitrary `unknown`).
  */
-export function mediaNodesFromPost(node: unknown): MetaMediaNode[] {
+export function mediaNodesFromPost(node: unknown, visiting = new WeakSet<Obj>()): MetaMediaNode[] {
   if (!isObj(node)) return []
+  if (visiting.has(node)) return []
+  visiting.add(node)
 
   const carousel = node['carousel_media']
   if (Array.isArray(carousel) && carousel.length > 0) {
-    return carousel.flatMap((child) => mediaNodesFromPost(child))
+    return carousel.flatMap((child) => mediaNodesFromPost(child, visiting))
   }
 
   const videoVersions = candidatesOf(node['video_versions'])

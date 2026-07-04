@@ -142,4 +142,11 @@ describe('mediaNodesFromPost', () => {
       { kind: 'photo', url: 'ok.jpg', width: 50, height: 50 },
     ])
   })
+
+  it('fails closed (does not throw) on a circular carousel_media reference', () => {
+    const node: Record<string, unknown> = { carousel_media: [] }
+    ;(node['carousel_media'] as unknown[]).push(node)
+    expect(() => mediaNodesFromPost(node)).not.toThrow()
+    expect(mediaNodesFromPost(node)).toEqual([])
+  })
 })
