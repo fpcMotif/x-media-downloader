@@ -64,7 +64,8 @@ import {
 import { decideTerminalOutcome } from '../core/download/terminal-outcome'
 import { decodeStore, emptyStore } from '../core/history/store'
 import { planHistory, type HistoryAction } from '../core/history/wiring'
-import { hookScopes, type Scope } from '../core/clear/ledger'
+import type { Scope } from '../core/clear/ledger'
+import { planClearSeed } from '../core/clear/seed'
 import type { ClearScope, SweepEnqueueResponse } from '../core/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
@@ -74,7 +75,6 @@ import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator } from '../background/clear-coordinator'
-import { isClearableTweetId } from '../core/clear/clearer'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
 import { recentConversations, selectConversation, summarize } from '../core/capture/store'
@@ -854,55 +854,33 @@ const handleDownload = (
     // seed ONLY the page's scope (origin 'sweep'), so it can never touch the
     // other list. It reads the option but NEVER mutates it. The auto-hook keeps
     // its per-scope toggles; the sweep clears exactly the page's scope.
-    const clearScopes: Scope[] = sweep
-      ? settings.clearAllListsOnSave
-        ? [...new Set([sweep.scope, ...hookScopes(settings).filter((s) => s !== 'notInterested')])]
-        : [sweep.scope]
-      : hookScopes(settings)
-    const clearOrigin = sweep ? 'sweep' : 'hook'
-    if (settings.downloadStrategy === 'aria2') {
-      traceBackground('clear-skip', { detail: 'aria2 hand-offs are not byte-verifiable; excluded' })
-    } else if (!settings.clearOnSave) {
-      traceBackground('clear-skip', { detail: 'Clear after download is OFF — download only' })
-    } else if (clearScopes.length === 0) {
-      traceBackground('clear-skip', { detail: 'both Un-bookmark and Un-like are OFF' })
-    } else {
-      const byTweet = new Map<string, string[]>()
-      const unclearable = new Set<string>()
-      for (const r of requests) {
-        const item = mediaById.get(r.id)
-        if (item === undefined) continue
-        // The Clear can only LOCATE a post by its numeric /status/ id (findArticle).
-        // The X adapter falls back to the media KEY as tweetId when a photo's tweet
-        // context can't be resolved (e.g. a quote-card image, whose id belongs to a
-        // DIFFERENT post). Such an id never matches a mounted article, so seeding it
-        // would only defer-then-drop and silently leave the post in its lists — and
-        // un-liking by a stray match would hit the WRONG post. Skip it: downloads
-        // still run (they key off `requests`, not `byTweet`); only the doomed,
-        // unsafe clear is dropped, and visibly (trace below) instead of silently.
-        if (!isClearableTweetId(item.tweetId)) {
-          unclearable.add(item.tweetId)
-          continue
-        }
-        byTweet.set(item.tweetId, [...(byTweet.get(item.tweetId) ?? []), r.id])
-      }
-      if (unclearable.size > 0)
+    const verdict = planClearSeed({
+      requests,
+      mediaById,
+      ...(sweep ? { sweep } : {}),
+      ...(clearExpect ? { clearExpect } : {}),
+      settings,
+    })
+    if (verdict.decision === 'skip') {
+      if (verdict.reason === 'aria2') {
         traceBackground('clear-skip', {
-          detail: `${unclearable.size} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
+          detail: 'aria2 hand-offs are not byte-verifiable; excluded',
         })
-      // For You: widen `expected` to the post's FULL media set so the clear waits
-      // for every photo — a 1-of-4 grab must never mark the post Truly Complete and
-      // "Not interested"-hide it, losing the other three. Only widens tweets in this
-      // batch; the un-grabbed ids stay pending until they too are downloaded.
-      for (const e of clearExpect ?? []) {
-        const cur = byTweet.get(e.tweetId)
-        if (cur !== undefined) byTweet.set(e.tweetId, [...new Set([...cur, ...e.ids])])
+      } else if (verdict.reason === 'clear-off') {
+        traceBackground('clear-skip', { detail: 'Clear after download is OFF — download only' })
+      } else {
+        traceBackground('clear-skip', { detail: 'both Un-bookmark and Un-like are OFF' })
       }
+    } else {
+      if (verdict.unclearableCount > 0)
+        traceBackground('clear-skip', {
+          detail: `${verdict.unclearableCount} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
+        })
       // Remember which tab this download came from, so the eventual clear is sent
       // there first (the feed the user is actually looking at).
       if (originTabId !== undefined)
-        for (const tweetId of byTweet.keys()) clearOriginTab.set(tweetId, originTabId)
-      clearCoordinator.seedClearLedger(byTweet, clearScopes, clearOrigin)
+        for (const tweetId of verdict.byTweet.keys()) clearOriginTab.set(tweetId, originTabId)
+      clearCoordinator.seedClearLedger(verdict.byTweet, verdict.scopes, verdict.origin)
     }
 
     const res = yield* queue.enqueue(requests)
