@@ -63,6 +63,21 @@ export function allAugmentModifier(base: GrabModifier): GrabModifier {
 }
 
 /**
+ * Whether a hover-dwell should grab the WHOLE post rather than one item:
+ * the Quick Grab modifier is active, the platform is eligible (Instagram/
+ * Threads — never X), and the augment modifier ({@link allAugmentModifier}) is
+ * also held. `flags` is any pointer/keyboard event (both carry the modifier flags).
+ */
+export function postGrabActive(
+  baseActive: boolean,
+  flags: ModifierFlags,
+  base: GrabModifier,
+  eligible: boolean,
+): boolean {
+  return baseActive && eligible && modifierHeld(flags, allAugmentModifier(base))
+}
+
+/**
  * Quick Grab arming state. `active` mirrors the held modifier; `grabbed` holds the
  * media keys already downloaded during the *current* press, so hovering one item
  * fires exactly once — the guard against a cursor sweep mass-downloading a grid.

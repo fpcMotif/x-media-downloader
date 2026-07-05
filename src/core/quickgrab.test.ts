@@ -11,6 +11,7 @@ import {
   markGrabbed,
   syncModifierFromFlags,
   allAugmentModifier,
+  postGrabActive,
 } from './quickgrab'
 
 const flags = (over: Partial<Record<'altKey' | 'shiftKey' | 'ctrlKey' | 'metaKey', boolean>>) => ({
@@ -119,5 +120,22 @@ describe('allAugmentModifier', () => {
     expect(allAugmentModifier('shift')).toBe('meta')
     expect(allAugmentModifier('ctrl')).toBe('meta')
     expect(allAugmentModifier('meta')).toBe('alt')
+  })
+})
+
+describe('postGrabActive', () => {
+  const held = flags({ altKey: true, metaKey: true }) // base=alt + augment=meta both held
+
+  it('is true only when base is active, platform is eligible, and the augment is held', () => {
+    expect(postGrabActive(true, held, 'alt', true)).toBe(true)
+  })
+  it('is false when the base modifier is not active', () => {
+    expect(postGrabActive(false, held, 'alt', true)).toBe(false)
+  })
+  it('is false on an ineligible platform (e.g. X)', () => {
+    expect(postGrabActive(true, held, 'alt', false)).toBe(false)
+  })
+  it('is false when the augment modifier is not held', () => {
+    expect(postGrabActive(true, flags({ altKey: true }), 'alt', true)).toBe(false)
   })
 })
