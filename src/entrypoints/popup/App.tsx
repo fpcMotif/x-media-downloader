@@ -14,7 +14,6 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { LayersIcon, EraserIcon, CheckIcon } from '@/components/icons'
 import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
-import { plural } from '@/components/capture-copy'
 import { CaptureQuickActions } from './capture-quick-actions'
 
 function fmtRate(bps: number): string {
@@ -29,6 +28,8 @@ function fmtBytes(bytes: number): string {
   if (bytes >= 1000) return `${Math.round(bytes / 1000)} KB`
   return `${bytes} B`
 }
+
+const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 // Poll the download monitor briskly while a batch is live, but back off when
 // idle — the snapshot is only surfaced when total > 0, so a 1s round-trip to
