@@ -1,21 +1,19 @@
 import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
-import { PanelHeader, SettingGroup, type PanelProps } from '../ui'
-import { ListChecksIcon } from '@/components/icons'
+import { PanelHeader, Section, type PanelProps } from '../ui'
 
 export function WorklistPanel({ settings, update }: PanelProps) {
   return (
     <>
       <PanelHeader
-        title="Worklist & clearing"
+        title="Clearing"
         description="Treat Bookmarks, Likes, and the For You feed as a worklist that empties itself as media is saved. Clearing is an irreversible account action — off by default."
       />
 
-      <SettingGroup
+      <Section
         title="Clear after download"
         description="When on, each post is removed from the list (un-like on Likes, un-bookmark on Bookmarks) once its media truly lands. When off, the worklist actions just download."
-        icon={<ListChecksIcon className="size-[18px]" />}
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -31,7 +29,10 @@ export function WorklistPanel({ settings, update }: PanelProps) {
         </Field>
 
         {settings.clearOnSave && (
-          <>
+          <div className="grid gap-0 divide-y divide-border border-l border-border pl-4 *:py-3 first:*:pt-0">
+            <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
+              Clear from
+            </span>
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="autoUnbookmarkOnSave">Un-bookmark</FieldLabel>
@@ -94,14 +95,14 @@ export function WorklistPanel({ settings, update }: PanelProps) {
                 }
               />
             </Field>
-          </>
+          </div>
         )}
 
         <FieldDescription>
           Run the worklist from the toolbar popup on an X Likes or Bookmarks tab — “Download this
           page” or “one by one”. This setting only decides whether those actions also clear.
         </FieldDescription>
-      </SettingGroup>
+      </Section>
     </>
   )
 }

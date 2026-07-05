@@ -30,7 +30,7 @@ describe('DownloadQueue core', () => {
     expect(res.outcomes[0]).toMatchObject({ id: 'a', ok: true, handle: { kind: 'browser', id: 1 } })
   })
 
-  it('reports a per-request outcome for a failure (ok:false, no handle)', async () => {
+  it('reports a per-request outcome for a failure (ok:false, no handle, WITH the reason)', async () => {
     const strategy: DownloadStrategy = {
       save: (req) =>
         req.id === 'b'
@@ -44,6 +44,10 @@ describe('DownloadQueue core', () => {
     const b = res.outcomes.find((o) => o.id === 'b')!
     expect(b.ok).toBe(false)
     expect(b.handle).toBeUndefined()
+    // The DownloadError's own reason must survive into the outcome — previously
+    // swallowed entirely by `Effect.orElseSucceed`, making every failure
+    // indistinguishable ("why didn't this download?" was unanswerable).
+    expect(b.error).toBe('nope')
   })
 
   it('never exceeds the configured concurrency', async () => {

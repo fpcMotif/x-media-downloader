@@ -10,6 +10,9 @@ import {
   canGrab,
   markGrabbed,
   syncModifierFromFlags,
+  allAugmentModifier,
+  postGrabActive,
+  markAllGrabbed,
 } from './quickgrab'
 
 const flags = (over: Partial<Record<'altKey' | 'shiftKey' | 'ctrlKey' | 'metaKey', boolean>>) => ({
@@ -109,5 +112,62 @@ describe('QuickGrab state machine', () => {
 
   it('stays idle when an inactive state sees no modifier (no spurious release)', () => {
     expect(syncModifierFromFlags(idleQuickGrab, flags({}), 'alt')).toBe(idleQuickGrab)
+  })
+})
+
+describe('allAugmentModifier', () => {
+  it('is Meta for any non-meta base, and Alt when the base is already Meta', () => {
+    expect(allAugmentModifier('alt')).toBe('meta')
+    expect(allAugmentModifier('shift')).toBe('meta')
+    expect(allAugmentModifier('ctrl')).toBe('meta')
+    expect(allAugmentModifier('meta')).toBe('alt')
+  })
+})
+
+describe('postGrabActive', () => {
+  const held = flags({ altKey: true, metaKey: true }) // base=alt + augment=meta both held
+
+  it('is true only when base is active, platform is eligible, and the augment is held', () => {
+    expect(postGrabActive(true, held, 'alt', true)).toBe(true)
+  })
+  it('is false when the base modifier is not active', () => {
+    expect(postGrabActive(false, held, 'alt', true)).toBe(false)
+  })
+  it('is false on an ineligible platform (e.g. X)', () => {
+    expect(postGrabActive(true, held, 'alt', false)).toBe(false)
+  })
+  it('is false when the augment modifier is not held', () => {
+    expect(postGrabActive(true, flags({ altKey: true }), 'alt', true)).toBe(false)
+  })
+})
+
+describe('markAllGrabbed', () => {
+  it('marks every key grabbed so none re-fire this press', () => {
+    const s = markAllGrabbed(pressModifier(idleQuickGrab), ['A', 'B'])
+    expect(canGrab(s, 'A')).toBe(false)
+    expect(canGrab(s, 'B')).toBe(false)
+    expect(canGrab(s, 'C')).toBe(true)
+  })
+  it('is a no-op (same reference) when every key is already grabbed', () => {
+    const once = markAllGrabbed(pressModifier(idleQuickGrab), ['A', 'B'])
+    expect(markAllGrabbed(once, ['A', 'B'])).toBe(once)
+  })
+  it('is a no-op (same reference) for an empty key list', () => {
+    const s = pressModifier(idleQuickGrab)
+    expect(markAllGrabbed(s, [])).toBe(s)
+  })
+})
+
+describe('Quick Grab all-mode badge labels', () => {
+  it('shows the whole-post variant with a count for queued/started', () => {
+    expect(quickGrabBadgeLabel('charging', { count: 4 })).toBe('Grab all')
+    expect(quickGrabBadgeLabel('queued', { count: 4 })).toBe('4 queued')
+    expect(quickGrabBadgeLabel('saved', { count: 4 })).toBe('4 started')
+    expect(quickGrabBadgeLabel('noted', { count: 4 })).toBe('Already queued')
+    expect(quickGrabBadgeLabel('failed', { count: 4 })).toBe('Failed')
+  })
+  it('keeps the single-item labels when no all-mode descriptor is passed', () => {
+    expect(quickGrabBadgeLabel('charging')).toBe('Grabbing')
+    expect(quickGrabBadgeLabel('saved')).toBe('Started')
   })
 })

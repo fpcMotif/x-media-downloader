@@ -46,3 +46,26 @@ export const safeSend = async <R>(send: () => Promise<R>): Promise<SendOutcome<R
       : { status: 'error', error }
   }
 }
+
+export type ReplyExpectation<R> =
+  | { readonly status: 'ok'; readonly reply: R }
+  | { readonly status: 'unclaimed' }
+  | { readonly status: 'context-invalidated' }
+  | { readonly status: 'error'; readonly error: unknown }
+
+/**
+ * Reclassifies a `safeSend` outcome: an `'ok'` status whose `reply` is
+ * `undefined` means the background never claimed the message — its
+ * `onMessage` listener returned `false` (a sender-guard rejection or a schema
+ * decode failure) without ever calling `sendResponse`, and Chrome resolves the
+ * sender's promise with `reply: undefined` either way. SEAM INVARIANT (see the
+ * matching comment on `messageHandlers` in `background.ts`): every
+ * content-script-visible handler replies a defined object on every code
+ * path — including the router's own `.catch`, which converts a handler
+ * rejection into a defined failure shape — so `reply === undefined` at the
+ * caller already uniquely means "unclaimed" today, with no wire/protocol
+ * change. This is a pure, additive, caller-side reclassification: it never
+ * changes `safeSend`'s own `SendOutcome` behavior.
+ */
+export const expectReply = <R>(out: SendOutcome<R>): ReplyExpectation<R> =>
+  out.status === 'ok' && out.reply === undefined ? { status: 'unclaimed' } : out

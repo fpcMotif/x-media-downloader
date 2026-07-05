@@ -75,8 +75,8 @@ describe('parseSyndicationTweet', () => {
     const items = parseSyndicationTweet(videoPayload)
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({
-      tweetId: '2068286123399676218',
-      handle: 'ooaoau',
+      postId: '2068286123399676218',
+      author: 'ooaoau',
       type: 'video',
       url: 'https://video.twimg.com/ext_tw_video/2068286110858661888/pu/vid/avc1/720x720/hi.mp4?tag=12',
       previewUrl:
@@ -94,8 +94,8 @@ describe('parseSyndicationTweet', () => {
     })
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({
-      tweetId: '500',
-      handle: 'bob',
+      postId: '500',
+      author: 'bob',
       type: 'photo',
       url: 'https://pbs.twimg.com/media/PIC.jpg?name=orig',
     })
@@ -106,7 +106,7 @@ describe('parseSyndicationTweet', () => {
       id_str: '7',
       mediaDetails: [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/media/Z.jpg' }],
     })
-    expect(items[0]?.handle).toBe('')
+    expect(items[0]?.author).toBe('')
   })
 
   it('returns [] for a non-object, id-less, or media-less payload', () => {

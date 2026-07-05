@@ -40,6 +40,11 @@ function fakeStore(): CaptureStore & { rows: Map<string, TweetRecord>; upsertCal
     async allRecords() {
       return [...rows.values()]
     },
+    async fold<A>(init: A, step: (acc: A, record: TweetRecord) => A) {
+      let acc = init
+      for (const r of rows.values()) acc = step(acc, r)
+      return acc
+    },
     async conversation(id: string) {
       return [...rows.values()].filter((r) => r.conversationId === id)
     },

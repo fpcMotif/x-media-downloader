@@ -16,16 +16,25 @@
   --xmd-ink: oklch(0.205 0.012 255);
   --xmd-muted: oklch(0.47 0.018 255);
   --xmd-faint: oklch(0.62 0.014 255);
-  --xmd-line: oklch(0.205 0.012 255 / 0.12);
-  --xmd-line-strong: oklch(0.205 0.012 255 / 0.2);
+  /* R4 "instrument, not dashboard": structure comes from hairlines, not cards —
+     these sit at 7-8% so a divider reads as a seam, not a border. */
+  --xmd-line: oklch(0.205 0.012 255 / 0.08);
+  --xmd-line-strong: oklch(0.205 0.012 255 / 0.14);
   --xmd-accent: oklch(0.58 0.176 250);
   --xmd-accent-hover: oklch(0.52 0.18 250);
   --xmd-accent-soft: oklch(0.58 0.176 250 / 0.12);
   --xmd-success: oklch(0.58 0.145 160);
-  --xmd-danger: oklch(0.58 0.19 28);
+  /* R4 uses this bare as destructive TEXT (never a filled slab), so it needs to
+     clear AA (4.5:1) on its own — L=0.58 only hit ~4.47:1 against --xmd-bg. */
+  --xmd-danger: oklch(0.48 0.19 25);
   --xmd-shadow-1: 0 1px 2px oklch(0.205 0.012 255 / 0.08);
   --xmd-shadow-2: 0 8px 14px -12px oklch(0.205 0.012 255 / 0.42);
   --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  /* Concentric radii (R4 Foundations): 12 outer → 10 → 8 → 6 innermost. */
+  --xmd-radius-1: 12px;
+  --xmd-radius-2: 10px;
+  --xmd-radius-3: 8px;
+  --xmd-radius-4: 6px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -36,24 +45,26 @@
    --success is set per theme directly (the brand green is tuned for fills, not
    for AA text on a tint). */
 :root {
-  --radius: 0.625rem;
+  /* R4 Foundations: 12/10/8/6 concentric radii; --radius is the outermost step
+     so the shadcn radius-sm/md/lg/xl chain below lands on 8/10/12/16. */
+  --radius: 0.75rem;
 
   --background: var(--xmd-bg);
   --foreground: var(--xmd-ink);
-  /* Frosted glass surfaces: translucent enough to reveal the popup's soft
-     background wash, kept bright by the backdrop brightness() filter so they
-     read as clean glass, not muddy gray. Dark mode (below) mirrors this. */
-  --card: oklch(1 0 0 / 0.62);
+  /* R4 kills glass on the popup + settings surfaces (the on-page overlay keeps
+     its own liquid-glass identity, separately) — every surface here is a flat,
+     fully-opaque fill. */
+  --card: var(--xmd-surface);
   --card-foreground: var(--xmd-ink);
-  --popover: oklch(1 0 0 / 0.86);
+  --popover: var(--xmd-surface);
   --popover-foreground: var(--xmd-ink);
   --primary: var(--xmd-accent);
   --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.97 0.005 255 / 0.55);
+  --secondary: var(--xmd-surface-raised);
   --secondary-foreground: var(--xmd-ink);
-  --muted: oklch(0.97 0.005 255 / 0.5);
+  --muted: var(--xmd-surface-raised);
   --muted-foreground: var(--xmd-muted);
-  --accent: oklch(0.96 0.006 255 / 0.6);
+  --accent: var(--xmd-surface-raised);
   --accent-foreground: var(--xmd-ink);
   --destructive: var(--xmd-danger);
   --destructive-foreground: oklch(1 0 0);
@@ -140,16 +151,14 @@ body,
   background: var(--xmd-bg);
 }
 
-/* Scroll container for the action popup; sticky header lives inside it. A faint
-   top glow gives the translucent glass surfaces something to reveal. */
+/* Scroll container for the action popup; sticky header lives inside it. Flat
+   fill — R4 drops the frosted-glass wash along with every other card surface. */
 .xmd-popup {
   width: min(380px, 100vw);
   height: 600px;
   max-height: 600px;
   overflow: auto;
-  background:
-    radial-gradient(90% 55% at 12% 2%, oklch(0.74 0.1 255 / 0.1), transparent 55%),
-    radial-gradient(95% 60% at 94% 99%, oklch(0.72 0.08 285 / 0.08), transparent 58%), var(--xmd-bg);
+  background: var(--xmd-bg);
   color: var(--xmd-ink);
   font:
     13px/1.35 system-ui,
@@ -166,11 +175,17 @@ body,
   color: var(--xmd-muted);
 }
 
-/* Frosted glass: translucent surfaces blur whatever sits/scrolls beneath. */
-[data-slot='card'],
-[data-slot='select-content'] {
-  backdrop-filter: blur(18px) saturate(1.1) brightness(1.03);
-  -webkit-backdrop-filter: blur(18px) saturate(1.1) brightness(1.03);
+/* R4 motion: press scale 0.97 already lives on the vendored Button; standardize
+   its timing (and the switch thumb's) on the shared --xmd-ease curve instead of
+   Tailwind's default transition timing. */
+[data-slot='button'] {
+  transition-duration: 160ms;
+  transition-timing-function: var(--xmd-ease);
+}
+[data-slot='switch'],
+[data-slot='switch-thumb'] {
+  transition-duration: 150ms;
+  transition-timing-function: var(--xmd-ease);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -181,23 +196,26 @@ body,
     --xmd-ink: oklch(0.965 0.004 255);
     --xmd-muted: oklch(0.75 0.012 255);
     --xmd-faint: oklch(0.62 0.012 255);
-    --xmd-line: oklch(0.965 0.004 255 / 0.12);
-    --xmd-line-strong: oklch(0.965 0.004 255 / 0.2);
+    --xmd-line: oklch(0.965 0.004 255 / 0.08);
+    --xmd-line-strong: oklch(0.965 0.004 255 / 0.14);
     --xmd-accent: oklch(0.72 0.15 240);
     --xmd-accent-hover: oklch(0.78 0.13 230);
     --xmd-accent-soft: oklch(0.72 0.15 240 / 0.18);
     --xmd-success: oklch(0.78 0.14 160);
+    /* Lighter than the light-mode value (same reason accent/success go lighter
+       in dark mode): L=0.58 only cleared ~4.21:1 against the dark --xmd-bg. */
+    --xmd-danger: oklch(0.7 0.17 22);
     --xmd-shadow-1: 0 1px 2px oklch(0 0 0 / 0.24);
     --xmd-shadow-2: 0 8px 14px -12px oklch(0 0 0 / 0.9);
     --success: oklch(0.82 0.14 160);
 
-    /* Dark glass: surfaces sit ABOVE the bg (lighter, translucent) so they read
-       as raised glass and keep text legible — not just transparent dark fills. */
-    --card: oklch(0.275 0.011 255 / 0.62);
-    --popover: oklch(0.235 0.011 255 / 0.92);
-    --secondary: oklch(0.31 0.011 255 / 0.6);
-    --muted: oklch(0.31 0.011 255 / 0.6);
-    --accent: oklch(0.34 0.011 255 / 0.62);
+    /* Flat dark surfaces — same "no glass" rule as light mode, just raised a
+       touch above --xmd-bg instead of translucent over it. */
+    --card: var(--xmd-surface);
+    --popover: var(--xmd-surface-raised);
+    --secondary: var(--xmd-surface-raised);
+    --muted: var(--xmd-surface-raised);
+    --accent: var(--xmd-surface-raised);
   }
 }
 

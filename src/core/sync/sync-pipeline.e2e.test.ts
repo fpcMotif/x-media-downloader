@@ -26,8 +26,9 @@ import { makeFetchServiceLive, type FetchService } from '../fetch-service'
 
 type MediaItem = {
   id: string
-  tweetId: string
-  handle: string
+  platform: 'x' | 'instagram' | 'threads'
+  postId: string
+  author: string
   type: 'photo' | 'video' | 'gif'
   url: string
   ext: string
@@ -36,8 +37,9 @@ type MediaItem = {
 
 const item = (over: Partial<MediaItem> = {}): MediaItem => ({
   id: 'req-1',
-  tweetId: '100',
-  handle: 'alice',
+  platform: 'x',
+  postId: '100',
+  author: 'alice',
   type: 'photo',
   url: 'https://pbs.twimg.com/media/AAA',
   ext: 'jpg',

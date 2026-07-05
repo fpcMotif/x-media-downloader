@@ -1,14 +1,19 @@
-import { X_HOST_MATCH } from '../core/adapters/x'
+import { allAdapterHostMatch } from '../core/adapters/registry'
 import type { Message } from '../core/schema'
 import type { ClearTweetResponse } from '../core/schema'
 import type { TabMessagingPort } from '../core/download/media-url-refresh'
 import type { Scope } from '../core/clear/ledger'
 
-/** The narrow tab-messaging surface every X-tab fan-out routes through. Owns no
+/** The narrow tab-messaging surface every tab fan-out routes through. Owns no
  *  module state — `queryXTabs` is the single tabs.query the messaging paths share,
- *  keyed off the one X_HOST_MATCH source of truth. */
+ *  keyed off the registry's `allAdapterHostMatch()` (every registered platform, not
+ *  just X — see the widening note on `defaultTabsPort` below). The name is legacy
+ *  (X was the only platform when it was written); which fan-outs actually run
+ *  X-specific DOM logic is now decided by the receiving handler's platform gate,
+ *  not by which tabs get queried here. */
 export interface TabBroadcaster {
-  /** The numeric ids of every open X tab. */
+  /** The numeric ids of every open tab on a registered platform (not X-only —
+   *  see the interface doc above). */
   readonly queryXTabs: () => Promise<number[]>
   /** The RefreshMediaUrl port the media-url refresh + retry-url resolution use. */
   readonly makeTabMessagingPort: () => TabMessagingPort
@@ -41,15 +46,21 @@ export interface TabBroadcaster {
  *  fake-browser package implements neither tabs.query's url-pattern match nor
  *  tabs.sendMessage, so the seam — not a global stub — is how this is testable). */
 export interface TabsPort {
-  /** The numeric ids of every open X tab. */
+  /** The numeric ids of every open tab on a registered platform (not X-only —
+   *  `defaultTabsPort` below queries `allAdapterHostMatch()`). */
   queryXTabs(): Promise<number[]>
   /** Send a message to one tab; resolves to its response (or undefined). */
   sendTabMessage(tabId: number, message: unknown): Promise<unknown>
 }
 
 const defaultTabsPort = (): TabsPort => ({
+  // Widened to every registered adapter's hostMatch (not X_HOST_MATCH alone): a
+  // download that fails on an Instagram/Threads tab must still reach that tab's
+  // TransferOutcome listener, or the badge set "saved" at hand-off never gets
+  // corrected. The X-only *behavior* for clear-family messages lives in the
+  // handlers.ts platform gate, not in which tabs get asked here.
   queryXTabs: async () => {
-    const tabs = await browser.tabs.query({ url: [...X_HOST_MATCH] })
+    const tabs = await browser.tabs.query({ url: [...allAdapterHostMatch()] })
     return tabs.flatMap((t) => (t.id !== undefined ? [t.id] : []))
   },
   sendTabMessage: (tabId, message) => browser.tabs.sendMessage(tabId, message),

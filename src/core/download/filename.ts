@@ -1,4 +1,4 @@
-import type { MediaItem } from '../schema'
+import type { MediaItem, Platform } from '../schema'
 
 // Intentional: strip control chars + filesystem-illegal chars from path segments.
 // oxlint-disable-next-line no-control-regex
@@ -14,16 +14,36 @@ export function sanitizeSegment(seg: string): string {
 }
 
 /**
+ * The download-folder name for a platform — what the `{platform}` token renders.
+ * X's internal id is `x`, but the folder users expect (and the default template
+ * produces) is `twitter`; Instagram and Threads already match their own names.
+ * This is the single source of the per-platform folder, so a local download and
+ * its cloud upload land in the SAME folder (the cloud folder is derived from the
+ * rendered local path — see `cloudTargetFor`).
+ */
+export function platformFolder(platform: Platform): string {
+  return platform === 'x' ? 'twitter' : platform
+}
+
+/**
  * Render a filename from a template and a MediaItem. Tokens:
- * `{handle} {tweetId} {index} {ext} {type} {date}`. Unknown tokens render empty.
+ * `{handle} {tweetId} {index} {ext} {type} {date}`, plus the generalized
+ * `{author} {postId} {platform}` (multi-platform design) — `{handle}`/`{tweetId}`
+ * are PERMANENT aliases for `{author}`/`{postId}` so existing saved templates
+ * never break. `{platform}` renders the download-folder name (`twitter` for X,
+ * `instagram`, `threads`) via {@link platformFolder}, not the internal id.
+ * Unknown tokens render empty.
  *
  * Output is always a RELATIVE path (no leading `/`, no `..`, never empty) —
  * `chrome.downloads.download` throws otherwise (ADR-0003, grounding §d).
  */
 export function renderFilename(template: string, item: MediaItem, date?: string): string {
   const tokens: Record<string, string> = {
-    handle: item.handle,
-    tweetId: item.tweetId,
+    handle: item.author,
+    tweetId: item.postId,
+    author: item.author,
+    postId: item.postId,
+    platform: platformFolder(item.platform),
     index: String(item.index),
     ext: item.ext,
     type: item.type,
@@ -39,9 +59,9 @@ export function renderFilename(template: string, item: MediaItem, date?: string)
   const path = toRelPath(template.replace(/\{(\w+)\}/g, (_, key: string) => tokens[key] ?? ''))
   if (path.length > 0) return path
   // The template sanitized away to nothing — run the id/index fallback through the
-  // SAME pipeline so a degenerate tweetId can't reintroduce a `..`, an illegal char,
+  // SAME pipeline so a degenerate postId can't reintroduce a `..`, an illegal char,
   // or a `/` and break the relative-path contract; a final default covers all-empty.
-  const fallback = toRelPath(`${item.tweetId}_${item.index}.${item.ext}`)
+  const fallback = toRelPath(`${item.postId}_${item.index}.${item.ext}`)
   /* v8 ignore next -- `_${index}.` always survives sanitization (digits/`_`/`.` are legal), so fallback is never empty; the `media_${index}` default is unreachable defensive code */
   return fallback.length > 0 ? fallback : `media_${item.index}`
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { isMessageAllowed, isFromExtensionWorker, CONTENT_SCRIPT_TAGS } from './sender-guard'
+import { originsForAllAdapters } from './adapters/registry'
 
 const OWN = 'self-extension-id'
 const UI_TAG = 'CloudConnectRequest' // privileged, UI-only
@@ -14,8 +15,41 @@ describe('CONTENT_SCRIPT_TAGS', () => {
         'RecoverTweetMediaRequest',
         'SweepEnqueueRequest',
         'CaptureTweets',
+        'SavedStatusRequest',
       ].toSorted(),
     )
+  })
+})
+
+describe('ALLOWED_CONTENT_SCRIPT_ORIGINS', () => {
+  // Pin: the registry-derived origin set must equal today's literal allow-list
+  // exactly, so swapping the literal for `originsForAllAdapters()` is a
+  // zero-behavior-change refactor (docs/adr/0019-platform-identity-derives-from-adapter-registry.md).
+  it('matches the adapter-registry-derived origin set exactly', () => {
+    expect([...originsForAllAdapters()].toSorted()).toEqual(
+      [
+        'https://x.com',
+        'https://twitter.com',
+        'https://www.instagram.com',
+        'https://www.threads.net',
+        'https://www.threads.com',
+      ].toSorted(),
+    )
+  })
+})
+
+describe('Saved-status sweep', () => {
+  // Regression: the overlay's timeline sweep sends SavedStatusRequest from a
+  // content script. When the tag was missing from CONTENT_SCRIPT_TAGS the guard
+  // dropped every sweep silently (fail-safe overlay → zero chips, no error).
+  it('allows the overlay content script to ask SavedStatusRequest', () => {
+    expect(
+      isMessageAllowed(
+        'SavedStatusRequest',
+        { id: OWN, tab: { id: 1 }, origin: 'https://x.com' },
+        OWN,
+      ),
+    ).toBe(true)
   })
 })
 
@@ -28,13 +62,21 @@ describe('Tweet Harvest capture tags', () => {
   })
 
   it('forbids a content script from triggering export/clear/summary (UI-only)', () => {
-    for (const tag of ['ExportCaptureRequest', 'ClearCaptureRequest', 'CaptureSummaryRequest']) {
+    for (const tag of [
+      'ExportCaptureRequest',
+      'ClearCaptureRequest',
+      'CaptureSummaryRequest',
+    ] as const) {
       expect(isMessageAllowed(tag, cs, OWN)).toBe(false)
     }
   })
 
   it('allows the options page (no tab) to drive export/clear/summary', () => {
-    for (const tag of ['ExportCaptureRequest', 'ClearCaptureRequest', 'CaptureSummaryRequest']) {
+    for (const tag of [
+      'ExportCaptureRequest',
+      'ClearCaptureRequest',
+      'CaptureSummaryRequest',
+    ] as const) {
       expect(isMessageAllowed(tag, ui, OWN)).toBe(true)
     }
   })
@@ -63,6 +105,31 @@ describe('isMessageAllowed', () => {
     ).toBe(true)
     expect(
       isMessageAllowed(CS_TAG, { id: OWN, tab: { id: 1 }, origin: 'https://twitter.com' }, OWN),
+    ).toBe(true)
+  })
+
+  // Regression: the multi-platform adapter work (Instagram/Threads content
+  // scripts, wxt.config.ts host_permissions + manifest matches) never updated
+  // this guard's origin allow-list, so every overlay-to-background message from
+  // an Instagram/Threads tab — DownloadRequest included — was silently dropped
+  // (the listener returns false, the caller sees an unanswered `reply: undefined`,
+  // never a rejection or a decoded failure list).
+  it('allows a content-script tag from an Instagram content script', () => {
+    expect(
+      isMessageAllowed(
+        CS_TAG,
+        { id: OWN, tab: { id: 1 }, origin: 'https://www.instagram.com' },
+        OWN,
+      ),
+    ).toBe(true)
+  })
+
+  it('allows a content-script tag from a Threads content script (both hosts)', () => {
+    expect(
+      isMessageAllowed(CS_TAG, { id: OWN, tab: { id: 1 }, origin: 'https://www.threads.net' }, OWN),
+    ).toBe(true)
+    expect(
+      isMessageAllowed(CS_TAG, { id: OWN, tab: { id: 1 }, origin: 'https://www.threads.com' }, OWN),
     ).toBe(true)
   })
 

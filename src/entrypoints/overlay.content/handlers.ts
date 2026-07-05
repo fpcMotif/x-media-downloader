@@ -10,9 +10,10 @@
 import { Option } from 'effect'
 import { resolveOutcome, type BadgeState } from '../../core/badge'
 import { resolveOutcomeAll, type LauncherPhase } from '../../core/launcher'
-import { detectRenderedImageElements } from '../../core/adapters/x'
+import type { PlatformAdapter } from '../../core/adapters/types'
 import { safeSend } from '../../core/messaging'
 import { findFreshMediaItem } from '../../core/download/media-url-refresh'
+import { makeListClear } from '../../core/clear/list-clear'
 import {
   TWEET_ARTICLE_SEL,
   clearControl,
@@ -22,8 +23,9 @@ import {
   pageScope,
   shouldClickScope,
   tweetIdOfArticle,
+  type MembershipScope,
 } from '../../core/clear/clearer'
-import type { makeDetectionStore } from '../../core/adapters/x/detection-store'
+import type { makeDetectionStore } from '../../core/adapters/detection-store'
 import type { ClearScope, MediaItem } from '../../core/schema'
 
 type HoverMediaElement = HTMLImageElement | HTMLVideoElement
@@ -37,6 +39,7 @@ type DetectionStore = ReturnType<typeof makeDetectionStore>
  * is something a handler must read or mutate to preserve the inlined behavior.
  */
 export interface HandlerDeps {
+  readonly adapter: PlatformAdapter
   readonly store: DetectionStore
   readonly document: Document
   readonly location: Location
@@ -69,6 +72,9 @@ export interface HandlerDeps {
   /** Queue a not-mounted clear for the auto-scroll drain (the post has virtualized
    *  out of the DOM; the overlay scrolls the list to surface it, then clears it). */
   readonly queueDrain: (tweetId: string, scopes: ClearScope[], allLists: boolean) => void
+  /** Whether the "Saved" status is live on THIS page right now (setting on AND an
+   *  in-scope timeline) — gates the late cross-device chip push. */
+  readonly savedStatusActive: () => boolean
 }
 
 type SendResponse = (r: unknown) => void
@@ -138,6 +144,25 @@ export async function sweepSavedStatus(deps: {
   }
 }
 
+/** LATE cross-device hits pushed by the background (`SavedStatusUpdate`): the sweep's
+ *  instant reply carries only the locally-known subset; once the Convex backstop
+ *  answers, the fresh hits arrive here and chip any still-mounted article. Fail-safe
+ *  like the sweep — scope-gated, positive ids only, idempotent chip injection. */
+export const handleSavedStatusUpdate: MessageHandler = (message, deps) => {
+  // The sweep/chip DOM (TWEET_ARTICLE_SEL, tweetIdOfArticle) is X-specific; an
+  // Instagram/Threads tab has nothing to chip. Fire-and-forget, so a bare early
+  // return (no sendResponse) is the correct no-op here too.
+  if (deps.adapter.platform !== 'x') return
+  if (!deps.savedStatusActive()) return
+  const saved = (message as { saved?: unknown }).saved
+  if (!Array.isArray(saved) || saved.length === 0) return
+  const ids = new Set(saved.filter((x): x is string => typeof x === 'string'))
+  for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
+    const tweetId = tweetIdOfArticle(article)
+    if (Option.isSome(tweetId) && ids.has(tweetId.value)) markArticleSaved(article, deps.document)
+  }
+}
+
 // A tracked transfer reached its TERMINAL outcome after the optimistic save
 // (bytes landed / 403 / timeout). Correct the badge/launcher that fired it,
 // ONLY while still on screen. Broadcast to every X tab, so this no-ops unless
@@ -182,12 +207,12 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
     type?: MediaItem['type']
   }
   let fresh = deps.store.get(req.itemId)
-  if (fresh?.tweetId !== req.tweetId) fresh = undefined
+  if (fresh?.postId !== req.tweetId) fresh = undefined
   if (fresh === undefined && req.index !== undefined && req.type !== undefined) {
-    const domItems = detectRenderedImageElements(deps.document, deps.location.pathname)
+    const domItems = deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname)
     if (domItems.length > 0) deps.store.addDetected(domItems)
     fresh = findFreshMediaItem(
-      { id: req.itemId, tweetId: req.tweetId, index: req.index, type: req.type },
+      { id: req.itemId, postId: req.tweetId, index: req.index, type: req.type },
       [...deps.store.values(), ...domItems],
     )
   }
@@ -195,10 +220,38 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
   return true
 }
 
+/** Click the clear control on every mounted post that is a clearable member of
+ *  `scope`, paced one click at a time so X registers each. Returns how many were
+ *  clicked. Shared by the one-shot visible clear and the whole-list scroll sweep. */
+export async function clearMountedForScope(
+  document: Document,
+  scope: MembershipScope,
+  paceMs: number,
+): Promise<number> {
+  let cleared = 0
+  // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
+  for (const article of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
+    const ctrl = clearControl(article, scope)
+    if (ctrl === null) continue
+    const target = (ctrl.closest('button,[role="button"]') as HTMLElement | null) ?? ctrl
+    target.click()
+    cleared++
+    await new Promise((r) => setTimeout(r, paceMs))
+  }
+  // oxlint-enable no-await-in-loop
+  return cleared
+}
+
 // Manual "Clear this page now" (popup button): un-bookmark / un-like EVERY
 // currently-mounted post for the requested scopes — a one-shot Drain of the
 // visible worklist, independent of downloads. Same click path proven to work.
 export const handleClearVisible: MessageHandler = (_message, deps, sendResponse) => {
+  // X-only: pageScope/TWEET_ARTICLE_SEL are X-specific DOM selectors that happen
+  // to match nothing off-X — gate explicitly rather than rely on that accident.
+  if (deps.adapter.platform !== 'x') {
+    sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
+    return
+  }
   // List-scoped: only ever clear the list you're ON — Likes page un-likes,
   // Bookmarks page un-bookmarks. Never both at once.
   const scope = pageScope(deps.location.pathname)
@@ -212,19 +265,52 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
       return
     }
-    let cleared = 0
-    // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
-    for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
-      const ctrl = clearControl(article, scope.value)
-      if (ctrl === null) continue
-      const target = (ctrl.closest('button,[role="button"]') as HTMLElement | null) ?? ctrl
-      target.click()
-      cleared++
-      await new Promise((r) => setTimeout(r, 350))
-    }
-    // oxlint-enable no-await-in-loop
+    const cleared = await clearMountedForScope(deps.document, scope.value, 350)
     if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
     sendResponse({ _tag: 'ClearVisibleResponse', cleared })
+  })()
+  return true
+}
+
+// "Clear entire list" (popup): auto-scroll the whole Likes/Bookmarks list and click
+// every post's clear control as it mounts — a list-scoped, download-free bulk clear.
+// The bounded scroll loop lives in core/clear/list-clear; here we wire the live
+// window/document/timer ports + the shared per-pass clear.
+export const handleClearWholeList: MessageHandler = (_message, deps, sendResponse) => {
+  // X-only: the auto-scroll drain clicks X's own bookmark/like controls.
+  if (deps.adapter.platform !== 'x') {
+    sendResponse({ _tag: 'ClearWholeListResponse', cleared: 0, reason: 'not-x' })
+    return true
+  }
+  const scope = pageScope(deps.location.pathname)
+  if (Option.isNone(scope)) {
+    sendResponse({ _tag: 'ClearWholeListResponse', cleared: 0, reason: 'not-list-page' })
+    return true
+  }
+  const view = deps.document.defaultView ?? window
+  const listClear = makeListClear({
+    scroll: {
+      position: () => view.scrollY,
+      to: (y) => view.scrollTo(0, y),
+      by: (dy) => view.scrollBy(0, dy),
+      viewport: () => view.innerHeight,
+    },
+    clock: {
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      after: (ms, fn) => {
+        const h = setTimeout(fn, ms)
+        return () => clearTimeout(h)
+      },
+    },
+    path: () => deps.location.pathname,
+    clearVisibleForPage: () => clearMountedForScope(deps.document, scope.value, 350),
+    report: (stage, detail) => {
+      if (import.meta.env.DEV) deps.clearLog(stage, detail)
+    },
+  })
+  void (async () => {
+    const result = await listClear.run()
+    sendResponse({ _tag: 'ClearWholeListResponse', ...result })
   })()
   return true
 }
@@ -360,6 +446,14 @@ export async function clearMountedTweet(
 }
 
 export const handleClearTweet: MessageHandler = (message, deps, sendResponse) => {
+  // X-only: findArticle/clearMountedTweet drive X's bookmark/like/notInterested
+  // DOM controls — nothing to click on an Instagram/Threads tab. Keep the channel
+  // open (return true) and reply with empty results, same shape as the "queued
+  // for scroll-drain" no-op below.
+  if (deps.adapter.platform !== 'x') {
+    sendResponse({ _tag: 'ClearTweetResponse', results: [] })
+    return true
+  }
   const req = message as { tweetId: string; scopes: ClearScope[]; allLists?: boolean }
   const allLists = req.allLists === true
   if (import.meta.env.DEV)
@@ -388,6 +482,15 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
 
 // Popup "Clear detected media": drop every detected pick + disarm all
 // affordances, optionally rescanning the visible page in place.
+//
+// Deliberately NOT platform-gated (unlike its four clear-family siblings above):
+// every line here is adapter-agnostic UI-state reset (store.clear(), dwell/cursor/
+// grab/badge/launcher) with no X-specific DOM read. The one branch that touches the
+// page, `rescanVisible`, calls `deps.adapter.detectRenderedMedia` — already correctly
+// dispatched per-platform (every registered adapter implements it; Instagram/Threads
+// currently return `[]`, a separate and intentional TODO, not a gating concern here).
+// Gating this handler would silently break "Clear detected media" for Instagram/
+// Threads users, who have nothing X-specific to protect against in the first place.
 export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResponse) => {
   const cleared = deps.store.count
   deps.store.clear()
@@ -402,7 +505,7 @@ export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResp
   const req = message as { _tag: string; rescanVisible?: boolean }
   if (req.rescanVisible) {
     rescanned = deps.store.addDetected(
-      detectRenderedImageElements(deps.document, deps.location.pathname),
+      deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname),
     ).length
     deps.recoverMissingVideos()
   }
@@ -415,8 +518,10 @@ export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResp
  *  entry) falls through to the same `undefined`/`return false` path as before. */
 export const messageHandlers: Record<string, MessageHandler> = {
   TransferOutcome: handleTransferOutcome,
+  SavedStatusUpdate: handleSavedStatusUpdate,
   RefreshMediaUrlRequest: handleRefreshMediaUrl,
   ClearVisibleRequest: handleClearVisible,
+  ClearWholeListRequest: handleClearWholeList,
   DrainPageRequest: handleDrainPage,
   SweepPageRequest: handleSweepPage,
   ClearTweetRequest: handleClearTweet,

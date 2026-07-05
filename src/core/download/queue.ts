@@ -1,11 +1,14 @@
 import { Effect, Schedule } from 'effect'
 import type { DownloadHandle, DownloadStrategy, SaveRequest } from './strategy'
 
-/** Per-request result: whether it started, and (on success) the transfer handle. */
+/** Per-request result: whether it started, and (on success) the transfer handle
+ *  or (on failure) the `DownloadError.reason` that caused it — the concrete
+ *  "why didn't this download?" answer, not just a bare `ok: false`. */
 export interface RequestOutcome {
   readonly id: string
   readonly ok: boolean
   readonly handle?: DownloadHandle
+  readonly error?: string
 }
 
 export interface QueueResult {
@@ -50,8 +53,19 @@ export function makeDownloadQueueCore(opts: {
           (req) =>
             strategy.save(req).pipe(
               Effect.retry(retrySchedule),
-              Effect.map((handle): RequestOutcome => ({ id: req.id, ok: true, handle })),
-              Effect.orElseSucceed((): RequestOutcome => ({ id: req.id, ok: false })),
+              // The DownloadError's own `reason` is the actual "why" — surfacing
+              // it (rather than collapsing every failure to a bare `ok: false`,
+              // as the prior `orElseSucceed`-based recovery did, with no access
+              // to the error value at all) is what makes a failed hand-off
+              // debuggable from outside the SW's own console.
+              Effect.match({
+                onFailure: (error): RequestOutcome => ({
+                  id: req.id,
+                  ok: false,
+                  error: error.reason,
+                }),
+                onSuccess: (handle): RequestOutcome => ({ id: req.id, ok: true, handle }),
+              }),
             ),
           { concurrency },
         )

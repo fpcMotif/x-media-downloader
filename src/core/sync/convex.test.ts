@@ -5,6 +5,7 @@ import {
   convexOriginPattern,
   makeConvexHttpPort,
   queryDownloadedAmong,
+  queryDownloadedMediaIdsAmong,
   type ConvexPort,
 } from './convex'
 import { classifySyncError } from './status'
@@ -250,6 +251,25 @@ describe('queryDownloadedAmong', () => {
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
       path: 'sync:downloadedAmong',
       args: { secret: 'secret', tweetIds: ['T1', 'T2'] },
+      format: 'json',
+    })
+  })
+})
+
+describe('queryDownloadedMediaIdsAmong', () => {
+  it('shapes the sync:downloadedMediaIdsAmong call and narrows the value', async () => {
+    const { layer, calls } = recordingFetch(
+      () => ({ ok: true, json: async () => ({ status: 'success', value: ['m1'] }) }) as Response,
+    )
+    const port = makeConvexHttpPort({ deploymentUrl: 'https://x.convex.cloud' })
+    const downloaded = await Effect.runPromise(
+      queryDownloadedMediaIdsAmong(port, 'secret', ['m1', 'm2']).pipe(Effect.provide(layer)),
+    )
+    expect(downloaded).toEqual(['m1'])
+    expect(calls[0]!.url).toBe('https://x.convex.cloud/api/query')
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      path: 'sync:downloadedMediaIdsAmong',
+      args: { secret: 'secret', mediaIds: ['m1', 'm2'] },
       format: 'json',
     })
   })

@@ -20,6 +20,10 @@ export interface RawTweet {
   readonly media: ReadonlyArray<RawMedia>
 }
 
+// RawTweet keeps X's own field names (it's X-adapter-internal plumbing, never
+// part of the generalized MediaItem contract) — only the MediaItem literals
+// built below use the generalized `postId`/`author`/`platform`.
+
 /* v8 ignore next -- String.split always yields a non-empty array; `?? url` is unreachable */
 const stripQuery = (url: string): string => url.split('?')[0] ?? url
 
@@ -55,8 +59,9 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
       seen.add(id)
       out.push({
         id,
-        tweetId: tweet.tweetId,
-        handle: tweet.handle,
+        platform: 'x',
+        postId: tweet.tweetId,
+        author: tweet.handle,
         type: 'photo',
         url,
         previewUrl: m.media_url_https,
@@ -72,8 +77,9 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
     seen.add(id)
     out.push({
       id,
-      tweetId: tweet.tweetId,
-      handle: tweet.handle,
+      platform: 'x',
+      postId: tweet.tweetId,
+      author: tweet.handle,
       type: m.type === 'animated_gif' ? 'gif' : 'video',
       url: variant.value.url,
       previewUrl: m.media_url_https,

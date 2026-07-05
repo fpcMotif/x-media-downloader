@@ -49,7 +49,7 @@ export const CloudProvider = Schema.Literals(CLOUD_PROVIDERS)
 
 const UploadTargetSchema = Schema.Struct({
   path: Schema.String,
-  handle: Schema.String,
+  folder: Schema.String,
   filename: Schema.String,
   contentType: Schema.String,
 })

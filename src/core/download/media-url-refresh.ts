@@ -1,14 +1,14 @@
 import type { MediaItem } from '../schema'
 
-/** Locate a fresh MediaItem for retry — prefer exact id, else tweetId+index+type. */
+/** Locate a fresh MediaItem for retry — prefer exact id, else postId+index+type. */
 export function findFreshMediaItem(
-  target: Pick<MediaItem, 'id' | 'tweetId' | 'index' | 'type'>,
+  target: Pick<MediaItem, 'id' | 'postId' | 'index' | 'type'>,
   candidates: ReadonlyArray<MediaItem>,
 ): MediaItem | undefined {
   const byId = candidates.find((c) => c.id === target.id)
   if (byId !== undefined) return byId
   const matches = candidates.filter(
-    (c) => c.tweetId === target.tweetId && c.index === target.index && c.type === target.type,
+    (c) => c.postId === target.postId && c.index === target.index && c.type === target.type,
   )
   return matches.length === 1 ? matches[0] : undefined
 }
@@ -42,7 +42,7 @@ export async function refreshMediaUrlFromTabs(
   const message = {
     _tag: 'RefreshMediaUrlRequest' as const,
     itemId: item.id,
-    tweetId: item.tweetId,
+    tweetId: item.postId,
     index: item.index,
     type: item.type,
   }

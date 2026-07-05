@@ -33,10 +33,12 @@ export interface OAuthTokens {
 
 /** Where one media item lands in the provider, derived from the local plan. */
 export interface UploadTarget {
-  /** Relative dest path, e.g. `handle/tweetId_0.jpg` (mirrors the local filename). */
+  /** Relative dest path, e.g. `twitter/tweetId_0.jpg` (mirrors the local filename). */
   readonly path: string
-  /** Author handle — the per-handle subfolder (Drive) / path segment (Dropbox). */
-  readonly handle: string
+  /** Destination folder — the directory of the rendered local path, e.g. `twitter`
+   *  (a subfolder at the Drive root / a Dropbox path segment). Empty when the
+   *  filename template produced no directory, meaning "upload to the root". */
+  readonly folder: string
   /** Basename, e.g. `tweetId_0.jpg`. */
   readonly filename: string
   /** Best-effort MIME hint; the source response's content-type overrides it. */

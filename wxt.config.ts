@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { defineConfig } from 'wxt'
 import preact from '@preact/preset-vite'
 import tailwindcss from '@tailwindcss/vite'
+import { allAdapterHostMatch } from './src/core/adapters/registry'
 
 // When a local `.env` pre-seeds Cloud Sync (WXT_CONVEX_URL), promote the Convex
 // origin from an optional to a REQUIRED host permission for THIS build only —
@@ -17,6 +18,17 @@ const seedsConvex = (() => {
 })()
 
 const CONVEX_ORIGIN = 'https://*.convex.cloud/*'
+
+// Every registered adapter's page origin, as a manifest `host_permissions`
+// entry (`https://host/*`) — derived from `allAdapterHostMatch()` (the
+// registry's own manifest-permissions source of truth) rather than
+// hand-listed, so adding a platform to the registry (docs/adr/0019) is the
+// only edit needed. `hostMatch` entries are match-pattern syntax
+// (`*://host/*`); the scheme differs from `host_permissions` shape, hence
+// the transform below.
+const PLATFORM_HOST_PERMISSIONS = allAdapterHostMatch().map(
+  (m) => `https://${m.split('://')[1]?.split('/')[0]}/*`,
+)
 
 // https://wxt.dev/api/config.html
 export default defineConfig({
@@ -36,8 +48,12 @@ export default defineConfig({
     // harvest tens of thousands of text records.
     permissions: ['downloads', 'storage', 'activeTab', 'identity', 'alarms', 'unlimitedStorage'],
     host_permissions: [
-      'https://x.com/*',
-      'https://twitter.com/*',
+      // X/Instagram/Threads page origins, derived from the adapter registry
+      // (docs/adr/0019-platform-identity-derives-from-adapter-registry.md) —
+      // the content scripts' widened `matches` need a matching host
+      // permission per platform. Threads moved `threads.net` → `threads.com`
+      // in April 2025; both hosts serve the same backend, so both are listed.
+      ...PLATFORM_HOST_PERMISSIONS,
       // X's public embed endpoint — the background fetches it to recover a video
       // the passive tee missed (SPA cache hit / lazy reply). Required (not opt-in)
       // so the media count is correct out of the box; read-only, X-owned, narrow.
@@ -54,6 +70,13 @@ export default defineConfig({
     optional_host_permissions: [
       'https://pbs.twimg.com/*',
       'https://video.twimg.com/*',
+      // Instagram/Threads media CDN — same rationale as the twimg pair above
+      // (HEAD-probes for the size/budget filters, the 'fetched' strategy, and
+      // Cloud Upload's byte source all need fetch-level host access, on top of
+      // the page-origin host_permissions already granted for the content
+      // script). Meta serves signed media off numbered `scontent` subdomains
+      // rather than one fixed host, hence the wildcard.
+      'https://*.cdninstagram.com/*',
       'http://localhost/*',
       'https://www.googleapis.com/*',
       'https://oauth2.googleapis.com/*',

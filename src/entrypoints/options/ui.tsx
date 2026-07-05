@@ -1,6 +1,5 @@
 import type { ComponentChildren, VNode } from 'preact'
 import type { Settings } from '@/core/schema'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { FieldGroup } from '@/components/ui/field'
 
 /** Every settings panel reads the live settings and writes through `update`;
@@ -12,49 +11,48 @@ export type PanelProps = {
   readonly reload: () => Promise<void>
 }
 
-/** The title + lede at the top of a panel's content column. */
+/** The title + lede at the top of a panel's content column — R4 Foundations
+ *  type scale (20px title, 13px muted lede): a quiet typographic document,
+ *  not a dashboard hero. */
 export function PanelHeader({ title, description }: { title: string; description: string }) {
   return (
-    <header className="grid gap-1.5">
-      <h1 className="text-2xl font-bold tracking-tight text-balance">{title}</h1>
-      <p className="text-sm leading-relaxed text-muted-foreground text-pretty">{description}</p>
+    <header className="grid gap-1.5 pb-1">
+      <h1 className="text-xl font-semibold tracking-tight text-balance">{title}</h1>
+      <p className="text-[13px] leading-relaxed text-muted-foreground text-pretty">{description}</p>
     </header>
   )
 }
 
-/** A bordered card grouping related settings, with an optional accent-tinted
- *  leading icon — the unit the Figma design uses for every settings cluster. */
-export function SettingGroup({
+/** A flat, hairline-separated block of settings — R4 replaces the bordered
+ *  card + icon-tile unit with structure that comes from spacing and a single
+ *  top hairline. No nested box, no icon: the title sits directly on the page
+ *  and each child row is hairline-divided from the next. `action` floats a
+ *  quiet link (e.g. "Open archive ›") to the right of the title line. */
+export function Section({
   title,
   description,
-  icon,
+  action,
   children,
 }: {
   title: string
   description?: string
-  icon?: VNode
+  action?: VNode
   children: ComponentChildren
 }) {
   return (
-    <Card aria-label={title}>
-      <CardHeader>
-        <div className="flex items-start gap-3">
-          {icon && (
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              {icon}
-            </span>
+    <section aria-label={title} className="border-t border-border pt-6">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="grid gap-1 min-w-0">
+          <h2 className="text-sm font-semibold">{title}</h2>
+          {description && (
+            <p className="text-[13px] leading-snug text-muted-foreground text-pretty">
+              {description}
+            </p>
           )}
-          <div className="grid gap-1">
-            <CardTitle className="font-semibold">{title}</CardTitle>
-            {description && (
-              <CardDescription className="leading-snug text-pretty">{description}</CardDescription>
-            )}
-          </div>
         </div>
-      </CardHeader>
-      <CardContent>
-        <FieldGroup className="gap-4">{children}</FieldGroup>
-      </CardContent>
-    </Card>
+        {action && <div className="shrink-0 pt-0.5">{action}</div>}
+      </div>
+      <FieldGroup className="gap-0 divide-y divide-border *:py-4">{children}</FieldGroup>
+    </section>
   )
 }

@@ -24,7 +24,7 @@ import {
 
 const target = (path: string) => ({
   path,
-  handle: 'alice',
+  folder: 'alice',
   filename: path.split('/').pop()!,
   contentType: 'image/jpeg',
 })

@@ -8,8 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { PanelHeader, SettingGroup, type PanelProps } from '../ui'
-import { DownloadIcon, SlidersIcon } from '@/components/icons'
+import { PanelHeader, Section, type PanelProps } from '../ui'
 
 export function DownloadsPanel({ settings, update }: PanelProps) {
   const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
@@ -38,10 +37,9 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
     <>
       <PanelHeader title="Downloads" description="How files are named, fetched, and saved." />
 
-      <SettingGroup
+      <Section
         title="Save defaults"
         description="Naming and sidecars applied to every new download."
-        icon={<DownloadIcon className="size-[18px]" />}
       >
         <Field>
           <FieldLabel htmlFor="filenameTemplate">Filename template</FieldLabel>
@@ -54,7 +52,7 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
             }
           />
           <FieldDescription className="font-mono text-xs">
-            {'{handle} {tweetId} {index} {ext} {type} {date}'}
+            {'{platform} {handle} {tweetId} {index} {ext} {type} {date}'}
           </FieldDescription>
         </Field>
         <Field orientation="horizontal">
@@ -71,12 +69,11 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
             onCheckedChange={(checked: boolean) => void update({ sidecarMetadata: checked })}
           />
         </Field>
-      </SettingGroup>
+      </Section>
 
-      <SettingGroup
+      <Section
         title="Speed"
         description="Conservative defaults; raise only when your network and disk keep up."
-        icon={<SlidersIcon className="size-[18px]" />}
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -88,7 +85,7 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
             type="number"
             min={1}
             max={10}
-            className="w-20 text-center tabular-nums"
+            className="w-20 text-center font-mono tabular-nums"
             aria-label="Concurrent downloads"
             value={settings.downloadConcurrency}
             onChange={(e: Event) =>
@@ -98,12 +95,11 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
             }
           />
         </Field>
-      </SettingGroup>
+      </Section>
 
-      <SettingGroup
+      <Section
         title="Download mode"
         description="Direct is the safest default — Chrome saves the file directly."
-        icon={<DownloadIcon className="size-[18px]" />}
       >
         <ToggleGroup
           type="single"
@@ -130,7 +126,7 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
         {activeMode && <p className="text-sm text-muted-foreground">{activeMode.hint}</p>}
 
         {settings.downloadStrategy === 'aria2' && (
-          <div className="flex flex-col gap-4 rounded-lg bg-muted/40 p-4">
+          <div className="grid gap-0 divide-y divide-border border-l border-border pl-4 *:py-3 first:*:pt-0">
             <Field orientation="horizontal">
               <FieldLabel htmlFor="aria2Split">aria2 split</FieldLabel>
               <Input
@@ -138,7 +134,7 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
                 type="number"
                 min={1}
                 max={16}
-                className="w-20 text-center tabular-nums"
+                className="w-20 text-center font-mono tabular-nums"
                 aria-label="aria2 split"
                 value={settings.aria2Split}
                 onChange={(e: Event) =>
@@ -191,7 +187,7 @@ export function DownloadsPanel({ settings, update }: PanelProps) {
             )}
           </div>
         )}
-      </SettingGroup>
+      </Section>
     </>
   )
 }

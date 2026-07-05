@@ -9,8 +9,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { PanelHeader, SettingGroup, type PanelProps } from '../ui'
-import { SlidersIcon, InfoIcon } from '@/components/icons'
+import { PanelHeader, Section, type PanelProps } from '../ui'
 
 export function GeneralPanel({ settings, update }: PanelProps) {
   return (
@@ -20,10 +19,9 @@ export function GeneralPanel({ settings, update }: PanelProps) {
         description="On-page helpers that ride alongside X — hover grabs, badges, and the download dock."
       />
 
-      <SettingGroup
+      <Section
         title="On-page controls"
         description="What the extension overlays on x.com while you browse."
-        icon={<SlidersIcon className="size-[18px]" />}
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -40,7 +38,13 @@ export function GeneralPanel({ settings, update }: PanelProps) {
 
         {settings.quickGrabEnabled && (
           <Field orientation="horizontal">
-            <FieldLabel htmlFor="quickGrabModifier">Quick grab modifier</FieldLabel>
+            <FieldContent>
+              <FieldLabel htmlFor="quickGrabModifier">Quick grab modifier</FieldLabel>
+              <FieldDescription>
+                Hold {settings.quickGrabModifier === 'meta' ? 'Alt' : 'Cmd'} as well to grab the
+                whole post (Instagram &amp; Threads)
+              </FieldDescription>
+            </FieldContent>
             <Select
               value={settings.quickGrabModifier}
               onValueChange={(value: string) =>
@@ -110,12 +114,11 @@ export function GeneralPanel({ settings, update }: PanelProps) {
             />
           </Field>
         )}
-      </SettingGroup>
+      </Section>
 
-      <SettingGroup
+      <Section
         title="Advanced"
         description="Opt-in behaviours that change how media is reached on the page."
-        icon={<InfoIcon className="size-[18px]" />}
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -165,7 +168,7 @@ export function GeneralPanel({ settings, update }: PanelProps) {
             onCheckedChange={(checked: boolean) => void update({ showSavedStatus: checked })}
           />
         </Field>
-      </SettingGroup>
+      </Section>
     </>
   )
 }

@@ -10,6 +10,11 @@ import type { SavedIndex, QueryConvex } from '../core/sync/saved-index'
 
 const MiB = 1024 * 1024
 
+/** HEAD probes go to the media CDN (~250ms RTT each); a serial per-item await
+ *  stalls a 30-item sweep ~7.5s before the first download starts. Probed in
+ *  parallel, bounded so a bulk sweep never opens an unbounded connection fan-out. */
+export const PROBE_CONCURRENCY = 8
+
 export interface AdmissionResult {
   readonly admitted: MediaItem[]
   readonly skipped: ReadonlyArray<{ item: MediaItem; reason: SkipReason }>
@@ -21,8 +26,8 @@ export interface AdmissionGate {
 
 export function makeAdmissionGate(deps: {
   getSettings: () => Promise<Settings>
-  savedIndex: SavedIndex
-  queryConvex: QueryConvex
+  savedMediaIndex: SavedIndex
+  queryConvexMedia: QueryConvex
   sizeProbe: SizeProbePort
   readTodayBudget: () => Promise<{ bytes: number; count: number }>
 }): AdmissionGate {
@@ -38,11 +43,11 @@ export function makeAdmissionGate(deps: {
       dailyMaxCount: settings.dailyMaxCount,
     }
 
-    const savedTweetIds = filter.preventDuplicateDownloads
+    const savedMediaIds = filter.preventDuplicateDownloads
       ? new Set(
-          await deps.savedIndex.resolve(
-            [...new Set(items.map((i) => i.tweetId))],
-            deps.queryConvex,
+          await deps.savedMediaIndex.resolve(
+            [...new Set(items.map((i) => i.id))],
+            deps.queryConvexMedia,
           ),
         )
       : new Set<string>()
@@ -53,19 +58,40 @@ export function makeAdmissionGate(deps: {
         ? { ...(await deps.readTodayBudget()) }
         : { bytes: 0, count: 0 }
 
+    // Pre-probe phase: HEAD every item that passes the free gate, in parallel with a
+    // bounded worker pool. `freeReason` runs here ONLY to gate the expensive probe — a
+    // type-filtered or duplicate item must never reach the network — and the probes
+    // carry no cross-item dependency (the budget fold below consumes their results
+    // sequentially), so nothing about the verdicts changes; only the wall-clock does.
+    const sizeById = new Map<string, number | null>()
+    if (probeActive) {
+      const targets = items.filter((i) => freeReason(i, filter, savedMediaIds) === null)
+      let cursor = 0
+      await Promise.all(
+        Array.from({ length: Math.min(PROBE_CONCURRENCY, targets.length) }, async () => {
+          // oxlint-disable no-await-in-loop -- each worker IS one lane of the parallel pool
+          for (;;) {
+            const target = targets[cursor++]
+            if (target === undefined) return
+            sizeById.set(target.id, await deps.sizeProbe.probe(target.url))
+          }
+          // oxlint-enable no-await-in-loop
+        }),
+      )
+    }
+
     const admitted: MediaItem[] = []
     const skipped: { item: MediaItem; reason: SkipReason }[] = []
 
     for (const item of items) {
-      // `freeReason` runs here ONLY to gate the expensive HEAD probe — a type-filtered or
-      // duplicate item must never reach the network. The admission verdict itself is the
-      // pure `evaluateAdmission`, which re-runs `freeReason` (cheap, pure, idempotent), so
-      // the free → size → budget decision now lives in exactly one place.
-      const free = freeReason(item, filter, savedTweetIds)
-      const sizeBytes = free === null && probeActive ? await deps.sizeProbe.probe(item.url) : null
+      // The admission verdict itself is the pure `evaluateAdmission`, which re-runs
+      // `freeReason` (cheap, pure, idempotent), so the free → size → budget decision
+      // lives in exactly one place; the probe result is read from the parallel phase.
+      const free = freeReason(item, filter, savedMediaIds)
+      const sizeBytes = free === null && probeActive ? (sizeById.get(item.id) ?? null) : null
       const decision = evaluateAdmission(item, {
         settings: filter,
-        savedTweetIds,
+        savedMediaIds,
         sizeBytes,
         running,
       })

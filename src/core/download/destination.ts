@@ -26,9 +26,12 @@ export function sidecarFilename(mediaFilename: string): string {
 
 /** Plain metadata object for the sidecar; ctx fields are added only when present. */
 export function buildSidecar(item: MediaItem, ctx?: SidecarContext): Record<string, unknown> {
+  // Sidecar JSON keys deliberately stay `handle`/`tweetId` — this is a
+  // user-visible file format existing X users may already parse; only the
+  // in-memory MediaItem field names generalized (ADR: multi-platform design).
   const meta: Record<string, unknown> = {
-    handle: item.handle,
-    tweetId: item.tweetId,
+    handle: item.author,
+    tweetId: item.postId,
     type: item.type,
     index: item.index,
     url: item.url,

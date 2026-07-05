@@ -11,8 +11,9 @@ import {
 
 const item: MediaItem = {
   id: 'm1',
-  tweetId: '123',
-  handle: 'alice',
+  platform: 'x',
+  postId: '123',
+  author: 'alice',
   type: 'photo',
   url: 'https://pbs.twimg.com/media/AAA.jpg?name=orig',
   ext: 'jpg',
@@ -62,22 +63,31 @@ describe('freeReason', () => {
     expect(freeReason(item, { ...allOff, minWidth: 1200, minHeight: 800 }, new Set())).toBeNull()
   })
 
-  it("returns 'duplicate' when savedTweetIds contains the tweetId", () => {
-    expect(freeReason(item, { ...allOff, preventDuplicateDownloads: true }, new Set(['123']))).toBe(
+  it("returns 'duplicate' when savedMediaIds contains the item's id", () => {
+    expect(freeReason(item, { ...allOff, preventDuplicateDownloads: true }, new Set(['m1']))).toBe(
       'duplicate',
     )
   })
 
   it('does not flag a duplicate when the dedup setting is off', () => {
     expect(
-      freeReason(item, { ...allOff, preventDuplicateDownloads: false }, new Set(['123'])),
+      freeReason(item, { ...allOff, preventDuplicateDownloads: false }, new Set(['m1'])),
     ).toBeNull()
   })
 
-  it('does not flag a duplicate when the tweetId is not saved', () => {
+  it('does not flag a duplicate when the item id is not saved', () => {
     expect(
       freeReason(item, { ...allOff, preventDuplicateDownloads: true }, new Set(['999'])),
     ).toBeNull()
+  })
+
+  it('flags item A as duplicate but leaves item B (same post, different id) admitted', () => {
+    const a: MediaItem = { ...item, id: 'a', postId: 'shared-post' }
+    const b: MediaItem = { ...item, id: 'b', postId: 'shared-post' }
+    const settings: FilterSettings = { ...allOff, preventDuplicateDownloads: true }
+    const saved = new Set(['a'])
+    expect(freeReason(a, settings, saved)).toBe('duplicate')
+    expect(freeReason(b, settings, saved)).toBeNull()
   })
 
   it('orders media-type before min-resolution before duplicate', () => {
@@ -88,14 +98,14 @@ describe('freeReason', () => {
       minWidth: 9999,
       preventDuplicateDownloads: true,
     }
-    expect(freeReason(video, settings, new Set(['123']))).toBe('filtered-type')
+    expect(freeReason(video, settings, new Set(['m1']))).toBe('filtered-type')
 
     const small: MediaItem = { ...item, width: 1 }
-    expect(freeReason(small, settings, new Set(['123']))).toBe('too-small')
+    expect(freeReason(small, settings, new Set(['m1']))).toBe('too-small')
   })
 
   it('returns null when all free checks are off', () => {
-    expect(freeReason(item, allOff, new Set(['123']))).toBeNull()
+    expect(freeReason(item, allOff, new Set(['m1']))).toBeNull()
   })
 })
 
@@ -174,7 +184,7 @@ describe('budgetReason', () => {
 describe('evaluateAdmission', () => {
   const ctx = (over: Partial<AdmissionContext> = {}): AdmissionContext => ({
     settings: allOff,
-    savedTweetIds: new Set(),
+    savedMediaIds: new Set(),
     sizeBytes: null,
     running: { bytes: 0, count: 0 },
     ...over,
@@ -189,7 +199,7 @@ describe('evaluateAdmission', () => {
       item,
       ctx({
         settings: { ...allOff, preventDuplicateDownloads: true, maxFileSizeBytes: 1 },
-        savedTweetIds: new Set(['123']),
+        savedMediaIds: new Set(['m1']),
         sizeBytes: 5_000_000,
       }),
     )

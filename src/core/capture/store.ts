@@ -58,31 +58,76 @@ export function summarize(records: ReadonlyArray<TweetRecord>): {
   return { tweets: tweets.size, conversations: conversations.size }
 }
 
+/** Fold ONE record into the by-conversation aggregate — the loop body of
+ *  {@link recentConversations}, extracted so a cursor-driven caller can stream
+ *  the store one record at a time instead of materializing it whole. */
+function foldConversation(byConversation: Map<string, RecentConversation>, r: TweetRecord): void {
+  const existing = byConversation.get(r.conversationId)
+  const isRoot = r.tweetId === r.conversationId
+  if (existing === undefined) {
+    byConversation.set(r.conversationId, {
+      conversationId: r.conversationId,
+      rootHandle: r.author.handle,
+      rootText: r.text,
+      count: 1,
+      lastAt: r.capturedAt,
+    })
+    return
+  }
+  existing.count += 1
+  existing.lastAt = Math.max(existing.lastAt, r.capturedAt)
+  if (isRoot) {
+    existing.rootHandle = r.author.handle
+    existing.rootText = r.text
+  }
+}
+
+/** Newest-first threads, capped at `n`. */
+function newestFirst(byConversation: Map<string, RecentConversation>, n: number) {
+  return [...byConversation.values()].toSorted((a, b) => b.lastAt - a.lastAt).slice(0, n)
+}
+
 /** The `n` newest conversation threads, each surfaced for the recent list (spec §8). */
 export function recentConversations(
   records: ReadonlyArray<TweetRecord>,
   n: number,
 ): RecentConversation[] {
   const byConversation = new Map<string, RecentConversation>()
-  for (const r of records) {
-    const existing = byConversation.get(r.conversationId)
-    const isRoot = r.tweetId === r.conversationId
-    if (existing === undefined) {
-      byConversation.set(r.conversationId, {
-        conversationId: r.conversationId,
-        rootHandle: r.author.handle,
-        rootText: r.text,
-        count: 1,
-        lastAt: r.capturedAt,
-      })
-      continue
-    }
-    existing.count += 1
-    existing.lastAt = Math.max(existing.lastAt, r.capturedAt)
-    if (isRoot) {
-      existing.rootHandle = r.author.handle
-      existing.rootText = r.text
-    }
+  for (const r of records) foldConversation(byConversation, r)
+  return newestFirst(byConversation, n)
+}
+
+/**
+ * Streaming accumulator for the panel summary (spec §8): the distinct-tweet
+ * count plus the by-conversation aggregate, foldable one record at a time so
+ * the popup's `CaptureSummaryRequest` never materializes the whole harvest in
+ * SW memory. `tweets` is a plain count — the capture store's keyPath makes its
+ * records unique by tweetId; do not fold an array that can carry duplicates.
+ */
+export type CaptureSummaryAcc = {
+  tweets: number
+  byConversation: Map<string, RecentConversation>
+}
+
+export const emptyCaptureSummary = (): CaptureSummaryAcc => ({
+  tweets: 0,
+  byConversation: new Map(),
+})
+
+export function foldCaptureSummary(acc: CaptureSummaryAcc, r: TweetRecord): CaptureSummaryAcc {
+  acc.tweets += 1
+  foldConversation(acc.byConversation, r)
+  return acc
+}
+
+/** The `CaptureSummaryRequest` reply: counts + the `n` newest threads. */
+export function finishCaptureSummary(
+  acc: CaptureSummaryAcc,
+  n: number,
+): { tweets: number; conversations: number; recent: RecentConversation[] } {
+  return {
+    tweets: acc.tweets,
+    conversations: acc.byConversation.size,
+    recent: newestFirst(acc.byConversation, n),
   }
-  return [...byConversation.values()].sort((a, b) => b.lastAt - a.lastAt).slice(0, n)
 }

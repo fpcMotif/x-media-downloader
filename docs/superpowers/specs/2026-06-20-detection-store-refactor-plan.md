@@ -1,5 +1,8 @@
 # DetectionStore refactor — plan (grilled 2026-06-20)
 
+> **STATUS 2026-07-05: EXECUTED.** M1+M2+M3 all landed (src/core/adapters/x/detection-store.ts,
+> ADR-0016); verified complete in the round-4 architecture review. Do not re-open or re-scope.
+
 Executable plan for a code-quality refactor of the **syndication video-recovery**
 feature (ADR-0015) and the overlay detection state it touches. Produced by a
 `/grill-with-docs` session; every design fork below was decided with the user.

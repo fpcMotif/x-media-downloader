@@ -78,8 +78,14 @@ export interface CaptureSummary {
   }>
 }
 
-export const fetchCaptureSummary = (): Promise<CaptureSummary | null> =>
+/** `limit` caps the `recent` list: 0 = counts only (popup), omitted = background
+ *  default, large = the options archive browser. */
+export const fetchCaptureSummary = (limit?: number): Promise<CaptureSummary | null> =>
   browser.runtime
-    .sendMessage({ _tag: 'CaptureSummaryRequest' })
+    .sendMessage(
+      limit === undefined
+        ? { _tag: 'CaptureSummaryRequest' }
+        : { _tag: 'CaptureSummaryRequest', limit },
+    )
     .then((s) => (s as CaptureSummary | null) ?? null)
     .catch(() => null)

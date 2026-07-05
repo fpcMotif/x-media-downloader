@@ -18,8 +18,9 @@ const videoEl = (html: string): HTMLVideoElement => {
 
 const media = (id: string, tweetId: string, index: number, url: string): MediaItem => ({
   id,
-  tweetId,
-  handle: 'alice',
+  platform: 'x',
+  postId: tweetId,
+  author: 'alice',
   type: 'photo',
   url,
   ext: 'jpg',

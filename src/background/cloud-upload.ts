@@ -42,7 +42,6 @@ import {
   type JobLedger,
   type UploadJob,
 } from '../core/cloud/upload-job'
-import { sanitizeSegment } from '../core/download/filename'
 import { PROVIDERS, revokeViaRecipe } from '../core/cloud/provider'
 import { classifyUploadError, type CloudUploadStatus } from '../core/cloud/status'
 import { makeSerialQueue, type SerialQueue } from '../core/serial-queue'
@@ -268,19 +267,21 @@ const defaultAuthFlowPort = (): AuthFlowPort => ({
   launchFlow: (url) => browser.identity.launchWebAuthFlow({ url, interactive: true }),
 })
 
-// Narrowed to the structural subset it reads so both the live queue (MediaItem)
-// and the backfill (a history record's SyncMediaMeta) share one constructor.
-const cloudTargetFor = (
-  m: { readonly handle: string; readonly ext: string },
-  filename: string,
-): UploadTarget => ({
-  path: filename,
-  // Sanitize the raw scraped handle (the local path goes through the same
-  // sanitizer) before it becomes a Drive folder name / Dropbox path segment.
-  handle: sanitizeSegment(m.handle) || 'unknown',
-  filename: filename.split('/').pop() ?? filename,
-  contentType: guessMime(m.ext),
-})
+// The cloud destination MIRRORS the local plan: the folder is the directory of the
+// rendered filename (e.g. `twitter` from `twitter/123_0.jpg`), so a media item lands
+// in the SAME platform folder locally and in the cloud — no per-handle subfolder.
+// renderFilename already sanitized every segment, so there's nothing to re-clean.
+// Narrowed to the structural subset it reads so both the live queue (MediaItem) and
+// the backfill (a history record) share one constructor.
+const cloudTargetFor = (m: { readonly ext: string }, filename: string): UploadTarget => {
+  const slash = filename.lastIndexOf('/')
+  return {
+    path: filename,
+    folder: slash >= 0 ? filename.slice(0, slash) : '',
+    filename: slash >= 0 ? filename.slice(slash + 1) : filename,
+    contentType: guessMime(m.ext),
+  }
+}
 
 const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
   const f = PROVIDERS[p].fields
@@ -377,7 +378,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
   /** Dispatch one job to its provider uploader on the cloud runtime. Drive resolves
    *  (and persists) its app root folder once; Dropbox needs only the access token. */
-  const runUpload = async (
+  const dispatchToProvider = async (
     job: UploadJob,
     accessToken: string,
     settings: Settings,
@@ -464,7 +465,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       try {
         const accessToken = await ensureAccessToken(settings, job.provider, now)
         settings = await getSettings() // re-read after a possible token write
-        outcome = await runUpload(job, accessToken, settings)
+        outcome = await dispatchToProvider(job, accessToken, settings)
       } catch (err) {
         outcome = { kind: 'failure', reason: err instanceof Error ? err.message : String(err) }
       }

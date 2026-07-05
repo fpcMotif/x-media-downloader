@@ -1,3 +1,6 @@
+import type { Message } from './schema'
+import { originsForAllAdapters } from './adapters/registry'
+
 /**
  * Sender authorization for the background service worker's `runtime.onMessage`
  * router. That router triggers downloads, OAuth flows, cloud byte egress, and
@@ -10,15 +13,21 @@
  *
  * Two trust tiers, validated against the real `sendMessage` call sites:
  *  - Internal UI (popup / options): our extension id, no `tab` — may send anything.
- *  - Content script (overlay on x.com / twitter.com): our extension id, has a
- *    `tab`, on an allowed origin — may send only {@link CONTENT_SCRIPT_TAGS}.
+ *  - Content script (overlay on x.com / twitter.com / instagram / threads): our
+ *    extension id, has a `tab`, on an allowed origin — may send only
+ *    {@link CONTENT_SCRIPT_TAGS}.
  * Everything else — a foreign extension id, a content script on another origin,
  * or a privileged (UI-only) tag arriving from a content script — is rejected.
  */
 
 /** The message tags the overlay content script legitimately sends. Every other
- *  tag is UI-only and is accepted from internal popup/options surfaces only. */
-export const CONTENT_SCRIPT_TAGS: ReadonlySet<string> = new Set([
+ *  tag is UI-only and is accepted from internal popup/options surfaces only.
+ *  Typed against `Message['_tag']` (not a bare `string`) so adding a new tag to
+ *  the `Message` union forces a decision here — this exact hole (a tag silently
+ *  missing from this set) dropped every Instagram/Threads overlay message with
+ *  no error signal until 670d5a6 caught it live. See `expectReply` in
+ *  `./messaging` for the caller-side half of that same invariant. */
+export const CONTENT_SCRIPT_TAGS: ReadonlySet<Message['_tag']> = new Set([
   'DownloadRequest',
   'DownloadTraceEvent',
   'RecoverTweetMediaRequest',
@@ -27,12 +36,21 @@ export const CONTENT_SCRIPT_TAGS: ReadonlySet<string> = new Set([
   // privileged capture tags (Summary/Export/Clear) stay UI-only — a content
   // script may PUSH captures but never trigger an export or wipe the store.
   'CaptureTweets',
+  // Timeline "Saved ✓" sweep: the overlay asks which mounted tweets are already
+  // downloaded. Read-only membership over the page's own tweet ids.
+  'SavedStatusRequest',
 ])
 
-const ALLOWED_CONTENT_SCRIPT_ORIGINS: ReadonlySet<string> = new Set([
-  'https://x.com',
-  'https://twitter.com',
-])
+// Derived from the adapter registry (docs/adr/0019-platform-identity-derives-from-adapter-registry.md)
+// so a new platform's origin is auto-allowed the moment its adapter is
+// registered — no parallel edit here to forget. Mirrors wxt.config.ts's
+// host_permissions page-origin list. This set was NOT updated when
+// Instagram/Threads content scripts were added under the old literal-Set
+// form, which silently dropped every overlay-to-background message from
+// those tabs (DownloadRequest included) with no error signal — the listener
+// returns false, so the caller sees an unanswered `reply: undefined`, not a
+// rejection. That's the failure mode this derivation closes off.
+const ALLOWED_CONTENT_SCRIPT_ORIGINS: ReadonlySet<string> = originsForAllAdapters()
 
 /** The `chrome.runtime.MessageSender` fields this guard inspects (structural). */
 export interface MessageSenderLike {
@@ -64,7 +82,7 @@ function isContentScript(sender: MessageSenderLike): boolean {
  * or a UI-only tag from a content script all return false.
  */
 export function isMessageAllowed(
-  tag: string,
+  tag: Message['_tag'],
   sender: MessageSenderLike | undefined,
   ownId: string,
 ): boolean {

@@ -11,7 +11,8 @@ import { type UploadInput, type UploadOutcome } from './types'
  * Google Drive v3 upload adapter (ADR-0013 §5, ADR-0017). Small media
  * (≤ SIMPLE_MAX_BYTES) goes via one multipart request; larger/unknown-size media
  * streams through a resumable session in 256 KiB-multiple chunks — never buffering
- * a whole video. Files land in a per-handle subfolder under an app root folder.
+ * a whole video. Files land in a single per-platform folder (e.g. `twitter`) at the
+ * My Drive root — no app-root wrapper and no per-handle subfolder.
  *
  * Decomposed as a `DriveUploader` service whose layer depends on `FetchService`,
  * `SourceFetch`, and `FolderCache`; per-upload `accessToken`/`rootFolderId` are
@@ -24,8 +25,6 @@ const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3/files'
 const FILES_BASE = 'https://www.googleapis.com/drive/v3/files'
 /** A valid Drive resumable chunk is a 256 KiB multiple; 32 × 256 KiB = 8 MiB. */
 const RESUMABLE_CHUNK = 32 * 256 * 1024
-/** The app root folder; the resolved id is persisted by the caller. */
-const ROOT_FOLDER_NAME = 'X Media Downloader'
 
 export interface DriveArgs {
   readonly accessToken: string
@@ -42,7 +41,8 @@ export class DriveUploader extends Context.Service<
   DriveUploader,
   {
     readonly upload: (args: DriveArgs, input: UploadInput) => Effect.Effect<UploadOutcome>
-    /** Lookup-or-create the app root folder; the id is persisted by the caller. */
+    /** Resolve the My Drive root folder id (the parent destination folders are
+     *  created under); the id is persisted by the caller and reused per SW life. */
     readonly ensureRoot: (accessToken: string) => Effect.Effect<string, CloudHttpError | FetchError>
   }
 >()('cloud/DriveUploader') {}
@@ -54,22 +54,24 @@ export const DriveUploaderLive = Layer.effect(
     const source = yield* SourceFetch
     const cache = yield* FolderCache
 
-    /** Lookup-or-create a folder named `name` under `parentId`. With full Drive
-     *  scope the list query finds a pre-existing folder so re-runs don't duplicate it. */
+    /** Lookup-or-create a folder named `name` under `parentId` (a real folder id or
+     *  the `'root'` alias). Scoping the query to `parentId` stops a common name like
+     *  `twitter` from matching an unrelated folder elsewhere in the Drive; with full
+     *  Drive scope it also finds a pre-existing folder so re-runs don't duplicate it. */
     const ensureFolder = (
       accessToken: string,
       name: string,
-      parentId: string | null,
+      parentId: string,
     ): Effect.Effect<string, CloudHttpError | FetchError> =>
       Effect.gen(function* () {
         // Escape backslash BEFORE single-quote so a trailing `\` can't break out of
-        // the q= string literal (defense-in-depth; the handle is sanitized upstream).
+        // the q= string literal (defense-in-depth; the folder name is sanitized upstream).
         const safe = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
         const q = [
           `name='${safe}'`,
           `mimeType='${FOLDER_MIME}'`,
           'trashed=false',
-          ...(parentId !== null ? [`'${parentId}' in parents`] : []),
+          `'${parentId}' in parents`,
         ].join(' and ')
         const listUrl = `${FILES_BASE}?q=${encodeURIComponent(q)}&fields=files(id)&pageSize=1`
         const found = yield* http.fetch(listUrl, { headers: authHeader(accessToken) })
@@ -80,11 +82,7 @@ export const DriveUploaderLive = Layer.effect(
         const created = yield* http.fetch(`${FILES_BASE}?fields=id`, {
           method: 'POST',
           headers: { ...authHeader(accessToken), 'content-type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            mimeType: FOLDER_MIME,
-            ...(parentId !== null ? { parents: [parentId] } : {}),
-          }),
+          body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
         })
         if (!created.ok) return yield* driveFail(created)
         const id = (yield* okJson<{ id?: string }>(created)).id
@@ -93,15 +91,17 @@ export const DriveUploaderLive = Layer.effect(
         return id
       })
 
-    const resolveHandleFolder = (
+    /** Lookup-or-create the destination folder (e.g. `twitter`) at the My Drive
+     *  root, memoized on the runtime's Ref so repeated uploads resolve it once. */
+    const resolveFolder = (
       args: DriveArgs,
-      handle: string,
+      folder: string,
     ): Effect.Effect<string, CloudHttpError | FetchError> =>
       Effect.gen(function* () {
-        const cached = yield* cache.get(handle)
+        const cached = yield* cache.get(folder)
         if (Option.isSome(cached)) return cached.value
-        const id = yield* ensureFolder(args.accessToken, handle, args.rootFolderId)
-        yield* cache.set(handle, id)
+        const id = yield* ensureFolder(args.accessToken, folder, args.rootFolderId)
+        yield* cache.set(folder, id)
         return id
       })
 
@@ -210,7 +210,10 @@ export const DriveUploaderLive = Layer.effect(
       runUpload(parseSource(input).pipe(Effect.provideService(SourceFetch, source)), {
         simple: (bytes, contentType) =>
           Effect.gen(function* () {
-            const parentId = yield* resolveHandleFolder(args, input.target.handle)
+            const parentId =
+              input.target.folder === ''
+                ? args.rootFolderId
+                : yield* resolveFolder(args, input.target.folder)
             const { id } = yield* multipart(args.accessToken, bytes, {
               name: input.target.filename,
               parentId,
@@ -225,7 +228,10 @@ export const DriveUploaderLive = Layer.effect(
           }),
         streamed: (body, size, contentType) =>
           Effect.gen(function* () {
-            const parentId = yield* resolveHandleFolder(args, input.target.handle)
+            const parentId =
+              input.target.folder === ''
+                ? args.rootFolderId
+                : yield* resolveFolder(args, input.target.folder)
             const { id, bytes } = yield* resumable(args.accessToken, body, {
               name: input.target.filename,
               parentId,
@@ -239,8 +245,19 @@ export const DriveUploaderLive = Layer.effect(
           }),
       })
 
+    /** Resolve the My Drive root folder id — the parent every destination folder is
+     *  created under. One cheap GET; the caller caches the id for the SW's life. */
     const ensureRoot = (accessToken: string): Effect.Effect<string, CloudHttpError | FetchError> =>
-      ensureFolder(accessToken, ROOT_FOLDER_NAME, null)
+      Effect.gen(function* () {
+        const res = yield* http.fetch(`${FILES_BASE}/root?fields=id`, {
+          headers: authHeader(accessToken),
+        })
+        if (!res.ok) return yield* driveFail(res)
+        const id = (yield* okJson<{ id?: string }>(res)).id
+        if (id === undefined)
+          return yield* Effect.die(new Error('drive: root resolve returned no id'))
+        return id
+      })
 
     return { upload, ensureRoot }
   }),

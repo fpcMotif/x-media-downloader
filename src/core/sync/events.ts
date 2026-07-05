@@ -1,5 +1,5 @@
 import { Schema } from 'effect'
-import { MediaType, type MediaItem } from '../schema'
+import { MediaType, Platform, type MediaItem } from '../schema'
 
 /**
  * Append-only state transitions mirrored to the cloud control plane
@@ -12,10 +12,13 @@ import { MediaType, type MediaItem } from '../schema'
 export const SyncEventKind = Schema.Literals(['queued', 'completed', 'failed'])
 export type SyncEventKind = typeof SyncEventKind.Type
 
-/** URL-cache payload: the provenance the cloud ledger keeps per Media Item. */
+/** URL-cache payload: the provenance the cloud ledger keeps per Media Item.
+ *  Mirrors `backend/convex/schema.ts`'s `media` validator field-for-field —
+ *  keep the two in sync (multi-platform design). */
 export const SyncMediaMeta = Schema.Struct({
-  tweetId: Schema.String,
-  handle: Schema.String,
+  platform: Platform,
+  postId: Schema.String,
+  author: Schema.String,
   type: MediaType,
   url: Schema.String,
   ext: Schema.String,
@@ -42,8 +45,9 @@ export const syncEventId = (deviceId: string, requestId: string, kind: SyncEvent
  *  construction (and so does Convex `media_state`). */
 export function syncMediaFromItem(item: MediaItem): SyncMediaMeta {
   return {
-    tweetId: item.tweetId,
-    handle: item.handle,
+    platform: item.platform,
+    postId: item.postId,
+    author: item.author,
     type: item.type,
     url: item.url,
     ext: item.ext,

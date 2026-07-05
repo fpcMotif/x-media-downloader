@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { findFreshMediaItem, mergeRetryUrl, refreshMediaUrlFromTabs } from './media-url-refresh'
 import type { MediaItem } from '../schema'
 
-const photo = (id: string, tweetId: string, index: number, url: string): MediaItem => ({
+const photo = (id: string, postId: string, index: number, url: string): MediaItem => ({
   id,
-  tweetId,
-  handle: 'alice',
+  platform: 'x',
+  postId,
+  author: 'alice',
   type: 'photo',
   url,
   ext: 'jpg',
@@ -20,7 +21,7 @@ describe('findFreshMediaItem', () => {
     expect(findFreshMediaItem(stale, [fresh])).toEqual(fresh)
   })
 
-  it('falls back to tweetId + index + type when id differs', () => {
+  it('falls back to postId + index + type when id differs', () => {
     const fresh = photo('m1-v2', '100', 0, 'https://pbs.twimg.com/media/BBB.jpg?name=orig')
     expect(findFreshMediaItem(stale, [fresh])).toEqual(fresh)
   })

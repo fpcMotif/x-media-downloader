@@ -13,12 +13,13 @@ const media = (
   id: string,
   tweetId: string,
   index: number,
-  handle = 'alice',
+  author = 'alice',
   type: MediaItem['type'] = 'photo',
 ): MediaItem => ({
   id,
-  tweetId,
-  handle,
+  platform: 'x',
+  postId: tweetId,
+  author,
   type,
   url: `https://pbs.twimg.com/${id}.jpg`,
   ext: 'jpg',
@@ -92,8 +93,8 @@ describe('selection', () => {
   it('restarts index at 0 for each selected tweet', () => {
     const sel = selectThread(emptySelection(), registry, 'th1')
     const resolved = resolveSelection(registry, sel)
-    const t1 = resolved.filter((i) => i.tweetId === 't1')
-    const t2 = resolved.filter((i) => i.tweetId === 't2')
+    const t1 = resolved.filter((i) => i.postId === 't1')
+    const t2 = resolved.filter((i) => i.postId === 't2')
     expect(t1.map((i) => i.index)).toEqual([0, 1, 2])
     expect(t2.map((i) => i.index)).toEqual([0, 1])
   })
@@ -120,7 +121,7 @@ describe('selection', () => {
     const sel = toggleMedia(emptySelection(), 'dup')
     const resolved = resolveSelection(dupRegistry, sel)
     expect(resolved.length).toBe(1)
-    expect(resolved[0]?.tweetId).toBe('t1')
+    expect(resolved[0]?.postId).toBe('t1')
   })
 
   it('does not mutate registry items on resolve', () => {

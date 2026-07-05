@@ -49,7 +49,7 @@ import {
   snapshot,
   type MetricsState,
 } from '../core/download/metrics'
-import { planInterruptRetry, type PendingInterruptRetry } from '../core/download/interrupt-retry'
+import type { PendingInterruptRetry } from '../core/download/interrupt-retry'
 import { syndicationUrl } from '../core/adapters/x/syndication'
 import {
   classifyTransfer,
@@ -74,12 +74,16 @@ import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator, hookScopes } from '../background/clear-coordinator'
+import { makeRetryPlanApplier } from '../background/retry-plan'
 import { isClearableTweetId } from '../core/clear/clearer'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
-import { recentConversations, selectConversation, summarize } from '../core/capture/store'
-import { buildTree } from '../core/capture/tree'
-import { toJsonl, toMarkdown, toTreeJson } from '../core/capture/export'
+import {
+  emptyCaptureSummary,
+  finishCaptureSummary,
+  foldCaptureSummary,
+} from '../core/capture/store'
+import { composeCaptureExport } from '../core/capture/build-export'
 
 // Ephemeral monitoring snapshot — session storage survives SW recycling but not
 // a browser restart (ADR-0005). The popup polls it via `MetricsRequest`.
@@ -125,7 +129,6 @@ interface RequestMeta {
 const requestMetaById = new Map<string, RequestMeta>()
 const interruptAttemptById = new Map<string, number>()
 const pendingRetries = new Map<string, PendingInterruptRetry>()
-const retryTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 
 const retryQueueItem = storage.defineItem<ReadonlyArray<PendingInterruptRetry>>(
   'session:interruptRetries',
@@ -159,16 +162,16 @@ const resolveRetryUrl = async (meta: RequestMeta): Promise<string> => {
   return fresh ?? meta.url
 }
 
-const clearRetryTimeout = (id: string): void => {
-  const handle = retryTimeouts.get(id)
-  if (handle !== undefined) {
-    clearTimeout(handle)
-    retryTimeouts.delete(id)
-  }
-}
-
+// `clearInterruptRetryState` needs `applier.cancel`, but `applier` isn't
+// constructed until after `failBrowserDownload`/`traceBackground`/`persistSnapshot`
+// are all declared (it takes them by direct reference, not a deferred closure, so
+// unlike `fire` it CANNOT be a forward reference — TDZ). `applier` itself is built
+// further down, right before `fireInterruptRetry`; `clearInterruptRetryState` is
+// only ever CALLED at runtime (never at module-eval time), so referencing
+// `applier` here before its textual declaration is safe for the same reason `fire`
+// is safe below.
 const clearInterruptRetryState = (id: string): void => {
-  clearRetryTimeout(id)
+  applier.cancel(id)
   pendingRetries.delete(id)
   interruptAttemptById.delete(id)
   requestMetaById.delete(id)
@@ -241,7 +244,14 @@ const cloudUpload = makeCloudUpload({
   queueError,
   getSettings,
   fetchImpl: fetch,
-  getBackfillRecords: async () => decodeStore(await historyItem.getValue()).records,
+  // BackfillRecord.media keeps its own `handle`-named field (cloud-upload.ts is
+  // untouched by the multi-platform rename) — map the generalized author onto it.
+  getBackfillRecords: async () =>
+    decodeStore(await historyItem.getValue()).records.map((r) => ({
+      requestId: r.requestId,
+      filename: r.filename,
+      media: { url: r.media.url, handle: r.media.author, ext: r.media.ext },
+    })),
 })
 const { uploadQueue, drainUploadJobs, recordCloudUploads } = cloudUpload
 
@@ -281,8 +291,20 @@ const recordHistory = (settings: Settings, actions: ReadonlyArray<HistoryAction>
 // originating tab where the user is looking) — a background Bookmarks/Likes tab
 // can't win the broadcast and un-bookmark a post meant only for its feed's clear.
 // In-memory; keyed by tweetId; lost on SW recycle (the clear simply falls back to
-// the broadcast then). Set at seed time, read when the clear fires.
+// the broadcast then). Set at seed time, read when the clear fires. Entries are
+// never individually retired (the clear path has no completion hook back here),
+// so the map is capped — oldest-inserted evicted first; an evicted tweet's clear
+// degrades to the broadcast, same as after a recycle.
+const CLEAR_ORIGIN_TAB_CAP = 512
 const clearOriginTab = new Map<string, number>()
+const rememberClearOrigin = (tweetId: string, tabId: number): void => {
+  clearOriginTab.delete(tweetId) // re-insert to refresh its eviction position
+  clearOriginTab.set(tweetId, tabId)
+  for (const oldest of clearOriginTab.keys()) {
+    if (clearOriginTab.size <= CLEAR_ORIGIN_TAB_CAP) break
+    clearOriginTab.delete(oldest)
+  }
+}
 
 // Clear-on-complete coordinator (worklist un-bookmark/un-like). Owns the in-memory
 // clear ledger + its serialized chain AND the durable sweep worklist; routes verified
@@ -328,11 +350,28 @@ const queryConvexSaved: QueryConvex = async (tweetIds) => {
 const savedStatusCoordinator = makeSavedStatusCoordinator({
   index: savedIndex,
   queryConvex: queryConvexSaved,
+  // Late cross-device hits (the sweep replied before the backstop answered):
+  // push them to every X tab so the chips land without waiting for a re-sweep.
+  notifyFresh: (saved) =>
+    void tabBroadcaster.broadcastToXTabs({ _tag: 'SavedStatusUpdate', saved }).catch(() => {}),
 })
+// Per-item duplicate-download check (admission gate only — NOT the post-level
+// "Saved" badge above). A separate SavedIndex instance keyed on item.id (the
+// media key), so grabbing one item from a multi-item post never blocks a
+// DIFFERENT item from the same post. Local-only for v1: the backend has a
+// `by_request_id` backstop available (queryDownloadedMediaIdsAmong) but it is
+// deliberately NOT wired here — cross-device per-item dedup was never a stated
+// requirement, only cross-device post-level "Saved" was. Local history already
+// durably answers "did I already grab this exact file."
+const savedMediaIndex = makeSavedIndex()
+const queryConvexMedia: QueryConvex = async () => []
+
 // Seed once on SW startup from the durable history's completed tweetIds.
 void (async () => {
   const { records } = decodeStore(await historyItem.getValue())
-  savedIndex.seed(records.filter((r) => r.status === 'completed').map((r) => r.media.tweetId))
+  const completed = records.filter((r) => r.status === 'completed')
+  savedIndex.seed(completed.map((r) => r.media.postId))
+  savedMediaIndex.seed(completed.map((r) => r.requestId)) // requestId === item.id
 })()
 
 // Download Admission Gate: a pre-scheduling check that drops duplicates and
@@ -354,8 +393,8 @@ const budgetQueue = makeSerialQueue(queueError('budget'))
 const headFetch = bindFetch(fetch)
 const admissionGate = makeAdmissionGate({
   getSettings,
-  savedIndex,
-  queryConvex: queryConvexSaved,
+  savedMediaIndex,
+  queryConvexMedia,
   sizeProbe: makeSizeProbe({ fetch: (url, init) => headFetch(url, init) }),
   readTodayBudget: () => budgetStore.readToday(),
 })
@@ -410,7 +449,7 @@ const settleBrowserDownload = async (
   now: number,
 ): Promise<void> => {
   const complete = outcome === 'complete'
-  const tweetId = requestMetaById.get(id)?.item?.tweetId
+  const tweetId = requestMetaById.get(id)?.item?.postId
   inFlight.delete(id)
   clearInterruptRetryState(id)
   if (complete) recordClearComplete(tweetId, id, downloadId)
@@ -455,6 +494,12 @@ const settleBrowserDownload = async (
       : 0
     budgetQueue.push(() => budgetStore.recordCompletion(bytes, 1))
   }
+  // Per-item dedup index (admission gate only, see the `savedMediaIndex` comment
+  // above): `id` here is the request id, which always equals item.id/requestId
+  // regardless of whether a postId was resolvable for the badge above. Marking a
+  // sidecar's own id is harmless — sidecar ids are never reused as a photo/video's
+  // item.id, so this can never wrongly dedup real media.
+  if (complete) savedMediaIndex.markSaved(id)
   traceBackground(complete ? 'browser-complete' : 'browser-failed', {
     itemId: id,
     elapsedMs: now - (requestStartedAt.get(id) ?? now),
@@ -469,6 +514,25 @@ const failBrowserDownload = (id: string, downloadId: number, now: number): Promi
 
 const completeBrowserDownload = (id: string, downloadId: number, now: number): Promise<void> =>
   settleBrowserDownload(id, downloadId, 'complete', now)
+
+// Retry Scheduler shell (CONTEXT.md's Clock Port entry): the applier owns
+// `attempt`-compute + `planInterruptRetry` decide + the timer/state/trace/persist
+// bookkeeping that used to be duplicated at three call sites below. `fire` is a
+// forward reference to `fireInterruptRetry` (declared next) — legal JS: the
+// closure only resolves it when actually CALLED, long after every module-level
+// `const` here has run at SW startup.
+const applier = makeRetryPlanApplier({
+  interruptAttemptById,
+  pendingRetries,
+  syncPendingRetries,
+  recordRetry: (id) => {
+    if (live) live = recordRetry(live, id)
+  },
+  trace: traceBackground,
+  persistSnapshot,
+  failBrowserDownload,
+  fire: (id) => void fireInterruptRetry(id),
+})
 
 const fireInterruptRetry = async (id: string): Promise<void> => {
   const meta = requestMetaById.get(id)
@@ -493,13 +557,13 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     // scheduleInterruptRetry's safe remove-then-add): a crash in this window then
     // leaves the id in NEITHER ledger — a lost retry, never a double-drive where
     // both rehydrate and reconcile fire the same id on the next boot.
-    clearRetryTimeout(id)
+    applier.cancel(id)
     pendingRetries.delete(id)
     syncPendingRetries()
     transfersState = trackTransfer(transfersState, {
       id,
       downloadId,
-      ...(meta.item?.tweetId ? { tweetId: meta.item.tweetId } : {}),
+      ...(meta.item?.postId ? { tweetId: meta.item.postId } : {}),
       startedAt: Date.now(),
     })
     persistTransfers()
@@ -510,31 +574,20 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     })
     await persistSnapshot(Date.now())
   } catch {
-    const attempt = interruptAttemptById.get(id) ?? 0
-    const plan = planInterruptRetry({ reason: 'NETWORK_FAILED', attempt })
-    if (plan.schedule) {
-      interruptAttemptById.set(id, plan.nextAttempt)
-      if (live) live = recordRetry(live, id)
-      const nextRetryAt = Date.now() + plan.delayMs
-      pendingRetries.set(id, {
-        id,
-        url,
-        filename: meta.filename,
-        attempt: plan.nextAttempt,
-        nextRetryAt,
-        ...(meta.item ? { item: meta.item } : {}),
-      })
-      syncPendingRetries()
-      const handle = setTimeout(() => void fireInterruptRetry(id), plan.delayMs)
-      retryTimeouts.set(id, handle)
-      traceBackground('interrupt-retry-scheduled', {
-        itemId: id,
-        detail: `start-failed in ${plan.delayMs}ms attempt ${plan.nextAttempt}`,
-      })
-      await persistSnapshot(Date.now())
-      return
-    }
-    await failBrowserDownload(id, -1, Date.now())
+    // No live download handle exists yet (the browser.downloads.download call
+    // above already threw), so `downloadId` is the sentinel -1 — mirrors the
+    // `failBrowserDownload(id, -1, ...)` sentinel usage elsewhere in this file.
+    // This path never had a transfer-ledger entry, so unlike scheduleInterruptRetry
+    // there is nothing to settle on the scheduled branch (decision 4 in the handoff).
+    await applier.apply({
+      id,
+      downloadId: -1,
+      url,
+      filename: meta.filename,
+      ...(meta.item ? { item: meta.item } : {}),
+      reason: 'NETWORK_FAILED',
+      now: Date.now(),
+    })
   }
 }
 
@@ -544,42 +597,40 @@ const scheduleInterruptRetry = (
   reason: string | undefined,
   now: number,
 ): void => {
-  const attempt = interruptAttemptById.get(id) ?? 0
-  const plan = planInterruptRetry({ reason, attempt })
   const meta = requestMetaById.get(id)
-  if (!plan.schedule || meta === undefined) {
+  if (meta === undefined) {
     void failBrowserDownload(id, downloadId, now)
     return
   }
-
-  requestIdByDownloadId.delete(downloadId)
-  // The dead downloadId leaves the active ledger; the retry is now tracked by the
-  // durable retry queue (`session:interruptRetries`) until it fires a fresh one.
-  transfersState = settleTransfer(transfersState, id)
-  persistTransfers()
-  interruptAttemptById.set(id, plan.nextAttempt)
-  if (live) live = recordRetry(live, id)
-
-  const nextRetryAt = now + plan.delayMs
-  pendingRetries.set(id, {
-    id,
-    url: meta.url,
-    filename: meta.filename,
-    attempt: plan.nextAttempt,
-    nextRetryAt,
-    ...(meta.item ? { item: meta.item } : {}),
-  })
-  syncPendingRetries()
-
-  clearRetryTimeout(id)
-  const handle = setTimeout(() => void fireInterruptRetry(id), plan.delayMs)
-  retryTimeouts.set(id, handle)
-
-  traceBackground('interrupt-retry-scheduled', {
-    itemId: id,
-    detail: `${reason ?? 'unknown'} in ${plan.delayMs}ms attempt ${plan.nextAttempt}`,
-  })
-  void persistSnapshot(now)
+  // The applier now computes `attempt` + decides via planInterruptRetry
+  // internally, so the scheduled-vs-exhausted branch can't be pre-checked here
+  // without duplicating that decision (out of scope). Instead, gate the
+  // transfer-ledger settle — which ONLY ever ran on the schedule branch — on the
+  // boolean `apply()` resolves with, in a `.then()`. This is a deliberate,
+  // disclosed microtask-scale reorder versus the original fully-synchronous body
+  // (the ledger-settle now happens a tick after `apply()`'s internal work,
+  // instead of before it); safe because `settleTransfer`/`decideTerminalOutcome`
+  // are idempotent on a missing/already-settled id (see decideTerminalOutcome's
+  // doc comment). `scheduleInterruptRetry` itself stays synchronous/non-blocking
+  // — its `onDownloadChanged` caller does not and should not await it.
+  void applier
+    .apply({
+      id,
+      downloadId,
+      url: meta.url,
+      filename: meta.filename,
+      ...(meta.item ? { item: meta.item } : {}),
+      reason,
+      now,
+    })
+    .then((scheduled) => {
+      if (!scheduled) return
+      requestIdByDownloadId.delete(downloadId)
+      // The dead downloadId leaves the active ledger; the retry is now tracked by
+      // the durable retry queue (`session:interruptRetries`) until it fires a fresh one.
+      transfersState = settleTransfer(transfersState, id)
+      persistTransfers()
+    })
 }
 
 const rehydrateInterruptRetries = async (): Promise<void> => {
@@ -594,10 +645,7 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
     interruptAttemptById.set(item.id, item.attempt)
     pendingRetries.set(item.id, item)
     inFlight.add(item.id)
-    const delay = Math.max(0, item.nextRetryAt - now)
-    clearRetryTimeout(item.id)
-    const handle = setTimeout(() => void fireInterruptRetry(item.id), delay)
-    retryTimeouts.set(item.id, handle)
+    applier.rehydrateTimer(item, now)
   }
 }
 
@@ -838,7 +886,17 @@ const handleDownload = (
       settings,
       requests.flatMap((r) => {
         const item = mediaById.get(r.id)
-        return item ? [{ item, filename: r.filename }] : []
+        // UploadCandidate.item keeps its own `handle`-named field (cloud-upload.ts
+        // is untouched by the multi-platform rename) — map the generalized
+        // MediaItem.author onto it explicitly.
+        return item
+          ? [
+              {
+                item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
+                filename: r.filename,
+              },
+            ]
+          : []
       }),
     )
 
@@ -880,11 +938,11 @@ const handleDownload = (
         // un-liking by a stray match would hit the WRONG post. Skip it: downloads
         // still run (they key off `requests`, not `byTweet`); only the doomed,
         // unsafe clear is dropped, and visibly (trace below) instead of silently.
-        if (!isClearableTweetId(item.tweetId)) {
-          unclearable.add(item.tweetId)
+        if (!isClearableTweetId(item.postId)) {
+          unclearable.add(item.postId)
           continue
         }
-        byTweet.set(item.tweetId, [...(byTweet.get(item.tweetId) ?? []), r.id])
+        byTweet.set(item.postId, [...(byTweet.get(item.postId) ?? []), r.id])
       }
       if (unclearable.size > 0)
         traceBackground('clear-skip', {
@@ -901,7 +959,7 @@ const handleDownload = (
       // Remember which tab this download came from, so the eventual clear is sent
       // there first (the feed the user is actually looking at).
       if (originTabId !== undefined)
-        for (const tweetId of byTweet.keys()) clearOriginTab.set(tweetId, originTabId)
+        for (const tweetId of byTweet.keys()) rememberClearOrigin(tweetId, originTabId)
       clearCoordinator.seedClearLedger(byTweet, clearScopes, clearOrigin)
     }
 
@@ -913,17 +971,24 @@ const handleDownload = (
     const now = Date.now()
     const syncEvents: SyncEvent[] = []
     const historyActions: HistoryAction[] = []
+    // Per-request start failures, WITH the strategy's own reason (a 403/network/
+    // CDN error) — sent back in the reply so "why didn't this download?" is
+    // answerable from the requesting tab's own console, not just the SW's.
+    const failures: { itemId: string; reason: string }[] = []
     for (const o of res.outcomes) {
       const media = mediaById.get(o.id)
       if (!o.ok) {
         inFlight.delete(o.id)
-        recordClearFailure(media?.tweetId, o.id)
+        recordClearFailure(media?.postId, o.id)
         live = recordOutcome(live, o.id, 'failed', now)
         syncEvents.push(outcomeEvent(o.id, 'failed', settings.cloudDeviceId, now))
         historyActions.push({ kind: 'failed', requestId: o.id, at: now })
+        const reason = o.error ?? 'unknown'
+        failures.push({ itemId: o.id, reason })
         traceBackground('start-failed', {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
+          detail: reason,
         })
       } else if (o.handle?.kind === 'browser') {
         requestIdByDownloadId.set(o.handle.id, o.id)
@@ -934,7 +999,7 @@ const handleDownload = (
           transfersState = trackTransfer(transfersState, {
             id: o.id,
             downloadId: o.handle.id,
-            ...(media?.tweetId ? { tweetId: media.tweetId } : {}),
+            ...(media?.postId ? { tweetId: media.postId } : {}),
             startedAt: requestStartedAt.get(o.id) ?? startedAt,
           })
         live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })
@@ -960,7 +1025,13 @@ const handleDownload = (
     persistTransfers()
     yield* Effect.promise(() => persistSnapshot(now))
 
-    return { _tag: 'QueueUpdate' as const, completed: res.completed, total: res.total, skipped }
+    return {
+      _tag: 'QueueUpdate' as const,
+      completed: res.completed,
+      total: res.total,
+      skipped,
+      ...(failures.length > 0 ? { failures } : {}),
+    }
   }).pipe(Effect.provide(SettingsServiceLive))
 
 /** The durable one-by-one sweep (content → background). Skip tweets already
@@ -1044,8 +1115,13 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   requestStartedAt.clear()
   requestMetaById.clear()
   interruptAttemptById.clear()
-  for (const handle of retryTimeouts.values()) clearTimeout(handle)
-  retryTimeouts.clear()
+  // Iterate the keys BEFORE clearing pendingRetries, so every pending id's timer
+  // gets cancelled (applier.cancel only wraps the timer-clear, not the map delete).
+  // Relies on the invariant that every pendingRetries entry has a live timer in the
+  // applier's private map (true today — apply() always sets both together); if that
+  // ever drifts, cancel()'s no-op-on-missing-handle behavior means this would
+  // silently under-cancel rather than throw.
+  for (const id of pendingRetries.keys()) applier.cancel(id)
   pendingRetries.clear()
   void retryQueueItem.setValue([])
   transfersState = emptyTracker
@@ -1069,27 +1145,17 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
 // the actual download. Quote text is resolved against the full record set.
 const captureRecentLimit = 20
 
-const buildCaptureExport = async (
-  kind: 'jsonl' | 'tree' | 'markdown',
-  conversationId: string | undefined,
-): Promise<{ filename: string; text: string } | null> => {
-  if (kind === 'jsonl') {
-    const records = await captureDb.allRecords()
-    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    return { filename: `xharvest-${day}.jsonl`, text: toJsonl(records) }
-  }
-  if (conversationId === undefined) return null
-  const all = await captureDb.allRecords()
-  const [tree] = buildTree(selectConversation(all, conversationId))
-  if (tree === undefined) return null
-  if (kind === 'tree')
-    return { filename: `thread-${conversationId}.json`, text: toTreeJson(tree, all) }
-  return { filename: `thread-${conversationId}.md`, text: toMarkdown(tree, all) }
-}
-
 // Typed message-router table. Each entry returns the value to send back; the
 // listener pipes it to sendResponse and keeps the channel open. `handle` narrows
 // the union member for the entry while keeping the table's value type uniform.
+//
+// SEAM INVARIANT: every content-script-visible handler here must reply a
+// defined object on every code path — never legitimately resolve `undefined`.
+// The router's own `.catch` below upholds this on the failure path too (it
+// turns a rejection into `{ ok: false, ... }`, not a bare `undefined`). This is
+// what lets the caller treat `reply === undefined` as uniquely meaning
+// "unclaimed" (guard-dropped or decode-rejected) — see `expectReply` in
+// `../core/messaging`, the caller-side half of this same invariant.
 /** The slice of the message sender the handlers need: the originating tab id, so a
  *  download's clear can be sent back to the tab it came from. */
 type MsgSender = { readonly tab?: { readonly id?: number | undefined } | undefined }
@@ -1160,15 +1226,18 @@ const messageHandlers: MessageHandlers = {
     captureOutbox.mirrorCaptures(msg.records)
     return { stored: msg.records.length }
   }),
-  CaptureSummaryRequest: async () => {
-    const records = await captureDb.allRecords()
-    return {
-      ...summarize(records),
-      recent: recentConversations(records, captureRecentLimit),
-    }
-  },
+  // Streams the store through a cursor fold — the harvest can be tens of
+  // thousands of records, and `getAll()` materialized every one of them in SW
+  // memory on each popup open just to compute three aggregates.
+  CaptureSummaryRequest: handle<'CaptureSummaryRequest'>(async (msg) =>
+    finishCaptureSummary(
+      await captureDb.fold(emptyCaptureSummary(), foldCaptureSummary),
+      msg.limit ?? captureRecentLimit,
+    ),
+  ),
   ExportCaptureRequest: handle<'ExportCaptureRequest'>(async (msg) => {
-    const built = await buildCaptureExport(msg.kind, msg.conversationId)
+    const records = await captureDb.allRecords()
+    const built = composeCaptureExport(records, msg.kind, msg.conversationId, Date.now())
     if (built === null) return { ok: false, filename: '', text: '' }
     console.info(
       `[XMD] capture export ${msg.kind} → ${built.filename} (${built.text.length} bytes)`,
@@ -1258,14 +1327,20 @@ export default defineBackground(() => {
   browser.downloads.onChanged.addListener((delta) => void onDownloadChanged(delta))
 
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Returning `false` here without calling `sendResponse` is a GUARD DROP, not a
+    // reply: Chrome resolves the sender's `safeSend` with `{status: 'ok', reply:
+    // undefined}` — structurally identical to a handler that legitimately replied
+    // with nothing. Two shipped incidents had exactly this signature (a missing
+    // CONTENT_SCRIPT_TAGS entry, then a missing sender-guard origin) and were only
+    // diagnosed live in a browser. Warn on every dropped tag — not just Capture
+    // ones — so the next hole is visible in the SW console instead. See
+    // `expectReply` in `../core/messaging` for the caller-side half of this
+    // invariant.
     const decoded = Schema.decodeUnknownResult(Message)(message)
     if (Result.isFailure(decoded)) {
       const rawTag = (message as { _tag?: unknown } | null)?._tag
-      if (typeof rawTag === 'string' && rawTag.startsWith('Capture'))
-        console.warn(
-          `[XMD] capture message ${rawTag} FAILED schema decode (dropped):`,
-          decoded.failure,
-        )
+      if (typeof rawTag === 'string')
+        console.warn(`[XMD] message ${rawTag} FAILED schema decode (dropped):`, decoded.failure)
       return false
     }
     const msg = decoded.success
@@ -1273,10 +1348,9 @@ export default defineBackground(() => {
     // content script, or a content script reaching for a UI-only tag — before
     // any download / OAuth / cloud-egress / clear handler runs.
     if (!isMessageAllowed(msg._tag, sender, browser.runtime.id)) {
-      if (msg._tag.startsWith('Capture'))
-        console.warn(
-          `[XMD] capture message ${msg._tag} BLOCKED by sender guard (contentScript=${sender?.tab !== undefined && sender?.tab !== null})`,
-        )
+      console.warn(
+        `[XMD] message ${msg._tag} BLOCKED by sender guard (contentScript=${sender?.tab !== undefined && sender?.tab !== null})`,
+      )
       return false
     }
     const h = messageHandlers[msg._tag]

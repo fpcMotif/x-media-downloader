@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Option } from 'effect'
 import {
   handleClearTweet,
+  handleClearVisible,
+  handleClearWholeList,
+  handleSavedStatusUpdate,
   sweepSavedStatus,
   isSavedStatusScope,
   savedStatusVisible,
@@ -39,13 +42,17 @@ function tweetArticle(opts: {
 }
 
 /** Only the fields handleClearTweet reads — cast a partial (it never touches the
- *  badge/launcher/store state the full HandlerDeps carries). */
+ *  badge/launcher/store state the full HandlerDeps carries). `platform` defaults to
+ *  'x' so every pre-existing call site (all X-DOM scenarios) is unaffected by the
+ *  gate; tests proving the off-X no-op override it. */
 const makeDeps = (over: {
   clearScope: HandlerDeps['clearScope']
   pathname: string
   queueDrain?: HandlerDeps['queueDrain']
+  platform?: 'x' | 'instagram' | 'threads'
 }): HandlerDeps =>
   ({
+    adapter: { platform: over.platform ?? 'x' },
     document,
     location: { pathname: over.pathname } as Location,
     clearScope: over.clearScope,
@@ -127,6 +134,66 @@ describe('handleClearTweet — scope wiring', () => {
     // The post virtualized out → hand it to the drain instead of dropping it.
     expect(queueDrain).toHaveBeenCalledWith('999', ALL, true)
   })
+
+  it('REGRESSION: non-x adapter short-circuits to empty results, never touches the DOM', async () => {
+    document.body.append(tweetArticle({ tweetId: '104', bookmarked: true, liked: true }))
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async () => true)
+    const res = await run(
+      makeDeps({ clearScope, pathname: '/jack/likes', platform: 'instagram' }),
+      { tweetId: '104', scopes: ALL, allLists: true },
+    )
+    expect(res).toEqual({ _tag: 'ClearTweetResponse', results: [] })
+    expect(clearScope).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleClearVisible — platform gate', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('REGRESSION: non-x adapter short-circuits to cleared:0, never scans the DOM', () => {
+    document.body.append(tweetArticle({ tweetId: '201', bookmarked: true }))
+    const deps = {
+      adapter: { platform: 'instagram' },
+      location: { pathname: '/jack/bookmarks' } as Location,
+      clearLog: () => {},
+    } as unknown as HandlerDeps
+    const querySpy = vi.spyOn(document, 'querySelectorAll')
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = handleClearVisible({}, deps, sendResponse)
+    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 0 })
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(kept).toBeUndefined()
+    querySpy.mockRestore()
+  })
+})
+
+describe('handleClearWholeList — platform gate', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('REGRESSION: non-x adapter short-circuits to a not-x reason, never scrolls or scans', () => {
+    document.body.append(tweetArticle({ tweetId: '202', bookmarked: true }))
+    const deps = {
+      adapter: { platform: 'threads' },
+      location: { pathname: '/jack/bookmarks' } as Location,
+      document,
+      clearLog: () => {},
+    } as unknown as HandlerDeps
+    const querySpy = vi.spyOn(document, 'querySelectorAll')
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = handleClearWholeList({}, deps, sendResponse)
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'ClearWholeListResponse',
+      cleared: 0,
+      reason: 'not-x',
+    })
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(kept).toBe(true)
+    querySpy.mockRestore()
+  })
 })
 
 describe('sweepSavedStatus — Saved ✓ chip', () => {
@@ -176,6 +243,67 @@ describe('sweepSavedStatus — Saved ✓ chip', () => {
     )
 
     await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
+
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
+})
+
+describe('handleSavedStatusUpdate — late cross-device chips', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  const depsWith = (active: boolean, platform: 'x' | 'instagram' | 'threads' = 'x'): HandlerDeps =>
+    ({
+      adapter: { platform },
+      document,
+      savedStatusActive: () => active,
+    }) as unknown as HandlerDeps
+
+  it('chips the mounted articles named by the push, idempotently', () => {
+    document.body.append(tweetArticle({ tweetId: '1' }), tweetArticle({ tweetId: '2' }))
+    const msg = { _tag: 'SavedStatusUpdate', saved: ['1'] }
+
+    handleSavedStatusUpdate(msg, depsWith(true), () => {})
+    expect(
+      Option.getOrNull(findArticle(document, '1'))?.querySelectorAll('.xdl-saved-chip').length,
+    ).toBe(1)
+    expect(
+      Option.getOrNull(findArticle(document, '2'))?.querySelectorAll('.xdl-saved-chip').length,
+    ).toBe(0)
+
+    // Re-push (chips are idempotent, like the sweep's).
+    handleSavedStatusUpdate(msg, depsWith(true), () => {})
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(1)
+  })
+
+  it('no-ops when the Saved status is off / out of scope on this page', () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate', saved: ['1'] }, depsWith(false), () => {})
+
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
+
+  it('fail-safe: malformed or empty payloads mark nothing', () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate' }, depsWith(true), () => {})
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate', saved: [] }, depsWith(true), () => {})
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate', saved: 'nope' }, depsWith(true), () => {})
+    handleSavedStatusUpdate({ _tag: 'SavedStatusUpdate', saved: [42] }, depsWith(true), () => {})
+
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
+
+  it('REGRESSION: non-x adapter no-ops even when active — the sweep DOM is X-specific', () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+
+    handleSavedStatusUpdate(
+      { _tag: 'SavedStatusUpdate', saved: ['1'] },
+      depsWith(true, 'instagram'),
+      () => {},
+    )
 
     expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
   })

@@ -4,10 +4,16 @@ import { TweetRecord } from '../capture/record'
 export const MediaType = Schema.Literals(['photo', 'video', 'gif'])
 export type MediaType = typeof MediaType.Type
 
+/** Which site a MediaItem was detected on. Drives adapter dispatch
+ *  (`core/adapters/registry.ts`) and tags every Convex-mirrored row. */
+export const Platform = Schema.Literals(['x', 'instagram', 'threads'])
+export type Platform = typeof Platform.Type
+
 export const MediaItem = Schema.Struct({
   id: Schema.String,
-  tweetId: Schema.String,
-  handle: Schema.String,
+  platform: Platform,
+  postId: Schema.String,
+  author: Schema.String,
   type: MediaType,
   url: Schema.String,
   previewUrl: Schema.optional(Schema.String),
@@ -39,7 +45,7 @@ export type DownloadTraceEntry = typeof DownloadTraceEntry.Type
 
 export const Settings = Schema.Struct({
   filenameTemplate: Schema.String.pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed('{handle}/{tweetId}_{index}.{ext}')),
+    Schema.withDecodingDefaultKey(Effect.succeed('{platform}/{tweetId}_{index}.{ext}')),
   ),
   downloadConcurrency: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(3))),
   authFallbackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
@@ -220,7 +226,15 @@ export const QueueUpdate = Schema.TaggedStruct('QueueUpdate', {
   skipped: Schema.optional(
     Schema.Array(Schema.Struct({ reason: SkipReason, count: Schema.Number })),
   ),
+  // Requests that reached the download strategy but failed to START (the
+  // strategy's own DownloadError.reason — a 403/network/CDN failure, not an
+  // admission-gate skip). Omitted when nothing failed. Without this, "why
+  // didn't this download?" was answerable only from the SW's own console.
+  failures: Schema.optional(
+    Schema.Array(Schema.Struct({ itemId: Schema.String, reason: Schema.String })),
+  ),
 })
+export type QueueUpdate = typeof QueueUpdate.Type
 export const MetricsRequest = Schema.TaggedStruct('MetricsRequest', {})
 export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {
   snapshot: MetricsSnapshot,
@@ -422,6 +436,15 @@ export const SavedStatusResponse = Schema.TaggedStruct('SavedStatusResponse', {
 })
 export type SavedStatusResponse = typeof SavedStatusResponse.Type
 
+/** SW → content script (broadcast): LATE cross-device "Saved" hits. The sweep's
+ *  reply carries only the locally-known subset (it must never wait on the
+ *  Convex round-trip); when the backstop answers, the fresh hits ride this
+ *  fire-and-forget push so the chips still land in one sweep. */
+export const SavedStatusUpdate = Schema.TaggedStruct('SavedStatusUpdate', {
+  saved: Schema.Array(Schema.String),
+})
+export type SavedStatusUpdate = typeof SavedStatusUpdate.Type
+
 /** content → background: harvested tweet records off the GraphQL tee, mirrored
  *  into the local capture store (+ opt-in Convex). `{ stored }` rides back. */
 export const CaptureTweets = Schema.TaggedStruct('CaptureTweets', {
@@ -429,8 +452,11 @@ export const CaptureTweets = Schema.TaggedStruct('CaptureTweets', {
 })
 export type CaptureTweets = typeof CaptureTweets.Type
 
-/** panel → background: capture-store counts. `{ tweets, conversations, recent }` back. */
-export const CaptureSummaryRequest = Schema.TaggedStruct('CaptureSummaryRequest', {})
+/** panel → background: capture-store counts. `{ tweets, conversations, recent }` back.
+ *  `limit` caps the `recent` list (absent → the background default; 0 → counts only). */
+export const CaptureSummaryRequest = Schema.TaggedStruct('CaptureSummaryRequest', {
+  limit: Schema.optional(Schema.Number),
+})
 export type CaptureSummaryRequest = typeof CaptureSummaryRequest.Type
 
 /** panel → background: build + deliver an export. `{ ok, filename }` back. */
@@ -465,9 +491,11 @@ export const Message = Schema.Union([
   CloudBackfillRequest,
   SweepEnqueueRequest,
   RecoverTweetMediaRequest,
+  RecoverTweetMediaResponse,
   TransferOutcome,
   SavedStatusRequest,
   SavedStatusResponse,
+  SavedStatusUpdate,
   CaptureTweets,
   CaptureSummaryRequest,
   ExportCaptureRequest,

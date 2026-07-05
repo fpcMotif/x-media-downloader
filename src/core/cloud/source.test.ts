@@ -7,7 +7,7 @@ import type { UploadInput } from './types'
 
 const input = (contentType = 'image/jpeg'): UploadInput => ({
   url: 'https://pbs.twimg.com/media/x.jpg',
-  target: { path: 'alice/t1_0.jpg', handle: 'alice', filename: 't1_0.jpg', contentType },
+  target: { path: 'alice/t1_0.jpg', folder: 'alice', filename: 't1_0.jpg', contentType },
 })
 
 const sourceResponse = (

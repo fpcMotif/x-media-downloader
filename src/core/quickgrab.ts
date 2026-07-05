@@ -24,8 +24,16 @@ const BADGE_LABEL: Record<QuickGrabUiPhase, string> = {
   failed: 'Failed',
 }
 
-export function quickGrabBadgeLabel(phase: QuickGrabUiPhase): string {
-  return BADGE_LABEL[phase]
+const ALL_BADGE_LABEL: Record<QuickGrabUiPhase, (count: number) => string> = {
+  charging: () => 'Grab all',
+  queued: (n) => `${n} queued`,
+  saved: (n) => `${n} started`,
+  noted: () => 'Already queued',
+  failed: () => 'Failed',
+}
+
+export function quickGrabBadgeLabel(phase: QuickGrabUiPhase, all?: { count: number }): string {
+  return all ? ALL_BADGE_LABEL[phase](all.count) : BADGE_LABEL[phase]
 }
 
 const FLAG: Record<GrabModifier, keyof ModifierFlags> = {
@@ -51,6 +59,30 @@ export function modifierHeld(e: ModifierFlags, mod: GrabModifier): boolean {
 /** Whether a key event's `key` is the chosen modifier itself. */
 export function isModifierKey(key: string, mod: GrabModifier): boolean {
   return key === KEY_NAME[mod]
+}
+
+/**
+ * The second modifier the user adds on top of the Quick Grab modifier to grab
+ * the WHOLE post instead of one item. Meta (Cmd) by default; falls back to Alt
+ * when the base modifier is itself Meta, so the two can never be the same key.
+ */
+export function allAugmentModifier(base: GrabModifier): GrabModifier {
+  return base === 'meta' ? 'alt' : 'meta'
+}
+
+/**
+ * Whether a hover-dwell should grab the WHOLE post rather than one item:
+ * the Quick Grab modifier is active, the platform is eligible (Instagram/
+ * Threads — never X), and the augment modifier ({@link allAugmentModifier}) is
+ * also held. `flags` is any pointer/keyboard event (both carry the modifier flags).
+ */
+export function postGrabActive(
+  baseActive: boolean,
+  flags: ModifierFlags,
+  base: GrabModifier,
+  eligible: boolean,
+): boolean {
+  return baseActive && eligible && modifierHeld(flags, allAugmentModifier(base))
 }
 
 /**
@@ -100,4 +132,12 @@ export function markGrabbed(state: QuickGrabState, key: string): QuickGrabState 
   const grabbed = new Set(state.grabbed)
   grabbed.add(key)
   return { ...state, grabbed }
+}
+
+/** Record that every key in `keys` was grabbed this press (idempotent; returns
+ *  the same state object when nothing changed). */
+export function markAllGrabbed(state: QuickGrabState, keys: Iterable<string>): QuickGrabState {
+  let next = state
+  for (const key of keys) next = markGrabbed(next, key)
+  return next
 }
