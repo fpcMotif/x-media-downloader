@@ -138,3 +138,21 @@ export function queryDownloadedAmong(
     FetchService
   >
 }
+
+/**
+ * Ask the deployment which of `mediaIds` (MediaItem.id / requestId) have
+ * already been downloaded on ANY device. Parallel to `queryDownloadedAmong`
+ * (post-level); not currently called by the extension (v1 keeps per-item
+ * dedup local-only) — see admission-gate wiring in background.ts.
+ */
+export function queryDownloadedMediaIdsAmong(
+  port: ConvexPort,
+  secret: string,
+  mediaIds: string[],
+): Effect.Effect<string[], ConvexMutationError, FetchService> {
+  return port.query('sync:downloadedMediaIdsAmong', { secret, mediaIds }) as Effect.Effect<
+    string[],
+    ConvexMutationError,
+    FetchService
+  >
+}

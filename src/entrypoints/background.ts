@@ -357,10 +357,23 @@ const savedStatusCoordinator = makeSavedStatusCoordinator({
   notifyFresh: (saved) =>
     void tabBroadcaster.broadcastToXTabs({ _tag: 'SavedStatusUpdate', saved }).catch(() => {}),
 })
+// Per-item duplicate-download check (admission gate only — NOT the post-level
+// "Saved" badge above). A separate SavedIndex instance keyed on item.id (the
+// media key), so grabbing one item from a multi-item post never blocks a
+// DIFFERENT item from the same post. Local-only for v1: the backend has a
+// `by_request_id` backstop available (queryDownloadedMediaIdsAmong) but it is
+// deliberately NOT wired here — cross-device per-item dedup was never a stated
+// requirement, only cross-device post-level "Saved" was. Local history already
+// durably answers "did I already grab this exact file."
+const savedMediaIndex = makeSavedIndex()
+const queryConvexMedia: QueryConvex = async () => []
+
 // Seed once on SW startup from the durable history's completed tweetIds.
 void (async () => {
   const { records } = decodeStore(await historyItem.getValue())
-  savedIndex.seed(records.filter((r) => r.status === 'completed').map((r) => r.media.postId))
+  const completed = records.filter((r) => r.status === 'completed')
+  savedIndex.seed(completed.map((r) => r.media.postId))
+  savedMediaIndex.seed(completed.map((r) => r.requestId)) // requestId === item.id
 })()
 
 // Download Admission Gate: a pre-scheduling check that drops duplicates and
@@ -382,8 +395,8 @@ const budgetQueue = makeSerialQueue(queueError('budget'))
 const headFetch = bindFetch(fetch)
 const admissionGate = makeAdmissionGate({
   getSettings,
-  savedIndex,
-  queryConvex: queryConvexSaved,
+  savedMediaIndex,
+  queryConvexMedia,
   sizeProbe: makeSizeProbe({ fetch: (url, init) => headFetch(url, init) }),
   readTodayBudget: () => budgetStore.readToday(),
 })
@@ -483,6 +496,12 @@ const settleBrowserDownload = async (
       : 0
     budgetQueue.push(() => budgetStore.recordCompletion(bytes, 1))
   }
+  // Per-item dedup index (admission gate only, see the `savedMediaIndex` comment
+  // above): `id` here is the request id, which always equals item.id/requestId
+  // regardless of whether a postId was resolvable for the badge above. Marking a
+  // sidecar's own id is harmless — sidecar ids are never reused as a photo/video's
+  // item.id, so this can never wrongly dedup real media.
+  if (complete) savedMediaIndex.markSaved(id)
   traceBackground(complete ? 'browser-complete' : 'browser-failed', {
     itemId: id,
     elapsedMs: now - (requestStartedAt.get(id) ?? now),

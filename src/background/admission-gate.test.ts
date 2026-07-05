@@ -28,15 +28,15 @@ const savedIndexReturning = (subset: string[]): SavedIndex => ({
   resolve: async () => subset,
 })
 
-const queryConvex = async () => []
+const queryConvexMedia = async () => []
 
 describe('makeAdmissionGate', () => {
   it('runs cheap filters before any probe — type-filtered item never reaches the probe', async () => {
     const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ skipTypes: ['video'], maxFileSizeMB: 1 }),
-      savedIndex: savedIndexReturning([]),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
@@ -53,8 +53,8 @@ describe('makeAdmissionGate', () => {
     const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ maxFileSizeMB: 0, dailyMaxMB: 0, dailyMaxCount: 5 }),
-      savedIndex: savedIndexReturning([]),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
@@ -67,12 +67,12 @@ describe('makeAdmissionGate', () => {
     expect(sizeProbe.probe).not.toHaveBeenCalled()
   })
 
-  it('drops duplicate tweets via the saved set — every item of a saved tweet is skipped', async () => {
+  it('drops a duplicate item via the saved-media set', async () => {
     const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ preventDuplicateDownloads: true }),
-      savedIndex: savedIndexReturning(['T1']),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning(['a']),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
@@ -82,11 +82,43 @@ describe('makeAdmissionGate', () => {
     const c = item({ id: 'c', postId: 'T2' })
     const res = await gate.admit([a, b, c])
 
-    expect(res.admitted).toEqual([c])
-    expect(res.skipped).toEqual([
-      { item: a, reason: 'duplicate' },
-      { item: b, reason: 'duplicate' },
-    ])
+    expect(res.admitted).toEqual([b, c])
+    expect(res.skipped).toEqual([{ item: a, reason: 'duplicate' }])
+  })
+
+  it('grabbing one item from a post does not block a different item from the same post', async () => {
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ preventDuplicateDownloads: true }),
+      savedMediaIndex: savedIndexReturning(['a']),
+      queryConvexMedia,
+      sizeProbe,
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+
+    const a = item({ id: 'a', postId: 'shared-post', index: 0 })
+    const b = item({ id: 'b', postId: 'shared-post', index: 1 })
+    const res = await gate.admit([a, b])
+
+    expect(res.admitted).toEqual([b])
+    expect(res.skipped).toEqual([{ item: a, reason: 'duplicate' }])
+  })
+
+  it('a genuine re-request of the exact same item id is still blocked', async () => {
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ preventDuplicateDownloads: true }),
+      savedMediaIndex: savedIndexReturning(['a']),
+      queryConvexMedia,
+      sizeProbe,
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+
+    const again = item({ id: 'a', postId: 'shared-post', index: 0 })
+    const res = await gate.admit([again])
+
+    expect(res.admitted).toEqual([])
+    expect(res.skipped).toEqual([{ item: again, reason: 'duplicate' }])
   })
 
   it('size cap skips an over-cap file and fails open on an unknown size', async () => {
@@ -97,8 +129,8 @@ describe('makeAdmissionGate', () => {
     }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ maxFileSizeMB: 1 }),
-      savedIndex: savedIndexReturning([]),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
@@ -115,8 +147,8 @@ describe('makeAdmissionGate', () => {
     const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 0) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ dailyMaxCount: 3 }),
-      savedIndex: savedIndexReturning([]),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 2 }),
     })
@@ -138,8 +170,8 @@ describe('makeAdmissionGate', () => {
     // Convex unreachable: resolve yields only the locally-known saved subset.
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ preventDuplicateDownloads: true }),
-      savedIndex: savedIndexReturning(['T_local']),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning(['a']),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
@@ -168,8 +200,8 @@ describe('makeAdmissionGate', () => {
     }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ maxFileSizeMB: 1 }),
-      savedIndex: savedIndexReturning([]),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
@@ -197,8 +229,8 @@ describe('makeAdmissionGate', () => {
     }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ maxFileSizeMB: 1 }),
-      savedIndex: savedIndexReturning([]),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 0 }),
     })
@@ -228,8 +260,8 @@ describe('makeAdmissionGate', () => {
     const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 0) }
     const gate = makeAdmissionGate({
       getSettings: async () => baseSettings({ skipTypes: ['gif'], dailyMaxCount: 2 }),
-      savedIndex: savedIndexReturning([]),
-      queryConvex,
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
       sizeProbe,
       readTodayBudget: async () => ({ bytes: 0, count: 1 }),
     })

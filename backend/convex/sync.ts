@@ -148,6 +148,38 @@ export const downloadedAmong = query({
 })
 
 /**
+ * Membership query for per-item duplicate detection: of the given requestIds
+ * (== the extension's MediaItem.id), which have at least one `completed`
+ * `media_state` row — on ANY device. Parallel to `downloadedAmong`, which
+ * answers the coarser POST-level "Saved" badge question and must not be
+ * reused here (different id domain, different semantics). Not currently
+ * called by the extension (v1 keeps per-item dedup local-only) — available
+ * for a future cross-device backstop without further backend changes.
+ */
+export const downloadedMediaIdsAmong = query({
+  args: { secret: v.string(), mediaIds: v.array(v.string()) },
+  returns: v.array(v.string()),
+  handler: async (ctx, { secret, mediaIds }) => {
+    assertSecret(secret)
+    if (mediaIds.length > DOWNLOADED_AMONG_CAP) {
+      throw new Error(
+        `downloadedMediaIdsAmong: batch too large (${mediaIds.length} > ${DOWNLOADED_AMONG_CAP})`,
+      )
+    }
+    const out: string[] = []
+    for (const mediaId of new Set(mediaIds)) {
+      const completed = await ctx.db
+        .query('media_state')
+        .withIndex('by_request_id', (q) => q.eq('requestId', mediaId))
+        .filter((q) => q.eq(q.field('lastKind'), 'completed'))
+        .first()
+      if (completed !== null) out.push(mediaId)
+    }
+    return out
+  },
+})
+
+/**
  * One-off migration: fill the top-level `tweetId` on `media_state` rows written
  * before the column existed, deriving it from the nested `media.tweetId`. Idempotent
  * (only patches rows whose `tweetId` is still empty). Secret-gated like every write.

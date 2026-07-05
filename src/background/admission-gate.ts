@@ -26,8 +26,8 @@ export interface AdmissionGate {
 
 export function makeAdmissionGate(deps: {
   getSettings: () => Promise<Settings>
-  savedIndex: SavedIndex
-  queryConvex: QueryConvex
+  savedMediaIndex: SavedIndex
+  queryConvexMedia: QueryConvex
   sizeProbe: SizeProbePort
   readTodayBudget: () => Promise<{ bytes: number; count: number }>
 }): AdmissionGate {
@@ -43,9 +43,12 @@ export function makeAdmissionGate(deps: {
       dailyMaxCount: settings.dailyMaxCount,
     }
 
-    const savedTweetIds = filter.preventDuplicateDownloads
+    const savedMediaIds = filter.preventDuplicateDownloads
       ? new Set(
-          await deps.savedIndex.resolve([...new Set(items.map((i) => i.postId))], deps.queryConvex),
+          await deps.savedMediaIndex.resolve(
+            [...new Set(items.map((i) => i.id))],
+            deps.queryConvexMedia,
+          ),
         )
       : new Set<string>()
 
@@ -62,7 +65,7 @@ export function makeAdmissionGate(deps: {
     // sequentially), so nothing about the verdicts changes; only the wall-clock does.
     const sizeById = new Map<string, number | null>()
     if (probeActive) {
-      const targets = items.filter((i) => freeReason(i, filter, savedTweetIds) === null)
+      const targets = items.filter((i) => freeReason(i, filter, savedMediaIds) === null)
       let cursor = 0
       await Promise.all(
         Array.from({ length: Math.min(PROBE_CONCURRENCY, targets.length) }, async () => {
@@ -84,11 +87,11 @@ export function makeAdmissionGate(deps: {
       // The admission verdict itself is the pure `evaluateAdmission`, which re-runs
       // `freeReason` (cheap, pure, idempotent), so the free → size → budget decision
       // lives in exactly one place; the probe result is read from the parallel phase.
-      const free = freeReason(item, filter, savedTweetIds)
+      const free = freeReason(item, filter, savedMediaIds)
       const sizeBytes = free === null && probeActive ? (sizeById.get(item.id) ?? null) : null
       const decision = evaluateAdmission(item, {
         settings: filter,
-        savedTweetIds,
+        savedMediaIds,
         sizeBytes,
         running,
       })

@@ -17,14 +17,14 @@ export type AdmissionDecision = { admit: true } | { admit: false; reason: SkipRe
 export function freeReason(
   item: MediaItem,
   settings: FilterSettings,
-  savedTweetIds: ReadonlySet<string>,
+  savedMediaIds: ReadonlySet<string>,
 ): SkipReason | null {
   if (settings.skipTypes.includes(item.type)) return 'filtered-type'
   if (item.width !== undefined && settings.minWidth > 0 && item.width < settings.minWidth)
     return 'too-small'
   if (item.height !== undefined && settings.minHeight > 0 && item.height < settings.minHeight)
     return 'too-small'
-  if (settings.preventDuplicateDownloads && savedTweetIds.has(item.postId)) return 'duplicate'
+  if (settings.preventDuplicateDownloads && savedMediaIds.has(item.id)) return 'duplicate'
   return null
 }
 
@@ -47,14 +47,14 @@ export function budgetReason(
 
 export interface AdmissionContext {
   readonly settings: FilterSettings
-  readonly savedTweetIds: ReadonlySet<string>
+  readonly savedMediaIds: ReadonlySet<string>
   readonly sizeBytes: number | null
   readonly running: { bytes: number; count: number }
 }
 
 export function evaluateAdmission(item: MediaItem, ctx: AdmissionContext): AdmissionDecision {
-  const { settings, savedTweetIds, sizeBytes, running } = ctx
-  const free = freeReason(item, settings, savedTweetIds)
+  const { settings, savedMediaIds, sizeBytes, running } = ctx
+  const free = freeReason(item, settings, savedMediaIds)
   if (free) return { admit: false, reason: free }
   const size = sizeReason(sizeBytes, settings.maxFileSizeBytes)
   if (size) return { admit: false, reason: size }

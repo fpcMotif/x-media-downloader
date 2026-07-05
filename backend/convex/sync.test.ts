@@ -311,6 +311,62 @@ describe('sync:downloadedAmong', () => {
   })
 })
 
+describe('sync:downloadedMediaIdsAmong', () => {
+  // Seed media_state rows for three requests (media ids): m1 completed, m2
+  // queued, m3 failed — parallel to the downloadedAmong fixture, but the
+  // lookup key is `requestId` (== the extension's MediaItem.id), not `tweetId`.
+  const seedStates = async (t: ReturnType<typeof convexTest>) => {
+    await t.mutation(api.sync.recordEvents, {
+      events: [
+        evt({ eventId: 'dev-1/m1/queued', requestId: 'm1', media: media({ tweetId: 'T1' }), at: 1_000 }),
+        evt({ eventId: 'dev-1/m1/completed', kind: 'completed', requestId: 'm1', at: 2_000, media: undefined }),
+        evt({ eventId: 'dev-1/m2/queued', requestId: 'm2', media: media({ tweetId: 'T1' }), at: 1_000 }),
+        evt({ eventId: 'dev-1/m3/queued', requestId: 'm3', media: media({ tweetId: 'T2' }), at: 1_000 }),
+        evt({ eventId: 'dev-1/m3/failed', kind: 'failed', requestId: 'm3', at: 2_000, media: undefined }),
+      ],
+      secret: SECRET,
+    })
+  }
+
+  it('returns only the requestIds with a completed row', async () => {
+    const t = convexTest(schema, modules)
+    await seedStates(t)
+    const out = await t.query(api.sync.downloadedMediaIdsAmong, {
+      secret: SECRET,
+      mediaIds: ['m1', 'm2', 'm3', 'm4'],
+    })
+    expect(out).toEqual(['m1'])
+  })
+
+  it('matches a completed row regardless of which device saved it (cross-device)', async () => {
+    const t = convexTest(schema, modules)
+    await t.mutation(api.sync.recordEvents, {
+      events: [
+        evt({ eventId: 'dev-A/m5/queued', requestId: 'm5', deviceId: 'dev-A', media: media({ tweetId: 'T5' }), at: 1_000 }),
+        evt({ eventId: 'dev-A/m5/completed', kind: 'completed', requestId: 'm5', deviceId: 'dev-A', at: 2_000, media: undefined }),
+      ],
+      secret: SECRET,
+    })
+    const out = await t.query(api.sync.downloadedMediaIdsAmong, { secret: SECRET, mediaIds: ['m5'] })
+    expect(out).toEqual(['m5'])
+  })
+
+  it('rejects an unauthenticated read (bad/missing secret)', async () => {
+    const t = convexTest(schema, modules)
+    await expect(
+      t.query(api.sync.downloadedMediaIdsAmong, { secret: 'WRONG', mediaIds: ['m1'] }),
+    ).rejects.toThrow(/bad or missing sync secret/)
+  })
+
+  it('rejects an oversized batch', async () => {
+    const t = convexTest(schema, modules)
+    const mediaIds = Array.from({ length: 129 }, (_, i) => `m${i}`)
+    await expect(
+      t.query(api.sync.downloadedMediaIdsAmong, { secret: SECRET, mediaIds }),
+    ).rejects.toThrow(/batch too large/)
+  })
+})
+
 describe('sync:backfillTweetId', () => {
   it('fills a missing top-level tweetId from the nested media', async () => {
     const t = convexTest(schema, modules)

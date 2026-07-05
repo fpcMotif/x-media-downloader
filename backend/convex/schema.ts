@@ -98,6 +98,7 @@ export default defineSchema({
     media: v.optional(media),
   })
     .index('by_device_request', ['deviceId', 'requestId'])
+    .index('by_request_id', ['requestId'])
     .index('by_tweet', ['tweetId'])
     .index('by_post', ['postId'])
     .index('by_platform_post', ['platform', 'postId'])
