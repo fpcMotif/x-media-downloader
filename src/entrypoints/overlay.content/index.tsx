@@ -1,7 +1,7 @@
 import './style.css'
 import { render } from 'preact'
 import { adapterForHostname, ALL_ADAPTERS } from '../../core/adapters/registry'
-import { makeDetectionStore } from '../../core/adapters/x/detection-store'
+import { makeDetectionStore } from '../../core/adapters/detection-store'
 import { harvestTweets } from '../../core/capture/harvest'
 import type { Source, TweetRecord } from '../../core/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
@@ -701,7 +701,7 @@ export default defineContentScript({
       return adapter.mediaKeyFromUrl(previewSrcFromMedia(media))
     }
 
-    const store = makeDetectionStore()
+    const store = makeDetectionStore({ mediaKeyFromUrl: adapter.mediaKeyFromUrl })
     let host: HTMLElement | null = null
 
     // Quick Grab state. `qgEnabled` fails CLOSED: a user who turned the feature

@@ -25,7 +25,7 @@ import {
   tweetIdOfArticle,
   type MembershipScope,
 } from '../../core/clear/clearer'
-import type { makeDetectionStore } from '../../core/adapters/x/detection-store'
+import type { makeDetectionStore } from '../../core/adapters/detection-store'
 import type { ClearScope, MediaItem } from '../../core/schema'
 
 type HoverMediaElement = HTMLImageElement | HTMLVideoElement

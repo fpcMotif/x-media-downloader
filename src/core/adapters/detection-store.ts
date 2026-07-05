@@ -1,13 +1,25 @@
-import type { MediaItem } from '../../schema'
-import { mediaKeyFromUrl } from './dom'
-import { videoTweetsNeedingRecovery } from './index'
+import type { MediaItem } from '../schema'
+import { videoTweetsNeedingRecovery } from './x/index'
 
 /**
- * The twimg media keys an item can be matched by: its resolved `url` and its
- * `previewUrl` (a video's poster), de-duplicated. A hovered `<img>`/poster maps
- * back to its MediaItem through one of these.
+ * Derives the stable media key a URL resolves to on the active platform, or
+ * `null` if the URL isn't a grabbable media preview — `PlatformAdapter.mediaKeyFromUrl`'s
+ * own signature (see `core/adapters/types.ts`). Injected here rather than
+ * imported, because this module used to hardcode X's own `mediaKeyFromUrl`
+ * (from `x/dom.ts`): for an Instagram/Threads MediaItem (a `cdninstagram.com`
+ * url), that always returned `null`, so `byKey` never got an entry for any
+ * non-X item — tee-detected Instagram/Threads media could never be found by
+ * hover lookup at all, a real bug found via live testing, not a hypothetical.
  */
-export function keysForItem(item: MediaItem): string[] {
+export type MediaKeyDeriver = (url: string) => string | null
+
+/**
+ * The media keys an item can be matched by: its resolved `url` and its
+ * `previewUrl` (a video's poster), de-duplicated, via the ACTIVE platform's
+ * own key-derivation rule. A hovered `<img>`/poster maps back to its MediaItem
+ * through one of these.
+ */
+export function keysForItem(item: MediaItem, mediaKeyFromUrl: MediaKeyDeriver): string[] {
   const keys = new Set<string>()
   const primary = mediaKeyFromUrl(item.url)
   const preview = item.previewUrl ? mediaKeyFromUrl(item.previewUrl) : null
@@ -23,6 +35,15 @@ export function keysForItem(item: MediaItem): string[] {
  * the recovered-key provenance, and the per-tweet recovery-attempt guard, so the
  * overlay holds one store instead of four loose maps. Pure of `chrome.*`/timers;
  * `needsRecovery` reads the DOM (happy-dom-testable, like the rest of the adapter).
+ *
+ * Shared across platforms (moved out of `core/adapters/x/` — this store itself
+ * has no X-specific logic once `mediaKeyFromUrl` is injected). `needsRecovery`
+ * still wraps X's own `videoTweetsNeedingRecovery` unconditionally: syndication
+ * recovery is X-only-forever (no Instagram/Threads equivalent exists), and this
+ * store is constructed once per content-script boot for whichever single
+ * platform is active — calling `needsRecovery` on a non-X page is the overlay's
+ * own responsibility to avoid (already gated via `adapter.platform === 'x'` at
+ * the `recoverMissingVideos` call site), same as any other X-only feature.
  */
 export interface DetectionStore {
   /** Add Passive-capture / DOM items; returns the newly-added (deduped by id),
@@ -53,7 +74,9 @@ export interface DetectionStore {
   clear(): void
 }
 
-export function makeDetectionStore(): DetectionStore {
+export function makeDetectionStore(deps: {
+  readonly mediaKeyFromUrl: MediaKeyDeriver
+}): DetectionStore {
   const byId = new Map<string, MediaItem>()
   const byKey = new Map<string, MediaItem>()
   const recoveredKeys = new Set<string>()
@@ -62,7 +85,7 @@ export function makeDetectionStore(): DetectionStore {
   const addDetected = (items: ReadonlyArray<MediaItem>): MediaItem[] => {
     const added: MediaItem[] = []
     for (const item of items) {
-      const keys = keysForItem(item)
+      const keys = keysForItem(item, deps.mediaKeyFromUrl)
       // A video the tee re-surfaces after we recovered it (different id scheme)
       // would otherwise be counted twice — suppress by recovered key.
       if (keys.some((k) => recoveredKeys.has(k))) continue
@@ -79,7 +102,7 @@ export function makeDetectionStore(): DetectionStore {
       // Photos are always DOM-detectable (different id scheme) — re-adding here
       // would double-count; only video/GIF need recovery.
       if (item.type === 'photo') continue
-      const keys = keysForItem(item)
+      const keys = keysForItem(item, deps.mediaKeyFromUrl)
       // Already known to the tee or DOM → nothing to recover.
       if (keys.some((k) => byKey.has(k))) continue
       added.push(item)
