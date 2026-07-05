@@ -12,7 +12,8 @@ import type { Scope } from '../core/clear/ledger'
  *  X-specific DOM logic is now decided by the receiving handler's platform gate,
  *  not by which tabs get queried here. */
 export interface TabBroadcaster {
-  /** The numeric ids of every open X tab. */
+  /** The numeric ids of every open tab on a registered platform (not X-only —
+   *  see the interface doc above). */
   readonly queryXTabs: () => Promise<number[]>
   /** The RefreshMediaUrl port the media-url refresh + retry-url resolution use. */
   readonly makeTabMessagingPort: () => TabMessagingPort
@@ -45,7 +46,8 @@ export interface TabBroadcaster {
  *  fake-browser package implements neither tabs.query's url-pattern match nor
  *  tabs.sendMessage, so the seam — not a global stub — is how this is testable). */
 export interface TabsPort {
-  /** The numeric ids of every open X tab. */
+  /** The numeric ids of every open tab on a registered platform (not X-only —
+   *  `defaultTabsPort` below queries `allAdapterHostMatch()`). */
   queryXTabs(): Promise<number[]>
   /** Send a message to one tab; resolves to its response (or undefined). */
   sendTabMessage(tabId: number, message: unknown): Promise<unknown>
