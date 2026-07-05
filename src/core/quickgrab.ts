@@ -24,8 +24,16 @@ const BADGE_LABEL: Record<QuickGrabUiPhase, string> = {
   failed: 'Failed',
 }
 
-export function quickGrabBadgeLabel(phase: QuickGrabUiPhase): string {
-  return BADGE_LABEL[phase]
+const ALL_BADGE_LABEL: Record<QuickGrabUiPhase, (count: number) => string> = {
+  charging: () => 'Grab all',
+  queued: (n) => `${n} queued`,
+  saved: (n) => `${n} started`,
+  noted: () => 'Already queued',
+  failed: () => 'Failed',
+}
+
+export function quickGrabBadgeLabel(phase: QuickGrabUiPhase, all?: { count: number }): string {
+  return all ? ALL_BADGE_LABEL[phase](all.count) : BADGE_LABEL[phase]
 }
 
 const FLAG: Record<GrabModifier, keyof ModifierFlags> = {

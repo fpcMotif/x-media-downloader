@@ -157,3 +157,17 @@ describe('markAllGrabbed', () => {
     expect(markAllGrabbed(s, [])).toBe(s)
   })
 })
+
+describe('Quick Grab all-mode badge labels', () => {
+  it('shows the whole-post variant with a count for queued/started', () => {
+    expect(quickGrabBadgeLabel('charging', { count: 4 })).toBe('Grab all')
+    expect(quickGrabBadgeLabel('queued', { count: 4 })).toBe('4 queued')
+    expect(quickGrabBadgeLabel('saved', { count: 4 })).toBe('4 started')
+    expect(quickGrabBadgeLabel('noted', { count: 4 })).toBe('Already queued')
+    expect(quickGrabBadgeLabel('failed', { count: 4 })).toBe('Failed')
+  })
+  it('keeps the single-item labels when no all-mode descriptor is passed', () => {
+    expect(quickGrabBadgeLabel('charging')).toBe('Grabbing')
+    expect(quickGrabBadgeLabel('saved')).toBe('Started')
+  })
+})
