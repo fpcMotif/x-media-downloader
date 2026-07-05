@@ -4,7 +4,8 @@ import { getSettings, setSettings } from '@/core/settings'
 import { DOWNLOAD_MODES } from '@/core/download/strategy'
 import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
 import { pageScope } from '@/core/clear/clearer'
-import { isXUrl } from '@/core/adapters/x'
+import { adapterForUrl } from '@/core/adapters/registry'
+import type { PlatformAdapter } from '@/core/adapters/types'
 import type { MetricsSnapshot, Settings } from '@/core/schema'
 import { cn } from '@/lib/utils'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
@@ -13,6 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { LayersIcon, EraserIcon, CheckIcon } from '@/components/icons'
 import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
+import { plural } from '@/components/capture-copy'
 import { CaptureQuickActions } from './capture-quick-actions'
 
 function fmtRate(bps: number): string {
@@ -28,8 +30,6 @@ function fmtBytes(bytes: number): string {
   return `${bytes} B`
 }
 
-const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
-
 // Poll the download monitor briskly while a batch is live, but back off when
 // idle — the snapshot is only surfaced when total > 0, so a 1s round-trip to
 // the SW every second is wasted work for an open popup with no batch running.
@@ -37,6 +37,13 @@ const POLL_ACTIVE_MS = 1000
 const POLL_IDLE_MS = 3000
 
 const PAGE_UNREACHABLE = 'Could not reach the page — reload the X tab and try again.'
+
+// Capitalized display name for a recognized non-X platform in the header copy —
+// just Instagram/Threads today, so an inline map beats a shared label module.
+const PLATFORM_LABEL: Record<string, string> = {
+  instagram: 'Instagram',
+  threads: 'Threads',
+}
 
 const CLEAR_SCOPES: ReadonlyArray<{ key: keyof Settings; label: string }> = [
   { key: 'autoUnbookmarkOnSave', label: 'Bookmarks' },
@@ -105,7 +112,7 @@ export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
-  const [onXTab, setOnXTab] = useState(false)
+  const [tabAdapter, setTabAdapter] = useState<PlatformAdapter | undefined>(undefined)
   const [onListPage, setOnListPage] = useState(false)
   // One shared status line for the page actions, so the most recent action's
   // result always shows instead of an earlier action's stale message.
@@ -212,9 +219,11 @@ export function App() {
         const tab = tabs[0]
         if (!tab) return
         const url = tab.url ?? ''
-        setOnXTab(isXUrl(url))
+        setTabAdapter(adapterForUrl(url))
         try {
-          setOnListPage(isXUrl(url) && Option.isSome(pageScope(new URL(url).pathname)))
+          setOnListPage(
+            adapterForUrl(url)?.platform === 'x' && Option.isSome(pageScope(new URL(url).pathname)),
+          )
         } catch {
           setOnListPage(false)
         }
@@ -255,6 +264,8 @@ export function App() {
   if (!settings) {
     return <div className="xmd-popup xmd-popup--loading">Loading...</div>
   }
+
+  const onXTab = tabAdapter?.platform === 'x'
 
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
@@ -306,7 +317,11 @@ export function App() {
               onXTab ? 'bg-success' : 'bg-muted-foreground/40',
             )}
           />
-          {onXTab ? 'Ready on this X tab' : 'Open X or Twitter'}
+          {onXTab
+            ? 'Ready on this X tab'
+            : tabAdapter
+              ? `Ready on this ${PLATFORM_LABEL[tabAdapter.platform] ?? tabAdapter.platform} tab — clear/sweep are X-only`
+              : 'Open X, Instagram, or Threads'}
         </span>
       </header>
 
