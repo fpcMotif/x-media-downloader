@@ -54,6 +54,15 @@ export function isModifierKey(key: string, mod: GrabModifier): boolean {
 }
 
 /**
+ * The second modifier the user adds on top of the Quick Grab modifier to grab
+ * the WHOLE post instead of one item. Meta (Cmd) by default; falls back to Alt
+ * when the base modifier is itself Meta, so the two can never be the same key.
+ */
+export function allAugmentModifier(base: GrabModifier): GrabModifier {
+  return base === 'meta' ? 'alt' : 'meta'
+}
+
+/**
  * Quick Grab arming state. `active` mirrors the held modifier; `grabbed` holds the
  * media keys already downloaded during the *current* press, so hovering one item
  * fires exactly once — the guard against a cursor sweep mass-downloading a grid.

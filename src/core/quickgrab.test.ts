@@ -10,6 +10,7 @@ import {
   canGrab,
   markGrabbed,
   syncModifierFromFlags,
+  allAugmentModifier,
 } from './quickgrab'
 
 const flags = (over: Partial<Record<'altKey' | 'shiftKey' | 'ctrlKey' | 'metaKey', boolean>>) => ({
@@ -109,5 +110,14 @@ describe('QuickGrab state machine', () => {
 
   it('stays idle when an inactive state sees no modifier (no spurious release)', () => {
     expect(syncModifierFromFlags(idleQuickGrab, flags({}), 'alt')).toBe(idleQuickGrab)
+  })
+})
+
+describe('allAugmentModifier', () => {
+  it('is Meta for any non-meta base, and Alt when the base is already Meta', () => {
+    expect(allAugmentModifier('alt')).toBe('meta')
+    expect(allAugmentModifier('shift')).toBe('meta')
+    expect(allAugmentModifier('ctrl')).toBe('meta')
+    expect(allAugmentModifier('meta')).toBe('alt')
   })
 })
