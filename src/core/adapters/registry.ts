@@ -47,3 +47,29 @@ function hostMatchesHostname(pattern: string, hostname: string): boolean {
   const host = afterScheme.split('/')[0] ?? afterScheme
   return hostname === host
 }
+
+/** Every distinct origin (`scheme://host`) a registered adapter's content
+ *  script may legitimately send a message from — the single source
+ *  sender-guard's ALLOWED_CONTENT_SCRIPT_ORIGINS derives from. */
+export function originsForAllAdapters(): ReadonlySet<string> {
+  const origins = new Set<string>()
+  for (const adapter of ALL_ADAPTERS) {
+    for (const pattern of adapter.hostMatch) {
+      // mirrors hostMatchesHostname's own '://' + '/' split (registry.ts:40-49);
+      // both `??` fallbacks are unreachable defensive code for the same reason
+      // (every real `hostMatch` entry is `scheme://host/*` by construction).
+      /* v8 ignore next -- `pattern` always contains '://', so `?? pattern` is unreachable */
+      const afterScheme = pattern.split('://')[1] ?? pattern
+      /* v8 ignore next -- `afterScheme` always contains '/', so `?? afterScheme` is unreachable */
+      const host = afterScheme.split('/')[0] ?? afterScheme
+      origins.add(`https://${host}`)
+    }
+  }
+  return origins
+}
+
+/** Every registered adapter's hostMatch, deduplicated — the manifest
+ *  host_permissions and browser.tabs.query source of truth. */
+export function allAdapterHostMatch(): readonly string[] {
+  return [...new Set(ALL_ADAPTERS.flatMap((a) => a.hostMatch))]
+}

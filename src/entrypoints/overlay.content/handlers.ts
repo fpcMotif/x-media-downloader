@@ -149,6 +149,10 @@ export async function sweepSavedStatus(deps: {
  *  answers, the fresh hits arrive here and chip any still-mounted article. Fail-safe
  *  like the sweep — scope-gated, positive ids only, idempotent chip injection. */
 export const handleSavedStatusUpdate: MessageHandler = (message, deps) => {
+  // The sweep/chip DOM (TWEET_ARTICLE_SEL, tweetIdOfArticle) is X-specific; an
+  // Instagram/Threads tab has nothing to chip. Fire-and-forget, so a bare early
+  // return (no sendResponse) is the correct no-op here too.
+  if (deps.adapter.platform !== 'x') return
   if (!deps.savedStatusActive()) return
   const saved = (message as { saved?: unknown }).saved
   if (!Array.isArray(saved) || saved.length === 0) return
@@ -242,6 +246,12 @@ export async function clearMountedForScope(
 // currently-mounted post for the requested scopes — a one-shot Drain of the
 // visible worklist, independent of downloads. Same click path proven to work.
 export const handleClearVisible: MessageHandler = (_message, deps, sendResponse) => {
+  // X-only: pageScope/TWEET_ARTICLE_SEL are X-specific DOM selectors that happen
+  // to match nothing off-X — gate explicitly rather than rely on that accident.
+  if (deps.adapter.platform !== 'x') {
+    sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
+    return
+  }
   // List-scoped: only ever clear the list you're ON — Likes page un-likes,
   // Bookmarks page un-bookmarks. Never both at once.
   const scope = pageScope(deps.location.pathname)
@@ -267,6 +277,11 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
 // The bounded scroll loop lives in core/clear/list-clear; here we wire the live
 // window/document/timer ports + the shared per-pass clear.
 export const handleClearWholeList: MessageHandler = (_message, deps, sendResponse) => {
+  // X-only: the auto-scroll drain clicks X's own bookmark/like controls.
+  if (deps.adapter.platform !== 'x') {
+    sendResponse({ _tag: 'ClearWholeListResponse', cleared: 0, reason: 'not-x' })
+    return true
+  }
   const scope = pageScope(deps.location.pathname)
   if (Option.isNone(scope)) {
     sendResponse({ _tag: 'ClearWholeListResponse', cleared: 0, reason: 'not-list-page' })
@@ -431,6 +446,14 @@ export async function clearMountedTweet(
 }
 
 export const handleClearTweet: MessageHandler = (message, deps, sendResponse) => {
+  // X-only: findArticle/clearMountedTweet drive X's bookmark/like/notInterested
+  // DOM controls — nothing to click on an Instagram/Threads tab. Keep the channel
+  // open (return true) and reply with empty results, same shape as the "queued
+  // for scroll-drain" no-op below.
+  if (deps.adapter.platform !== 'x') {
+    sendResponse({ _tag: 'ClearTweetResponse', results: [] })
+    return true
+  }
   const req = message as { tweetId: string; scopes: ClearScope[]; allLists?: boolean }
   const allLists = req.allLists === true
   if (import.meta.env.DEV)
@@ -459,6 +482,15 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
 
 // Popup "Clear detected media": drop every detected pick + disarm all
 // affordances, optionally rescanning the visible page in place.
+//
+// Deliberately NOT platform-gated (unlike its four clear-family siblings above):
+// every line here is adapter-agnostic UI-state reset (store.clear(), dwell/cursor/
+// grab/badge/launcher) with no X-specific DOM read. The one branch that touches the
+// page, `rescanVisible`, calls `deps.adapter.detectRenderedMedia` — already correctly
+// dispatched per-platform (every registered adapter implements it; Instagram/Threads
+// currently return `[]`, a separate and intentional TODO, not a gating concern here).
+// Gating this handler would silently break "Clear detected media" for Instagram/
+// Threads users, who have nothing X-specific to protect against in the first place.
 export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResponse) => {
   const cleared = deps.store.count
   deps.store.clear()

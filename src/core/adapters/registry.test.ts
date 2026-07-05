@@ -1,8 +1,17 @@
 import { describe, it, expect } from 'vitest'
-import { ALL_ADAPTERS, adapterForUrl, adapterForHostname } from './registry'
+import {
+  ALL_ADAPTERS,
+  adapterForUrl,
+  adapterForHostname,
+  originsForAllAdapters,
+  allAdapterHostMatch,
+} from './registry'
 import { xAdapter } from './x/adapter'
 import { instagramAdapter } from './instagram/adapter'
 import { threadsAdapter } from './threads/adapter'
+import { X_HOST_MATCH } from './x'
+import { INSTAGRAM_HOST_MATCH } from './instagram/adapter'
+import { THREADS_HOST_MATCH } from './threads/adapter'
 
 describe('ALL_ADAPTERS', () => {
   it('registers the x, instagram, and threads adapters', () => {
@@ -63,5 +72,27 @@ describe('adapterForHostname', () => {
   it('returns undefined for a hostname on no registered platform', () => {
     expect(adapterForHostname('example.com')).toBeUndefined()
     expect(adapterForHostname('instagram.com')).toBeUndefined()
+  })
+})
+
+describe('originsForAllAdapters', () => {
+  it('returns exactly the 5 origins across x, instagram, and threads', () => {
+    expect([...originsForAllAdapters()].toSorted()).toEqual(
+      [
+        'https://x.com',
+        'https://twitter.com',
+        'https://www.instagram.com',
+        'https://www.threads.net',
+        'https://www.threads.com',
+      ].toSorted(),
+    )
+  })
+})
+
+describe('allAdapterHostMatch', () => {
+  it('returns the deduplicated union of every adapter hostMatch', () => {
+    expect(allAdapterHostMatch().toSorted()).toEqual(
+      [...new Set([...X_HOST_MATCH, ...INSTAGRAM_HOST_MATCH, ...THREADS_HOST_MATCH])].toSorted(),
+    )
   })
 })

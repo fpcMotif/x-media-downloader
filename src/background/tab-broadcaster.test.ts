@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
+import { fakeBrowser } from 'wxt/testing'
 import { makeTabBroadcaster, type TabsPort } from './tab-broadcaster'
+import { allAdapterHostMatch } from '../core/adapters/registry'
 
 // The tab-broadcaster SHELL through an injected TabsPort. Pins the irreversible-clear
 // targeting guarantee that clear-coordinator.test.ts mocks away: the origin tab is
@@ -105,6 +107,28 @@ describe('reportTransferOutcome', () => {
     makeTabBroadcaster(tabs).reportTransferOutcome('req-1.json', 'complete', 1234)
     await tick()
     expect(tabs.sendTabMessage).not.toHaveBeenCalled()
+  })
+})
+
+// defaultTabsPort (the real browser.tabs binding) isn't exported — every other
+// test in this file drives the shell through an injected TabsPort fake, since
+// fake-browser implements neither tabs.query's url-pattern match nor
+// tabs.sendMessage (see the TabsPort doc comment). To pin the LIVE-BUG FIX
+// itself — that the query widened off X_HOST_MATCH alone — spy on the global
+// `browser.tabs.query` the default port calls through, and construct the
+// broadcaster with NO injected port so it falls back to `defaultTabsPort()`.
+describe('defaultTabsPort.queryXTabs — widened host query', () => {
+  it('queries browser.tabs with every registered adapter hostMatch, not X alone', async () => {
+    fakeBrowser.reset()
+    const spy = vi.spyOn(fakeBrowser.tabs, 'query')
+    await makeTabBroadcaster().queryXTabs()
+    expect(spy).toHaveBeenCalledWith({ url: [...allAdapterHostMatch()] })
+    const [{ url: queried }] = spy.mock.calls[0]!
+    expect(queried).toEqual(expect.arrayContaining(['*://www.instagram.com/*']))
+    expect(queried).toEqual(
+      expect.arrayContaining(['*://www.threads.net/*', '*://www.threads.com/*']),
+    )
+    expect(queried).toEqual(expect.arrayContaining(['*://x.com/*', '*://twitter.com/*']))
   })
 })
 
