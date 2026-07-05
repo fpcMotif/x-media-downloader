@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { defineConfig } from 'wxt'
 import preact from '@preact/preset-vite'
 import tailwindcss from '@tailwindcss/vite'
-import { ALL_ADAPTERS } from './src/core/adapters/registry'
+import { allAdapterHostMatch } from './src/core/adapters/registry'
 
 // When a local `.env` pre-seeds Cloud Sync (WXT_CONVEX_URL), promote the Convex
 // origin from an optional to a REQUIRED host permission for THIS build only —
@@ -20,11 +20,13 @@ const seedsConvex = (() => {
 const CONVEX_ORIGIN = 'https://*.convex.cloud/*'
 
 // Every registered adapter's page origin, as a manifest `host_permissions`
-// entry (`https://host/*`) — derived from `hostMatch` rather than hand-listed,
-// so adding a platform to the registry (docs/adr/0019) is the only edit
-// needed. `hostMatch` entries are match-pattern syntax (`*://host/*`); the
-// scheme differs from `host_permissions` shape, hence the transform below.
-const PLATFORM_HOST_PERMISSIONS = [...new Set(ALL_ADAPTERS.flatMap((a) => a.hostMatch))].map(
+// entry (`https://host/*`) — derived from `allAdapterHostMatch()` (the
+// registry's own manifest-permissions source of truth) rather than
+// hand-listed, so adding a platform to the registry (docs/adr/0019) is the
+// only edit needed. `hostMatch` entries are match-pattern syntax
+// (`*://host/*`); the scheme differs from `host_permissions` shape, hence
+// the transform below.
+const PLATFORM_HOST_PERMISSIONS = allAdapterHostMatch().map(
   (m) => `https://${m.split('://')[1]?.split('/')[0]}/*`,
 )
 
