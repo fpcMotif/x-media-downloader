@@ -5,13 +5,7 @@ import { makeDetectionStore } from '../../core/adapters/x/detection-store'
 import { harvestTweets } from '../../core/capture/harvest'
 import type { Source, TweetRecord } from '../../core/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
-import {
-  mediaKeyFromUrl,
-  isGrabbableMediaPreviewUrl,
-  videoPosterUrl,
-  VIDEO_PLAYER_SEL,
-  VIDEO_PREVIEW_SECTIONS,
-} from '../../core/adapters/x/dom'
+import { videoPosterUrl, VIDEO_PLAYER_SEL, VIDEO_PREVIEW_SECTIONS } from '../../core/adapters/x/dom'
 import {
   idleQuickGrab,
   pressModifier,
@@ -641,16 +635,6 @@ function PhaseGlyphs({ block }: { readonly block: 'xmd-badge' | 'xmd-launcher' }
   )
 }
 
-const previewSrcFromMedia = (media: HoverMediaElement): string =>
-  isVideoElement(media)
-    ? (videoPosterUrl(media) ?? (media.poster || media.currentSrc || media.src))
-    : media.currentSrc || media.src
-
-const previewKeyFromMedia = (media: HoverMediaElement | null): string | null => {
-  const src = media ? previewSrcFromMedia(media) : ''
-  return media && isGrabbableMediaPreviewUrl(src) ? mediaKeyFromUrl(src) : null
-}
-
 /** Is `media` still under the pointer? A hidden X `<video>` is never in
  *  `elementsFromPoint`, so accept when the cursor is still over its player. */
 const mediaStillUnderPointer = (media: HoverMediaElement, x: number, y: number): boolean => {
@@ -690,6 +674,33 @@ export default defineContentScript({
     // script isn't live on this tab (old build loaded, or the tab predates the
     // extension reload) — reload the extension AND refresh the tab.
     console.info('[XMD] overlay content script loaded @', location.href, adapter.platform)
+
+    // Preview src for a hovered media element: a video's poster (X only — no
+    // platform besides X has a DOM-derivable video identity; Instagram/Threads
+    // stay tee-map-only for video, see the design's Honest Gaps). Off-X this is
+    // inert rather than unreachable-by-luck: `VIDEO_PLAYER_SEL`
+    // (`[data-testid="videoPlayer"]` etc.) never matches Instagram/Threads
+    // markup, so `video.closest(...)` finds nothing, and `videoPosterUrl`'s own
+    // `pbs.twimg.com`-gated check independently also rejects any cdninstagram
+    // poster even if one were found — so calling it unconditionally here is a
+    // deliberate no-op off-X, not an omission.
+    const previewSrcFromMedia = (media: HoverMediaElement): string =>
+      isVideoElement(media)
+        ? (videoPosterUrl(media) ?? (media.poster || media.currentSrc || media.src))
+        : media.currentSrc || media.src
+
+    // Dispatches through the boot-resolved adapter's own `mediaKeyFromUrl` —
+    // for X this is the same two-step gate (`isGrabbableMediaPreviewUrl` then
+    // `mediaKeyFromUrl`) this function ran inline before, just relocated so it
+    // can close over `adapter`; for Instagram/Threads it resolves a hovered
+    // `<img>` to the same basename key the tee derives (photos only — a
+    // hovered `<video>`'s `blob:`/empty src never passes the platform's own
+    // grabbability gate, so it falls through to null exactly like before).
+    const previewKeyFromMedia = (media: HoverMediaElement | null): string | null => {
+      if (!media) return null
+      return adapter.mediaKeyFromUrl(previewSrcFromMedia(media))
+    }
+
     const store = makeDetectionStore()
     let host: HTMLElement | null = null
 

@@ -218,14 +218,14 @@ describe('threadsAdapter', () => {
     ])
   })
 
-  describe('DOM path (tee-map-only — see domResolutionDecision in the build report)', () => {
-    it('detectRenderedMedia always returns [] (no independent DOM detection)', () => {
+  describe('DOM path (tee-first, photo-only DOM fallback — video stays tee-map-only)', () => {
+    it('detectRenderedMedia always returns [] (no independent DOM post-identity detection)', () => {
       const root = document.createElement('div')
       root.innerHTML = `<article><img src="https://cdn.example/rendered.jpg" /></article>`
       expect(threadsAdapter.detectRenderedMedia(root, '/@alice/post/C1')).toEqual([])
     })
 
-    it('resolveHoverItem returns the tee-detected item for a known key, else null', () => {
+    it('resolveHoverItem returns the tee-detected item for a known key, else null (non-photo element)', () => {
       const el = document.createElement('div')
       const item = {
         id: 'k1',
@@ -242,7 +242,7 @@ describe('threadsAdapter', () => {
       expect(threadsAdapter.resolveHoverItem(el, 'unknown', detected, '/')).toBeNull()
     })
 
-    it('canResolveHoverItem reflects only tee-map membership', () => {
+    it('canResolveHoverItem reflects tee-map membership (non-photo element)', () => {
       const el = document.createElement('div')
       const item = {
         id: 'k1',
@@ -257,6 +257,70 @@ describe('threadsAdapter', () => {
       const detected = new Map([['k1', item]])
       expect(threadsAdapter.canResolveHoverItem(el, 'k1', detected)).toBe(true)
       expect(threadsAdapter.canResolveHoverItem(el, 'unknown', detected)).toBe(false)
+    })
+
+    it('mediaKeyFromUrl delegates to mediaKeyFromMetaUrl (shared with Instagram, no Threads-specific variant)', () => {
+      expect(
+        threadsAdapter.mediaKeyFromUrl(
+          'https://scontent.cdninstagram.com/v/t51.82787-15/AAA_n.jpg',
+        ),
+      ).toBe('AAA_n')
+      expect(
+        threadsAdapter.mediaKeyFromUrl(
+          'https://scontent.cdninstagram.com/v/t51.82787-19/AAA_n.jpg',
+        ),
+      ).toBeNull()
+    })
+
+    it('resolveHoverItem/canResolveHoverItem fall back to a DOM photo resolve when the tee misses it', () => {
+      const root = document.createElement('div')
+      root.innerHTML = '<img src="https://scontent.cdninstagram.com/v/t51.82787-15/AAA_n.jpg" />'
+      const img = root.querySelector('img')!
+      const key = threadsAdapter.mediaKeyFromUrl(img.src)!
+
+      expect(threadsAdapter.canResolveHoverItem(img, key, new Map())).toBe(true)
+      expect(threadsAdapter.resolveHoverItem(img, key, new Map(), '/')).toEqual({
+        id: key,
+        platform: 'threads',
+        postId: key,
+        author: '',
+        type: 'photo',
+        url: img.src,
+        ext: 'jpg',
+        index: 0,
+      })
+    })
+
+    it('resolveHoverItem/canResolveHoverItem do not fall back for a non-<img> element even with a grabbable-looking key', () => {
+      const el = document.createElement('div')
+      expect(threadsAdapter.canResolveHoverItem(el, 'unknown', new Map())).toBe(false)
+      expect(threadsAdapter.resolveHoverItem(el, 'unknown', new Map(), '/')).toBeNull()
+    })
+
+    it('resolveHoverItem returns null for an <img> whose src is not a grabbable photo (avatar)', () => {
+      const avatarImg = document.createElement('img')
+      avatarImg.src = 'https://scontent.cdninstagram.com/v/t51.82787-19/BBB_n.jpg'
+      expect(threadsAdapter.canResolveHoverItem(avatarImg, 'unknown', new Map())).toBe(false)
+      expect(threadsAdapter.resolveHoverItem(avatarImg, 'unknown', new Map(), '/')).toBeNull()
+    })
+
+    it('falls back to .src when currentSrc is empty (not-yet-loaded image)', () => {
+      const img = document.createElement('img')
+      img.src = 'https://scontent.cdninstagram.com/v/t51.82787-15/AAA_n.jpg'
+      // currentSrc would short-circuit the `||`; force it empty so the `.src` arm runs.
+      Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
+      const key = threadsAdapter.mediaKeyFromUrl(img.src)!
+      expect(threadsAdapter.canResolveHoverItem(img, key, new Map())).toBe(true)
+      expect(threadsAdapter.resolveHoverItem(img, key, new Map(), '/')).toEqual({
+        id: key,
+        platform: 'threads',
+        postId: key,
+        author: '',
+        type: 'photo',
+        url: img.src,
+        ext: 'jpg',
+        index: 0,
+      })
     })
   })
 

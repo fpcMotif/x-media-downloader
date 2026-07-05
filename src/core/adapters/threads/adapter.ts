@@ -1,5 +1,7 @@
 import type { PlatformAdapter } from '../types'
 import { detectMediaItems } from '../meta-shared/detect'
+import { mediaKeyFromMetaUrl, isGrabbableMetaPhotoUrl, extFromMetaImgUrl } from '../meta-shared/dom'
+import type { MediaItem } from '../../schema'
 
 /** Host-match patterns for Threads tabs — both the pre- and post-migration
  *  domains. Threads moved `threads.net` → `threads.com` in April 2025; both
@@ -40,6 +42,29 @@ export function isTrackedThreadsResponseUrl(
 }
 
 /**
+ * Resolve one hovered `<img>` into a placeholder photo MediaItem when the tee
+ * hasn't already seen it. Identical shape to Instagram's own resolver — same
+ * shared CDN, same key rule (`meta-shared/dom.ts`), no Threads-specific
+ * variant. See `instagram/adapter.ts`'s `resolveMetaImageElement` for the
+ * full carousel-transient-grouping caveat (applies here too, unchanged).
+ */
+function resolveMetaImageElement(img: HTMLImageElement): MediaItem | null {
+  const src = img.currentSrc || img.src
+  const key = mediaKeyFromMetaUrl(src)
+  if (!key) return null
+  return {
+    id: key,
+    platform: 'threads',
+    postId: key,
+    author: '',
+    type: 'photo',
+    url: src,
+    ext: extFromMetaImgUrl(src),
+    index: 0,
+  }
+}
+
+/**
  * Threads' `PlatformAdapter`. Detection is entirely the shared meta-shared
  * pipeline (`detectMediaItems`, tagged 'threads') — Threads and Instagram are,
  * per research, the same backend media schema, so there is no Threads-only
@@ -55,22 +80,30 @@ export const threadsAdapter: PlatformAdapter = {
   // which one Threads actually sends; see isTrackedThreadsResponseUrl's doc.
   isTrackedResponseUrl: isTrackedThreadsResponseUrl,
   detectFromResponse: (_url, json) => detectMediaItems(json, 'threads'),
-  // DOM resolution decision: tee-map-only, not a real DOM fallback. Two
-  // independent reasons, not just caution:
-  // (1) The design spec's own Open Questions section flags Threads' hidden-
-  //     <video> hover-anchor mapping as UNVERIFIED, needing live inspection.
-  // (2) Unlike X's `pbs.twimg.com`/`video.twimg.com` (host-pinned, verified
-  //     over years), meta-shared/detect.ts's own `mediaKeyFromUrl` comment
-  //     admits Threads' CDN url shape has never been live-verified either.
-  //     A DOM resolver built on an unverified CDN key shape would silently
-  //     mismatch or find nothing live — worse than admitting the gap, since
-  //     it LOOKS like real functionality. Tee-map-only fails closed instead:
-  //     a hover only resolves once the network tee has actually seen the
-  //     media, which IS verified (it's the same detectMediaItems pipeline the
-  //     photo/video/carousel tests above exercise).
+  mediaKeyFromUrl: mediaKeyFromMetaUrl,
+  // Real post-identity DOM detection (a rescan needing pk/code/author) stays
+  // deferred — no anchor-walk for Threads was live-verified this session
+  // either. Hover resolution is strictly narrower (map a key to whatever the
+  // tee already resolved with correct identity, or — photos only — a
+  // self-contained DOM fallback) and doesn't have that problem.
+  // LIVE-VERIFIED 2026-07-05 (Chrome Canary, logged-in Threads): photo <img>
+  // elements carry a real, direct cdninstagram.com CDN url (same CDN family
+  // as Instagram, confirmed identical host/path-family conventions) in
+  // `currentSrc`. Threads' own video/poster DOM shape was NOT independently
+  // re-verified this session (only Instagram's reel was checked) — defaults
+  // to the same tee-map-only posture as a reasoned default, not a verified
+  // fact for Threads specifically. Video DOM-hover is NOT attempted below
+  // (gated on `HTMLImageElement`).
   detectRenderedMedia: () => [],
-  resolveHoverItem: (_el, key, detected) => detected.get(key) ?? null,
-  canResolveHoverItem: (_el, key, detected) => detected.has(key),
+  resolveHoverItem: (el, key, detected) => {
+    const teed = detected.get(key)
+    if (teed !== undefined) return teed
+    return el instanceof HTMLImageElement ? resolveMetaImageElement(el) : null
+  },
+  canResolveHoverItem: (el, key, detected) => {
+    if (detected.has(key)) return true
+    return el instanceof HTMLImageElement && isGrabbableMetaPhotoUrl(el.currentSrc || el.src)
+  },
   // findMediaNeedingRecovery intentionally omitted: no public/no-auth
   // recovery fallback exists for Threads (oEmbed is Meta-app-registration-
   // gated), confirmed by the design spec's research — not merely unbuilt.

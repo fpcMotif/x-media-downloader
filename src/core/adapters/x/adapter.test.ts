@@ -67,4 +67,17 @@ describe('xAdapter', () => {
     expect(xAdapter.resolveHoverItem(root, 'key', new Map(), '/')).toBeNull()
     expect(xAdapter.findMediaNeedingRecovery?.(root, new Set())).toEqual([])
   })
+
+  it("mediaKeyFromUrl combines isGrabbableMediaPreviewUrl + mediaKeyFromUrl exactly like the overlay's inline gate", () => {
+    // A /media/ photo — grabbable, yields its key.
+    expect(xAdapter.mediaKeyFromUrl('https://pbs.twimg.com/media/AAA.jpg')).toBe('AAA')
+    // A named video-poster section — grabbable, yields its key.
+    expect(xAdapter.mediaKeyFromUrl('https://pbs.twimg.com/tweet_video_thumb/BBB.jpg')).toBe('BBB')
+    // An avatar (/profile_images/) — NOT grabbable, even though the host is twimg.
+    expect(xAdapter.mediaKeyFromUrl('https://pbs.twimg.com/profile_images/CCC.jpg')).toBeNull()
+    // A non-twimg host — null.
+    expect(xAdapter.mediaKeyFromUrl('https://example.com/media/AAA.jpg')).toBeNull()
+    // Malformed input — null (doesn't throw).
+    expect(xAdapter.mediaKeyFromUrl('not a url')).toBeNull()
+  })
 })

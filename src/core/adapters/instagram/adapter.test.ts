@@ -169,31 +169,94 @@ describe('instagramAdapter', () => {
     ).toEqual([])
   })
 
-  it('detectRenderedMedia/resolveHoverItem/canResolveHoverItem defer to the tee map (no DOM-only resolution)', () => {
+  it('detectRenderedMedia always returns [] (no independent DOM post-identity detection)', () => {
     const root = document.createElement('div')
-    root.innerHTML = '<img src="https://cdn.example/media/AAA.jpg" />'
+    root.innerHTML =
+      '<img src="https://scontent-lga3-2.cdninstagram.com/v/t51.82787-15/AAA_n.jpg" />'
     expect(instagramAdapter.detectRenderedMedia(root, '/p/CODE1/')).toEqual([])
+  })
 
+  it('mediaKeyFromUrl delegates to mediaKeyFromMetaUrl', () => {
+    expect(
+      instagramAdapter.mediaKeyFromUrl(
+        'https://scontent-lga3-2.cdninstagram.com/v/t51.82787-15/AAA_n.jpg?a=1',
+      ),
+    ).toBe('AAA_n')
+    expect(
+      instagramAdapter.mediaKeyFromUrl(
+        'https://scontent-lga3-2.cdninstagram.com/v/t51.2885-19/AAA_n.jpg',
+      ),
+    ).toBeNull()
+  })
+
+  it('resolveHoverItem/canResolveHoverItem prefer the tee map, else fall back to a DOM photo resolve', () => {
+    const root = document.createElement('div')
+    root.innerHTML =
+      '<img src="https://scontent-lga3-2.cdninstagram.com/v/t51.82787-15/AAA_n.jpg" />'
     const img = root.querySelector('img')!
-    expect(instagramAdapter.canResolveHoverItem(img, 'unknown-key', new Map())).toBe(false)
-    expect(instagramAdapter.resolveHoverItem(img, 'unknown-key', new Map(), '/p/CODE1/')).toBeNull()
+    const key = instagramAdapter.mediaKeyFromUrl(img.src)!
 
-    const item = {
-      id: 'AAA',
+    // Unknown key, non-<img> element — no fallback possible.
+    const div = document.createElement('div')
+    expect(instagramAdapter.canResolveHoverItem(div, key, new Map())).toBe(false)
+    expect(instagramAdapter.resolveHoverItem(div, key, new Map(), '/p/CODE1/')).toBeNull()
+
+    // Unknown key, real <img> with a non-grabbable src — no fallback.
+    const avatarImg = document.createElement('img')
+    avatarImg.src = 'https://scontent-lga3-2.cdninstagram.com/v/t51.2885-19/BBB_n.jpg'
+    expect(instagramAdapter.canResolveHoverItem(avatarImg, 'unknown', new Map())).toBe(false)
+    expect(instagramAdapter.resolveHoverItem(avatarImg, 'unknown', new Map(), '/')).toBeNull()
+
+    // Unknown key, grabbable <img> — DOM fallback resolves a placeholder photo item.
+    expect(instagramAdapter.canResolveHoverItem(img, key, new Map())).toBe(true)
+    const resolved = instagramAdapter.resolveHoverItem(img, key, new Map(), '/p/CODE1/')
+    expect(resolved).toEqual({
+      id: key,
+      platform: 'instagram',
+      postId: key,
+      author: '',
+      type: 'photo',
+      url: img.src,
+      ext: 'jpg',
+      index: 0,
+    })
+
+    // Tee already knows the key — tee item wins over the DOM fallback.
+    const teed = {
+      id: key,
       platform: 'instagram' as const,
       postId: '111',
       author: 'alice',
       type: 'photo' as const,
-      url: 'https://cdn.example/media/AAA.jpg',
+      url: img.src,
       ext: 'jpg',
       index: 0,
     }
-    const detected = new Map([['AAA', item]])
-    expect(instagramAdapter.canResolveHoverItem(img, 'AAA', detected)).toBe(true)
-    expect(instagramAdapter.resolveHoverItem(img, 'AAA', detected, '/p/CODE1/')).toBe(item)
+    const detected = new Map([[key, teed]])
+    expect(instagramAdapter.canResolveHoverItem(img, key, detected)).toBe(true)
+    expect(instagramAdapter.resolveHoverItem(img, key, detected, '/p/CODE1/')).toBe(teed)
   })
 
   it('has no findMediaNeedingRecovery (no public no-auth recovery fallback exists)', () => {
     expect(instagramAdapter.findMediaNeedingRecovery).toBeUndefined()
+  })
+
+  it('resolveHoverItem/canResolveHoverItem fall back to .src when currentSrc is empty (not-yet-loaded image)', () => {
+    const img = document.createElement('img')
+    img.src = 'https://scontent-lga3-2.cdninstagram.com/v/t51.82787-15/AAA_n.jpg'
+    // currentSrc would short-circuit the `||`; force it empty so the `.src` arm runs.
+    Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
+    const key = instagramAdapter.mediaKeyFromUrl(img.src)!
+    expect(instagramAdapter.canResolveHoverItem(img, key, new Map())).toBe(true)
+    expect(instagramAdapter.resolveHoverItem(img, key, new Map(), '/')).toEqual({
+      id: key,
+      platform: 'instagram',
+      postId: key,
+      author: '',
+      type: 'photo',
+      url: img.src,
+      ext: 'jpg',
+      index: 0,
+    })
   })
 })

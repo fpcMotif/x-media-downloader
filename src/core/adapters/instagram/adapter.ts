@@ -1,4 +1,6 @@
 import { detectMediaItems } from '../meta-shared/detect'
+import { mediaKeyFromMetaUrl, isGrabbableMetaPhotoUrl, extFromMetaImgUrl } from '../meta-shared/dom'
+import type { MediaItem } from '../../schema'
 import type { PlatformAdapter } from '../types'
 
 /** Host-match pattern for Instagram tabs — the single source of truth for the
@@ -42,6 +44,40 @@ export function isTrackedInstagramResponseUrl(url: string): boolean {
 }
 
 /**
+ * Resolve one hovered `<img>` into a placeholder photo MediaItem when the tee
+ * hasn't already seen it. No post identity (pk/code/author) is DOM-derivable
+ * here (unlike X's `/status/` anchors), so `postId` is set to the media key
+ * itself — mirrors X's own `ctx?.tweetId ?? key` fallback shape.
+ *
+ * KNOWN TRANSIENT-WINDOW EFFECT: a carousel post hovered before the tee
+ * resolves it forms N separate single-item groups (each DOM-only item's own
+ * key as its `postId`) instead of one N-item group, for any future consumer
+ * that groups items by `postId` (none exists on this hot path today — see
+ * `x/dom.ts`'s `groupByTweet`, currently unconsumed outside its own test).
+ * Self-heals the moment the tee resolves the same post: both the DOM
+ * fallback and the tee derive `id` from the identical basename-extraction
+ * algorithm, so `DetectionStore`'s existing same-id-overwrites-by-id
+ * semantics replace this placeholder with the tee's correctly-grouped item.
+ * Until then, Quick Grab / single-item download works correctly — only
+ * multi-item grouping is transiently wrong.
+ */
+function resolveMetaImageElement(img: HTMLImageElement): MediaItem | null {
+  const src = img.currentSrc || img.src
+  const key = mediaKeyFromMetaUrl(src)
+  if (!key) return null
+  return {
+    id: key,
+    platform: 'instagram',
+    postId: key,
+    author: '',
+    type: 'photo',
+    url: src,
+    ext: extFromMetaImgUrl(src),
+    index: 0,
+  }
+}
+
+/**
  * Instagram's `PlatformAdapter`. Unlike X, Instagram has no repost/quote
  * concept (confirmed by research) — `detectFromResponse` never needs to
  * special-case an embedded original post the way Threads' `reposted_post`/
@@ -59,19 +95,30 @@ export const instagramAdapter: PlatformAdapter = {
   // this hasn't been independently verified against a live network capture).
   isTrackedResponseUrl: (url, _requestHeaders) => isTrackedInstagramResponseUrl(url),
   detectFromResponse: (_url, json) => detectMediaItems(json, 'instagram'),
-  // DOM path deferred to tee-map-only, not the article+/p//reel/ DOM fallback.
-  // The capability table's DOM anchor row is reasonably stable for POST
-  // IDENTITY, but the design spec's Open Questions flag the video hover/poster
-  // idiom and whether `currentSrc` populates without a network capture as
-  // UNVERIFIED. X's DOM fallback is deep because it ALSO independently
-  // verified a fetchable, quality-upgradable CDN url scheme
-  // (`pbs.twimg.com/media/...`) — no such scheme is verified here. A guessed
-  // selector risks a badge that resolves to nothing, or the wrong image, on
-  // click — worse than no fallback. Tee-first already wins over DOM when both
-  // are available (mirrors X's own layering); revisit once live-verified.
+  mediaKeyFromUrl: mediaKeyFromMetaUrl,
+  // Real post-identity DOM detection (a rescan needing pk/code/author) stays
+  // deferred: none of that is DOM-derivable without a walk this session never
+  // live-verified (no `/p/{code}/` anchor-walk built). Hover resolution below
+  // is strictly narrower — map a key to whatever the tee already resolved
+  // with correct identity, or (photos only) a self-contained DOM fallback —
+  // and doesn't have that problem. LIVE-VERIFIED 2026-07-05: photo `<img>`
+  // elements carry a real, direct cdninstagram.com CDN url in `currentSrc`;
+  // videos use a `blob:` MediaSource src with no nearby poster `<img>`
+  // (checked 8 ancestor levels up on a real reel) — so video DOM-hover stays
+  // infeasible and is NOT attempted below (gated on `HTMLImageElement`).
   detectRenderedMedia: () => [],
-  resolveHoverItem: (_element, key, detected) => detected.get(key) ?? null,
-  canResolveHoverItem: (_element, key, detected) => detected.has(key),
+  resolveHoverItem: (element, key, detected) => {
+    const teed = detected.get(key)
+    if (teed !== undefined) return teed
+    return element instanceof HTMLImageElement ? resolveMetaImageElement(element) : null
+  },
+  canResolveHoverItem: (element, key, detected) => {
+    if (detected.has(key)) return true
+    return (
+      element instanceof HTMLImageElement &&
+      isGrabbableMetaPhotoUrl(element.currentSrc || element.src)
+    )
+  },
   // No findMediaNeedingRecovery: Instagram has no public/no-auth fallback
   // (oEmbed is Meta-app-registration-gated) — confirmed by research, per the
   // design spec's PlatformAdapter interface comment.

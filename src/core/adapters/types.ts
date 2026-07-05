@@ -18,6 +18,18 @@ export interface PlatformAdapter {
   matchesUrl(url: string): boolean
 
   /**
+   * The stable media key `url` resolves to on THIS platform, or `null` if
+   * `url` isn't a grabbable media preview here. A rendered DOM element
+   * pointing at the same asset resolves to the identical key a tee-derived
+   * `MediaItem.id`/key does — that's the whole contract. Already gated: it
+   * is the ONLY key-derivation entry point an adapter needs, combining what
+   * X historically split into two functions (a raw key extractor plus a
+   * separate "is this actually grabbable" predicate) into one self-gated
+   * call, so non-X adapters implement exactly one thing, not two.
+   */
+  mediaKeyFromUrl(url: string): string | null
+
+  /**
    * Network layer (the "tee"): does this response carry media-bearing data
    * worth parsing? `requestHeaders` is optional — X's implementation ignores
    * it (URL-string filtering is enough); Instagram/Threads lean on request
