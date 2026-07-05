@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { isMessageAllowed, isFromExtensionWorker, CONTENT_SCRIPT_TAGS } from './sender-guard'
+import { originsForAllAdapters } from './adapters/registry'
 
 const OWN = 'self-extension-id'
 const UI_TAG = 'CloudConnectRequest' // privileged, UI-only
@@ -15,6 +16,23 @@ describe('CONTENT_SCRIPT_TAGS', () => {
         'SweepEnqueueRequest',
         'CaptureTweets',
         'SavedStatusRequest',
+      ].toSorted(),
+    )
+  })
+})
+
+describe('ALLOWED_CONTENT_SCRIPT_ORIGINS', () => {
+  // Pin: the registry-derived origin set must equal today's literal allow-list
+  // exactly, so swapping the literal for `originsForAllAdapters()` is a
+  // zero-behavior-change refactor (docs/adr/0019-platform-identity-derives-from-adapter-registry.md).
+  it('matches the adapter-registry-derived origin set exactly', () => {
+    expect([...originsForAllAdapters()].toSorted()).toEqual(
+      [
+        'https://x.com',
+        'https://twitter.com',
+        'https://www.instagram.com',
+        'https://www.threads.net',
+        'https://www.threads.com',
       ].toSorted(),
     )
   })

@@ -1,4 +1,5 @@
 import type { Message } from './schema'
+import { originsForAllAdapters } from './adapters/registry'
 
 /**
  * Sender authorization for the background service worker's `runtime.onMessage`
@@ -40,19 +41,16 @@ export const CONTENT_SCRIPT_TAGS: ReadonlySet<Message['_tag']> = new Set([
   'SavedStatusRequest',
 ])
 
-// Mirrors wxt.config.ts's host_permissions page-origin list (multi-platform
-// adapter abstraction, docs/superpowers/specs/2026-07-04-multi-platform-adapter-design.md).
-// This set was NOT updated when Instagram/Threads content scripts were added,
-// which silently dropped every overlay-to-background message from those tabs
-// (DownloadRequest included) with no error signal — the listener returns
-// false, so the caller sees an unanswered `reply: undefined`, not a rejection.
-const ALLOWED_CONTENT_SCRIPT_ORIGINS: ReadonlySet<string> = new Set([
-  'https://x.com',
-  'https://twitter.com',
-  'https://www.instagram.com',
-  'https://www.threads.net',
-  'https://www.threads.com',
-])
+// Derived from the adapter registry (docs/adr/0019-platform-identity-derives-from-adapter-registry.md)
+// so a new platform's origin is auto-allowed the moment its adapter is
+// registered — no parallel edit here to forget. Mirrors wxt.config.ts's
+// host_permissions page-origin list. This set was NOT updated when
+// Instagram/Threads content scripts were added under the old literal-Set
+// form, which silently dropped every overlay-to-background message from
+// those tabs (DownloadRequest included) with no error signal — the listener
+// returns false, so the caller sees an unanswered `reply: undefined`, not a
+// rejection. That's the failure mode this derivation closes off.
+const ALLOWED_CONTENT_SCRIPT_ORIGINS: ReadonlySet<string> = originsForAllAdapters()
 
 /** The `chrome.runtime.MessageSender` fields this guard inspects (structural). */
 export interface MessageSenderLike {
