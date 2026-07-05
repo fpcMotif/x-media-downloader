@@ -6,9 +6,9 @@ import { SourceFetch } from './source-fetch'
 import { FolderCacheLive } from './folder-cache'
 import type { UploadInput } from './types'
 
-const input = (path = 'alice/t1_0.jpg'): UploadInput => ({
+const input = (path = 'alice/t1_0.jpg', folder = 'alice'): UploadInput => ({
   url: 'https://pbs.twimg.com/media/x.jpg',
-  target: { path, handle: 'alice', filename: path.split('/').pop()!, contentType: 'image/jpeg' },
+  target: { path, folder, filename: path.split('/').pop()!, contentType: 'image/jpeg' },
 })
 
 const sourceResponse = (
@@ -61,7 +61,9 @@ const driveRoute: Route = (url, init) => {
 }
 
 // Per-scenario routers (module scope: they capture no test state).
-const routeRootFound: Route = () => filesFound('root-id')
+const routeRootId: Route = () => new Response(JSON.stringify({ id: 'root-id' }), { status: 200 })
+const routeRootFails: Route = () => new Response('down', { status: 500 })
+const routeRootNoId: Route = () => new Response(JSON.stringify({}), { status: 200 })
 const routeFolderX: Route = () => filesFound('x')
 const routeFolderExisting: Route = () => filesFound('existing')
 const routeFolderCreateFails: Route = (url, init) =>
@@ -200,28 +202,45 @@ describe('DriveUploader.upload', () => {
     expect((await h.upload(input())).kind).toBe('failure')
   })
 
-  it('caches the per-handle subfolder across uploads (one runtime = one Ref)', async () => {
+  it('caches the destination folder across uploads (one runtime = one Ref)', async () => {
     const h = harness(
       driveRoute,
       sourceStub(() => sourceResponse(new Uint8Array(16))),
     )
     await h.upload(input())
     await h.upload(input('alice/t2_0.jpg'))
-    expect(folderCreates(h.calls).length).toBe(1) // alice resolved once, then a Ref hit
+    expect(folderCreates(h.calls).length).toBe(1) // folder resolved once, then a Ref hit
   })
 })
 
 describe('DriveUploader.ensureRoot', () => {
-  it('resolves a top-level folder (no parent constraint in the query)', async () => {
+  it('resolves the My Drive root folder id', async () => {
     const h = harness(
-      routeRootFound,
+      routeRootId,
       sourceStub(() => sourceResponse(new Uint8Array(1))),
     )
     expect(await h.ensureRoot()).toBe('root-id')
-    const q = decodeURIComponent(new URL(h.calls[0]!.url).searchParams.get('q') ?? '')
-    expect(q).not.toContain('in parents') // null parent → no parent clause
+    expect(h.calls[0]!.url).toContain('/drive/v3/files/root?fields=id')
   })
 
+  it('fails when the root lookup is not ok', async () => {
+    const h = harness(
+      routeRootFails,
+      sourceStub(() => sourceResponse(new Uint8Array(1))),
+    )
+    await expect(h.ensureRoot()).rejects.toThrow('drive HTTP 500')
+  })
+
+  it('dies when the root lookup returns no id', async () => {
+    const h = harness(
+      routeRootNoId,
+      sourceStub(() => sourceResponse(new Uint8Array(1))),
+    )
+    await expect(h.ensureRoot()).rejects.toThrow('root resolve returned no id')
+  })
+})
+
+describe('DriveUploader — destination folder resolution', () => {
   it('escapes single-quotes and backslashes in the folder name (q= injection guard)', async () => {
     const h = harness(
       routeFolderX,
@@ -231,7 +250,7 @@ describe('DriveUploader.ensureRoot', () => {
       url: 'https://pbs.twimg.com/media/x.jpg',
       target: {
         path: "a'b\\c/f.jpg",
-        handle: "a'b\\c",
+        folder: "a'b\\c",
         filename: 'f.jpg',
         contentType: 'image/jpeg',
       },
@@ -246,6 +265,26 @@ describe('DriveUploader.ensureRoot', () => {
       sourceStub(() => sourceResponse(new Uint8Array(16))),
     )
     await h.upload(input())
+    expect(folderCreates(h.calls).length).toBe(0)
+  })
+
+  it('uploads to the root when the target folder is empty (no subfolder created)', async () => {
+    const h = harness(
+      driveRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+    )
+    const out = await h.upload(input('pic.jpg', ''))
+    expect(out).toMatchObject({ kind: 'success', remotePath: 'pic.jpg' })
+    expect(folderCreates(h.calls).length).toBe(0) // folder==='' → parent is the root id
+  })
+
+  it('streams to the root when the target folder is empty (unknown size, no subfolder)', async () => {
+    const h = harness(
+      driveRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(300).fill(9), { contentLength: null })),
+    )
+    const out = await h.upload(input('big.mp4', ''))
+    expect(out).toMatchObject({ kind: 'success', remoteId: 'file-rs' })
     expect(folderCreates(h.calls).length).toBe(0)
   })
 })
@@ -382,10 +421,10 @@ describe('DriveUploader — error & resumable edge paths', () => {
 })
 
 // Folder list non-2xx → falls through to create (found.ok === false).
-const routeRootListFailsThenCreate: Route = (url, init) =>
+const routeListFailsThenCreate: Route = (url, init) =>
   isGet(init)
     ? new Response('down', { status: 500 })
-    : new Response(JSON.stringify({ id: 'root-x' }), { status: 200 })
+    : new Response(JSON.stringify({ id: 'folder-x' }), { status: 200 })
 // Folder create returns 200 but no id → Effect.die.
 const routeFolderCreateNoId: Route = (url, init) =>
   isGet(init)
@@ -400,12 +439,14 @@ const routePutThrows: Route = (url, init) => {
 }
 
 describe('DriveUploader — folder + transport edge branches', () => {
-  it('ensureRoot: creates when the folder list query itself is not ok', async () => {
+  it('folder resolution: falls through to create when the list query is not ok', async () => {
     const h = harness(
-      routeRootListFailsThenCreate,
-      sourceStub(() => sourceResponse(new Uint8Array(1))),
+      routeListFailsThenCreate,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
     )
-    expect(await h.ensureRoot()).toBe('root-x')
+    const out = await h.upload(input())
+    expect(out).toMatchObject({ kind: 'success' })
+    expect(folderCreates(h.calls).length).toBe(1) // list !ok → the folder is created
   })
 
   it('fails when folder creation returns no id', async () => {

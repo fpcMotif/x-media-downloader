@@ -36,7 +36,8 @@ type MediaItem = {
   index: number
 }
 
-/** Mirrors the background's spec builder: dest path is `handle/tweetId_index.ext`. */
+/** Mirrors the background's spec builder: the cloud folder is the directory of the
+ *  rendered local path (here the author handle stands in for the platform folder). */
 function specFromItem(item: MediaItem, provider: CloudProviderId): UploadJobSpec {
   const filename = `${item.tweetId}_${item.index}.${item.ext}`
   return {
@@ -45,7 +46,7 @@ function specFromItem(item: MediaItem, provider: CloudProviderId): UploadJobSpec
     url: item.url,
     target: {
       path: `${item.handle}/${filename}`,
-      handle: item.handle,
+      folder: item.handle,
       filename,
       contentType: guessMime(item.ext),
     },

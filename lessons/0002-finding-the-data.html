@@ -1,0 +1,93 @@
+<link rel="stylesheet" href="../assets/lesson.css">
+<div class="page">
+  <p class="kicker">Lesson 2 · Reverse-engineering social media SPAs</p>
+  <h1>Finding the Data: The Hands-On Hunt</h1>
+
+  <p><a href="0001-the-key-trick.html">Lesson 1</a> assumed you already had a blob of JSON in hand. This one is the step before that: given an unfamiliar site (or a familiar one that just broke), how do you actually find where its data lives — in under five minutes, without reading a single line of its source code?</p>
+
+  <h2>Ask this one question first</h2>
+  <p>Everything branches from: <strong>is the data on the page already, or does it show up after you do something?</strong></p>
+
+  <div class="compare">
+    <div class="col good">
+      <h4>Already there on load</h4>
+      <p style="font-size:0.9rem; margin:0;">A profile page, a single post permalink, the first screen of a feed — data the server had time to prepare before sending HTML.</p>
+      <p style="font-size:0.85rem; margin-top:0.6rem;">→ Check the <strong>embedded script tag</strong> first. Fastest path, zero waiting.</p>
+    </div>
+    <div class="col good">
+      <h4>Shows up later</h4>
+      <p style="font-size:0.9rem; margin:0;">Infinite scroll loading more posts, a modal opening, search-as-you-type, "load more" clicks.</p>
+      <p style="font-size:0.85rem; margin-top:0.6rem;">→ Go straight to the <strong>Network tab</strong> and trigger the action while watching.</p>
+    </div>
+  </div>
+
+  <h2>Path A: the embedded blob</h2>
+  <p>Open the Console and run:</p>
+  <pre><code>[...document.querySelectorAll('script[type="application/json"]')]
+  .map(s =&gt; s.textContent.length)</code></pre>
+  <p>That gives you every candidate and its size — the real content is usually the biggest one, or the one whose text contains a word you recognize from the page (a username, a caption fragment). Check with:</p>
+  <pre><code>[...document.querySelectorAll('script[type="application/json"]')]
+  .find(s =&gt; s.textContent.includes('SOMETHING_YOU_SEE_ON_SCREEN'))</code></pre>
+
+  <h2>Path B: the network tab</h2>
+  <p>Following <a href="https://developer.chrome.com/docs/devtools/network" target="_blank" rel="noopener">Chrome DevTools: Network panel</a> and the walkthrough in <a href="https://scrapfly.io/blog/posts/how-to-scrape-hidden-apis" target="_blank" rel="noopener">How to Scrape Hidden APIs</a> (this lesson's primary source):</p>
+  <ol>
+    <li>Open DevTools → <strong>Network</strong> tab, click the <strong>Fetch/XHR</strong> filter (cuts out images, CSS, fonts — everything that isn't a data call).</li>
+    <li><strong>Trigger the action</strong> — scroll, click, type — while the panel is open and recording.</li>
+    <li>New rows appear. Click one, open the <strong>Preview</strong> tab (not Response) — it renders the JSON as an expandable tree, much faster to scan than raw text.</li>
+    <li>Not sure which request has what you want, out of several? Use the panel's own <kbd>Cmd/Ctrl+F</kbd> to search <em>across every captured response at once</em> for a field name or value you recognize.</li>
+  </ol>
+
+  <div class="callout">
+    <span class="label">One thing worth a glance, not a deep dive</span>
+    Once you've found the request, the <strong>Headers</strong> tab shows what the request needed to succeed — usually just your ordinary session cookie, sometimes an extra app-identifying header the page's own JavaScript already attaches for you. For a passive reader (watching traffic your own logged-in session already generates), you don't need to reconstruct any of this by hand — you're not sending the request, you're reading the one the page sent anyway.
+  </div>
+
+  <h2>Either path, same next move</h2>
+  <p>Once you have ONE real captured example — from the embedded blob or the network tab, doesn't matter which — you're back to <a href="0001-the-key-trick.html">Lesson 1</a>: find the 2-3 fields that make something recognizably "the thing you want," and write the shape-signature walk. The hunt in this lesson is how you get the example to build that signature from; it is not itself the parser.</p>
+
+  <h2>Check your understanding</h2>
+  <div class="quiz" data-quiz>
+    <p class="q">You're looking at a profile page that shows 12 posts immediately on load, with no spinner. Where should you check FIRST?</p>
+    <div class="choices">
+      <button class="choice" data-correct="false">Network tab, filtered to Fetch/XHR, after reloading with it open.</button>
+      <button class="choice" data-correct="true">The embedded &lt;script type="application/json"&gt; tags already in the page.</button>
+      <button class="choice" data-correct="false">The page's Headers tab for an Authorization token.</button>
+    </div>
+    <p class="feedback"></p>
+  </div>
+
+  <div class="quiz" data-quiz>
+    <p class="q">You've captured 40 network requests and don't know which one has the data. What's the fastest way to narrow it down?</p>
+    <div class="choices">
+      <button class="choice" data-correct="false">Open each one's Response tab in order until you find it.</button>
+      <button class="choice" data-correct="true">Cmd/Ctrl+F search across all captured responses for a field/value you recognize from the screen.</button>
+      <button class="choice" data-correct="false">Sort by request size and check the largest one — it's always the data.</button>
+    </div>
+    <p class="feedback"></p>
+  </div>
+
+  <p class="ask-agent">Next time a platform in the extension breaks, try this hunt yourself first — then tell me what you found (or where you got stuck) and we'll go from there.</p>
+
+  <div class="nav"><span><a href="0001-the-key-trick.html">← Lesson 1</a></span><span>Lesson 2 of ?</span></div>
+</div>
+<script>
+document.querySelectorAll('[data-quiz]').forEach((quiz) => {
+  const feedback = quiz.querySelector('.feedback');
+  quiz.querySelectorAll('.choice').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const correct = btn.dataset.correct === 'true';
+      quiz.querySelectorAll('.choice').forEach((b) => b.disabled = true);
+      btn.classList.add(correct ? 'correct' : 'wrong');
+      if (!correct) {
+        const right = [...quiz.querySelectorAll('.choice')].find(b => b.dataset.correct === 'true');
+        right.classList.add('correct');
+      }
+      feedback.textContent = correct
+        ? 'Right.'
+        : 'Not quite — see the highlighted answer above.';
+      feedback.classList.add('shown');
+    });
+  });
+});
+</script>

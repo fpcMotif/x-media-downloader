@@ -74,7 +74,7 @@ describe('Platform schema', () => {
 describe('Settings schema', () => {
   it('fills defaults when keys are absent', () => {
     const s = Schema.decodeUnknownSync(Settings)({})
-    expect(s.filenameTemplate).toBe('{handle}/{tweetId}_{index}.{ext}')
+    expect(s.filenameTemplate).toBe('{platform}/{tweetId}_{index}.{ext}')
     expect(s.downloadConcurrency).toBe(3)
     expect(s.authFallbackEnabled).toBe(false)
     expect(s.downloadStrategy).toBe('direct')

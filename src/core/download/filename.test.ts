@@ -19,8 +19,19 @@ describe('renderFilename', () => {
   })
 
   it('renders the generalized {author}/{postId}/{platform} placeholders', () => {
+    // {platform} renders the download-folder name — `twitter` for X, not the id `x`.
     expect(renderFilename('{platform}/{author}/{postId}_{index}.{ext}', item)).toBe(
-      'x/alice/123_0.jpg',
+      'twitter/alice/123_0.jpg',
+    )
+  })
+
+  it('renders {platform} as each platform folder (twitter for X, own name otherwise)', () => {
+    expect(renderFilename('{platform}/{postId}.{ext}', item)).toBe('twitter/123.jpg')
+    expect(renderFilename('{platform}/{postId}.{ext}', { ...item, platform: 'instagram' })).toBe(
+      'instagram/123.jpg',
+    )
+    expect(renderFilename('{platform}/{postId}.{ext}', { ...item, platform: 'threads' })).toBe(
+      'threads/123.jpg',
     )
   })
 

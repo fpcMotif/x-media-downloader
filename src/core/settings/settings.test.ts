@@ -139,7 +139,7 @@ describe('watchSettings', () => {
     const unwatch = watchSettings((s) => seen.push(s.filenameTemplate))
     // Removing the item fires the watch with the defineItem fallback ({}) → defaults.
     await fakeBrowser.storage.local.remove('settings')
-    expect(seen).toEqual(['{handle}/{tweetId}_{index}.{ext}'])
+    expect(seen).toEqual(['{platform}/{tweetId}_{index}.{ext}'])
     unwatch()
   })
 })

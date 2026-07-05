@@ -1,4 +1,4 @@
-import type { MediaItem } from '../schema'
+import type { MediaItem, Platform } from '../schema'
 
 // Intentional: strip control chars + filesystem-illegal chars from path segments.
 // oxlint-disable-next-line no-control-regex
@@ -14,11 +14,25 @@ export function sanitizeSegment(seg: string): string {
 }
 
 /**
+ * The download-folder name for a platform — what the `{platform}` token renders.
+ * X's internal id is `x`, but the folder users expect (and the default template
+ * produces) is `twitter`; Instagram and Threads already match their own names.
+ * This is the single source of the per-platform folder, so a local download and
+ * its cloud upload land in the SAME folder (the cloud folder is derived from the
+ * rendered local path — see `cloudTargetFor`).
+ */
+export function platformFolder(platform: Platform): string {
+  return platform === 'x' ? 'twitter' : platform
+}
+
+/**
  * Render a filename from a template and a MediaItem. Tokens:
  * `{handle} {tweetId} {index} {ext} {type} {date}`, plus the generalized
  * `{author} {postId} {platform}` (multi-platform design) — `{handle}`/`{tweetId}`
  * are PERMANENT aliases for `{author}`/`{postId}` so existing saved templates
- * never break. Unknown tokens render empty.
+ * never break. `{platform}` renders the download-folder name (`twitter` for X,
+ * `instagram`, `threads`) via {@link platformFolder}, not the internal id.
+ * Unknown tokens render empty.
  *
  * Output is always a RELATIVE path (no leading `/`, no `..`, never empty) —
  * `chrome.downloads.download` throws otherwise (ADR-0003, grounding §d).
@@ -29,7 +43,7 @@ export function renderFilename(template: string, item: MediaItem, date?: string)
     tweetId: item.postId,
     author: item.author,
     postId: item.postId,
-    platform: item.platform,
+    platform: platformFolder(item.platform),
     index: String(item.index),
     ext: item.ext,
     type: item.type,

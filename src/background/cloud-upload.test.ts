@@ -54,8 +54,8 @@ const connectedDropbox = (over: Partial<Settings> = {}): Settings => ({
 })
 
 const target: UploadTarget = {
-  path: 'alice/pic.jpg',
-  handle: 'alice',
+  path: 'twitter/pic.jpg',
+  folder: 'twitter',
   filename: 'pic.jpg',
   contentType: 'image/jpeg',
 }
@@ -369,6 +369,27 @@ describe('serialized upload queue', () => {
       const ids = decodeLedger(ledger.value).map((j) => j.mediaId)
       expect(ids).toContain('A')
       expect(ids).toContain('B')
+    })
+  })
+
+  it('derives the cloud folder from the filename directory (platform folder, no handle)', async () => {
+    // The rendered local path is `twitter/123_0.mp4`; the cloud target must mirror it —
+    // folder `twitter`, basename `123_0.mp4` — regardless of the media's author handle.
+    const ledger = fakeLedger(null)
+    const cu = makeCU({ ledger, runtime: fakeRuntime() })
+    cu.recordCloudUploads(connected(), [
+      {
+        item: { id: 'X', url: 'https://video.twimg.com/x.mp4', handle: 'alice', ext: 'mp4' },
+        filename: 'twitter/123_0.mp4',
+      },
+    ])
+    await vi.waitFor(() => {
+      const job = decodeLedger(ledger.value)[0]
+      expect(job?.target).toMatchObject({
+        path: 'twitter/123_0.mp4',
+        folder: 'twitter',
+        filename: '123_0.mp4',
+      })
     })
   })
 })

@@ -45,7 +45,7 @@ export type DownloadTraceEntry = typeof DownloadTraceEntry.Type
 
 export const Settings = Schema.Struct({
   filenameTemplate: Schema.String.pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed('{handle}/{tweetId}_{index}.{ext}')),
+    Schema.withDecodingDefaultKey(Effect.succeed('{platform}/{tweetId}_{index}.{ext}')),
   ),
   downloadConcurrency: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(3))),
   authFallbackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),

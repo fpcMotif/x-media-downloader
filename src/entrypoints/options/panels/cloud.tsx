@@ -7,13 +7,11 @@ import { FETCHED_HOST_PATTERNS } from '@/core/download/fetched-strategy'
 import type { CloudProviderId } from '@/core/cloud/types'
 import { PROVIDERS } from '@/core/cloud/provider'
 import { describeUploadSummary, type CloudUploadStatus } from '@/core/cloud/status'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { PanelHeader, SettingGroup, type PanelProps } from '../ui'
-import { CloudIcon, UploadIcon } from '@/components/icons'
+import { PanelHeader, Section, type PanelProps } from '../ui'
 
 const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
@@ -133,10 +131,9 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
         description="Back up to your own cloud — opt-in, and you hold the keys."
       />
 
-      <SettingGroup
+      <Section
         title="Cloud sync to Convex"
         description="Mirrors download metadata only — never file bytes. You run the deployment (ADR-0009)."
-        icon={<CloudIcon className="size-[18px]" />}
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -207,7 +204,9 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
                   Grant access
                 </Button>
               )}
-              {convexGranted === true && <Badge variant="success">access granted</Badge>}
+              {convexGranted === true && (
+                <span className="text-[13px] font-medium text-success">access granted</span>
+              )}
             </div>
             {syncStatus && (
               <p
@@ -221,12 +220,11 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
             )}
           </>
         )}
-      </SettingGroup>
+      </Section>
 
-      <SettingGroup
+      <Section
         title="Cloud upload — Drive & Dropbox"
         description="Uploads the real media bytes to your own cloud. Bytes go provider-direct, never through our servers (ADR-0013)."
-        icon={<UploadIcon className="size-[18px]" />}
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -303,7 +301,7 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
             )}
           </>
         )}
-      </SettingGroup>
+      </Section>
     </>
   )
 }
@@ -335,17 +333,15 @@ function CloudProviderRow({
     setDraft(clientId)
   }, [clientId])
   return (
-    <div className="grid gap-3 rounded-lg border p-4">
+    <div className="grid gap-3 border-l border-border pl-4">
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-semibold">{label}</span>
         {connected ? (
-          <Badge variant="success" className="shrink-0">
+          <span className="shrink-0 text-[13px] text-success">
             {account !== '' ? account : 'connected'}
-          </Badge>
+          </span>
         ) : (
-          <Badge variant="outline" className="shrink-0">
-            Not connected
-          </Badge>
+          <span className="shrink-0 text-[13px] text-muted-foreground">Not connected</span>
         )}
       </div>
       <Field>

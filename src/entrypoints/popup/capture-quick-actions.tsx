@@ -1,16 +1,17 @@
 import { useState } from 'preact/hooks'
 import { EraserIcon } from '@/components/icons'
 import { runCaptureExport, type CaptureSummary } from '@/components/capture-export'
+import {
+  plural,
+  fmtDay,
+  confirmClearArchiveCopy,
+  clearedArchiveCopy,
+} from '@/components/capture-copy'
 
 // Keep this in sync with the eager fetch in App.tsx (fetchCaptureSummary(3)) —
 // the popup asks the background for exactly this many recent conversations, so
 // slicing here is a defensive no-op, not a real pagination cut.
 const RECENT_LIMIT = 3
-
-const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
-
-const fmtDay = (ms: number): string =>
-  new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
 interface CaptureQuickActionsProps {
   readonly summary: CaptureSummary | null
@@ -56,10 +57,10 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
   // local reset + status message happen unconditionally, since ClearCaptureRequest
   // is a durable local wipe with no partial-failure mode worth branching on.
   const clearArchive = async (): Promise<void> => {
-    if (!confirm(`Delete all ${plural(tweets, 'captured tweet')}? This cannot be undone.`)) return
+    if (!confirm(confirmClearArchiveCopy(tweets))) return
     await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
     onCleared()
-    flashStatus(`Cleared ${plural(tweets, 'tweet')} from the archive.`)
+    flashStatus(clearedArchiveCopy(tweets))
   }
 
   const recent = (summary?.recent ?? []).slice(0, RECENT_LIMIT)

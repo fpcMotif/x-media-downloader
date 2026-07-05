@@ -18,10 +18,8 @@ body {
   background: var(--xmd-bg);
 }
 
-/* Soft brand wash behind the settings shell, mirroring the popup's glow. */
+/* R4: flat surface, no gradient wash — the settings page reads as a quiet
+   typographic document, not a glowing dashboard. */
 .xmd-options-root {
-  background:
-    radial-gradient(58% 48% at 0% 0%, oklch(0.74 0.1 255 / 0.08), transparent 55%),
-    radial-gradient(48% 42% at 100% 100%, oklch(0.72 0.08 285 / 0.06), transparent 60%),
-    var(--xmd-bg);
+  background: var(--xmd-bg);
 }

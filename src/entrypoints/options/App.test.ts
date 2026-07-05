@@ -2,27 +2,30 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const appSource = readFileSync('src/entrypoints/options/App.tsx', 'utf8')
-const iconsSource = readFileSync('src/components/icons.tsx', 'utf8')
 
-/** Pull the `icon:` component name out of a `{ id: '<id>', ... }` SECTIONS entry. */
-const sectionIcon = (id: string): string | undefined => {
+/** Pull the `group: '<...>'` value out of a `{ id: '<id>', ... }` SECTIONS entry. */
+const sectionGroup = (id: string): string | undefined => {
   const idx = appSource.indexOf(`id: '${id}'`)
   if (idx === -1) return undefined
   const chunk = appSource.slice(idx, appSource.indexOf('}', idx) + 1)
-  return chunk.match(/icon:\s*(\w+)/)?.[1]
+  return chunk.match(/group:\s*'(\w+)'/)?.[1]
 }
 
-describe('settings sidebar nav icons', () => {
-  it('gives General and Filters visually distinct icons', () => {
-    const general = sectionIcon('general')
-    const filters = sectionIcon('filters')
-    expect(general).toBeDefined()
-    expect(filters).toBeDefined()
-    expect(filters).not.toBe(general)
+describe('settings sidebar is text-only (R4: no icon tiles anywhere in Settings)', () => {
+  it('does not carry an icon field on the SECTIONS entries', () => {
+    // R4 kills icon tiles in the sidebar — locking this in guards against
+    // regressing back to the pre-redesign icon-per-row nav.
+    expect(appSource).not.toMatch(/icon:\s*\w*Icon/)
   })
 
-  it('points Filters at a dedicated FunnelIcon', () => {
-    expect(sectionIcon('filters')).toBe('FunnelIcon')
-    expect(iconsSource).toContain('export function FunnelIcon')
+  it('groups every non-utility section under Settings or Library', () => {
+    // Each id's group is asserted directly (rather than checking that some
+    // "SETTINGS_IDS"/"LIBRARY_IDS" constant exists) so the test still catches
+    // a mis-grouped section regardless of how the grouping is implemented.
+    const settingsIds = ['general', 'downloads', 'filters', 'clearing', 'capture', 'cloud']
+    const libraryIds = ['archive', 'history']
+    for (const id of settingsIds) expect(sectionGroup(id)).toBe('settings')
+    for (const id of libraryIds) expect(sectionGroup(id)).toBe('library')
+    expect(sectionGroup('about')).toBe('utility')
   })
 })

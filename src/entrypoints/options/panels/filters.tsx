@@ -7,8 +7,8 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
-import { PanelHeader, SettingGroup, type PanelProps } from '../ui'
-import { SlidersIcon, ClockIcon, EraserIcon } from '@/components/icons'
+import { PanelHeader, Section, type PanelProps } from '../ui'
+import { EraserIcon } from '@/components/icons'
 
 const budgetItem = storage.defineItem<BudgetRecord>('local:daily-budget', {
   fallback: { day: '', bytes: 0, count: 0 },
@@ -54,10 +54,9 @@ export function FiltersPanel({ settings, update }: PanelProps) {
         description="A pre-download gate that skips duplicates and media you don't want — all off by default."
       />
 
-      <SettingGroup
+      <Section
         title="Duplicates"
         description="Skip media from tweets you've already downloaded, on any device."
-        icon={<SlidersIcon className="size-[18px]" />}
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -73,12 +72,11 @@ export function FiltersPanel({ settings, update }: PanelProps) {
             onCheckedChange={(checked: boolean) => void update(dedupeToggleDelta(checked))}
           />
         </Field>
-      </SettingGroup>
+      </Section>
 
-      <SettingGroup
+      <Section
         title="Media filters"
         description="Skip media by type or below a minimum resolution before it's queued."
-        icon={<SlidersIcon className="size-[18px]" />}
       >
         {TYPE_FILTERS.map((filter) => (
           <Field key={filter.value} orientation="horizontal">
@@ -106,7 +104,7 @@ export function FiltersPanel({ settings, update }: PanelProps) {
             id="minWidth"
             type="number"
             min={0}
-            className="w-24 text-center tabular-nums"
+            className="w-24 text-center font-mono tabular-nums"
             aria-label="Minimum width"
             value={settings.minWidth}
             onChange={(e: Event) =>
@@ -124,7 +122,7 @@ export function FiltersPanel({ settings, update }: PanelProps) {
             id="minHeight"
             type="number"
             min={0}
-            className="w-24 text-center tabular-nums"
+            className="w-24 text-center font-mono tabular-nums"
             aria-label="Minimum height"
             value={settings.minHeight}
             onChange={(e: Event) =>
@@ -142,7 +140,7 @@ export function FiltersPanel({ settings, update }: PanelProps) {
             id="maxFileSizeMB"
             type="number"
             min={0}
-            className="w-24 text-center tabular-nums"
+            className="w-24 text-center font-mono tabular-nums"
             aria-label="Max file size in MB"
             value={settings.maxFileSizeMB}
             onChange={(e: Event) =>
@@ -150,12 +148,11 @@ export function FiltersPanel({ settings, update }: PanelProps) {
             }
           />
         </Field>
-      </SettingGroup>
+      </Section>
 
-      <SettingGroup
+      <Section
         title="Daily budget"
         description="Hard-stop downloads once either cap is reached for the local calendar day."
-        icon={<ClockIcon className="size-[18px]" />}
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -166,7 +163,7 @@ export function FiltersPanel({ settings, update }: PanelProps) {
             id="dailyMaxMB"
             type="number"
             min={0}
-            className="w-24 text-center tabular-nums"
+            className="w-24 text-center font-mono tabular-nums"
             aria-label="Daily size cap in MB"
             value={settings.dailyMaxMB}
             onChange={(e: Event) =>
@@ -184,7 +181,7 @@ export function FiltersPanel({ settings, update }: PanelProps) {
             id="dailyMaxCount"
             type="number"
             min={0}
-            className="w-24 text-center tabular-nums"
+            className="w-24 text-center font-mono tabular-nums"
             aria-label="Daily file cap"
             value={settings.dailyMaxCount}
             onChange={(e: Event) =>
@@ -196,7 +193,7 @@ export function FiltersPanel({ settings, update }: PanelProps) {
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel>Used today</FieldLabel>
-            <FieldDescription className="tabular-nums">
+            <FieldDescription className="font-mono tabular-nums">
               {usedMB} MB · {usage?.count ?? 0} files
             </FieldDescription>
           </FieldContent>
@@ -211,7 +208,7 @@ export function FiltersPanel({ settings, update }: PanelProps) {
             Reset today
           </Button>
         </Field>
-      </SettingGroup>
+      </Section>
     </>
   )
 }

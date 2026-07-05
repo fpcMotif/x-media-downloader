@@ -139,8 +139,6 @@ describe('popup hosts a minimal capture toggle', () => {
   it('hosts a trimmed (3-row) recent-conversation list with per-conversation exports via CaptureQuickActions', () => {
     expect(popupSource).toContain('fetchCaptureSummary(3)')
     expect(captureQuickActionsSource).toContain('RECENT_LIMIT')
-    expect(captureQuickActionsSource).toContain("runCaptureExport('tree'")
-    expect(captureQuickActionsSource).toContain("runCaptureExport('markdown'")
     expect(captureQuickActionsSource).toContain('Export all')
   })
 
@@ -166,9 +164,6 @@ describe('CaptureQuickActions renders a popup-sized recent-archive disclosure', 
   it('starts collapsed, is hidden with nothing captured, and wires export + clear', () => {
     expect(captureQuickActionsSource).toContain('useState(false)')
     expect(captureQuickActionsSource).toContain('if (tweets === 0) return null')
-    expect(captureQuickActionsSource).toContain("runCaptureExport('jsonl')")
-    expect(captureQuickActionsSource).toContain("runCaptureExport('tree'")
-    expect(captureQuickActionsSource).toContain("runCaptureExport('markdown'")
     expect(captureQuickActionsSource).toContain("_tag: 'ClearCaptureRequest'")
     expect(captureQuickActionsSource).toContain('Export all')
     expect(captureQuickActionsSource).toContain('Clear archive')

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import type { DownloadRecord } from '@/core/history/record'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -10,8 +9,7 @@ import {
   historyEmptyLabel,
   fetchHistory,
 } from '@/entrypoints/popup/history-section'
-import { PanelHeader, SettingGroup, type PanelProps } from '../ui'
-import { ClockIcon } from '@/components/icons'
+import { PanelHeader, Section, type PanelProps } from '../ui'
 
 export function HistoryPanel({ settings, update }: PanelProps) {
   const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
@@ -32,11 +30,7 @@ export function HistoryPanel({ settings, update }: PanelProps) {
         description="A durable local record of every download — original link and status. Local only; never deletes files."
       />
 
-      <SettingGroup
-        title="Download history"
-        description="Survives restarts. Independent of Cloud Sync."
-        icon={<ClockIcon className="size-[18px]" />}
-      >
+      <Section title="Download history" description="Survives restarts. Independent of Cloud Sync.">
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel htmlFor="downloadHistoryEnabled">Keep download history</FieldLabel>
@@ -85,22 +79,20 @@ export function HistoryPanel({ settings, update }: PanelProps) {
                 </ol>
               </div>
             ))}
-            <Button
+            <button
               type="button"
-              variant="outline"
-              size="sm"
-              className="self-start"
+              className="self-start text-[13px] text-destructive hover:underline"
               onClick={() => void clearHistory()}
             >
-              Clear history
-            </Button>
+              Clear history…
+            </button>
           </>
         ) : (
           <FieldDescription>
             {historyEmptyLabel(settings.downloadHistoryEnabled, history.length)}
           </FieldDescription>
         )}
-      </SettingGroup>
+      </Section>
     </>
   )
 }

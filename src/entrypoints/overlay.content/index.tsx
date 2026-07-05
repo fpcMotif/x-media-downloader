@@ -1116,10 +1116,67 @@ export default defineContentScript({
       }
       grab = markGrabbed(grab, key)
       const all = postGrabArmed
-      const items = all ? postGrabItems(item, store.valuesForTweet(item.postId)) : [item]
-      // Marking every key of the post keeps a cursor sweep across sibling slides
-      // from re-charging the ring (downstream the admission gate dedups anyway).
-      if (all) grab = markAllGrabbed(grab, store.keysForTweet(item.postId))
+      let items: MediaItem[] = [item]
+      if (all) {
+        // Resolve the WHOLE post from the DOM post anchor, NOT the hovered
+        // media's own url key: an Instagram/Threads photo's rendered `<img>`
+        // basename can differ from the tee's captured basename, so the hovered
+        // item falls back to a placeholder whose `postId` is its own media key
+        // (grouping nothing) — `valuesForTweet` on it would return just itself.
+        // The post's DOM shortcode → the tee's real `postId` recovers the whole
+        // detected set (all slides, best quality). Falls back to the hovered
+        // item alone when the tee hasn't linked/seen this post yet.
+        const code = adapter.postCodeFromElement?.(media, location.pathname) ?? null
+        const codePostId = code ? store.postIdForCode(code) : undefined
+        const teePost = codePostId ? store.valuesForTweet(codePostId) : []
+        items =
+          teePost.length > 0 ? teePost : postGrabItems(item, store.valuesForTweet(item.postId))
+        // Mark every key of the resolved post so a cursor sweep across sibling
+        // slides doesn't re-charge the ring (downstream the gate dedups anyway).
+        grab = markAllGrabbed(grab, [
+          ...store.keysForTweet(item.postId),
+          ...(codePostId ? store.keysForTweet(codePostId) : []),
+        ])
+        // TEMP DIAG (grab-all) — REMOVE after confirming on live IG/Threads.
+        // Breaks the payload down by media TYPE and by postId so a missing-video
+        // report can be pinned to the right boundary: `sendingTypes` lacking the
+        // videos ⇒ they never got RESOLVED into the payload (a postId/resolution
+        // bug); `sendingTypes` INCLUDING them but nothing downloading ⇒ they were
+        // resolved and the dedup/size gate dropped them downstream. `videosInStore`
+        // + `postIdCounts` expose a postId split (videos indexed under a different
+        // postId than `codePostId`, so `valuesForTweet(codePostId)` misses them).
+        const typeCounts = (arr: readonly MediaItem[]): Record<string, number> =>
+          arr.reduce<Record<string, number>>((a, i) => {
+            a[i.type] = (a[i.type] ?? 0) + 1
+            return a
+          }, {})
+        console.info(
+          '[XMD grab-all diag]',
+          JSON.stringify({
+            platform: adapter.platform,
+            hoveredType: item.type,
+            hoveredPostId: item.postId,
+            hoveredId: item.id,
+            hoveredInStore: store.get(item.id) !== undefined,
+            domCode: code,
+            codePostId: codePostId ?? null,
+            codeMatchesHovered: (codePostId ?? null) === item.postId,
+            teePostCount: teePost.length,
+            teeTypes: typeCounts(teePost),
+            sending: items.length,
+            sendingTypes: typeCounts(items),
+            videosInStore: store
+              .values()
+              .filter((i) => i.type === 'video')
+              .map((i) => ({ postId: i.postId, index: i.index, id: i.id })),
+            postIdCounts: store.values().reduce<Record<string, number>>((a, i) => {
+              a[i.postId] = (a[i.postId] ?? 0) + 1
+              return a
+            }, {}),
+            storeCount: store.count,
+          }),
+        )
+      }
       // After the dwell completes, move out of the charge state immediately.
       // The background reply then confirms whether the browser/aria2 handoff started.
       grabUi = all
@@ -1629,6 +1686,8 @@ export default defineContentScript({
 
     // Quick Grab hover tracking: hold the configured modifier and hover a real
     // X media image/poster for the dwell window. No competing per-hover buttons.
+    // TEMP hover diag — throttle key, REMOVE after debugging grab failures.
+    let hoverProbeLast: Element | null = null
     ctx.addEventListener(document, 'mousemove', (event) => {
       const e = event as MouseEvent
       lastX = e.clientX
@@ -1646,6 +1705,41 @@ export default defineContentScript({
       if (target?.tagName === 'XMD-OVERLAY') return
       const media = resolveHoverMedia(target, e.clientX, e.clientY)
       const key = previewKeyFromMedia(media)
+      // TEMP hover diag — logs (once per element) WHY a hovered media does/doesn't
+      // resolve, but only while the grab modifier is held. REMOVE after debugging.
+      if (grabbing && target && target !== hoverProbeLast) {
+        hoverProbeLast = target
+        const src = media
+          ? isVideoElement(media)
+            ? media.poster || media.currentSrc || media.src
+            : media.currentSrc || media.src
+          : ''
+        let host = ''
+        let family: string | null = null
+        try {
+          const u = new URL(src)
+          host = u.hostname
+          family = u.pathname.split('/').find((p) => /^t\d+(\.\d+-\d+)?$/.test(p)) ?? null
+        } catch {
+          /* blob: or empty src */
+        }
+        console.info(
+          '[XMD hover diag]',
+          JSON.stringify({
+            mediaTag: media?.tagName ?? null,
+            key,
+            host,
+            family,
+            srcKind: src.startsWith('blob:') ? 'blob:' : src.slice(0, 44),
+            targetTag: target.tagName,
+            targetClass: typeof target.className === 'string' ? target.className.slice(0, 70) : '',
+            hasArticle: target.closest('article') !== null,
+            domCode: media
+              ? (adapter.postCodeFromElement?.(media, location.pathname) ?? null)
+              : null,
+          }),
+        )
+      }
       if (grabbing) focusHover(media, key)
       focusBadge(media, key)
     })

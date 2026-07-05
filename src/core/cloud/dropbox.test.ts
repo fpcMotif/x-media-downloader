@@ -27,7 +27,7 @@ const emptyStream = (): ReadableStream<Uint8Array> =>
 
 const input = (path = 'alice/t1_0.mp4'): UploadInput => ({
   url: 'https://video.twimg.com/x.mp4',
-  target: { path, handle: 'alice', filename: path.split('/').pop()!, contentType: 'video/mp4' },
+  target: { path, folder: 'alice', filename: path.split('/').pop()!, contentType: 'video/mp4' },
 })
 
 const sourceStub = (make: () => Response): Layer.Layer<SourceFetch> =>

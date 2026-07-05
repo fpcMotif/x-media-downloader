@@ -49,7 +49,7 @@ import {
   snapshot,
   type MetricsState,
 } from '../core/download/metrics'
-import { planInterruptRetry, type PendingInterruptRetry } from '../core/download/interrupt-retry'
+import type { PendingInterruptRetry } from '../core/download/interrupt-retry'
 import { syndicationUrl } from '../core/adapters/x/syndication'
 import {
   classifyTransfer,
@@ -74,6 +74,7 @@ import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator, hookScopes } from '../background/clear-coordinator'
+import { makeRetryPlanApplier } from '../background/retry-plan'
 import { isClearableTweetId } from '../core/clear/clearer'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
@@ -81,10 +82,8 @@ import {
   emptyCaptureSummary,
   finishCaptureSummary,
   foldCaptureSummary,
-  selectConversation,
 } from '../core/capture/store'
-import { buildTree } from '../core/capture/tree'
-import { toJsonl, toMarkdown, toTreeJson } from '../core/capture/export'
+import { composeCaptureExport } from '../core/capture/build-export'
 
 // Ephemeral monitoring snapshot — session storage survives SW recycling but not
 // a browser restart (ADR-0005). The popup polls it via `MetricsRequest`.
@@ -130,7 +129,6 @@ interface RequestMeta {
 const requestMetaById = new Map<string, RequestMeta>()
 const interruptAttemptById = new Map<string, number>()
 const pendingRetries = new Map<string, PendingInterruptRetry>()
-const retryTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 
 const retryQueueItem = storage.defineItem<ReadonlyArray<PendingInterruptRetry>>(
   'session:interruptRetries',
@@ -164,16 +162,16 @@ const resolveRetryUrl = async (meta: RequestMeta): Promise<string> => {
   return fresh ?? meta.url
 }
 
-const clearRetryTimeout = (id: string): void => {
-  const handle = retryTimeouts.get(id)
-  if (handle !== undefined) {
-    clearTimeout(handle)
-    retryTimeouts.delete(id)
-  }
-}
-
+// `clearInterruptRetryState` needs `applier.cancel`, but `applier` isn't
+// constructed until after `failBrowserDownload`/`traceBackground`/`persistSnapshot`
+// are all declared (it takes them by direct reference, not a deferred closure, so
+// unlike `fire` it CANNOT be a forward reference — TDZ). `applier` itself is built
+// further down, right before `fireInterruptRetry`; `clearInterruptRetryState` is
+// only ever CALLED at runtime (never at module-eval time), so referencing
+// `applier` here before its textual declaration is safe for the same reason `fire`
+// is safe below.
 const clearInterruptRetryState = (id: string): void => {
-  clearRetryTimeout(id)
+  applier.cancel(id)
   pendingRetries.delete(id)
   interruptAttemptById.delete(id)
   requestMetaById.delete(id)
@@ -517,6 +515,25 @@ const failBrowserDownload = (id: string, downloadId: number, now: number): Promi
 const completeBrowserDownload = (id: string, downloadId: number, now: number): Promise<void> =>
   settleBrowserDownload(id, downloadId, 'complete', now)
 
+// Retry Scheduler shell (CONTEXT.md's Clock Port entry): the applier owns
+// `attempt`-compute + `planInterruptRetry` decide + the timer/state/trace/persist
+// bookkeeping that used to be duplicated at three call sites below. `fire` is a
+// forward reference to `fireInterruptRetry` (declared next) — legal JS: the
+// closure only resolves it when actually CALLED, long after every module-level
+// `const` here has run at SW startup.
+const applier = makeRetryPlanApplier({
+  interruptAttemptById,
+  pendingRetries,
+  syncPendingRetries,
+  recordRetry: (id) => {
+    if (live) live = recordRetry(live, id)
+  },
+  trace: traceBackground,
+  persistSnapshot,
+  failBrowserDownload,
+  fire: (id) => void fireInterruptRetry(id),
+})
+
 const fireInterruptRetry = async (id: string): Promise<void> => {
   const meta = requestMetaById.get(id)
   if (meta === undefined) {
@@ -540,7 +557,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     // scheduleInterruptRetry's safe remove-then-add): a crash in this window then
     // leaves the id in NEITHER ledger — a lost retry, never a double-drive where
     // both rehydrate and reconcile fire the same id on the next boot.
-    clearRetryTimeout(id)
+    applier.cancel(id)
     pendingRetries.delete(id)
     syncPendingRetries()
     transfersState = trackTransfer(transfersState, {
@@ -557,31 +574,20 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     })
     await persistSnapshot(Date.now())
   } catch {
-    const attempt = interruptAttemptById.get(id) ?? 0
-    const plan = planInterruptRetry({ reason: 'NETWORK_FAILED', attempt })
-    if (plan.schedule) {
-      interruptAttemptById.set(id, plan.nextAttempt)
-      if (live) live = recordRetry(live, id)
-      const nextRetryAt = Date.now() + plan.delayMs
-      pendingRetries.set(id, {
-        id,
-        url,
-        filename: meta.filename,
-        attempt: plan.nextAttempt,
-        nextRetryAt,
-        ...(meta.item ? { item: meta.item } : {}),
-      })
-      syncPendingRetries()
-      const handle = setTimeout(() => void fireInterruptRetry(id), plan.delayMs)
-      retryTimeouts.set(id, handle)
-      traceBackground('interrupt-retry-scheduled', {
-        itemId: id,
-        detail: `start-failed in ${plan.delayMs}ms attempt ${plan.nextAttempt}`,
-      })
-      await persistSnapshot(Date.now())
-      return
-    }
-    await failBrowserDownload(id, -1, Date.now())
+    // No live download handle exists yet (the browser.downloads.download call
+    // above already threw), so `downloadId` is the sentinel -1 — mirrors the
+    // `failBrowserDownload(id, -1, ...)` sentinel usage elsewhere in this file.
+    // This path never had a transfer-ledger entry, so unlike scheduleInterruptRetry
+    // there is nothing to settle on the scheduled branch (decision 4 in the handoff).
+    await applier.apply({
+      id,
+      downloadId: -1,
+      url,
+      filename: meta.filename,
+      ...(meta.item ? { item: meta.item } : {}),
+      reason: 'NETWORK_FAILED',
+      now: Date.now(),
+    })
   }
 }
 
@@ -591,42 +597,40 @@ const scheduleInterruptRetry = (
   reason: string | undefined,
   now: number,
 ): void => {
-  const attempt = interruptAttemptById.get(id) ?? 0
-  const plan = planInterruptRetry({ reason, attempt })
   const meta = requestMetaById.get(id)
-  if (!plan.schedule || meta === undefined) {
+  if (meta === undefined) {
     void failBrowserDownload(id, downloadId, now)
     return
   }
-
-  requestIdByDownloadId.delete(downloadId)
-  // The dead downloadId leaves the active ledger; the retry is now tracked by the
-  // durable retry queue (`session:interruptRetries`) until it fires a fresh one.
-  transfersState = settleTransfer(transfersState, id)
-  persistTransfers()
-  interruptAttemptById.set(id, plan.nextAttempt)
-  if (live) live = recordRetry(live, id)
-
-  const nextRetryAt = now + plan.delayMs
-  pendingRetries.set(id, {
-    id,
-    url: meta.url,
-    filename: meta.filename,
-    attempt: plan.nextAttempt,
-    nextRetryAt,
-    ...(meta.item ? { item: meta.item } : {}),
-  })
-  syncPendingRetries()
-
-  clearRetryTimeout(id)
-  const handle = setTimeout(() => void fireInterruptRetry(id), plan.delayMs)
-  retryTimeouts.set(id, handle)
-
-  traceBackground('interrupt-retry-scheduled', {
-    itemId: id,
-    detail: `${reason ?? 'unknown'} in ${plan.delayMs}ms attempt ${plan.nextAttempt}`,
-  })
-  void persistSnapshot(now)
+  // The applier now computes `attempt` + decides via planInterruptRetry
+  // internally, so the scheduled-vs-exhausted branch can't be pre-checked here
+  // without duplicating that decision (out of scope). Instead, gate the
+  // transfer-ledger settle — which ONLY ever ran on the schedule branch — on the
+  // boolean `apply()` resolves with, in a `.then()`. This is a deliberate,
+  // disclosed microtask-scale reorder versus the original fully-synchronous body
+  // (the ledger-settle now happens a tick after `apply()`'s internal work,
+  // instead of before it); safe because `settleTransfer`/`decideTerminalOutcome`
+  // are idempotent on a missing/already-settled id (see decideTerminalOutcome's
+  // doc comment). `scheduleInterruptRetry` itself stays synchronous/non-blocking
+  // — its `onDownloadChanged` caller does not and should not await it.
+  void applier
+    .apply({
+      id,
+      downloadId,
+      url: meta.url,
+      filename: meta.filename,
+      ...(meta.item ? { item: meta.item } : {}),
+      reason,
+      now,
+    })
+    .then((scheduled) => {
+      if (!scheduled) return
+      requestIdByDownloadId.delete(downloadId)
+      // The dead downloadId leaves the active ledger; the retry is now tracked by
+      // the durable retry queue (`session:interruptRetries`) until it fires a fresh one.
+      transfersState = settleTransfer(transfersState, id)
+      persistTransfers()
+    })
 }
 
 const rehydrateInterruptRetries = async (): Promise<void> => {
@@ -641,10 +645,7 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
     interruptAttemptById.set(item.id, item.attempt)
     pendingRetries.set(item.id, item)
     inFlight.add(item.id)
-    const delay = Math.max(0, item.nextRetryAt - now)
-    clearRetryTimeout(item.id)
-    const handle = setTimeout(() => void fireInterruptRetry(item.id), delay)
-    retryTimeouts.set(item.id, handle)
+    applier.rehydrateTimer(item, now)
   }
 }
 
@@ -1114,8 +1115,13 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   requestStartedAt.clear()
   requestMetaById.clear()
   interruptAttemptById.clear()
-  for (const handle of retryTimeouts.values()) clearTimeout(handle)
-  retryTimeouts.clear()
+  // Iterate the keys BEFORE clearing pendingRetries, so every pending id's timer
+  // gets cancelled (applier.cancel only wraps the timer-clear, not the map delete).
+  // Relies on the invariant that every pendingRetries entry has a live timer in the
+  // applier's private map (true today — apply() always sets both together); if that
+  // ever drifts, cancel()'s no-op-on-missing-handle behavior means this would
+  // silently under-cancel rather than throw.
+  for (const id of pendingRetries.keys()) applier.cancel(id)
   pendingRetries.clear()
   void retryQueueItem.setValue([])
   transfersState = emptyTracker
@@ -1138,24 +1144,6 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
 // artifact text; the options page (which has a DOM + URL.createObjectURL) does
 // the actual download. Quote text is resolved against the full record set.
 const captureRecentLimit = 20
-
-const buildCaptureExport = async (
-  kind: 'jsonl' | 'tree' | 'markdown',
-  conversationId: string | undefined,
-): Promise<{ filename: string; text: string } | null> => {
-  if (kind === 'jsonl') {
-    const records = await captureDb.allRecords()
-    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    return { filename: `xharvest-${day}.jsonl`, text: toJsonl(records) }
-  }
-  if (conversationId === undefined) return null
-  const all = await captureDb.allRecords()
-  const [tree] = buildTree(selectConversation(all, conversationId))
-  if (tree === undefined) return null
-  if (kind === 'tree')
-    return { filename: `thread-${conversationId}.json`, text: toTreeJson(tree, all) }
-  return { filename: `thread-${conversationId}.md`, text: toMarkdown(tree, all) }
-}
 
 // Typed message-router table. Each entry returns the value to send back; the
 // listener pipes it to sendResponse and keeps the channel open. `handle` narrows
@@ -1248,7 +1236,8 @@ const messageHandlers: MessageHandlers = {
     ),
   ),
   ExportCaptureRequest: handle<'ExportCaptureRequest'>(async (msg) => {
-    const built = await buildCaptureExport(msg.kind, msg.conversationId)
+    const records = await captureDb.allRecords()
+    const built = composeCaptureExport(records, msg.kind, msg.conversationId, Date.now())
     if (built === null) return { ok: false, filename: '', text: '' }
     console.info(
       `[XMD] capture export ${msg.kind} → ${built.filename} (${built.text.length} bytes)`,

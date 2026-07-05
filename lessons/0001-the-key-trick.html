@@ -1,0 +1,109 @@
+<link rel="stylesheet" href="../assets/lesson.css">
+<div class="page">
+  <p class="kicker">Lesson 1 · Reverse-engineering social media SPAs</p>
+  <h1>The Key Trick: Shape, Not Path</h1>
+
+  <p>This session, you watched me pull real post data out of Instagram and Threads without ever being told where in the response it lived. Here's the one idea that made that possible — and why it'll outlive the next redesign of whatever platform breaks next.</p>
+
+  <h2>The problem: paths are not stable</h2>
+  <p>When I actually looked at a captured Instagram response, the post data was buried here:</p>
+  <pre><code>root.require[0][3][0].__bbox.require[0][3][1].__bbox
+    .result.data.xdt_api__v1__feed__timeline__connection
+    .edges[0].node.media</code></pre>
+  <p>That's not a typo-prone edge case — it's <em>normal</em> for a modern app built on Relay/GraphQL. The wrapper around your data (which query ran, how the client library bundles its cache, which surface served the response) changes constantly. If detection code says <code>response.data.items[0].media</code>, it breaks the moment that wrapper shifts even slightly — and it <em>will</em> shift, because none of it is a promise the site made to you.</p>
+
+  <h2>The trick: check the shape, not the address</h2>
+  <p>Instead of asking "where does the post live," ask: <strong>"what does a post <em>look like</em>, wherever it is?"</strong> A node in that pile of JSON <em>is</em> a post if it has a non-empty <code>code</code> string (the URL shortcode) and a <code>user.username</code> string sitting on it. Nothing else about its position matters.</p>
+
+  <div class="compare">
+    <div class="col bad">
+      <h4>Hardcoded path</h4>
+      <pre><code>const post =
+  json.data.items[0]
+    .media</code></pre>
+      <p style="margin-top:0.6rem; font-size:0.85rem;">Breaks the instant the wrapper changes shape — even if the post data itself is untouched.</p>
+    </div>
+    <div class="col good">
+      <h4>Shape signature</h4>
+      <pre><code>function isPost(n) {
+  return typeof n?.code
+      === 'string'
+    && typeof n?.user
+      ?.username
+      === 'string'
+}</code></pre>
+      <p style="margin-top:0.6rem; font-size:0.85rem;">Survives the wrapper changing, because it never looks at the wrapper at all.</p>
+    </div>
+  </div>
+
+  <p>Then you walk <em>every</em> node in the tree — arrays, objects, all the way down — and test each one against that shape. When one matches, you've found a post, no matter how deep or how the wrapper is arranged this week:</p>
+
+  <pre><code>function forEachPost(json, visit) {
+  const walk = (node) =&gt; {
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    if (typeof node !== 'object' || node === null) return
+    if (isPost(node)) visit(node)
+    for (const key of Object.keys(node)) walk(node[key])
+  }
+  walk(json)
+}</code></pre>
+
+  <div class="callout">
+    <span class="label">Why this signature specifically</span>
+    <code>code</code> and <code>user.username</code> aren't decoration — the site's OWN page needs them to render a working permalink and byline. If Instagram removed them, their own UI would break too. That's the test for a good signature: would the <em>site itself</em> visibly break without this field? If yes, it's a safe thing to depend on.
+  </div>
+
+  <h2>Where the JSON tree comes from in the first place</h2>
+  <p>Two sources, and you don't need to pick just one:</p>
+  <ul>
+    <li><strong>Watch the network.</strong> DevTools → Network → filter to Fetch/XHR. See <a href="https://developer.chrome.com/docs/devtools/network" target="_blank" rel="noopener">Chrome DevTools: Network panel</a> (the primary source for this lesson) for the exact clicks.</li>
+    <li><strong>Read what's already on the page.</strong> Many sites embed the first batch of data directly in the HTML, in a <code>&lt;script type="application/json"&gt;</code> tag, so the page doesn't have to show a loading spinner while it re-fetches what the server already knew. This is called <em>hydration</em> — see the <a href="https://www.apollographql.com/docs/react/performance/server-side-rendering" target="_blank" rel="noopener">Apollo Client SSR docs</a> for the general pattern (Instagram/Threads use their own internal version of the same idea, not Apollo specifically, but the shape of the trick is identical). You can find it with one line: <code>document.querySelectorAll('script[type="application/json"]')</code>, then check each one's text for a field name you're hunting for.</li>
+  </ul>
+
+  <h2>Check your understanding</h2>
+  <div class="quiz" data-quiz>
+    <p class="q">A site redesigns its GraphQL query and the response's wrapper object gets one extra layer of nesting. Your detector uses a shape-signature walk. What happens?</p>
+    <div class="choices">
+      <button class="choice" data-correct="false">It breaks the same way a hardcoded path would — nesting depth always matters.</button>
+      <button class="choice" data-correct="true">It keeps working — the walk doesn't care how deep the matching node is.</button>
+      <button class="choice" data-correct="false">It works, but only if you also update the walk to expect the new depth.</button>
+    </div>
+    <p class="feedback"></p>
+  </div>
+
+  <div class="quiz" data-quiz>
+    <p class="q">Which field is a BETTER choice for a shape signature?</p>
+    <div class="choices">
+      <button class="choice" data-correct="false">A "theme color" field the UI uses for a decorative banner.</button>
+      <button class="choice" data-correct="true">The numeric ID the page's own permalink URL is built from.</button>
+      <button class="choice" data-correct="false">A field that's present on roughly half of the sampled responses.</button>
+    </div>
+    <p class="feedback"></p>
+  </div>
+
+  <p class="sidenote">Quick reference for this technique, including the "pick the best candidate" pattern and the DOM-only fallback caveats (what worked for photos, what genuinely doesn't for video): <a href="../reference/structural-vs-hardcoded-parsing.html">Structural vs. Hardcoded Parsing</a>.</p>
+
+  <p class="ask-agent">Something unclear, or want to try this against a real response together? Ask me — that's the whole point of having a teacher in the loop.</p>
+
+  <div class="nav"><span>Lesson 1 of ?</span><span><a href="0002-finding-the-data.html">Lesson 2 →</a></span></div>
+</div>
+<script>
+document.querySelectorAll('[data-quiz]').forEach((quiz) => {
+  const feedback = quiz.querySelector('.feedback');
+  quiz.querySelectorAll('.choice').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const correct = btn.dataset.correct === 'true';
+      quiz.querySelectorAll('.choice').forEach((b) => b.disabled = true);
+      btn.classList.add(correct ? 'correct' : 'wrong');
+      if (!correct) {
+        const right = [...quiz.querySelectorAll('.choice')].find(b => b.dataset.correct === 'true');
+        right.classList.add('correct');
+      }
+      feedback.textContent = correct
+        ? 'Right — the walk is blind to depth by design.'
+        : 'Not quite — see the highlighted answer above.';
+      feedback.classList.add('shown');
+    });
+  });
+});
+</script>

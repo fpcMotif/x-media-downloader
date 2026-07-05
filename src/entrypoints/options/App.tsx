@@ -3,19 +3,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '@/core/settings'
 import type { Settings } from '@/core/schema'
 import { cn } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
-import {
-  DownloadIcon,
-  SlidersIcon,
-  FunnelIcon,
-  ListChecksIcon,
-  CloudIcon,
-  LayersIcon,
-  ClockIcon,
-  InfoIcon,
-  CheckIcon,
-  MoonIcon,
-} from '@/components/icons'
+import { CheckIcon } from '@/components/icons'
 import type { PanelProps } from './ui'
 import { GeneralPanel } from './panels/general'
 import { DownloadsPanel } from './panels/downloads'
@@ -25,42 +13,34 @@ import { CloudPanel } from './panels/cloud'
 import { CapturePanel } from './panels/capture'
 import { HistoryPanel } from './panels/history'
 import { AboutPanel } from './panels/about'
+import { ArchivePanel } from './panels/archive'
+
+// Which sidebar cluster a section renders in. 'utility' sections (About) skip
+// both nav lists — they're rendered by hand in the sidebar's bottom corner.
+type NavGroup = 'settings' | 'library' | 'utility'
 
 type Section = {
   readonly id: string
   readonly label: string
-  readonly icon: typeof DownloadIcon
+  readonly group: NavGroup
   // AboutPanel takes no props; it harmlessly ignores the ones it's handed.
   readonly Panel: ComponentType<PanelProps>
 }
 
 const SECTIONS = [
-  { id: 'general', label: 'General', icon: SlidersIcon, Panel: GeneralPanel },
-  {
-    id: 'downloads',
-    label: 'Downloads',
-    icon: DownloadIcon,
-    Panel: DownloadsPanel,
-  },
-  { id: 'filters', label: 'Filters', icon: FunnelIcon, Panel: FiltersPanel },
-  {
-    id: 'worklist',
-    label: 'Worklist & clearing',
-    icon: ListChecksIcon,
-    Panel: WorklistPanel,
-  },
-  { id: 'cloud', label: 'Cloud', icon: CloudIcon, Panel: CloudPanel },
-  {
-    id: 'capture',
-    label: 'Knowledge Capture',
-    icon: LayersIcon,
-    Panel: CapturePanel,
-  },
-  { id: 'history', label: 'History', icon: ClockIcon, Panel: HistoryPanel },
-  { id: 'about', label: 'About', icon: InfoIcon, Panel: AboutPanel },
+  { id: 'general', label: 'General', group: 'settings', Panel: GeneralPanel },
+  { id: 'downloads', label: 'Downloads', group: 'settings', Panel: DownloadsPanel },
+  { id: 'filters', label: 'Filters', group: 'settings', Panel: FiltersPanel },
+  { id: 'clearing', label: 'Clearing', group: 'settings', Panel: WorklistPanel },
+  { id: 'capture', label: 'Capture', group: 'settings', Panel: CapturePanel },
+  { id: 'cloud', label: 'Cloud', group: 'settings', Panel: CloudPanel },
+  { id: 'archive', label: 'Archive', group: 'library', Panel: ArchivePanel },
+  { id: 'history', label: 'History', group: 'library', Panel: HistoryPanel },
+  { id: 'about', label: 'About', group: 'utility', Panel: AboutPanel },
 ] as const satisfies ReadonlyArray<Section>
 
-type SectionId = (typeof SECTIONS)[number]['id']
+type SectionEntry = (typeof SECTIONS)[number]
+type SectionId = SectionEntry['id']
 
 const isSectionId = (value: string): value is SectionId =>
   SECTIONS.some((section) => section.id === value)
@@ -72,10 +52,20 @@ export function App() {
 
   useEffect(() => {
     void getSettings().then(setSettingsState)
-    const hash = location.hash.replace(/^#/, '')
-    if (isSectionId(hash)) setSection(hash)
+    const handleHash = () => {
+      const hash = location.hash.replace(/^#/, '')
+      const target = hash === 'worklist' ? 'clearing' : hash
+      if (isSectionId(target)) setSection(target)
+    }
+    handleHash()
+    window.addEventListener('hashchange', handleHash)
+    return () => window.removeEventListener('hashchange', handleHash)
   }, [])
 
+  // Sidebar clicks are tab switches, not navigation — replaceState keeps the
+  // hash in sync (so reload/copy-link still lands on the right panel) without
+  // spamming browser history; five sidebar clicks shouldn't take five presses
+  // of Back to leave the page.
   const select = (id: SectionId): void => {
     setSection(id)
     history.replaceState(null, '', `#${id}`)
@@ -98,7 +88,7 @@ export function App() {
       <SettingsSidebar sections={SECTIONS} active={section} onSelect={select} />
 
       <main className="min-w-0 flex-1">
-        <div className="mx-auto flex max-w-3xl flex-col gap-5 px-8 py-9">
+        <div className="mx-auto flex max-w-2xl flex-col gap-8 px-10 py-12">
           {settings ? <ActivePanel settings={settings} update={update} reload={reload} /> : null}
         </div>
       </main>
@@ -110,10 +100,10 @@ export function App() {
           saved ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
       >
-        <Badge variant="success" className="gap-1.5 px-3 py-1.5 shadow-md">
+        <span className="flex items-center gap-1.5 rounded-[8px] border border-border bg-background px-3 py-1.5 text-[13px] font-medium text-success">
           <CheckIcon className="size-3.5" />
           All changes saved
-        </Badge>
+        </span>
       </div>
     </div>
   )
@@ -128,54 +118,81 @@ function SettingsSidebar({
   active: SectionId
   onSelect: (id: SectionId) => void
 }) {
+  const settingsSections = sections.filter((s) => s.group === 'settings')
+  const librarySections = sections.filter((s) => s.group === 'library')
+
   return (
-    <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col gap-1 border-r border-border bg-card/40 px-3 py-4 backdrop-blur-xl">
-      <div className="flex items-center gap-3 px-2 pb-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-[11px] bg-primary text-primary-foreground shadow-sm">
-          <DownloadIcon className="size-5" />
+    <aside className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col gap-1 border-r border-border px-3 py-5">
+      <div className="px-2 pb-4">
+        <span className="block text-sm leading-tight font-semibold tracking-tight">
+          X Media Downloader
         </span>
-        <div className="grid gap-0.5">
-          <span className="text-sm leading-tight font-bold tracking-tight">X Media Downloader</span>
-          <span className="text-[11px] leading-tight text-muted-foreground">
-            Version 1.0 · local
-          </span>
-        </div>
+        <span className="mt-0.5 block font-mono text-[11px] leading-tight text-muted-foreground">
+          v1.0 · local
+        </span>
       </div>
 
-      <p className="px-2 pt-2 pb-1 text-[10px] font-bold tracking-[0.16em] text-muted-foreground/70">
-        SETTINGS
+      <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground">
+        Settings
       </p>
-      <nav className="flex flex-col gap-0.5">
-        {sections.map((s) => {
-          const Icon = s.icon
-          const isActive = s.id === active
-          return (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => onSelect(s.id)}
-              aria-current={isActive ? 'page' : undefined}
-              className={cn(
-                'flex items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors',
-                isActive
-                  ? 'bg-primary/10 font-semibold text-primary'
-                  : 'font-medium text-foreground hover:bg-muted',
-              )}
-            >
-              <Icon className="size-[18px]" />
-              {s.label}
-            </button>
-          )
-        })}
+      <nav className="mb-4 flex flex-col gap-0.5">
+        {settingsSections.map((s) => (
+          <NavItem key={s.id} section={s} active={active} onSelect={onSelect} />
+        ))}
       </nav>
 
-      <div className="mt-auto flex items-center gap-2.5 rounded-lg bg-muted/50 px-3 py-2.5">
-        <MoonIcon className="size-[15px] text-muted-foreground" />
-        <div className="grid gap-0.5">
-          <span className="text-xs font-semibold leading-tight">Appearance</span>
-          <span className="text-[11px] leading-tight text-muted-foreground">Following system</span>
-        </div>
+      <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground">
+        Library
+      </p>
+      <nav className="flex flex-col gap-0.5">
+        {librarySections.map((s) => (
+          <NavItem key={s.id} section={s} active={active} onSelect={onSelect} />
+        ))}
+      </nav>
+
+      <div className="mt-auto flex flex-col gap-2 border-t border-border px-2 pt-3">
+        <button
+          type="button"
+          onClick={() => onSelect('about')}
+          aria-current={active === 'about' ? 'page' : undefined}
+          className={cn(
+            'flex min-h-10 items-center rounded-[8px] px-2 text-left text-[13px] transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
+            active === 'about'
+              ? 'font-semibold text-primary'
+              : 'font-medium text-muted-foreground hover:text-foreground',
+          )}
+        >
+          About
+        </button>
+        <span className="text-[11px] text-muted-foreground">Appearance · System</span>
       </div>
     </aside>
+  )
+}
+
+function NavItem({
+  section,
+  active,
+  onSelect,
+}: {
+  section: Pick<SectionEntry, 'id' | 'label'>
+  active: SectionId
+  onSelect: (id: SectionId) => void
+}) {
+  const isActive = section.id === active
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(section.id)}
+      aria-current={isActive ? 'page' : undefined}
+      className={cn(
+        'flex min-h-10 items-center rounded-[8px] px-3 text-left text-[13px] transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
+        isActive
+          ? 'bg-primary/[0.09] font-semibold text-primary'
+          : 'font-medium text-foreground/80 hover:bg-muted hover:text-foreground',
+      )}
+    >
+      {section.label}
+    </button>
   )
 }

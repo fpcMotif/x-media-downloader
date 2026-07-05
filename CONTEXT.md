@@ -44,8 +44,10 @@ use these words, they mean exactly this.
 
 ## Components (by responsibility, not implementation)
 
-- **Source Adapter** — turns a site's page + Captures into Media Items. X is the
-  only adapter today; the seam exists so others could be added.
+- **Source Adapter** — turns a site's page + Captures into Media Items. Three
+  Source Adapters exist today (X, Instagram, Threads), registered in the
+  platform registry (`ALL_ADAPTERS`, `src/core/adapters/registry.ts`); the
+  registry's `hostMatch` drives both content scripts' `matches`.
 - **Resolver** — normalizes raw media references into Original-quality Media Items
   (photo upgrade, Variant selection, de-duplication).
 - **Download Queue** — saves Media Items to disk: rate-limited, resilient to
@@ -72,15 +74,22 @@ use these words, they mean exactly this.
   and the CDN-url refresh before re-firing — is pure (`core/download`
   interrupt-retry), folding the **Transfer Tracker** and **Metrics** transitions
   into its result exactly as **Terminal Outcome** does. The Retry Scheduler is its
-  effectful shell: it holds the in-flight retry queue (durable across SW recycle,
-  ADR-0005) and the timer wheel behind an injected **Clock Port** and **Download
-  Port**, applying the pure result's intents. A retry that exhausts its attempts
-  hands off to the **Terminal Outcome** as `failed`. It owns the boot tie-break
-  with the **Transfer Tracker** — an id it owns (`ownedIds`) is reconciled by it
-  alone, never double-driven.
-- **Clock Port** — the injected timer seam (`setTimeout` / `clearTimeout`) shared
-  by the **Retry Scheduler**'s backoff and the **Settle** confirm-window, so both
-  schedule against fake timers in tests. The temporal sibling of the **Settle
+  effectful shell (`src/background/retry-plan.ts`'s `makeRetryPlanApplier`): it
+  holds the in-flight retry queue (durable across SW recycle, ADR-0005) and the
+  timer wheel behind its own injected **Clock Port** and **Download Port**,
+  applying the pure result's intents. A retry that exhausts its attempts hands off
+  to the **Terminal Outcome** as `failed`. It owns the boot tie-break with the
+  **Transfer Tracker** — an id it owns (`ownedIds`) is reconciled by it alone,
+  never double-driven.
+- **Clock Port** — the injected timer seam (`schedule(fn, ms): CancelHandle`), so
+  scheduled work runs against a fake clock in tests instead of `vi.useFakeTimers()`.
+  Realized by the **Drain**'s Clock in `core/clear` (`scroll-drain.ts` /
+  `list-clear.ts`) and, as of `src/background/retry-plan.ts`, by the **Retry
+  Scheduler**'s own minimal port (a deliberately different shape from the Drain's
+  `{ sleep, after }` Clock — retry-specific, not shared). **Settle**'s
+  confirm-window timer (`clear-coordinator.ts`) is still raw `setTimeout` (its
+  tests still use `vi.useFakeTimers()`) — migrating Settle onto an injected clock
+  is a queued follow-on, not yet built. The temporal sibling of the **Settle
   Port**: this one *schedules* work, that one *observes* a download's bytes.
 - **Settle** — the confirmation that a browser **Download Handle**'s recorded
   `complete` truly landed on disk. After a short window the byte is re-probed

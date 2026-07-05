@@ -1,0 +1,78 @@
+<link rel="stylesheet" href="../assets/lesson.css">
+<div class="page">
+  <p class="kicker">Reference</p>
+  <h1>Structural vs. Hardcoded Parsing</h1>
+  <p class="sidenote">Quick-reference card. Companion to <a href="../lessons/0001-the-key-trick.html">Lesson 1: The Key Trick</a>.</p>
+
+  <h2>The two ways to find a site's data</h2>
+  <table style="width:100%; border-collapse:collapse; margin:1rem 0;">
+    <tr style="border-bottom:1px solid var(--rule);">
+      <th style="text-align:left; padding:0.4rem 0.6rem 0.4rem 0;">Method</th>
+      <th style="text-align:left; padding:0.4rem 0.6rem;">Where to look</th>
+      <th style="text-align:left; padding:0.4rem 0;">When it's there</th>
+    </tr>
+    <tr style="border-bottom:1px solid var(--rule);">
+      <td style="padding:0.5rem 0.6rem 0.5rem 0;"><strong>Network interception</strong></td>
+      <td style="padding:0.5rem 0.6rem;">DevTools → Network → Fetch/XHR filter; or a content script patching <code>fetch</code>/<code>XMLHttpRequest.prototype.open</code></td>
+      <td style="padding:0.5rem 0;">Data that loads <em>after</em> first paint — scrolling, pagination, opening a modal</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem 0.6rem 0.5rem 0;"><strong>Embedded JSON blob</strong></td>
+      <td style="padding:0.5rem 0.6rem;"><code>document.querySelectorAll('script[type="application/json"]')</code>, look for one whose text contains your target field names</td>
+      <td style="padding:0.5rem 0;">Data present on <em>first load</em> — the "hydration" pattern (server pre-fetches, embeds the result so the client doesn't show a spinner)</td>
+    </tr>
+  </table>
+
+  <h2>The shape-signature walk (pseudocode)</h2>
+  <pre><code>function isTargetShaped(node) {
+  return typeof node === 'object'
+      && node !== null
+      && typeof node.CODE_FIELD === 'string'   // pick 2-3 fields that MUST
+      && typeof node.OTHER_FIELD === 'string'  // co-occur on your target,
+      && node.OTHER_FIELD !== ''               // and are cheap to check
+}
+
+function forEachMatch(json, visit) {
+  const walk = (node) =&gt; {
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    if (typeof node !== 'object' || node === null) return
+    if (isTargetShaped(node)) visit(node)
+    for (const key of Object.keys(node)) walk(node[key])   // ALWAYS keep
+  }                                                          // recursing —
+  walk(json)                                                 // don't `return`
+}                                                              // after a match</code></pre>
+
+  <div class="callout">
+    <span class="label">Picking a good signature</span>
+    Prefer fields that are <strong>required for the site's own UI to render</strong> (an id, a username, a URL) over fields that are cosmetic or optional. If the site's own page would break without that field, the site's own developers can't quietly remove it either — which is exactly what makes it a stable anchor.
+  </div>
+
+  <h2>Real example (this session)</h2>
+  <p>Instagram/Threads post identity: a node is "a post" if it has a non-empty <code>code</code> string (the URL shortcode) <em>and</em> a <code>user.username</code> string. The actual JSON path to reach that node was a different, deeply-nested shape every time — a live capture from this session:</p>
+  <pre><code>root.require[0][3][0].__bbox.require[0][3][1].__bbox
+    .result.data.xdt_api__v1__feed__timeline__connection
+    .edges[0].node.media</code></pre>
+  <p>Nobody should hardcode that path. The shape-signature walk finds the node wherever it lives, on this response or the next redesign's response.</p>
+
+  <h2>Picking the "best" candidate from an array</h2>
+  <p>Media URLs are usually offered at several resolutions/qualities in an array. Rank by <code>width × height</code> (both default to <code>0</code> if missing, so a dimensioned candidate always beats an undimensioned one), first-wins on a tie:</p>
+  <pre><code>const area = c =&gt; (c.width ?? 0) * (c.height ?? 0)
+const best = candidates.reduce((a, b) =&gt; area(b) &gt; area(a) ? b : a)</code></pre>
+
+  <h2>DOM-only fallback (when you can't/don't want to touch the network)</h2>
+  <ul>
+    <li>A rendered <code>&lt;img&gt;</code>'s <code>currentSrc</code> is often the SAME CDN URL family as what's in the JSON — but possibly a <em>different resolution</em>, so its raw basename won't always equal the JSON-detected item's key. Look for a way to <strong>normalize</strong> across renditions (X forces a canonical quality query param on any twimg URL, regardless of what the DOM happened to render).</li>
+    <li>CDN URL <em>path families</em> often distinguish content types without touching JSON at all (e.g., an avatar path segment vs. a post-content path segment). Useful for a cheap "is this even worth trying to grab" filter before checking identity.</li>
+    <li><code>&lt;video&gt;</code> elements streamed via MediaSource Extensions have a <code>blob:</code> local URL with zero correlation to the real file — there is no DOM-only trick for video identity. Check for a sibling poster/thumbnail <code>&lt;img&gt;</code> near the player as a fallback; if there isn't one, DOM-only video resolution isn't possible and that's a real constraint, not a shortcut you're missing.</li>
+  </ul>
+
+  <h2>Staying on the right side of personal-use scraping</h2>
+  <ul>
+    <li>Read-only, your own logged-in session, no bypassing a login/paywall you don't already have legitimate access to.</li>
+    <li>Passive observation of traffic the page <em>already</em> generates beats firing your own extra requests — no added load on the target's servers.</li>
+    <li>Don't redistribute what you collect; personal archival is a different legal posture from republishing.</li>
+  </ul>
+
+  <p class="ask-agent">Ask your teaching agent if any of this is unclear — that's what it's there for.</p>
+  <div class="nav"><span><a href="../lessons/0001-the-key-trick.html">← Lesson 1</a></span><span>Reference</span></div>
+</div>
