@@ -63,4 +63,25 @@ export interface PlatformAdapter {
    * not merely left unbuilt.
    */
   findMediaNeedingRecovery?(root: ParentNode, detectedKeys: ReadonlySet<string>): string[]
+
+  /**
+   * Optional: per-post `postId` <-> URL-shortcode linkage extracted from a
+   * tracked response, for platforms whose hover-DOM can only recover the URL
+   * shortcode (not the tee's own `postId`, which may differ — e.g.
+   * Instagram's numeric `pk` vs its `/p/{code}/` shortcode). X has no such
+   * split (its tweetId IS its DOM-derivable id), so it omits this.
+   */
+  extractPostCodes?(json: unknown): ReadonlyMap<string, string>
+
+  /**
+   * Optional: a DOM-derived, STABLE (across repeated calls on the same
+   * element) hover key for a `<video>` whose URL carries no identity at all
+   * (Instagram/Threads' `blob:` src) — purely so the overlay's hover/badge
+   * state machine has a non-null key to arm on. Does NOT need to already
+   * resolve to a real MediaItem (that's `resolveHoverItem`'s job, given the
+   * SAME key) — only needs to be non-null while hovering a real post-video
+   * and change when the hovered post changes. X omits this: its video always
+   * has a URL-derivable key via `mediaKeyFromUrl` already.
+   */
+  postKeyFromVideoElement?(video: HTMLVideoElement): string | null
 }

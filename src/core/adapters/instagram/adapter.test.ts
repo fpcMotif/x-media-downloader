@@ -259,4 +259,65 @@ describe('instagramAdapter', () => {
       index: 0,
     })
   })
+
+  describe('postKeyFromVideoElement', () => {
+    it('returns post:{code} for a <video> inside a real <article> with a /p/{code}/ link', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<article><a href="/p/CODE1/">link</a><div><video></video></div></article>`
+      const video = root.querySelector('video')!
+      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE1')
+    })
+
+    it('returns null when the <video> has no <article> ancestor', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div><video></video></div>`
+      const video = root.querySelector('video')!
+      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBeNull()
+    })
+
+    it('returns null when the <article> has no matching post link', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<article><a href="/explore/">link</a><video></video></article>`
+      const video = root.querySelector('video')!
+      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBeNull()
+    })
+  })
+
+  describe('extractPostCodes', () => {
+    it('delegates to postCodesInResponse', () => {
+      const json = { pk: '111', code: 'CODE1', user: { username: 'alice' } }
+      expect([...instagramAdapter.extractPostCodes!(json)]).toEqual([['111', 'CODE1']])
+    })
+  })
+
+  describe('resolveHoverItem/canResolveHoverItem for a <video> resolved via a post-level key', () => {
+    it('resolves via detected when the key is a registered post:{code} string', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<article><a href="/p/CODE1/">link</a><video></video></article>`
+      const video = root.querySelector('video')!
+      const key = instagramAdapter.postKeyFromVideoElement!(video)!
+      const teedVideo = {
+        id: 'BBB',
+        platform: 'instagram' as const,
+        postId: '111',
+        author: 'alice',
+        type: 'video' as const,
+        url: 'https://cdn.example/v/BBB.mp4',
+        ext: 'mp4',
+        index: 0,
+      }
+      const detected = new Map([[key, teedVideo]])
+      expect(instagramAdapter.canResolveHoverItem(video, key, detected)).toBe(true)
+      expect(instagramAdapter.resolveHoverItem(video, key, detected, '/p/CODE1/')).toBe(teedVideo)
+    })
+
+    it('canResolveHoverItem is false for a video whose post-key was never registered (e.g. carousel)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<article><a href="/p/CODE1/">link</a><video></video></article>`
+      const video = root.querySelector('video')!
+      const key = instagramAdapter.postKeyFromVideoElement!(video)!
+      expect(instagramAdapter.canResolveHoverItem(video, key, new Map())).toBe(false)
+      expect(instagramAdapter.resolveHoverItem(video, key, new Map(), '/p/CODE1/')).toBeNull()
+    })
+  })
 })

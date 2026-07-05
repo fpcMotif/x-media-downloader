@@ -1,7 +1,30 @@
-import { detectMediaItems } from '../meta-shared/detect'
+import { detectMediaItems, postCodesInResponse } from '../meta-shared/detect'
 import { mediaKeyFromMetaUrl, isGrabbableMetaPhotoUrl, extFromMetaImgUrl } from '../meta-shared/dom'
+import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
+import { postVideoKey } from '../detection-store'
 import type { MediaItem } from '../../schema'
 import type { PlatformAdapter } from '../types'
+
+/** Instagram's post-boundary selector — the confirmed stable ancestor
+ *  (LIVE-VERIFIED 2026-07-05): a real <article>, no id/data-attr/role of its own. */
+const INSTAGRAM_POST_SELECTOR = 'article'
+
+/** The universal post-shortcode link every Instagram feed post carries
+ *  (LIVE-VERIFIED 2026-07-05): `<a href="/p/{code}/">`, present on every post
+ *  regardless of media type — NOT the video-specific `/reels/{code}/` link,
+ *  which is additive-only on video posts and therefore unnecessary: `/p/`
+ *  alone is sufficient and simpler. */
+const INSTAGRAM_POST_LINK_PATTERN = /^\/p\/([A-Za-z0-9_-]+)\//
+
+/** The postId a hovered element's Instagram post resolves to, by walking up
+ *  to its nearest <article> and reading that article's `/p/{code}/` link
+ *  fresh — or null if `el` isn't inside a post, or the post carries no such
+ *  link (shouldn't happen per research, but fails closed rather than throws). */
+function postIdFromDom(el: Element): string | null {
+  const container = findPostContainer(el, INSTAGRAM_POST_SELECTOR)
+  if (!container) return null
+  return postCodeFromContainer(container, 'a[href]', INSTAGRAM_POST_LINK_PATTERN)
+}
 
 /** Host-match pattern for Instagram tabs — the single source of truth for the
  *  manifest content-script glob and `browser.tabs.query` (mirrors X_HOST_MATCH's
@@ -97,15 +120,22 @@ export const instagramAdapter: PlatformAdapter = {
   detectFromResponse: (_url, json) => detectMediaItems(json, 'instagram'),
   mediaKeyFromUrl: mediaKeyFromMetaUrl,
   // Real post-identity DOM detection (a rescan needing pk/code/author) stays
-  // deferred: none of that is DOM-derivable without a walk this session never
-  // live-verified (no `/p/{code}/` anchor-walk built). Hover resolution below
-  // is strictly narrower — map a key to whatever the tee already resolved
-  // with correct identity, or (photos only) a self-contained DOM fallback —
-  // and doesn't have that problem. LIVE-VERIFIED 2026-07-05: photo `<img>`
-  // elements carry a real, direct cdninstagram.com CDN url in `currentSrc`;
-  // videos use a `blob:` MediaSource src with no nearby poster `<img>`
-  // (checked 8 ancestor levels up on a real reel) — so video DOM-hover stays
-  // infeasible and is NOT attempted below (gated on `HTMLImageElement`).
+  // deferred for the "initial paint" role `detectRenderedMedia` plays — see
+  // `postIdFromDom`/`postKeyFromVideoElement` below for the narrower "map a
+  // hovered element to its post" anchor that IS built (hover-only, not a
+  // rescan). Hover resolution below maps a key to whatever the tee already
+  // resolved with correct identity, or (photos only) a self-contained DOM
+  // fallback. LIVE-VERIFIED 2026-07-05: photo `<img>` elements carry a real,
+  // direct cdninstagram.com CDN url in `currentSrc`; videos use a `blob:`
+  // MediaSource src with no nearby poster `<img>` (checked 8 ancestor levels
+  // up on a real reel) — so a video's OWN url/poster carries no identity.
+  // `resolveHoverItem`/`canResolveHoverItem` don't need a video-specific
+  // branch though: `previewKeyFromMedia` (overlay.content/index.tsx) already
+  // falls back to `postKeyFromVideoElement`'s `post:{code}` string as `key`
+  // for a hovered video, so `detected.get(key)` below transparently resolves
+  // it once `detection-store.ts` has registered that key (single-video posts
+  // only — a carousel with 2+ videos never registers the key, v1 scope limit,
+  // see meta-shared/post-anchor.ts's module doc).
   detectRenderedMedia: () => [],
   resolveHoverItem: (element, key, detected) => {
     const teed = detected.get(key)
@@ -118,6 +148,11 @@ export const instagramAdapter: PlatformAdapter = {
       element instanceof HTMLImageElement &&
       isGrabbableMetaPhotoUrl(element.currentSrc || element.src)
     )
+  },
+  extractPostCodes: postCodesInResponse,
+  postKeyFromVideoElement: (video) => {
+    const code = postIdFromDom(video)
+    return code ? postVideoKey(code) : null
   },
   // No findMediaNeedingRecovery: Instagram has no public/no-auth fallback
   // (oEmbed is Meta-app-registration-gated) — confirmed by research, per the

@@ -327,4 +327,67 @@ describe('threadsAdapter', () => {
   it('does not implement findMediaNeedingRecovery (no public/no-auth fallback exists)', () => {
     expect(threadsAdapter.findMediaNeedingRecovery).toBeUndefined()
   })
+
+  describe('postKeyFromVideoElement', () => {
+    it('returns post:{code} for a <video> inside a pressable-container with a /@user/post/{code} link', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE1">link</a><video></video></div>`
+      const video = root.querySelector('video')!
+      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE1')
+    })
+
+    it('handles a trailing /media suffix and a trailing dash in the code', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/DaXWrlBEyf-/media">link</a><video></video></div>`
+      const video = root.querySelector('video')!
+      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:DaXWrlBEyf-')
+    })
+
+    it('returns null when there is no pressable-container ancestor', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div><video></video></div>`
+      const video = root.querySelector('video')!
+      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBeNull()
+    })
+  })
+
+  describe('extractPostCodes', () => {
+    it('delegates to postCodesInResponse', () => {
+      const json = { pk: '111', code: 'CODE1', user: { username: 'alice' } }
+      expect([...threadsAdapter.extractPostCodes!(json)]).toEqual([['111', 'CODE1']])
+    })
+  })
+
+  describe('resolveHoverItem/canResolveHoverItem for a <video> resolved via a post-level key', () => {
+    it('resolves via detected when the key is a registered post:{code} string', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE1">link</a><video></video></div>`
+      const video = root.querySelector('video')!
+      const key = threadsAdapter.postKeyFromVideoElement!(video)!
+      const teedVideo = {
+        id: 'BBB',
+        platform: 'threads' as const,
+        postId: '111',
+        author: 'zuck',
+        type: 'video' as const,
+        url: 'https://cdn.example/v/BBB.mp4',
+        ext: 'mp4',
+        index: 0,
+      }
+      const detected = new Map([[key, teedVideo]])
+      expect(threadsAdapter.canResolveHoverItem(video, key, detected)).toBe(true)
+      expect(threadsAdapter.resolveHoverItem(video, key, detected, '/@zuck/post/CODE1')).toBe(
+        teedVideo,
+      )
+    })
+
+    it('canResolveHoverItem is false for a video whose post-key was never registered (e.g. carousel)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE1">link</a><video></video></div>`
+      const video = root.querySelector('video')!
+      const key = threadsAdapter.postKeyFromVideoElement!(video)!
+      expect(threadsAdapter.canResolveHoverItem(video, key, new Map())).toBe(false)
+      expect(threadsAdapter.resolveHoverItem(video, key, new Map(), '/@zuck/post/CODE1')).toBeNull()
+    })
+  })
 })

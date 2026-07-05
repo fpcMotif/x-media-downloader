@@ -743,10 +743,23 @@ export default defineContentScript({
     // can close over `adapter`; for Instagram/Threads it resolves a hovered
     // `<img>` to the same basename key the tee derives (photos only — a
     // hovered `<video>`'s `blob:`/empty src never passes the platform's own
-    // grabbability gate, so it falls through to null exactly like before).
+    // grabbability gate, so it falls through to null).
+    //
+    // For a video with no URL-derivable key (Instagram/Threads' blob: src, no
+    // poster), fall back to a DOM-derived post-level key so the hover/badge
+    // state machine has a non-null, stable `key` to arm on at all — the
+    // adapter's own resolveHoverItem/canResolveHoverItem then decide whether
+    // that key ACTUALLY resolves to a tee-detected single-video item (v1
+    // scope: exactly one video per post — see
+    // core/adapters/meta-shared/post-anchor.ts's module doc). X is
+    // unaffected: `previewSrcFromMedia`'s poster-first branch already yields a
+    // real twimg key for X video, so `mediaKeyFromUrl` never returns null
+    // there and this fallback never triggers off-X callers reaching it.
     const previewKeyFromMedia = (media: HoverMediaElement | null): string | null => {
       if (!media) return null
-      return adapter.mediaKeyFromUrl(previewSrcFromMedia(media))
+      const urlKey = adapter.mediaKeyFromUrl(previewSrcFromMedia(media))
+      if (urlKey) return urlKey
+      return isVideoElement(media) ? (adapter.postKeyFromVideoElement?.(media) ?? null) : null
     }
 
     const store = makeDetectionStore({ mediaKeyFromUrl: adapter.mediaKeyFromUrl })
@@ -1552,6 +1565,13 @@ export default defineContentScript({
       }
       try {
         if (store.addDetected(adapter.detectFromResponse(detail.path, json)).length > 0) rerender()
+        // Instagram/Threads only (X omits extractPostCodes): links the DOM's
+        // URL-shortcode to the tee's own postId (which may differ — e.g.
+        // Instagram's numeric pk vs its /p/{code}/ shortcode), so a hovered
+        // video's DOM-derived post:{code} key (see previewKeyFromMedia above)
+        // resolves to the same MediaItem addDetected just indexed by postId.
+        const codes = adapter.extractPostCodes?.(json)
+        if (codes) for (const [postId, code] of codes) store.registerPostCode(postId, code)
       } catch {
         /* media detection is best-effort */
       }

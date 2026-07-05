@@ -28,6 +28,29 @@ export function keysForItem(item: MediaItem, mediaKeyFromUrl: MediaKeyDeriver): 
   return [...keys]
 }
 
+/** The post-level hover key for a single-video post, keyed by a DOM-walked
+ *  shortcode (`post:code:{code}`). Exported so adapters' `postKeyFromVideoElement`
+ *  can derive the identical string from a DOM-walked shortcode without
+ *  importing store internals — this is the ONLY key shape a DOM caller can
+ *  ever query with, since a DOM walk only ever yields a shortcode, never the
+ *  tee's raw `postId`. Namespaced separately from the store's internal
+ *  postId-keyed entry (see `postVideoKeyById` below) so an accidental string
+ *  collision between an unrelated post's raw `postId`/`pk` and another post's
+ *  shortcode can never cause one to silently overwrite the other. */
+export function postVideoKey(code: string): string {
+  return `post:code:${code}`
+}
+
+/** The store's internal post-level hover key, keyed by the tee's own
+ *  `postId` (`post:id:{postId}`) — never queried by a DOM caller (nothing
+ *  DOM-side ever has the raw postId), kept namespaced apart from
+ *  `postVideoKey`'s code-keyed space purely as defense-in-depth. Exported
+ *  (test-only consumer today) so tests can assert on the postId-keyed
+ *  entry directly rather than reaching into `byKey` some other way. */
+export function postVideoKeyById(postId: string): string {
+  return `post:id:${postId}`
+}
+
 /**
  * The page's Detected Media Set (CONTEXT.md): every Media Item found on the
  * current page plus how each was obtained, behind one object. Owns the dual index
@@ -68,6 +91,18 @@ export interface DetectionStore {
   values(): MediaItem[]
   /** Detected Media Items belonging to one tweet. */
   valuesForTweet(tweetId: string): MediaItem[]
+  /**
+   * Register postId <-> DOM-shortcode linkage (Instagram/Threads only — see
+   * `PlatformAdapter.extractPostCodes`) so a DOM-derived shortcode (which
+   * never carries the tee's own `postId`, e.g. Instagram's numeric `pk` vs
+   * its `/p/{code}/` shortcode) can still resolve the same `post:{...}`
+   * lookup key `postKeyFromVideoElement` computes from the DOM alone. A
+   * no-op-safe call for a postId that never gets a video registered (the key
+   * simply never appears in `keyIndex()`). Order-independent relative to
+   * `addDetected` — whichever runs first, the post-video key still converges
+   * once both have run.
+   */
+  registerPostCode(postId: string, code: string): void
   /** How many Media Items are detected (the Bulk count). */
   readonly count: number
   /** Drop everything — items, keys, recovered-key provenance, and attempts. */
@@ -81,9 +116,31 @@ export function makeDetectionStore(deps: {
   const byKey = new Map<string, MediaItem>()
   const recoveredKeys = new Set<string>()
   const attempted = new Set<string>()
+  // Video MediaItems seen so far, grouped by postId — lets addDetected decide,
+  // after each add, whether a post now has EXACTLY one video (register the
+  // post:{postId}/post:{code} lookup keys) or more than one (deregister them —
+  // a carousel with 2+ videos can't be disambiguated by postId alone, v1 scope
+  // limit, see meta-shared/post-anchor.ts's module doc).
+  const videosByPost = new Map<string, Map<string, MediaItem>>() // postId -> (itemId -> item)
+  const codeToPostId = new Map<string, string>() // DOM shortcode -> tee postId
+
+  const syncPostVideoKey = (postId: string): void => {
+    const videos = videosByPost.get(postId)
+    const single = videos && videos.size === 1 ? [...videos.values()][0]! : null
+    const idKey = postVideoKeyById(postId)
+    if (single) byKey.set(idKey, single)
+    else byKey.delete(idKey)
+    for (const [code, mappedPostId] of codeToPostId) {
+      if (mappedPostId !== postId) continue
+      const codeKey = postVideoKey(code)
+      if (single) byKey.set(codeKey, single)
+      else byKey.delete(codeKey)
+    }
+  }
 
   const addDetected = (items: ReadonlyArray<MediaItem>): MediaItem[] => {
     const added: MediaItem[] = []
+    const touchedPosts = new Set<string>()
     for (const item of items) {
       const keys = keysForItem(item, deps.mediaKeyFromUrl)
       // A video the tee re-surfaces after we recovered it (different id scheme)
@@ -92,7 +149,17 @@ export function makeDetectionStore(deps: {
       if (!byId.has(item.id)) added.push(item)
       byId.set(item.id, item)
       for (const key of keys) byKey.set(key, item)
+      if (item.type === 'video') {
+        let videos = videosByPost.get(item.postId)
+        if (!videos) {
+          videos = new Map()
+          videosByPost.set(item.postId, videos)
+        }
+        videos.set(item.id, item)
+        touchedPosts.add(item.postId)
+      }
     }
+    for (const postId of touchedPosts) syncPostVideoKey(postId)
     return added
   }
 
@@ -132,6 +199,11 @@ export function makeDetectionStore(deps: {
     get: (id) => byId.get(id),
     values: () => [...byId.values()],
     valuesForTweet: (tweetId) => [...byId.values()].filter((i) => i.postId === tweetId),
+    registerPostCode: (postId, code) => {
+      codeToPostId.set(code, postId)
+      syncPostVideoKey(postId) // re-sync NOW in case the video(s) were already
+      // added before the code linkage arrived (order-independent)
+    },
     get count() {
       return byId.size
     },
@@ -140,6 +212,8 @@ export function makeDetectionStore(deps: {
       byKey.clear()
       recoveredKeys.clear()
       attempted.clear()
+      videosByPost.clear()
+      codeToPostId.clear()
     },
   }
 }

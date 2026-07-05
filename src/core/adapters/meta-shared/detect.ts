@@ -88,3 +88,19 @@ export function detectMediaItems(json: unknown, platform: Platform): MediaItem[]
   })
   return out
 }
+
+/**
+ * Per-post `code` (URL shortcode) for every postId detected in this response,
+ * so a DOM-derived shortcode (which the hover-path walker never sees, only
+ * `postId` does) can be mapped back to the tee's `postId` identity — see
+ * `PlatformAdapter.extractPostCodes` and `DetectionStore.registerPostCode`.
+ * Companion to `detectMediaItems` — same underlying walk (`forEachPostNode`),
+ * called from the same response, kept as a separate pure function (not merged
+ * into `detectMediaItems`'s signature) so that function's existing, already-
+ * tested `MediaItem[]` return shape stays untouched.
+ */
+export function postCodesInResponse(json: unknown): ReadonlyMap<string, string> {
+  const out = new Map<string, string>()
+  forEachPostNode(json, (ctx) => out.set(ctx.postId, ctx.code))
+  return out
+}

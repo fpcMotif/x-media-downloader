@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectMediaItems } from './detect'
+import { detectMediaItems, postCodesInResponse } from './detect'
 
 describe('detectMediaItems', () => {
   it('resolves a single photo post into one MediaItem, tagged with the given platform', () => {
@@ -170,5 +170,54 @@ describe('detectMediaItems', () => {
         index: 0,
       },
     ])
+  })
+})
+
+describe('postCodesInResponse', () => {
+  it('returns one {postId: code} pair for a single post', () => {
+    const json = { pk: '111', code: 'CODE1', user: { username: 'alice' } }
+    expect([...postCodesInResponse(json)]).toEqual([['111', 'CODE1']])
+  })
+
+  it('returns multiple pairs for multiple posts', () => {
+    const json = {
+      items: [
+        { pk: '1', code: 'A', user: { username: 'a' } },
+        { pk: '2', code: 'B', user: { username: 'b' } },
+      ],
+    }
+    expect([...postCodesInResponse(json)].toSorted()).toEqual([
+      ['1', 'A'],
+      ['2', 'B'],
+    ])
+  })
+
+  it('keys by pk (matching MediaItem.postId) when pk is present', () => {
+    const json = { pk: 42, code: 'CODE42', user: { username: 'a' } }
+    const map = postCodesInResponse(json)
+    expect(map.get('42')).toBe('CODE42')
+  })
+
+  it('keys by code itself when pk is absent (degenerate but consistent)', () => {
+    const json = { code: 'ONLYCODE', user: { username: 'a' } }
+    const map = postCodesInResponse(json)
+    expect(map.get('ONLYCODE')).toBe('ONLYCODE')
+  })
+
+  it('includes a nested reposted/quoted post as its own separate pair', () => {
+    const json = {
+      code: 'OUTER',
+      user: { username: 'alice' },
+      text_post_app_info: {
+        share_info: { reposted_post: { code: 'INNER', user: { username: 'bob' } } },
+      },
+    }
+    const map = postCodesInResponse(json)
+    expect(map.get('OUTER')).toBe('OUTER')
+    expect(map.get('INNER')).toBe('INNER')
+  })
+
+  it('returns an empty map for a response with no post-shaped nodes', () => {
+    expect(postCodesInResponse({ hello: 'world' }).size).toBe(0)
   })
 })

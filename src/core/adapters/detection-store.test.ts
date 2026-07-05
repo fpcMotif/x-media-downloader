@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { MediaItem } from '../schema'
-import { makeDetectionStore, keysForItem } from './detection-store'
+import { makeDetectionStore, keysForItem, postVideoKey, postVideoKeyById } from './detection-store'
 import { mediaKeyFromUrl } from './x/dom'
 
 /** twimg URLs so mediaKeyFromUrl yields a real key (final path segment, no ext). */
@@ -152,5 +152,118 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
     expect(s.addDetected([video('v', 'MP4', 'POST')])).toHaveLength(1)
     // attempts reset → tweet can be re-attempted
     expect(s.markAttempted('t1')).toBe(true)
+  })
+})
+
+describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
+  it('registers post:id:{postId} for a single-video post', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4', 'POST', 'postA')
+    s.addDetected([v])
+    expect(s.keyIndex().get(postVideoKeyById('postA'))).toEqual(v)
+    expect(s.resolve(postVideoKeyById('postA'))).toEqual(v)
+  })
+
+  it('does NOT register for a 2-video carousel post', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postB'), video('v2', 'MP4B', 'POSTB', 'postB')])
+    expect(s.keyIndex().has(postVideoKeyById('postB'))).toBe(false)
+  })
+
+  it('de-registers if a 2nd video for the same post arrives later', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postC')])
+    expect(s.keyIndex().has(postVideoKeyById('postC'))).toBe(true)
+    s.addDetected([video('v2', 'MP4B', 'POSTB', 'postC')])
+    expect(s.keyIndex().has(postVideoKeyById('postC'))).toBe(false)
+  })
+
+  it('ignores photos (never registers a post-key for a photo-only post)', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.addDetected([photo('p1', 'KA', 'postD')])
+    expect(s.keyIndex().has(postVideoKeyById('postD'))).toBe(false)
+  })
+
+  it('clear() wipes videosByPost bookkeeping too', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.addDetected([video('v1', 'MP4', 'POST', 'postE')])
+    expect(s.keyIndex().has(postVideoKeyById('postE'))).toBe(true)
+    s.clear()
+    s.addDetected([video('v1', 'MP4', 'POST', 'postE')])
+    expect(s.keyIndex().has(postVideoKeyById('postE'))).toBe(true)
+  })
+
+  it('a duplicate addDetected call for the same video item does not inflate the per-post count', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4', 'POST', 'postF')
+    s.addDetected([v])
+    s.addDetected([v])
+    expect(s.keyIndex().has(postVideoKeyById('postF'))).toBe(true)
+  })
+
+  it('registerPostCode called AFTER addDetected still resolves post:{code}', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4', 'POST', 'postG')
+    s.addDetected([v])
+    s.registerPostCode('postG', 'CODEG')
+    expect(s.keyIndex().get(postVideoKey('CODEG'))).toEqual(v)
+  })
+
+  it('registerPostCode called BEFORE addDetected also resolves post:{code}', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postH', 'CODEH')
+    const v = video('v1', 'MP4', 'POST', 'postH')
+    s.addDetected([v])
+    expect(s.keyIndex().get(postVideoKey('CODEH'))).toEqual(v)
+  })
+
+  it('registerPostCode for a postId that never gets a video is a harmless no-op', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postI', 'CODEI')
+    expect(s.keyIndex().has(postVideoKey('CODEI'))).toBe(false)
+  })
+
+  it('a 2-video post keeps BOTH post:id:{postId} and post:code:{code} absent', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postJ', 'CODEJ')
+    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postJ'), video('v2', 'MP4B', 'POSTB', 'postJ')])
+    expect(s.keyIndex().has(postVideoKeyById('postJ'))).toBe(false)
+    expect(s.keyIndex().has(postVideoKey('CODEJ'))).toBe(false)
+  })
+
+  it('a postId and an unrelated post code that are the SAME raw string never collide', () => {
+    // Regression test for the pre-namespacing risk: post:{x} was one flat
+    // string space shared by both raw postIds and DOM-derived codes, so a
+    // postId and a totally unrelated post's code that happened to share the
+    // same literal string ('SHARED' here) would silently overwrite one
+    // another's byKey entry. post:id:/post:code: namespacing below prevents
+    // this even when the strings collide.
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const vId = video('vId', 'MP4ID', 'POSTID', 'SHARED')
+    s.addDetected([vId])
+    s.registerPostCode('unrelatedPost', 'SHARED')
+    const vCode = video('vCode', 'MP4CODE', 'POSTCODE', 'unrelatedPost')
+    s.addDetected([vCode])
+    expect(s.keyIndex().get(postVideoKeyById('SHARED'))).toEqual(vId)
+    expect(s.keyIndex().get(postVideoKey('SHARED'))).toEqual(vCode)
+  })
+
+  it('syncing one post leaves an unrelated registered code -> post mapping untouched', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    // postK registers first and gets its video — establishes an entry in
+    // codeToPostId that a LATER sync (for a different post) must skip over.
+    s.registerPostCode('postK', 'CODEK')
+    const vK = video('vK', 'MP4K', 'POSTK', 'postK')
+    s.addDetected([vK])
+    expect(s.keyIndex().get(postVideoKey('CODEK'))).toEqual(vK)
+
+    // postL is a completely separate post/video/code triple.
+    s.registerPostCode('postL', 'CODEL')
+    const vL = video('vL', 'MP4L', 'POSTL', 'postL')
+    s.addDetected([vL])
+
+    // postK's code-keyed entry must still resolve to vK, unaffected by postL's sync.
+    expect(s.keyIndex().get(postVideoKey('CODEK'))).toEqual(vK)
+    expect(s.keyIndex().get(postVideoKey('CODEL'))).toEqual(vL)
   })
 })
