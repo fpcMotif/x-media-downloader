@@ -16,3 +16,6 @@ coverage/
 .claude/tmp/
 .impeccable/
 droid-wiki/
+
+# Local git worktrees
+.worktrees/
