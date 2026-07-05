@@ -3,6 +3,7 @@ import type { DownloadTraceEntry, Settings } from '../core/schema'
 import {
   createEntry,
   reduce as reduceLedger,
+  hookScopes,
   isFullyCleared,
   isTrulyComplete,
   seedScopes,
@@ -30,17 +31,6 @@ import { makeSerialQueue } from '../core/serial-queue'
 const SETTLE_CONFIRM_MS = 1500
 
 const SWEEP_WORKLIST_MAX = 5000
-
-/** The auto-hook's enabled clear scopes, derived from the per-scope kill
- *  switches — the single mapping shared by ledger seeding and re-checks. The
- *  page the download happens on decides which of these is actually clicked
- *  (handleClearTweet's onScope): un-bookmark/un-like on a list page, "Not
- *  interested" on the For You feed; the off-page scopes no-op. */
-export const hookScopes = (s: Settings): Scope[] => [
-  ...(s.autoUnbookmarkOnSave ? (['bookmark'] as Scope[]) : []),
-  ...(s.autoUnlikeOnSave ? (['like'] as Scope[]) : []),
-  ...(s.autoNotInterestedOnSave ? (['notInterested'] as Scope[]) : []),
-]
 
 /** CAS-claim each still-enabled scope, returning the CAS-updated entry (the
  *  caller MUST persist `entry` — the rebind carries the won claims) and the list

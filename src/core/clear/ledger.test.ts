@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   canClaim,
   createEntry,
+  hookScopes,
   isFullyCleared,
   isStrategyEligible,
   isTrulyComplete,
@@ -12,6 +13,15 @@ import {
   type Scope,
   type Strategy,
 } from './ledger'
+import type { Settings } from '../schema'
+
+/** hookScopes reads only the three per-scope toggles; cast a minimal partial. */
+const toggles = (bookmark: boolean, like: boolean, notInterested: boolean): Settings =>
+  ({
+    autoUnbookmarkOnSave: bookmark,
+    autoUnlikeOnSave: like,
+    autoNotInterestedOnSave: notInterested,
+  }) as Settings
 
 const seed = (over: Partial<{ scopes: Scope[]; strategy: Strategy; expected: string[] }> = {}) =>
   createEntry({
@@ -205,5 +215,18 @@ describe('reduce guard branches (no-op early returns)', () => {
     const next = reduce(e, { type: 'ResolveClear', scope: 'bookmark', ok: true })
     expect(next).toBe(e)
     expect(next.clear.bookmark).toBe('none')
+  })
+})
+
+describe('hookScopes', () => {
+  it('maps each per-scope toggle to its clear scope (incl. For You notInterested)', () => {
+    expect(hookScopes(toggles(true, true, true))).toEqual(['bookmark', 'like', 'notInterested'])
+    expect(hookScopes(toggles(true, false, false))).toEqual(['bookmark'])
+    expect(hookScopes(toggles(false, true, false))).toEqual(['like'])
+    // Regression guard: the For You toggle alone MUST seed 'notInterested', or the
+    // timeline clear is dead code — the ledger never gets the scope to claim. (This
+    // is exactly the wiring that was missing on the first cut of the feature.)
+    expect(hookScopes(toggles(false, false, true))).toEqual(['notInterested'])
+    expect(hookScopes(toggles(false, false, false))).toEqual([])
   })
 })

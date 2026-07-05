@@ -11,6 +11,8 @@
  * in-progress set (Settle, confirmed via search) — never the start-time verdict.
  */
 
+import type { Settings } from '../schema'
+
 export type Scope = 'bookmark' | 'like' | 'notInterested'
 export type ClearStatus = 'none' | 'clearing' | 'cleared' | 'failed'
 export type Origin = 'hook' | 'drain' | 'sweep'
@@ -166,3 +168,14 @@ export function tryClaim(e: LedgerEntry, scope: Scope): { entry: LedgerEntry; wo
 /** The tweet is removable from the worklist only once every scope it's in is cleared. */
 export const isFullyCleared = (e: LedgerEntry): boolean =>
   [...e.scopes].every((s) => e.clear[s] === 'cleared')
+
+/** The auto-hook's enabled clear scopes, derived from the per-scope kill
+ *  switches — the single mapping shared by ledger seeding and re-checks. The
+ *  page the download happens on decides which of these is actually clicked
+ *  (handleClearTweet's onScope): un-bookmark/un-like on a list page, "Not
+ *  interested" on the For You feed; the off-page scopes no-op. */
+export const hookScopes = (s: Settings): Scope[] => [
+  ...(s.autoUnbookmarkOnSave ? (['bookmark'] as Scope[]) : []),
+  ...(s.autoUnlikeOnSave ? (['like'] as Scope[]) : []),
+  ...(s.autoNotInterestedOnSave ? (['notInterested'] as Scope[]) : []),
+]
