@@ -32,6 +32,11 @@ const SETTLE_CONFIRM_MS = 1500
 
 const SWEEP_WORKLIST_MAX = 5000
 
+/** Which scopes may clear NOW: a sweep entry uses its OWN list scope only; the
+ *  auto-hook re-derives from its (mid-flight-toggleable) per-scope kill switches. */
+const enabledScopesFor = (entry: LedgerEntry, settings: Settings): Set<Scope> =>
+  entry.origin === 'sweep' ? new Set<Scope>(entry.scopes) : new Set(hookScopes(settings))
+
 /** CAS-claim each still-enabled scope, returning the CAS-updated entry (the
  *  caller MUST persist `entry` — the rebind carries the won claims) and the list
  *  of scopes actually claimed. */
@@ -143,11 +148,6 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
       if (next !== wl) await sweepWorklistItem.setValue(next)
     })
   }
-
-  /** Which scopes may clear NOW: a sweep entry uses its OWN list scope only; the
-   *  auto-hook re-derives from its (mid-flight-toggleable) per-scope kill switches. */
-  const enabledScopesFor = (entry: LedgerEntry, settings: Settings): Set<Scope> =>
-    entry.origin === 'sweep' ? new Set<Scope>(entry.scopes) : new Set(hookScopes(settings))
 
   /** Truly Complete → claim the still-enabled scopes (CAS), DOM-clear them in-page,
    *  resolve each latch from the verified flip, prune once every scope is cleared.
