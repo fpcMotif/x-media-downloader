@@ -40,7 +40,13 @@ export function GeneralPanel({ settings, update }: PanelProps) {
 
         {settings.quickGrabEnabled && (
           <Field orientation="horizontal">
-            <FieldLabel htmlFor="quickGrabModifier">Quick grab modifier</FieldLabel>
+            <FieldContent>
+              <FieldLabel htmlFor="quickGrabModifier">Quick grab modifier</FieldLabel>
+              <FieldDescription>
+                Hold {settings.quickGrabModifier === 'meta' ? 'Alt' : 'Cmd'} as well to grab the
+                whole post (Instagram &amp; Threads)
+              </FieldDescription>
+            </FieldContent>
             <Select
               value={settings.quickGrabModifier}
               onValueChange={(value: string) =>
