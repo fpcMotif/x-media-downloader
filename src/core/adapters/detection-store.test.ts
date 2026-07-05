@@ -3,6 +3,7 @@ import type { MediaItem } from '../schema'
 import {
   makeDetectionStore,
   keysForItem,
+  postGrabItems,
   postVideoKey,
   postVideoKeyById,
   postVideoKeyIndexed,
@@ -76,6 +77,20 @@ describe('keysForItem', () => {
         mediaKeyFromUrl,
       ),
     ).toEqual([])
+  })
+})
+
+describe('postGrabItems', () => {
+  it('unions the hovered item with the post items, hovered first, de-duped by id', () => {
+    const a = photo('a', 'KA', 't1')
+    const b = photo('b', 'KB', 't1')
+    const c = video('c', 'MP4', 'POST', 't1')
+    expect(postGrabItems(a, [a, b, c]).map((i) => i.id)).toEqual(['a', 'b', 'c'])
+    expect(postGrabItems(a, [b, c]).map((i) => i.id)).toEqual(['a', 'b', 'c'])
+  })
+  it('returns just the hovered item when the post set is empty (tee not seen it yet)', () => {
+    const a = photo('a', 'KA', 't1')
+    expect(postGrabItems(a, [])).toEqual([a])
   })
 })
 

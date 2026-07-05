@@ -28,6 +28,19 @@ export function keysForItem(item: MediaItem, mediaKeyFromUrl: MediaKeyDeriver): 
   return [...keys]
 }
 
+/**
+ * The whole-post grab payload: the hovered `item` unioned with every already-
+ * detected item of its post (`store.valuesForTweet(postId)`), de-duped by id
+ * with the hovered item first. Guarantees at least the hovered item, so a post
+ * the tee hasn't fully captured yet still grabs what's known.
+ */
+export function postGrabItems(item: MediaItem, postItems: readonly MediaItem[]): MediaItem[] {
+  const byId = new Map<string, MediaItem>()
+  byId.set(item.id, item)
+  for (const it of postItems) if (!byId.has(it.id)) byId.set(it.id, it)
+  return [...byId.values()]
+}
+
 /** The post-level hover key for a single-video post, keyed by a DOM-walked
  *  shortcode (`post:code:{code}`). Exported so adapters' `postKeyFromVideoElement`
  *  can derive the identical string from a DOM-walked shortcode without
