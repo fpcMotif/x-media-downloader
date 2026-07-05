@@ -281,6 +281,46 @@ describe('instagramAdapter', () => {
       const video = root.querySelector('video')!
       expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBeNull()
     })
+
+    it('returns the indexed key (never the bare shortcut) for a <video> at carousel slide 0', () => {
+      // A DOM walk can't tell "single-video post" from "multi-video post
+      // whose first slide happens to be a video" — only the store (which
+      // knows the real video count) can. Always deriving the indexed form
+      // here is what lets the store's own index-0 alias (registered
+      // uniformly regardless of video count) resolve correctly either way.
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <article><a href="/p/CODE2/">link</a>
+          <ul>
+            <li><video></video></li>
+            <li><img /></li>
+            <li></li>
+          </ul>
+        </article>`
+      const video = root.querySelector('video')!
+      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE2:0')
+    })
+
+    it('returns the indexed key for a <video> at a non-zero carousel slide, excluding the empty trailing sentinel <li>', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <article><a href="/p/CODE3/">link</a>
+          <ul>
+            <li><img /></li>
+            <li><video></video></li>
+            <li></li>
+          </ul>
+        </article>`
+      const video = root.querySelector('video')!
+      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE3:1')
+    })
+
+    it('treats a <video> with no <ul> ancestor as slide 0 (single-media post)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<article><a href="/p/CODE4/">link</a><div><video></video></div></article>`
+      const video = root.querySelector('video')!
+      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE4')
+    })
   })
 
   describe('extractPostCodes', () => {

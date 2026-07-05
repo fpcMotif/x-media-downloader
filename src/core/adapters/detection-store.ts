@@ -51,6 +51,39 @@ export function postVideoKeyById(postId: string): string {
   return `post:id:${postId}`
 }
 
+/** NEW: the post-level hover key for slide `index` of a multi-video (or
+ *  mixed) carousel post, keyed by DOM-walked shortcode. `index` is the
+ *  ABSOLUTE per-post `MediaItem.index` for platforms that can supply one
+ *  (Instagram). Kept alongside (never replacing) `postVideoKey`: a post with
+ *  exactly one video registers BOTH the no-index and the `index:0` indexed
+ *  form (see `syncPostVideoKey`), so a caller that always derives an indexed
+ *  key works uniformly regardless of video count, while a caller still
+ *  querying the bare no-index key keeps working too. */
+export function postVideoKeyIndexed(code: string, index: number): string {
+  return `post:code:${code}:${index}`
+}
+
+/** Sibling of {@link postVideoKeyIndexed}, keyed by the tee's own `postId`
+ *  instead of a DOM-walked shortcode — same posture as `postVideoKeyById`
+ *  vs `postVideoKey`. */
+export function postVideoKeyByIdIndexed(postId: string, index: number): string {
+  return `post:id:${postId}:${index}`
+}
+
+/** NEW: Threads-only. A hover key that names "the Nth video encountered SO
+ *  FAR while walking this specific container's mounted video elements in DOM
+ *  order," NOT a stable absolute post-index — see the Threads adapter's
+ *  `postKeyFromVideoElement` for how it's derived and why. Registered as an
+ *  always-present alias for every registered video (index 0 included)
+ *  regardless of platform — the store doesn't need an `if (threads)` branch;
+ *  only Threads' resolver ever queries it. Deliberately NOT a general
+ *  primitive: this is a documented degraded-precision fallback for a
+ *  platform that can only supply a window-relative slide position, not an
+ *  absolute post-wide index. */
+export function postVideoKeyByDomSlot(code: string, domSlot: number): string {
+  return `post:code:${code}:slot:${domSlot}`
+}
+
 /**
  * The page's Detected Media Set (CONTEXT.md): every Media Item found on the
  * current page plus how each was obtained, behind one object. Owns the dual index
@@ -116,26 +149,59 @@ export function makeDetectionStore(deps: {
   const byKey = new Map<string, MediaItem>()
   const recoveredKeys = new Set<string>()
   const attempted = new Set<string>()
-  // Video MediaItems seen so far, grouped by postId — lets addDetected decide,
-  // after each add, whether a post now has EXACTLY one video (register the
-  // post:{postId}/post:{code} lookup keys) or more than one (deregister them —
-  // a carousel with 2+ videos can't be disambiguated by postId alone, v1 scope
-  // limit, see meta-shared/post-anchor.ts's module doc).
-  const videosByPost = new Map<string, Map<string, MediaItem>>() // postId -> (itemId -> item)
+  // Video MediaItems seen so far, grouped by postId, keyed by each video's OWN
+  // per-post `MediaItem.index` (not itemId) — index doubles as both the map's
+  // dedup key (a post's own slide occupies exactly one index) and the exact
+  // quantity `postKeyFromVideoElement` needs to produce a key for. A post
+  // whose tee-parsed items skip an index (e.g. index 1 is a photo, not a
+  // video) is fine — the map simply has no entry there, same as today's Map
+  // already tolerates gaps in itemId-space.
+  const videosByPost = new Map<string, Map<number, MediaItem>>() // postId -> (index -> item)
   const codeToPostId = new Map<string, string>() // DOM shortcode -> tee postId
+  // Which indexed/dom-slot keys this store last registered for a postId, so a
+  // re-sync (a video superseded/removed) can precisely clear stale entries
+  // instead of a blind sweep.
+  const registeredIndicesByPost = new Map<string, Set<number>>()
 
   const syncPostVideoKey = (postId: string): void => {
     const videos = videosByPost.get(postId)
-    const single = videos && videos.size === 1 ? [...videos.values()][0]! : null
+    const count = videos?.size ?? 0
+    const single = count === 1 ? [...videos!.values()][0]! : null
     const idKey = postVideoKeyById(postId)
+    const codesForPost = [...codeToPostId].filter(([, p]) => p === postId).map(([c]) => c)
+
     if (single) byKey.set(idKey, single)
     else byKey.delete(idKey)
-    for (const [code, mappedPostId] of codeToPostId) {
-      if (mappedPostId !== postId) continue
+    for (const code of codesForPost) {
       const codeKey = postVideoKey(code)
       if (single) byKey.set(codeKey, single)
       else byKey.delete(codeKey)
     }
+
+    // Indexed + dom-slot keys: clear whatever this postId previously
+    // registered, then re-add for every currently-known video (count===1
+    // included, so a caller that always derives an indexed key works
+    // uniformly regardless of video count).
+    const prevIndices = registeredIndicesByPost.get(postId) ?? new Set<number>()
+    for (const index of prevIndices) {
+      byKey.delete(postVideoKeyByIdIndexed(postId, index))
+      byKey.delete(postVideoKeyByDomSlot(postId, index))
+      for (const code of codesForPost) {
+        byKey.delete(postVideoKeyIndexed(code, index))
+        byKey.delete(postVideoKeyByDomSlot(code, index))
+      }
+    }
+    const nextIndices = new Set<number>()
+    for (const [index, item] of videos ?? []) {
+      byKey.set(postVideoKeyByIdIndexed(postId, index), item)
+      byKey.set(postVideoKeyByDomSlot(postId, index), item)
+      for (const code of codesForPost) {
+        byKey.set(postVideoKeyIndexed(code, index), item)
+        byKey.set(postVideoKeyByDomSlot(code, index), item)
+      }
+      nextIndices.add(index)
+    }
+    registeredIndicesByPost.set(postId, nextIndices)
   }
 
   const addDetected = (items: ReadonlyArray<MediaItem>): MediaItem[] => {
@@ -155,7 +221,7 @@ export function makeDetectionStore(deps: {
           videos = new Map()
           videosByPost.set(item.postId, videos)
         }
-        videos.set(item.id, item)
+        videos.set(item.index, item)
         touchedPosts.add(item.postId)
       }
     }
@@ -214,6 +280,7 @@ export function makeDetectionStore(deps: {
       attempted.clear()
       videosByPost.clear()
       codeToPostId.clear()
+      registeredIndicesByPost.clear()
     },
   }
 }

@@ -349,6 +349,95 @@ describe('threadsAdapter', () => {
       const video = root.querySelector('video')!
       expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBeNull()
     })
+
+    // Track fixture shape LIVE-VERIFIED 2026-07-05 against
+    // https://www.threads.com/@zuck/post/DZ7eGA1G7wU (a real 2-video, 3-photo
+    // mixed carousel): a track div carrying an inline `transform: translateX`
+    // style, whose DIRECT children are [spacer (no element children), slide
+    // wrapper, slide wrapper, ...] — the spacer is distinguishable purely by
+    // having zero element children (structural, not class-based: Threads'
+    // own wrapper class names are build-obfuscated `x*` atomic classes with
+    // no stable semantic hook to select on).
+    it('returns the domSlot-0 indexed key (never the bare shortcut) for the FIRST video slide inside a real carousel track', () => {
+      // A DOM walk can't tell "single-video post" from "multi-video post
+      // whose first mounted slide happens to be a video" — only the store
+      // (which knows the real video count) can. Always deriving the indexed
+      // form here is what lets the store's own domSlot-0 alias (registered
+      // uniformly regardless of video count) resolve correctly either way.
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <div data-pressable-container="true"><a href="/@zuck/post/CODE5">link</a>
+          <div style="transform: translateX(0px);">
+            <div></div>
+            <div><video></video></div>
+            <div><img /></div>
+          </div>
+        </div>`
+      const video = root.querySelector('video')!
+      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE5:slot:0')
+    })
+
+    it("returns the dom-slot key for the SECOND video slide, counting ALL mounted slides (a photo slide in between shifts the count, matching the store's absolute-index scheme)", () => {
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <div data-pressable-container="true"><a href="/@zuck/post/CODE6">link</a>
+          <div style="transform: translateX(-716px);">
+            <div></div>
+            <div><video></video></div>
+            <div><img /></div>
+            <div><video></video></div>
+          </div>
+        </div>`
+      const videos = root.querySelectorAll('video')
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!)).toBe('post:code:CODE6:slot:0')
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[1]!)).toBe('post:code:CODE6:slot:2')
+      // each video resolves to its OWN distinct key, never swapped
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!)).not.toBe(
+        threadsAdapter.postKeyFromVideoElement?.(videos[1]!),
+      )
+    })
+
+    it('returns slot:2 for a THIRD video slide, proving the running counter advances past slot 1 too', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <div data-pressable-container="true"><a href="/@zuck/post/CODE9">link</a>
+          <div style="transform: translateX(-1400px);">
+            <div></div>
+            <div><video></video></div>
+            <div><video></video></div>
+            <div><video></video></div>
+          </div>
+        </div>`
+      const videos = root.querySelectorAll('video')
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!)).toBe('post:code:CODE9:slot:0')
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[1]!)).toBe('post:code:CODE9:slot:1')
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[2]!)).toBe('post:code:CODE9:slot:2')
+    })
+
+    it('treats a <video> with no track ancestor as domSlot 0 (single-media post)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE7">link</a><video></video></div>`
+      const video = root.querySelector('video')!
+      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE7')
+    })
+
+    it('treats a <video> mounted directly under the track (no slide-wrapper div) as domSlot 0, not a throw', () => {
+      // Malformed-markup edge case: real Threads markup always wraps a video
+      // in its own slide <div>, but a <video> sitting as a DIRECT child of the
+      // translateX track itself (no wrapper) has no ancestor-or-self match
+      // among track's children other than itself, and `Element.contains` is
+      // reflexive (an element contains itself) — still falls back to the
+      // index-0 shortcut rather than throwing.
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <div data-pressable-container="true"><a href="/@zuck/post/CODE8">link</a>
+          <div style="transform: translateX(0px);">
+            <video></video>
+          </div>
+        </div>`
+      const video = root.querySelector('video')!
+      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE8')
+    })
   })
 
   describe('extractPostCodes', () => {

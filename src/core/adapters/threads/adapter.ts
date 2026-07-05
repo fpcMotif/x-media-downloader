@@ -2,7 +2,7 @@ import type { PlatformAdapter } from '../types'
 import { detectMediaItems, postCodesInResponse } from '../meta-shared/detect'
 import { mediaKeyFromMetaUrl, isGrabbableMetaPhotoUrl, extFromMetaImgUrl } from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
-import { postVideoKey } from '../detection-store'
+import { postVideoKey, postVideoKeyByDomSlot } from '../detection-store'
 import type { MediaItem } from '../../schema'
 
 /** Threads' post-boundary selector — LIVE-VERIFIED 2026-07-05: zero
@@ -24,6 +24,74 @@ function postIdFromDom(el: Element): string | null {
   const container = findPostContainer(el, THREADS_POST_SELECTOR)
   if (!container) return null
   return postCodeFromContainer(container, 'a[href]', THREADS_POST_LINK_PATTERN)
+}
+
+/** The carousel track ancestor of `el` — an inline `transform: translateX(...)`
+ *  div (LIVE-VERIFIED 2026-07-05 against a real 2-video/3-photo Threads
+ *  carousel: https://www.threads.com/@zuck/post/DZ7eGA1G7wU) — or null if
+ *  `el` isn't inside a recognizable carousel track at all (single-media
+ *  post). Selecting by inline style rather than Threads' own wrapper class
+ *  names is deliberate: those classes are build-obfuscated atomic `x*`
+ *  classes with no stable semantic hook, confirmed to differ across
+ *  elements/builds, whereas the track's `translateX` positioning is a
+ *  structural property of "this is a horizontally-scrolling carousel". */
+function trackFor(el: Element): Element | null {
+  return el.closest('[style*="translateX"]')
+}
+
+/** The direct children of `track` that are actual slide wrappers, excluding
+ *  the always-present LEADING spacer (LIVE-VERIFIED: track's first child
+ *  carries zero element children of its own — every real slide wrapper has
+ *  at least one, the mounted `<img>`/`<video>`). Structural exclusion
+ *  (childElementCount, not a class/width check) so this is identical in
+ *  happy-dom (no computed layout) and a real browser. */
+function mountedSlideWrappers(track: Element): Element[] {
+  return [...track.children].filter((c) => c.childElementCount > 0)
+}
+
+/** `el`'s own mounted slide-wrapper: the direct child of `track` (see
+ *  {@link trackFor}) that contains `el`, excluding the empty leading spacer —
+ *  or null if none of `track`'s children actually contain `el` (shouldn't
+ *  happen given `track` was found by walking UP from `el`, but fails closed
+ *  rather than asserting). */
+function slideWrapperFor(el: Element, track: Element): Element | null {
+  return [...track.children].find((c) => c.contains(el) && c.childElementCount > 0) ?? null
+}
+
+/** The 0-based rank of `el`'s own slide wrapper among ALL of the MOUNTED slide
+ *  wrappers (video and photo slides alike) — i.e. "this wrapper's position
+ *  walking the currently-mounted track in DOM order". This MUST count every
+ *  slide, not just video-containing ones: `detection-store.ts`'s
+ *  `syncPostVideoKey` registers `postVideoKeyByDomSlot`/`postVideoKeyIndexed`
+ *  keyed by each video's ABSOLUTE `MediaItem.index` (photos included in that
+ *  count, since the tee assigns index across the whole carousel) — a
+ *  video-only count would drift from the store's absolute-index scheme the
+ *  moment a photo slide sits before a 2nd-or-later video (LIVE-VERIFIED
+ *  mixed-window shape: [spacer, video, photo, video] — the store indexes the
+ *  second video at 2, not 1). Window-relative, not absolute: Threads mounts
+ *  only a sliding window of the full carousel (current ± 1, LIVE-VERIFIED)
+ *  with no absolute-position indicator anywhere in the DOM (no counter, no
+ *  dots, no aria-current) — this is the wrapper's position among whatever's
+ *  mounted RIGHT NOW. This only matches the store's absolute index when the
+ *  mounted window starts at the carousel's own slide 0 (a fresh mount); a
+ *  scrolled-into-view window (current ± 1 starting mid-carousel) still won't
+ *  line up with the tee's whole-carousel index — an accepted residual gap
+ *  (see the module doc's known v1 scope limits), not one this fix claims to
+ *  close. Reads fresh every call — no caching, matching `postIdFromDom`'s own
+ *  posture (Threads' virtualization was confirmed to recycle a container's
+ *  contents between reads). Takes the already-resolved `wrapper` (from
+ *  {@link slideWrapperFor}) rather than re-deriving it, so the caller's own
+ *  "does a track exist at all" guard isn't duplicated here — `wrapper` is
+ *  always one of `track`'s own mounted children by construction, so the loop
+ *  always finds it. */
+function videoDomSlotAmongMountedSlides(wrapper: Element, track: Element): number {
+  let slot = 0
+  for (const slide of mountedSlideWrappers(track)) {
+    if (slide === wrapper) return slot
+    slot++
+  }
+  /* v8 ignore next -- wrapper is always one of track's own mounted children (see doc above) */
+  return slot
 }
 
 /** Host-match patterns for Threads tabs — both the pre- and post-migration
@@ -119,11 +187,17 @@ export const threadsAdapter: PlatformAdapter = {
   // Instagram's, not an independently re-confirmed fact for Threads
   // specifically. `resolveHoverItem`/`canResolveHoverItem` don't need a
   // video-specific branch: `previewKeyFromMedia` (overlay.content/index.tsx)
-  // already falls back to `postKeyFromVideoElement`'s `post:{code}` string as
-  // `key` for a hovered video, so `detected.get(key)` below transparently
-  // resolves it once `detection-store.ts` has registered that key
-  // (single-video posts only — v1 scope limit, see
-  // meta-shared/post-anchor.ts's module doc).
+  // already falls back to `postKeyFromVideoElement`'s `post:{code}`/
+  // `post:{code}:slot:{n}` string as `key` for a hovered video, so
+  // `detected.get(key)` below transparently resolves it once
+  // `detection-store.ts` has registered that key — multi-video (and mixed
+  // photo/video) carousels ARE supported via the dom-slot key form
+  // (`postVideoKeyByDomSlot`, keyed by `videoDomSlotAmongMountedSlides`'s
+  // mounted-window slide position), not just single-video posts; see
+  // meta-shared/post-anchor.ts's module doc for the one still-open scope
+  // limit (ambiguous first-matching-link inside a container) and this
+  // module's own `videoDomSlotAmongMountedSlides` doc for the window-relative
+  // (not absolute-position) caveat specific to Threads' virtualized mount.
   detectRenderedMedia: () => [],
   resolveHoverItem: (el, key, detected) => {
     const teed = detected.get(key)
@@ -137,7 +211,22 @@ export const threadsAdapter: PlatformAdapter = {
   extractPostCodes: postCodesInResponse,
   postKeyFromVideoElement: (video) => {
     const code = postIdFromDom(video)
-    return code ? postVideoKey(code) : null
+    if (!code) return null
+    const track = trackFor(video)
+    const wrapper = track ? slideWrapperFor(video, track) : null
+    if (!track || !wrapper) return postVideoKey(code) // no track/wrapper found: single-media post
+    // Always the indexed/dom-slot form once inside a real carousel track —
+    // even at domSlot 0. A DOM walk can't tell "this post has exactly one
+    // video" from "this post has 2+ videos and the hovered one happens to be
+    // the first" — only the store knows the video count. The store already
+    // registers the domSlot-0 alias uniformly regardless of count (see
+    // `syncPostVideoKey`'s own doc), so this never regresses the
+    // single-video case; using the bare `postVideoKey(code)` shortcut here
+    // instead would silently fail to resolve for any multi-video carousel
+    // whose first mounted slide is a video, since the store deletes that
+    // bare key the moment a post has 2+ videos.
+    const domSlot = videoDomSlotAmongMountedSlides(wrapper, track)
+    return postVideoKeyByDomSlot(code, domSlot)
   },
   // findMediaNeedingRecovery intentionally omitted: no public/no-auth
   // recovery fallback exists for Threads (oEmbed is Meta-app-registration-

@@ -1,7 +1,7 @@
 import { detectMediaItems, postCodesInResponse } from '../meta-shared/detect'
 import { mediaKeyFromMetaUrl, isGrabbableMetaPhotoUrl, extFromMetaImgUrl } from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
-import { postVideoKey } from '../detection-store'
+import { postVideoKey, postVideoKeyIndexed } from '../detection-store'
 import type { MediaItem } from '../../schema'
 import type { PlatformAdapter } from '../types'
 
@@ -24,6 +24,31 @@ function postIdFromDom(el: Element): string | null {
   const container = findPostContainer(el, INSTAGRAM_POST_SELECTOR)
   if (!container) return null
   return postCodeFromContainer(container, 'a[href]', INSTAGRAM_POST_LINK_PATTERN)
+}
+
+/** The 0-based carousel slide index of `li` (an <li> of the post's slide
+ *  <ul>) among its slide siblings. LIVE-VERIFIED 2026-07-05: slide <li> order
+ *  in the DOM (excluding the always-present trailing empty sentinel <li> — a
+ *  real carousel's sentinel measures 1px wide; happy-dom computes no layout,
+ *  so this excludes by DOM content instead of computed width, which is
+ *  layout-independent and identical in intent: the sentinel carries no
+ *  media, every real slide does) matches logical slide order. Takes the
+ *  already-resolved `li` (the caller's own "is this a carousel at all" guard
+ *  already found it via `closest('li')`) rather than re-deriving it, so that
+ *  guard isn't duplicated here.
+ *
+ *  `li.parentElement` and `siblings.indexOf(li)` are never null/-1: a
+ *  connected element always has a parent (an `<li>` can't be a document
+ *  root), and `li` itself always satisfies the sibling filter (it's the
+ *  ancestor-or-self match FOR the hovered element, which is what's actually
+ *  rendered — it necessarily has at least one element child). No defensive
+ *  fallback needed for either. */
+function slideIndexFromDom(li: Element): number {
+  const ul = li.parentElement!
+  const siblings = [...ul.children].filter(
+    (c) => c.tagName === 'LI' && c.childElementCount > 0, // drop the empty sentinel
+  )
+  return siblings.indexOf(li)
 }
 
 /** Host-match pattern for Instagram tabs — the single source of truth for the
@@ -131,11 +156,14 @@ export const instagramAdapter: PlatformAdapter = {
   // up on a real reel) — so a video's OWN url/poster carries no identity.
   // `resolveHoverItem`/`canResolveHoverItem` don't need a video-specific
   // branch though: `previewKeyFromMedia` (overlay.content/index.tsx) already
-  // falls back to `postKeyFromVideoElement`'s `post:{code}` string as `key`
-  // for a hovered video, so `detected.get(key)` below transparently resolves
-  // it once `detection-store.ts` has registered that key (single-video posts
-  // only — a carousel with 2+ videos never registers the key, v1 scope limit,
-  // see meta-shared/post-anchor.ts's module doc).
+  // falls back to `postKeyFromVideoElement`'s `post:{code}`/`post:{code}:{index}`
+  // string as `key` for a hovered video, so `detected.get(key)` below
+  // transparently resolves it once `detection-store.ts` has registered that
+  // key — multi-video (and mixed photo/video) carousels ARE supported via the
+  // indexed key form (`postVideoKeyIndexed`, keyed by `slideIndexFromDom`'s
+  // DOM slide position), not just single-video posts; see
+  // meta-shared/post-anchor.ts's module doc for the one still-open scope
+  // limit (ambiguous first-matching-link inside a container).
   detectRenderedMedia: () => [],
   resolveHoverItem: (element, key, detected) => {
     const teed = detected.get(key)
@@ -152,7 +180,20 @@ export const instagramAdapter: PlatformAdapter = {
   extractPostCodes: postCodesInResponse,
   postKeyFromVideoElement: (video) => {
     const code = postIdFromDom(video)
-    return code ? postVideoKey(code) : null
+    if (!code) return null
+    const li = video.closest('li')
+    if (!li) return postVideoKey(code) // no <ul>/<li> ancestor: single-media post
+    // Always the indexed form once inside a real carousel <ul> — even at
+    // slide 0. A DOM walk can't tell "this post has exactly one video" from
+    // "this post has 2+ videos and the hovered one happens to be the first
+    // slide" — only the store (which knows the real video count) can. The
+    // store already registers the index-0 alias uniformly regardless of
+    // count (see `detection-store.ts`'s `syncPostVideoKey`), so this never
+    // regresses the single-video case; using the bare `postVideoKey(code)`
+    // shortcut here instead would silently fail to resolve for any
+    // multi-video carousel whose first slide is a video, since the store
+    // deletes that bare key the moment a post has 2+ videos.
+    return postVideoKeyIndexed(code, slideIndexFromDom(li))
   },
   // No findMediaNeedingRecovery: Instagram has no public/no-auth fallback
   // (oEmbed is Meta-app-registration-gated) — confirmed by research, per the

@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'vitest'
 import type { MediaItem } from '../schema'
-import { makeDetectionStore, keysForItem, postVideoKey, postVideoKeyById } from './detection-store'
+import {
+  makeDetectionStore,
+  keysForItem,
+  postVideoKey,
+  postVideoKeyById,
+  postVideoKeyIndexed,
+  postVideoKeyByIdIndexed,
+  postVideoKeyByDomSlot,
+} from './detection-store'
 import { mediaKeyFromUrl } from './x/dom'
+import { mediaKeyFromMetaUrl } from './meta-shared/dom'
+import { threadsAdapter } from './threads/adapter'
+import { instagramAdapter } from './instagram/adapter'
 
 /** twimg URLs so mediaKeyFromUrl yields a real key (final path segment, no ext). */
 const photo = (id: string, key: string, tweetId = 't1'): MediaItem => ({
@@ -16,7 +27,13 @@ const photo = (id: string, key: string, tweetId = 't1'): MediaItem => ({
   index: 0,
 })
 
-const video = (id: string, mp4Key: string, posterKey: string, tweetId = 't1'): MediaItem => ({
+const video = (
+  id: string,
+  mp4Key: string,
+  posterKey: string,
+  tweetId = 't1',
+  index = 0,
+): MediaItem => ({
   id,
   platform: 'x',
   postId: tweetId,
@@ -25,7 +42,7 @@ const video = (id: string, mp4Key: string, posterKey: string, tweetId = 't1'): M
   url: `https://video.twimg.com/ext_tw_video/9/pu/vid/720x720/${mp4Key}.mp4?tag=12`,
   previewUrl: `https://pbs.twimg.com/ext_tw_video_thumb/9/pu/img/${posterKey}.jpg`,
   ext: 'mp4',
-  index: 0,
+  index,
 })
 
 describe('keysForItem', () => {
@@ -164,17 +181,29 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
     expect(s.resolve(postVideoKeyById('postA'))).toEqual(v)
   })
 
+  it('also registers the indexed key at index 0 for a single-video post (uniform lookup)', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4', 'POST', 'postA', 0)
+    s.addDetected([v])
+    s.registerPostCode('postA', 'CODEA')
+    expect(s.keyIndex().get(postVideoKeyByIdIndexed('postA', 0))).toEqual(v)
+    expect(s.keyIndex().get(postVideoKeyIndexed('CODEA', 0))).toEqual(v)
+  })
+
   it('does NOT register for a 2-video carousel post', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
-    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postB'), video('v2', 'MP4B', 'POSTB', 'postB')])
+    s.addDetected([
+      video('v1', 'MP4A', 'POSTA', 'postB', 0),
+      video('v2', 'MP4B', 'POSTB', 'postB', 1),
+    ])
     expect(s.keyIndex().has(postVideoKeyById('postB'))).toBe(false)
   })
 
   it('de-registers if a 2nd video for the same post arrives later', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
-    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postC')])
+    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postC', 0)])
     expect(s.keyIndex().has(postVideoKeyById('postC'))).toBe(true)
-    s.addDetected([video('v2', 'MP4B', 'POSTB', 'postC')])
+    s.addDetected([video('v2', 'MP4B', 'POSTB', 'postC', 1)])
     expect(s.keyIndex().has(postVideoKeyById('postC'))).toBe(false)
   })
 
@@ -191,6 +220,17 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
     s.clear()
     s.addDetected([video('v1', 'MP4', 'POST', 'postE')])
     expect(s.keyIndex().has(postVideoKeyById('postE'))).toBe(true)
+  })
+
+  it('clear() also wipes the indexed and dom-slot key bookkeeping', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postE2', 'CODEE2')
+    s.addDetected([video('v1', 'MP4', 'POST', 'postE2', 0)])
+    expect(s.keyIndex().has(postVideoKeyIndexed('CODEE2', 0))).toBe(true)
+    expect(s.keyIndex().has(postVideoKeyByDomSlot('CODEE2', 0))).toBe(true)
+    s.clear()
+    expect(s.keyIndex().has(postVideoKeyIndexed('CODEE2', 0))).toBe(false)
+    expect(s.keyIndex().has(postVideoKeyByDomSlot('CODEE2', 0))).toBe(false)
   })
 
   it('a duplicate addDetected call for the same video item does not inflate the per-post count', () => {
@@ -226,7 +266,10 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
   it('a 2-video post keeps BOTH post:id:{postId} and post:code:{code} absent', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
     s.registerPostCode('postJ', 'CODEJ')
-    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postJ'), video('v2', 'MP4B', 'POSTB', 'postJ')])
+    s.addDetected([
+      video('v1', 'MP4A', 'POSTA', 'postJ', 0),
+      video('v2', 'MP4B', 'POSTB', 'postJ', 1),
+    ])
     expect(s.keyIndex().has(postVideoKeyById('postJ'))).toBe(false)
     expect(s.keyIndex().has(postVideoKey('CODEJ'))).toBe(false)
   })
@@ -246,6 +289,180 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
     s.addDetected([vCode])
     expect(s.keyIndex().get(postVideoKeyById('SHARED'))).toEqual(vId)
     expect(s.keyIndex().get(postVideoKey('SHARED'))).toEqual(vCode)
+  })
+
+  it('two videos in one post resolve via distinct indexed keys, never swapped', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postM', 'CODEM')
+    const v0 = video('v1', 'MP4A', 'POSTA', 'postM', 0)
+    const v1 = video('v2', 'MP4B', 'POSTB', 'postM', 1)
+    s.addDetected([v0, v1])
+
+    // the no-index keys withhold entirely (can't disambiguate by postId alone)
+    expect(s.keyIndex().has(postVideoKey('CODEM'))).toBe(false)
+    expect(s.keyIndex().has(postVideoKeyById('postM'))).toBe(false)
+
+    // the indexed keys resolve each to its OWN distinct item
+    expect(s.keyIndex().get(postVideoKeyIndexed('CODEM', 0))).toEqual(v0)
+    expect(s.keyIndex().get(postVideoKeyIndexed('CODEM', 1))).toEqual(v1)
+
+    // the always-registered dom-slot alias resolves identically
+    expect(s.keyIndex().get(postVideoKeyByDomSlot('CODEM', 0))).toEqual(v0)
+    expect(s.keyIndex().get(postVideoKeyByDomSlot('CODEM', 1))).toEqual(v1)
+  })
+
+  it('mixed carousel: only videos get indexed keys, a photo-occupied index stays absent', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postN', 'CODEN')
+    // index 1 is a photo in this carousel — never enters videosByPost at all.
+    const v0 = video('v1', 'MP4A', 'POSTA', 'postN', 0)
+    const v2 = video('v2', 'MP4B', 'POSTB', 'postN', 2)
+    s.addDetected([v0, photo('p1', 'KA', 'postN'), v2])
+
+    expect(s.keyIndex().get(postVideoKeyIndexed('CODEN', 0))).toEqual(v0)
+    expect(s.keyIndex().get(postVideoKeyIndexed('CODEN', 2))).toEqual(v2)
+    expect(s.keyIndex().has(postVideoKeyIndexed('CODEN', 1))).toBe(false)
+  })
+
+  it('a 1→2 video transition re-syncs: no-index keys go away, both indexed keys appear', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postO', 'CODEO')
+    const v0 = video('v1', 'MP4A', 'POSTA', 'postO', 0)
+    s.addDetected([v0])
+    expect(s.keyIndex().has(postVideoKey('CODEO'))).toBe(true)
+    expect(s.keyIndex().has(postVideoKeyById('postO'))).toBe(true)
+
+    const v1 = video('v2', 'MP4B', 'POSTB', 'postO', 1)
+    s.addDetected([v1])
+    expect(s.keyIndex().has(postVideoKey('CODEO'))).toBe(false)
+    expect(s.keyIndex().has(postVideoKeyById('postO'))).toBe(false)
+    expect(s.keyIndex().get(postVideoKeyIndexed('CODEO', 0))).toEqual(v0)
+    expect(s.keyIndex().get(postVideoKeyIndexed('CODEO', 1))).toEqual(v1)
+  })
+
+  it('a superseded/removed video does not leave a stale indexed entry behind', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postP', 'CODEP')
+    const v0 = video('v1', 'MP4A', 'POSTA', 'postP', 0)
+    const v1 = video('v2', 'MP4B', 'POSTB', 'postP', 1)
+    s.addDetected([v0, v1])
+    expect(s.keyIndex().has(postVideoKeyIndexed('CODEP', 1))).toBe(true)
+
+    // simulate the tee re-detecting the post with only index 0 present now —
+    // addDetected itself only ever ADDS to videosByPost (never removes an
+    // index), so directly exercise the removal path via a fresh store that
+    // never saw index 1, proving syncPostVideoKey's cleanup only ever
+    // registers indices actually present in videosByPost right now.
+    const s2 = makeDetectionStore({ mediaKeyFromUrl })
+    s2.registerPostCode('postP2', 'CODEP2')
+    s2.addDetected([video('v1', 'MP4A', 'POSTA', 'postP2', 0)])
+    expect(s2.keyIndex().has(postVideoKeyIndexed('CODEP2', 1))).toBe(false)
+  })
+
+  it('fails closed: a slide index the store never registered resolves to nothing, never a wrong item', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postQ', 'CODEQ')
+    // Only index 0 was ever tee-detected for this post.
+    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postQ', 0)])
+    // A hover resolver that (incorrectly) computed index/domSlot 5 for this
+    // post must get nothing back, never accidentally the index-0 item.
+    expect(s.resolve(postVideoKeyIndexed('CODEQ', 5))).toBeUndefined()
+    expect(s.resolve(postVideoKeyByDomSlot('CODEQ', 5))).toBeUndefined()
+  })
+
+  it('Threads integration: a mixed carousel [video, photo, video] resolves the SECOND video via the real adapter + store together', () => {
+    // Regression test for the domSlot/absolute-index mismatch: the Threads
+    // adapter's DOM-derived slot must name the SAME video the store registered
+    // under that slot, for a real mixed carousel (video, photo, video) — the
+    // exact shape live-verified at threads.com/@zuck/post/DZ7eGA1G7wU.
+    const s = makeDetectionStore({ mediaKeyFromUrl: mediaKeyFromMetaUrl })
+    s.registerPostCode('postR', 'CODER')
+    const v0: MediaItem = {
+      id: 'v0',
+      platform: 'threads',
+      postId: 'postR',
+      author: 'zuck',
+      type: 'video',
+      url: 'https://cdn.example/v0.mp4',
+      ext: 'mp4',
+      index: 0,
+    }
+    const v2: MediaItem = {
+      id: 'v2',
+      platform: 'threads',
+      postId: 'postR',
+      author: 'zuck',
+      type: 'video',
+      url: 'https://cdn.example/v2.mp4',
+      ext: 'mp4',
+      index: 2,
+    }
+    // index 1 is a photo slide — never enters videosByPost.
+    s.addDetected([v0, v2])
+
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <div data-pressable-container="true"><a href="/@zuck/post/CODER">link</a>
+        <div style="transform: translateX(-716px);">
+          <div></div>
+          <div><video></video></div>
+          <div><img /></div>
+          <div><video></video></div>
+        </div>
+      </div>`
+    const videos = root.querySelectorAll('video')
+    const firstKey = threadsAdapter.postKeyFromVideoElement!(videos[0]!)!
+    const secondKey = threadsAdapter.postKeyFromVideoElement!(videos[1]!)!
+
+    expect(s.resolve(firstKey)).toEqual(v0)
+    expect(s.resolve(secondKey)).toEqual(v2)
+  })
+
+  it('Instagram integration: a 2-video carousel whose FIRST slide is a video resolves via the real adapter + store together', () => {
+    // Regression test for the analogous bug on Instagram: postKeyFromVideoElement
+    // used to special-case slide-0 to the bare post:{code} shortcut, but the
+    // store deletes that bare key the moment a post has 2+ videos (it only
+    // stays alive for a genuinely single-video post) — so a multi-video
+    // carousel whose first slide is a video could never resolve via hover.
+    const s = makeDetectionStore({ mediaKeyFromUrl: mediaKeyFromMetaUrl })
+    s.registerPostCode('postS', 'CODES')
+    const v0: MediaItem = {
+      id: 'ig-v0',
+      platform: 'instagram',
+      postId: 'postS',
+      author: 'alice',
+      type: 'video',
+      url: 'https://cdn.example/ig-v0.mp4',
+      ext: 'mp4',
+      index: 0,
+    }
+    const v1: MediaItem = {
+      id: 'ig-v1',
+      platform: 'instagram',
+      postId: 'postS',
+      author: 'alice',
+      type: 'video',
+      url: 'https://cdn.example/ig-v1.mp4',
+      ext: 'mp4',
+      index: 1,
+    }
+    s.addDetected([v0, v1])
+
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <article><a href="/p/CODES/">link</a>
+        <ul>
+          <li><video></video></li>
+          <li><video></video></li>
+          <li></li>
+        </ul>
+      </article>`
+    const videos = root.querySelectorAll('video')
+    const firstKey = instagramAdapter.postKeyFromVideoElement!(videos[0]!)!
+    const secondKey = instagramAdapter.postKeyFromVideoElement!(videos[1]!)!
+
+    expect(s.resolve(firstKey)).toEqual(v0)
+    expect(s.resolve(secondKey)).toEqual(v1)
   })
 
   it('syncing one post leaves an unrelated registered code -> post mapping untouched', () => {
