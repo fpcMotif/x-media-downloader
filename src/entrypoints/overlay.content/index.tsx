@@ -1,7 +1,7 @@
 import './style.css'
 import { render } from 'preact'
 import { adapterForHostname, ALL_ADAPTERS } from '../../core/adapters/registry'
-import { makeDetectionStore } from '../../core/adapters/detection-store'
+import { makeDetectionStore, postGrabItems } from '../../core/adapters/detection-store'
 import { harvestTweets } from '../../core/capture/harvest'
 import type { Source, TweetRecord } from '../../core/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
@@ -16,6 +16,9 @@ import {
   syncModifierFromFlags,
   quickGrabDwellMs,
   quickGrabBadgeLabel,
+  allAugmentModifier,
+  postGrabActive,
+  markAllGrabbed,
   type GrabModifier,
   type QuickGrabState,
   type QuickGrabUiPhase,
@@ -718,6 +721,8 @@ export default defineContentScript({
     // none of the X-only clear/capture/reveal machinery below ever runs.
     const adapter = adapterForHostname(location.hostname)
     if (!adapter) return
+    // Whole-post grab (Cmd augment) is Instagram/Threads-only by product decision.
+    const postGrabEligible = adapter.platform === 'instagram' || adapter.platform === 'threads'
     // Boot marker: if you don't see this in the X page console, the content
     // script isn't live on this tab (old build loaded, or the tab predates the
     // extension reload) — reload the extension AND refresh the tab.
@@ -772,6 +777,9 @@ export default defineContentScript({
     let qgEnabled = false
     let qgModifier: GrabModifier = 'alt'
     let grab: QuickGrabState = idleQuickGrab
+    // Whether the Cmd augment is held right now (all-mode). Tracked as a scalar
+    // because the dwell fires on a timer with no event in hand.
+    let postGrabArmed = false
     let hoverMedia: HoverMediaElement | null = null
     let hoverKey: string | null = null
     // Phases: charging (dwell running) → queued (background handoff pending) →
@@ -780,6 +788,8 @@ export default defineContentScript({
       key: string
       rect: Rect
       phase: QuickGrabUiPhase
+      all?: boolean
+      allCount?: number
     } | null = null
     let dwell: ReturnType<typeof setTimeout> | null = null
     let cursorStyle: HTMLStyleElement | null = null
@@ -1100,12 +1110,19 @@ export default defineContentScript({
         return
       }
       grab = markGrabbed(grab, key)
+      const all = postGrabArmed
+      const items = all ? postGrabItems(item, store.valuesForTweet(item.postId)) : [item]
+      // Marking every key of the post keeps a cursor sweep across sibling slides
+      // from re-charging the ring (downstream the admission gate dedups anyway).
+      if (all) grab = markAllGrabbed(grab, store.keysForTweet(item.postId))
       // After the dwell completes, move out of the charge state immediately.
       // The background reply then confirms whether the browser/aria2 handoff started.
-      grabUi = { key, rect: rectOf(media), phase: 'queued' }
+      grabUi = all
+        ? { key, rect: rectOf(media), phase: 'queued', all: true, allCount: items.length }
+        : { key, rect: rectOf(media), phase: 'queued' }
       rerender()
       runHandoff({
-        items: [item],
+        items,
         trace: { fn: traceQuickGrab, item, armedAt: hoverArmedAt },
         isStale: () => grabUi === null || grabUi.key !== key,
         resolve: (ok) => {
@@ -1117,13 +1134,13 @@ export default defineContentScript({
     /** Begin (or, if already grabbed this press, just acknowledge) a hovered media item. */
     const armHover = (media: HoverMediaElement, key: string): void => {
       if (canGrab(grab, key)) {
-        grabUi = { key, rect: rectOf(media), phase: 'charging' }
+        grabUi = { key, rect: rectOf(media), phase: 'charging', all: postGrabArmed }
         rerender()
         hoverArmedAt = Date.now()
         traceQuickGrab('armed', { key })
         dwell = setTimeout(() => fireGrab(media, key), quickGrabDwellMs)
       } else {
-        grabUi = { key, rect: rectOf(media), phase: 'noted' }
+        grabUi = { key, rect: rectOf(media), phase: 'noted', all: postGrabArmed }
         rerender()
       }
     }
@@ -1147,8 +1164,20 @@ export default defineContentScript({
       grab = releaseModifier()
       clearDwell()
       setCursorActive(false)
+      postGrabArmed = false
       grabUi = null
       rerender()
+    }
+
+    // Update all-mode and, if a ring is already up (charging/noted), re-label it
+    // live so pressing/releasing Cmd without moving the cursor is reflected.
+    const refreshPostGrabArmed = (next: boolean): void => {
+      if (next === postGrabArmed) return
+      postGrabArmed = next
+      if (grabUi && (grabUi.phase === 'charging' || grabUi.phase === 'noted')) {
+        grabUi = { ...grabUi, all: next }
+        rerender()
+      }
     }
 
     const syncGrabFromPointer = (e: MouseEvent): boolean => {
@@ -1413,7 +1442,12 @@ export default defineContentScript({
                 '--xmd-dwell': `${quickGrabDwellMs}ms`,
               }}
             >
-              <span class="xmd-grab__badge">{quickGrabBadgeLabel(grabUi.phase)}</span>
+              <span class="xmd-grab__badge">
+                {quickGrabBadgeLabel(
+                  grabUi.phase,
+                  grabUi.all ? { count: grabUi.allCount ?? 0 } : undefined,
+                )}
+              </span>
               {grabUi.phase === 'charging' && (
                 <span key={`${grabUi.key}:charge`} class="xmd-grab__frame" aria-hidden="true">
                   <span class="xmd-grab__edge xmd-grab__edge--top" />
@@ -1600,6 +1634,7 @@ export default defineContentScript({
       // keyup and cover the common "hold modifier, then hover media" path where
       // the page never saw the initial keydown.
       const grabbing = qgEnabled && syncGrabFromPointer(e)
+      refreshPostGrabArmed(postGrabActive(grab.active, e, qgModifier, postGrabEligible))
       const target = e.target as Element | null
       // Hovering this extension's own UI (the badge) must not read as leaving
       // the media underneath it — the entrance would hide before the click.
@@ -1673,6 +1708,7 @@ export default defineContentScript({
       if (!qgEnabled || !isModifierKey(e.key, qgModifier)) return
       const was = grab.active
       grab = pressModifier(grab)
+      postGrabArmed = postGrabActive(grab.active, e, qgModifier, postGrabEligible)
       if (grab.active && !was) {
         setCursorActive(true)
         // One affordance at a time: the ring owns the hover while the modifier is held.
@@ -1694,6 +1730,21 @@ export default defineContentScript({
       if (isModifierKey((event as KeyboardEvent).key, qgModifier)) releaseAll()
     })
     ctx.addEventListener(window, 'blur', () => releaseAll())
+    // The Cmd augment (grab whole post): update all-mode even without a mousemove
+    // and re-label a live ring. `allAugmentModifier(qgModifier)` is read fresh each
+    // event because the base modifier can change via settings at runtime.
+    ctx.addEventListener(window, 'keydown', (event) => {
+      const e = event as KeyboardEvent
+      if (!qgEnabled || !postGrabEligible) return
+      if (!isModifierKey(e.key, allAugmentModifier(qgModifier))) return
+      refreshPostGrabArmed(postGrabActive(grab.active, e, qgModifier, postGrabEligible))
+    })
+    ctx.addEventListener(window, 'keyup', (event) => {
+      const e = event as KeyboardEvent
+      if (!postGrabEligible) return
+      if (!isModifierKey(e.key, allAugmentModifier(qgModifier))) return
+      refreshPostGrabArmed(false)
+    })
     ctx.addEventListener(document, 'mouseleave', () => {
       focusHover(null, null)
       focusBadge(null, null)
