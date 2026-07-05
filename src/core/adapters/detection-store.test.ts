@@ -411,8 +411,8 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
         </div>
       </div>`
     const videos = root.querySelectorAll('video')
-    const firstKey = threadsAdapter.postKeyFromVideoElement!(videos[0]!)!
-    const secondKey = threadsAdapter.postKeyFromVideoElement!(videos[1]!)!
+    const firstKey = threadsAdapter.postKeyFromVideoElement!(videos[0]!, '/@zuck/post/CODER')!
+    const secondKey = threadsAdapter.postKeyFromVideoElement!(videos[1]!, '/@zuck/post/CODER')!
 
     expect(s.resolve(firstKey)).toEqual(v0)
     expect(s.resolve(secondKey)).toEqual(v2)
@@ -458,8 +458,8 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
         </ul>
       </article>`
     const videos = root.querySelectorAll('video')
-    const firstKey = instagramAdapter.postKeyFromVideoElement!(videos[0]!)!
-    const secondKey = instagramAdapter.postKeyFromVideoElement!(videos[1]!)!
+    const firstKey = instagramAdapter.postKeyFromVideoElement!(videos[0]!, '/p/CODES/')!
+    const secondKey = instagramAdapter.postKeyFromVideoElement!(videos[1]!, '/p/CODES/')!
 
     expect(s.resolve(firstKey)).toEqual(v0)
     expect(s.resolve(secondKey)).toEqual(v1)

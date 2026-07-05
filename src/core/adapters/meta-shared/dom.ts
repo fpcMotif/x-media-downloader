@@ -119,3 +119,96 @@ export function extFromMetaImgUrl(url: string): string {
     return 'jpg'
   }
 }
+
+/**
+ * The bare `t{N}` path-family segment carried by a cdninstagram.com *video*
+ * URL (e.g. `t16` in `/o1/v/t16/f2/m84/{token}.mp4`) — deliberately NOT the
+ * same shape as {@link pathFamily}'s `t{N}.{N}-{N}` photo convention. LIVE-
+ * VERIFIED 2026-07-05: a real Instagram `/p/{code}/` inline video post
+ * (instagram.com/p/DaSs_DTmWdw/) and a real Threads carousel video slide
+ * (threads.com/@zuck/post/DZ7eGA1G7wU) both serve `t16` with NO dot-suffix at
+ * all — unlike photos, whose family always carries a `.{N}-{N}` suffix.
+ * Returns null if no bare `t{N}` segment exists in the path (a whole-segment
+ * match, so a photo family like `t51.82787-15` — which also "contains" a
+ * `t51` prefix conceptually — correctly does NOT match here: the full segment
+ * text differs).
+ */
+export function videoPathFamily(pathname: string): string | null {
+  const seg = pathname.split('/').find((p) => /^t\d+$/.test(p))
+  return seg ?? null
+}
+
+/**
+ * Whether `url` is a grabbable Instagram/Threads *video*: a
+ * `*.cdninstagram.com` host on a real `tN`-shaped video path segment. Kept as
+ * its OWN predicate rather than widening {@link isGrabbableMetaPhotoUrl} —
+ * every existing caller of that function (the photo DOM-hover resolution
+ * path) assumes "photo" by its very name and return shape; conflating the two
+ * risks a photo-path caller silently starting to accept video assets it isn't
+ * prepared to handle. No avatar-equivalent exclusion is applied here (unlike
+ * the photo family's `-19` vs `-15` split): LIVE-VERIFIED 2026-07-05 — a full
+ * `performance.getEntriesByType('resource')` sweep of a real `/p/` video post
+ * page found no `t16`-shaped profile-picture/avatar video asset at all (only
+ * `-19`-suffixed PHOTO avatars, plus an unrelated `t2/f2/mNNN` asset family —
+ * see the module-level outlier caveat on {@link mediaKeyFromMetaVideoUrl}).
+ */
+export function isGrabbableMetaVideoUrl(url: string): boolean {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return false
+  }
+  if (!isCdninstagramHost(u.hostname)) return false
+  return videoPathFamily(u.pathname) !== null
+}
+
+/**
+ * The stable media key for a cdninstagram.com *video* URL: the final path
+ * segment, minus extension, minus query string — identical extraction rule
+ * to {@link mediaKeyFromMetaUrl}, just gated on {@link isGrabbableMetaVideoUrl}
+ * instead of the photo predicate. Already gated — returns null for anything
+ * that isn't a grabbable content video.
+ *
+ * SAME UNVERIFIED ASSUMPTION as `mediaKeyFromMetaUrl` carries for photos,
+ * now inherited here for video: whether a video ever has multiple renditions
+ * with DIFFERING basenames (the way a photo's `image_versions2.candidates[]`
+ * might) has not been independently re-verified — not proven impossible, just
+ * unverified.
+ *
+ * KNOWN OUTLIER, NOT GENERALIZED AWAY: exactly one unusual Threads post this
+ * session showed a `t2/f2/m367`-shaped video-ish asset (not `t16`) — this
+ * predicate's generalized `tN` matching would also accept a `t2`-shaped
+ * asset if one were ever hover-targeted directly, and no live case has ruled
+ * that out as a non-content asset class. Treated as acceptably low-risk per
+ * research's otherwise-clean negative result (19 images inspected, all
+ * `t51.*`; only one `t2` sighting, on an unrelated resource, not a hovered
+ * `<video>`'s own src), not proven safe.
+ */
+export function mediaKeyFromMetaVideoUrl(url: string): string | null {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  if (!isGrabbableMetaVideoUrl(url)) return null
+  const base = u.pathname.slice(u.pathname.lastIndexOf('/') + 1)
+  const dot = base.lastIndexOf('.')
+  const key = dot >= 0 ? base.slice(0, dot) : base
+  return key.length > 0 ? key : null
+}
+
+/**
+ * The combined photo-or-video media key for a cdninstagram.com URL: tries
+ * the photo path first ({@link mediaKeyFromMetaUrl}), then the video path
+ * ({@link mediaKeyFromMetaVideoUrl}), returning null only if neither resolves.
+ * This is what `PlatformAdapter.mediaKeyFromUrl` should point at (for both
+ * Instagram and Threads) instead of the photo-only function directly, so a
+ * hovered `<video>` with a real (non-`blob:`) `tN`-shaped URL resolves via the
+ * existing url-based key path with zero DOM-anchor machinery needed — see
+ * `instagram/adapter.ts` and `threads/adapter.ts`.
+ */
+export function mediaKeyFromMetaCombinedUrl(url: string): string | null {
+  return mediaKeyFromMetaUrl(url) ?? mediaKeyFromMetaVideoUrl(url)
+}

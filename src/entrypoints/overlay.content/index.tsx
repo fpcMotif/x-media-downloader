@@ -759,7 +759,9 @@ export default defineContentScript({
       if (!media) return null
       const urlKey = adapter.mediaKeyFromUrl(previewSrcFromMedia(media))
       if (urlKey) return urlKey
-      return isVideoElement(media) ? (adapter.postKeyFromVideoElement?.(media) ?? null) : null
+      return isVideoElement(media)
+        ? (adapter.postKeyFromVideoElement?.(media, location.pathname) ?? null)
+        : null
     }
 
     const store = makeDetectionStore({ mediaKeyFromUrl: adapter.mediaKeyFromUrl })

@@ -82,6 +82,15 @@ export interface PlatformAdapter {
    * SAME key) — only needs to be non-null while hovering a real post-video
    * and change when the hovered post changes. X omits this: its video always
    * has a URL-derivable key via `mediaKeyFromUrl` already.
+   *
+   * `pathname` is the CURRENT page's `location.pathname` — needed for the
+   * standalone-permalink-page fallback (a `/p/{code}/`, `/reel/{code}/`, or
+   * `/reels/{code}/` page has zero `<article>` ancestors to walk at all, so
+   * the normal DOM-anchor walk finds no container; the permalink URL itself
+   * already carries the post's own code). Instagram's implementation uses it;
+   * Threads' accepts-and-ignores it (its own post-boundary DOM anchor
+   * — `data-pressable-container` — is present on both feed and permalink
+   * pages, so it never needs this fallback).
    */
-  postKeyFromVideoElement?(video: HTMLVideoElement): string | null
+  postKeyFromVideoElement?(video: HTMLVideoElement, pathname: string): string | null
 }

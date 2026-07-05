@@ -1,5 +1,10 @@
 import { detectMediaItems, postCodesInResponse } from '../meta-shared/detect'
-import { mediaKeyFromMetaUrl, isGrabbableMetaPhotoUrl, extFromMetaImgUrl } from '../meta-shared/dom'
+import {
+  mediaKeyFromMetaUrl,
+  mediaKeyFromMetaCombinedUrl,
+  isGrabbableMetaPhotoUrl,
+  extFromMetaImgUrl,
+} from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
 import { postVideoKey, postVideoKeyIndexed } from '../detection-store'
 import type { MediaItem } from '../../schema'
@@ -16,14 +21,78 @@ const INSTAGRAM_POST_SELECTOR = 'article'
  *  alone is sufficient and simpler. */
 const INSTAGRAM_POST_LINK_PATTERN = /^\/p\/([A-Za-z0-9_-]+)\//
 
-/** The postId a hovered element's Instagram post resolves to, by walking up
- *  to its nearest <article> and reading that article's `/p/{code}/` link
- *  fresh — or null if `el` isn't inside a post, or the post carries no such
- *  link (shouldn't happen per research, but fails closed rather than throws). */
-function postIdFromDom(el: Element): string | null {
+/**
+ * The post-shortcode pattern for a standalone Instagram permalink PAGE url
+ * itself (`location.pathname`, not an `<a href>`) — `/p/{code}/`,
+ * `/reel/{code}/`, or `/reels/{code}/`. LIVE-VERIFIED 2026-07-05: a `/reel/`
+ * permalink page's own url is rewritten to `/reels/` (plural) once the
+ * client-side router settles, so both forms must match. No trailing slash is
+ * required (matches a bare `/p/{code}` too), same posture as
+ * `INSTAGRAM_POST_LINK_PATTERN`'s own leniency.
+ */
+export const INSTAGRAM_PERMALINK_PATTERN = /^\/(?:p|reels?)\/([A-Za-z0-9_-]+)/
+
+/** The post code carried by the CURRENT page's own `pathname` (a standalone
+ *  permalink page's url), or null if `pathname` isn't a permalink shape at
+ *  all (e.g. the home feed root, `/`, or a profile page). */
+export function postCodeFromPathname(pathname: string): string | null {
+  return INSTAGRAM_PERMALINK_PATTERN.exec(pathname)?.[1] ?? null
+}
+
+/**
+ * The postId a hovered element's Instagram post resolves to, by walking up
+ * to its nearest <article> and reading that article's `/p/{code}/` link
+ * fresh — or, when no <article> ancestor exists at all (a standalone
+ * permalink/reel page has ZERO <article> elements anywhere on the page,
+ * LIVE-VERIFIED 2026-07-05: `document.querySelector('article') === null` on
+ * a real instagram.com/p/{code}/ page), falls back to the CURRENT page's own
+ * `pathname` — the permalink url already carries the post's own code, a much
+ * simpler signal than any further DOM walk.
+ *
+ * RISK, DISCLOSED NOT SOLVED (see the design doc's Part A): a permalink page
+ * can render a "More posts" suggested-content section below the main post,
+ * whose links carry OTHER, different posts' codes. LIVE-VERIFIED 2026-07-05
+ * against a real permalink page (instagram.com/p/DaSs_DTmWdw/, which DOES
+ * have such a section, confirmed via distinct `/{username}/p/{code}/` links
+ * in the DOM): that section's cards render `<img>` thumbnails only — zero
+ * `<video>` elements anywhere outside the main post (`videoCount` on the page
+ * was exactly 1, matching the single real post). No hero-content DOM
+ * boundary is built regardless — the pathname fallback applies
+ * unconditionally once no `<article>` ancestor is found, per that clean
+ * (if not exhaustively proven) live negative result.
+ *
+ * SECOND GUARD, LIVE-VERIFIED 2026-07-05 (found via correctness review, not
+ * the original design): Instagram's Reels IMMERSIVE player
+ * (`/reels/{code}/`) is ALSO `<article>`-less, but unlike a `/p/{code}/`
+ * permalink page (always exactly 1 mounted `<video>`), it mounts 6-11
+ * sibling `<video>` elements simultaneously (off-screen ones included) while
+ * `location.pathname` only ever reflects whichever reel is currently
+ * scrolled into view. Applying the pathname fallback there would resolve
+ * EVERY mounted sibling to the SAME post code — reproduced directly
+ * pre-fix (two distinct sibling `<video>`s returned the identical key). The
+ * permalink-page case this fallback exists for always has exactly one
+ * `<video>` on the whole page (also live-verified), so gating on "exactly
+ * one `<video>` reachable from `el`'s own root" cleanly separates the two
+ * cases with no viewport/geometry check needed (geometry is also unusable
+ * here: happy-dom computes no real layout, so any such check would be
+ * untestable without mocking). `getRootNode()` is used rather than
+ * `el.ownerDocument` so this counts correctly against a detached test
+ * fixture too, not just a real attached page.
+ */
+function postIdFromDom(el: Element, pathname: string): string | null {
   const container = findPostContainer(el, INSTAGRAM_POST_SELECTOR)
-  if (!container) return null
-  return postCodeFromContainer(container, 'a[href]', INSTAGRAM_POST_LINK_PATTERN)
+  if (container) return postCodeFromContainer(container, 'a[href]', INSTAGRAM_POST_LINK_PATTERN)
+  // `getRootNode()` resolves to the live `document` on a real page (every
+  // mounted video lives there), but to the nearest detached fragment root in
+  // a test that never attaches its scratch `<div>` to `document.body` —
+  // either way this counts every video actually reachable from `el`'s own
+  // tree, not a separate unrelated tree. A connected/detached element's root
+  // is always a Document or DocumentFragment (a ShadowRoot IS a
+  // DocumentFragment) — never a bare Element — so this covers every real
+  // case `getRootNode()` can return.
+  const root = el.getRootNode() as Document | DocumentFragment
+  if (root.querySelectorAll('video').length !== 1) return null
+  return postCodeFromPathname(pathname)
 }
 
 /** The 0-based carousel slide index of `li` (an <li> of the post's slide
@@ -143,7 +212,12 @@ export const instagramAdapter: PlatformAdapter = {
   // this hasn't been independently verified against a live network capture).
   isTrackedResponseUrl: (url, _requestHeaders) => isTrackedInstagramResponseUrl(url),
   detectFromResponse: (_url, json) => detectMediaItems(json, 'instagram'),
-  mediaKeyFromUrl: mediaKeyFromMetaUrl,
+  // Combined photo-or-video key deriver: a hovered <video> with a real,
+  // non-blob: `tN`-shaped url (LIVE-VERIFIED 2026-07-05 on a real Instagram
+  // /p/{code}/ inline video post, instagram.com/p/DaSs_DTmWdw/) now resolves
+  // via this url-based path directly — no DOM-anchor/index machinery needed
+  // for that case at all. See meta-shared/dom.ts's mediaKeyFromMetaCombinedUrl.
+  mediaKeyFromUrl: mediaKeyFromMetaCombinedUrl,
   // Real post-identity DOM detection (a rescan needing pk/code/author) stays
   // deferred for the "initial paint" role `detectRenderedMedia` plays — see
   // `postIdFromDom`/`postKeyFromVideoElement` below for the narrower "map a
@@ -178,8 +252,8 @@ export const instagramAdapter: PlatformAdapter = {
     )
   },
   extractPostCodes: postCodesInResponse,
-  postKeyFromVideoElement: (video) => {
-    const code = postIdFromDom(video)
+  postKeyFromVideoElement: (video, pathname) => {
+    const code = postIdFromDom(video, pathname)
     if (!code) return null
     const li = video.closest('li')
     if (!li) return postVideoKey(code) // no <ul>/<li> ancestor: single-media post

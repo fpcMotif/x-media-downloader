@@ -1,6 +1,11 @@
 import type { PlatformAdapter } from '../types'
 import { detectMediaItems, postCodesInResponse } from '../meta-shared/detect'
-import { mediaKeyFromMetaUrl, isGrabbableMetaPhotoUrl, extFromMetaImgUrl } from '../meta-shared/dom'
+import {
+  mediaKeyFromMetaUrl,
+  mediaKeyFromMetaCombinedUrl,
+  isGrabbableMetaPhotoUrl,
+  extFromMetaImgUrl,
+} from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
 import { postVideoKey, postVideoKeyByDomSlot } from '../detection-store'
 import type { MediaItem } from '../../schema'
@@ -171,7 +176,12 @@ export const threadsAdapter: PlatformAdapter = {
   // which one Threads actually sends; see isTrackedThreadsResponseUrl's doc.
   isTrackedResponseUrl: isTrackedThreadsResponseUrl,
   detectFromResponse: (_url, json) => detectMediaItems(json, 'threads'),
-  mediaKeyFromUrl: mediaKeyFromMetaUrl,
+  // Combined photo-or-video key deriver: a hovered <video> with a real,
+  // non-blob: `tN`-shaped url (LIVE-VERIFIED 2026-07-05 on a real Threads
+  // carousel, @zuck/DZ7eGA1G7wU) now resolves via this url-based path
+  // directly — no DOM-anchor/index machinery needed for that case at all.
+  // See meta-shared/dom.ts's mediaKeyFromMetaCombinedUrl.
+  mediaKeyFromUrl: mediaKeyFromMetaCombinedUrl,
   // Real post-identity DOM detection (a rescan needing pk/code/author) stays
   // deferred for the "initial paint" role `detectRenderedMedia` plays — see
   // `postIdFromDom`/`postKeyFromVideoElement` below for the narrower "map a
@@ -209,7 +219,12 @@ export const threadsAdapter: PlatformAdapter = {
     return el instanceof HTMLImageElement && isGrabbableMetaPhotoUrl(el.currentSrc || el.src)
   },
   extractPostCodes: postCodesInResponse,
-  postKeyFromVideoElement: (video) => {
+  // `pathname` accepted for interface conformance only, unused: Threads'
+  // own post-boundary DOM anchor (`data-pressable-container`) is present on
+  // both feed and permalink pages alike (unlike Instagram's <article>, which
+  // is absent on a standalone permalink page) — Threads never needs the
+  // pathname-fallback Instagram's adapter implements.
+  postKeyFromVideoElement: (video, _pathname) => {
     const code = postIdFromDom(video)
     if (!code) return null
     const track = trackFor(video)

@@ -176,7 +176,7 @@ describe('instagramAdapter', () => {
     expect(instagramAdapter.detectRenderedMedia(root, '/p/CODE1/')).toEqual([])
   })
 
-  it('mediaKeyFromUrl delegates to mediaKeyFromMetaUrl', () => {
+  it('mediaKeyFromUrl delegates to mediaKeyFromMetaCombinedUrl (photo path)', () => {
     expect(
       instagramAdapter.mediaKeyFromUrl(
         'https://scontent-lga3-2.cdninstagram.com/v/t51.82787-15/AAA_n.jpg?a=1',
@@ -187,6 +187,18 @@ describe('instagramAdapter', () => {
         'https://scontent-lga3-2.cdninstagram.com/v/t51.2885-19/AAA_n.jpg',
       ),
     ).toBeNull()
+  })
+
+  it('mediaKeyFromUrl also resolves a real (non-blob:) inline video url via the combined key path', () => {
+    // LIVE-VERIFIED 2026-07-05: a real Instagram /p/{code}/ inline video post
+    // (instagram.com/p/DaSs_DTmWdw/) served a direct, resolvable `tN`-shaped
+    // url for its <video> — not blob: — so it resolves here with zero
+    // DOM-anchor/index machinery needed for that case at all.
+    expect(
+      instagramAdapter.mediaKeyFromUrl(
+        'https://scontent-lga3-1.cdninstagram.com/o1/v/t16/f2/m84/AQM-abc123.mp4?efg=1',
+      ),
+    ).toBe('AQM-abc123')
   })
 
   it('resolveHoverItem/canResolveHoverItem prefer the tee map, else fall back to a DOM photo resolve', () => {
@@ -265,21 +277,21 @@ describe('instagramAdapter', () => {
       const root = document.createElement('div')
       root.innerHTML = `<article><a href="/p/CODE1/">link</a><div><video></video></div></article>`
       const video = root.querySelector('video')!
-      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE1')
+      expect(instagramAdapter.postKeyFromVideoElement?.(video, '/')).toBe('post:code:CODE1')
     })
 
     it('returns null when the <video> has no <article> ancestor', () => {
       const root = document.createElement('div')
       root.innerHTML = `<div><video></video></div>`
       const video = root.querySelector('video')!
-      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBeNull()
+      expect(instagramAdapter.postKeyFromVideoElement?.(video, '/')).toBeNull()
     })
 
     it('returns null when the <article> has no matching post link', () => {
       const root = document.createElement('div')
       root.innerHTML = `<article><a href="/explore/">link</a><video></video></article>`
       const video = root.querySelector('video')!
-      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBeNull()
+      expect(instagramAdapter.postKeyFromVideoElement?.(video, '/')).toBeNull()
     })
 
     it('returns the indexed key (never the bare shortcut) for a <video> at carousel slide 0', () => {
@@ -298,7 +310,7 @@ describe('instagramAdapter', () => {
           </ul>
         </article>`
       const video = root.querySelector('video')!
-      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE2:0')
+      expect(instagramAdapter.postKeyFromVideoElement?.(video, '/')).toBe('post:code:CODE2:0')
     })
 
     it('returns the indexed key for a <video> at a non-zero carousel slide, excluding the empty trailing sentinel <li>', () => {
@@ -312,14 +324,128 @@ describe('instagramAdapter', () => {
           </ul>
         </article>`
       const video = root.querySelector('video')!
-      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE3:1')
+      expect(instagramAdapter.postKeyFromVideoElement?.(video, '/')).toBe('post:code:CODE3:1')
     })
 
     it('treats a <video> with no <ul> ancestor as slide 0 (single-media post)', () => {
       const root = document.createElement('div')
       root.innerHTML = `<article><a href="/p/CODE4/">link</a><div><video></video></div></article>`
       const video = root.querySelector('video')!
-      expect(instagramAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE4')
+      expect(instagramAdapter.postKeyFromVideoElement?.(video, '/')).toBe('post:code:CODE4')
+    })
+
+    describe('standalone permalink-page fallback (no <article> anywhere on the page)', () => {
+      // LIVE-VERIFIED 2026-07-05 (Chrome Canary): a standalone Instagram
+      // permalink page (instagram.com/p/DaSs_DTmWdw/) has ZERO <article>
+      // elements at all (document.querySelector('article') === null on the
+      // real page) — the normal DOM-anchor walk in postIdFromDom always
+      // returns null there, so video hover-grab was completely broken on
+      // permalink pages even though the URL itself already carries the
+      // post's own code.
+
+      it('falls back to the pathname´s own /p/{code}/ code when no <article> ancestor exists', () => {
+        const root = document.createElement('div')
+        root.innerHTML = `<div><video></video></div>` // no <article> anywhere
+        const video = root.querySelector('video')!
+        expect(instagramAdapter.postKeyFromVideoElement?.(video, '/p/PERMACODE/')).toBe(
+          'post:code:PERMACODE',
+        )
+      })
+
+      it('falls back to the pathname´s own /reel/{code}/ code (singular form)', () => {
+        const root = document.createElement('div')
+        root.innerHTML = `<div><video></video></div>`
+        const video = root.querySelector('video')!
+        expect(instagramAdapter.postKeyFromVideoElement?.(video, '/reel/REELCODE/')).toBe(
+          'post:code:REELCODE',
+        )
+      })
+
+      it('falls back to the pathname´s own /reels/{code}/ code (plural form)', () => {
+        const root = document.createElement('div')
+        root.innerHTML = `<div><video></video></div>`
+        const video = root.querySelector('video')!
+        expect(instagramAdapter.postKeyFromVideoElement?.(video, '/reels/REELSCODE/')).toBe(
+          'post:code:REELSCODE',
+        )
+      })
+
+      it('handles a share-link query suffix on the pathname is irrelevant — pathname never carries a query string, but a trailing share segment in the path itself still resolves', () => {
+        // location.pathname never includes the query string (?utm_source=...
+        // lives in location.search), so no special query-stripping is needed
+        // here at all — this test simply documents that fact for the exact
+        // share-link shape the user was reproducing with.
+        const root = document.createElement('div')
+        root.innerHTML = `<div><video></video></div>`
+        const video = root.querySelector('video')!
+        expect(instagramAdapter.postKeyFromVideoElement?.(video, '/reel/DaZ1rHWDjCN/')).toBe(
+          'post:code:DaZ1rHWDjCN',
+        )
+      })
+
+      it('the pathname fallback still derives the indexed key for a carousel slide, keyed off a <ul> ancestor even without an <article>', () => {
+        // A permalink page's carousel still has slide <li> markup (only the
+        // outer <article> boundary is missing) — the existing slideIndexFromDom
+        // logic keeps working once postIdFromDom's <article>-walk is merely
+        // ONE of two ways to learn the code, not the only way.
+        const root = document.createElement('div')
+        root.innerHTML = `
+          <ul>
+            <li><video></video></li>
+            <li><img /></li>
+            <li></li>
+          </ul>`
+        const video = root.querySelector('video')!
+        expect(instagramAdapter.postKeyFromVideoElement?.(video, '/p/CAROUSELCODE/')).toBe(
+          'post:code:CAROUSELCODE:0',
+        )
+      })
+
+      it('returns null when neither an <article> ancestor NOR a permalink-shaped pathname exists (e.g. the home feed root url)', () => {
+        const root = document.createElement('div')
+        root.innerHTML = `<div><video></video></div>`
+        const video = root.querySelector('video')!
+        expect(instagramAdapter.postKeyFromVideoElement?.(video, '/')).toBeNull()
+      })
+
+      it('prefers the real <article> DOM anchor over the pathname fallback when both are present and disagree (e.g. a suggested-post video, if one ever exists)', () => {
+        // The permalink page's OWN code lives in the pathname; a DIFFERENT
+        // post's <article> (if one were ever found containing a video, which
+        // live research found NOT to happen for suggested-content sections)
+        // must still win over the page-wide pathname fallback — the fallback
+        // is last-resort only, never a first choice once a real DOM anchor is
+        // found.
+        const root = document.createElement('div')
+        root.innerHTML = `<article><a href="/p/OTHERCODE/">link</a><video></video></article>`
+        const video = root.querySelector('video')!
+        expect(instagramAdapter.postKeyFromVideoElement?.(video, '/p/PAGECODE/')).toBe(
+          'post:code:OTHERCODE',
+        )
+      })
+
+      it('does NOT apply the pathname fallback when multiple sibling <video>s with no <article> ancestor are mounted at once (Reels immersive player)', () => {
+        // LIVE-VERIFIED 2026-07-05: Instagram's Reels immersive player
+        // (/reels/{code}/) mounts many sibling <video> elements simultaneously
+        // (6-11 observed live, off-screen ones included) with NO <article>/<li>
+        // ancestor for any of them, and `location.pathname` reflects only
+        // whichever reel is currently scrolled into view. A naive "no
+        // <article> -> trust the pathname" fallback would resolve EVERY
+        // mounted sibling to the SAME post code — reproduced directly against
+        // the pre-fix code, where two distinct sibling videos returned the
+        // identical key. The permalink-page case this fallback exists for
+        // (`/p/{code}/`, `/reel(s)/{code}/` landed on directly) always has
+        // exactly ONE <video> mounted (also live-verified) — so gating the
+        // fallback on "exactly one <video> in the whole document" cleanly
+        // distinguishes the two cases without any viewport/geometry check
+        // (which happy-dom can't compute anyway).
+        const root = document.createElement('div')
+        root.innerHTML = `
+          <div><video></video></div>
+          <div><video></video></div>`
+        const [video1, video2] = [...root.querySelectorAll('video')]
+        expect(instagramAdapter.postKeyFromVideoElement?.(video1!, '/reels/CODE_A/')).toBeNull()
+        expect(instagramAdapter.postKeyFromVideoElement?.(video2!, '/reels/CODE_A/')).toBeNull()
+      })
     })
   })
 
@@ -335,7 +461,7 @@ describe('instagramAdapter', () => {
       const root = document.createElement('div')
       root.innerHTML = `<article><a href="/p/CODE1/">link</a><video></video></article>`
       const video = root.querySelector('video')!
-      const key = instagramAdapter.postKeyFromVideoElement!(video)!
+      const key = instagramAdapter.postKeyFromVideoElement!(video, '/')!
       const teedVideo = {
         id: 'BBB',
         platform: 'instagram' as const,
@@ -355,7 +481,7 @@ describe('instagramAdapter', () => {
       const root = document.createElement('div')
       root.innerHTML = `<article><a href="/p/CODE1/">link</a><video></video></article>`
       const video = root.querySelector('video')!
-      const key = instagramAdapter.postKeyFromVideoElement!(video)!
+      const key = instagramAdapter.postKeyFromVideoElement!(video, '/')!
       expect(instagramAdapter.canResolveHoverItem(video, key, new Map())).toBe(false)
       expect(instagramAdapter.resolveHoverItem(video, key, new Map(), '/p/CODE1/')).toBeNull()
     })

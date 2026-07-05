@@ -259,7 +259,7 @@ describe('threadsAdapter', () => {
       expect(threadsAdapter.canResolveHoverItem(el, 'unknown', detected)).toBe(false)
     })
 
-    it('mediaKeyFromUrl delegates to mediaKeyFromMetaUrl (shared with Instagram, no Threads-specific variant)', () => {
+    it('mediaKeyFromUrl delegates to mediaKeyFromMetaCombinedUrl (shared with Instagram, no Threads-specific variant)', () => {
       expect(
         threadsAdapter.mediaKeyFromUrl(
           'https://scontent.cdninstagram.com/v/t51.82787-15/AAA_n.jpg',
@@ -270,6 +270,17 @@ describe('threadsAdapter', () => {
           'https://scontent.cdninstagram.com/v/t51.82787-19/AAA_n.jpg',
         ),
       ).toBeNull()
+    })
+
+    it('mediaKeyFromUrl also resolves a real (non-blob:) video url via the combined key path', () => {
+      // LIVE-VERIFIED 2026-07-05: a real Threads carousel video slide
+      // (@zuck/DZ7eGA1G7wU) serves a direct, resolvable `tN`-shaped url — not
+      // blob: — so it resolves here with zero DOM-anchor machinery needed.
+      expect(
+        threadsAdapter.mediaKeyFromUrl(
+          'https://scontent-lga3-1.cdninstagram.com/o1/v/t16/f2/m84/AQM-abc123.mp4?efg=1',
+        ),
+      ).toBe('AQM-abc123')
     })
 
     it('resolveHoverItem/canResolveHoverItem fall back to a DOM photo resolve when the tee misses it', () => {
@@ -333,21 +344,23 @@ describe('threadsAdapter', () => {
       const root = document.createElement('div')
       root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE1">link</a><video></video></div>`
       const video = root.querySelector('video')!
-      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE1')
+      expect(threadsAdapter.postKeyFromVideoElement?.(video, '/@zuck/post/CODE1')).toBe(
+        'post:code:CODE1',
+      )
     })
 
     it('handles a trailing /media suffix and a trailing dash in the code', () => {
       const root = document.createElement('div')
       root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/DaXWrlBEyf-/media">link</a><video></video></div>`
       const video = root.querySelector('video')!
-      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:DaXWrlBEyf-')
+      expect(threadsAdapter.postKeyFromVideoElement?.(video, '/')).toBe('post:code:DaXWrlBEyf-')
     })
 
     it('returns null when there is no pressable-container ancestor', () => {
       const root = document.createElement('div')
       root.innerHTML = `<div><video></video></div>`
       const video = root.querySelector('video')!
-      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBeNull()
+      expect(threadsAdapter.postKeyFromVideoElement?.(video, '/')).toBeNull()
     })
 
     // Track fixture shape LIVE-VERIFIED 2026-07-05 against
@@ -374,7 +387,7 @@ describe('threadsAdapter', () => {
           </div>
         </div>`
       const video = root.querySelector('video')!
-      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE5:slot:0')
+      expect(threadsAdapter.postKeyFromVideoElement?.(video, '/')).toBe('post:code:CODE5:slot:0')
     })
 
     it("returns the dom-slot key for the SECOND video slide, counting ALL mounted slides (a photo slide in between shifts the count, matching the store's absolute-index scheme)", () => {
@@ -389,11 +402,15 @@ describe('threadsAdapter', () => {
           </div>
         </div>`
       const videos = root.querySelectorAll('video')
-      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!)).toBe('post:code:CODE6:slot:0')
-      expect(threadsAdapter.postKeyFromVideoElement?.(videos[1]!)).toBe('post:code:CODE6:slot:2')
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!, '/')).toBe(
+        'post:code:CODE6:slot:0',
+      )
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[1]!, '/')).toBe(
+        'post:code:CODE6:slot:2',
+      )
       // each video resolves to its OWN distinct key, never swapped
-      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!)).not.toBe(
-        threadsAdapter.postKeyFromVideoElement?.(videos[1]!),
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!, '/')).not.toBe(
+        threadsAdapter.postKeyFromVideoElement?.(videos[1]!, '/'),
       )
     })
 
@@ -409,16 +426,22 @@ describe('threadsAdapter', () => {
           </div>
         </div>`
       const videos = root.querySelectorAll('video')
-      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!)).toBe('post:code:CODE9:slot:0')
-      expect(threadsAdapter.postKeyFromVideoElement?.(videos[1]!)).toBe('post:code:CODE9:slot:1')
-      expect(threadsAdapter.postKeyFromVideoElement?.(videos[2]!)).toBe('post:code:CODE9:slot:2')
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[0]!, '/')).toBe(
+        'post:code:CODE9:slot:0',
+      )
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[1]!, '/')).toBe(
+        'post:code:CODE9:slot:1',
+      )
+      expect(threadsAdapter.postKeyFromVideoElement?.(videos[2]!, '/')).toBe(
+        'post:code:CODE9:slot:2',
+      )
     })
 
     it('treats a <video> with no track ancestor as domSlot 0 (single-media post)', () => {
       const root = document.createElement('div')
       root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE7">link</a><video></video></div>`
       const video = root.querySelector('video')!
-      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE7')
+      expect(threadsAdapter.postKeyFromVideoElement?.(video, '/')).toBe('post:code:CODE7')
     })
 
     it('treats a <video> mounted directly under the track (no slide-wrapper div) as domSlot 0, not a throw', () => {
@@ -436,7 +459,19 @@ describe('threadsAdapter', () => {
           </div>
         </div>`
       const video = root.querySelector('video')!
-      expect(threadsAdapter.postKeyFromVideoElement?.(video)).toBe('post:code:CODE8')
+      expect(threadsAdapter.postKeyFromVideoElement?.(video, '/')).toBe('post:code:CODE8')
+    })
+
+    it('ignores the pathname param entirely — Threads never needs the permalink fallback (its own data-pressable-container anchor works on every page)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE10">link</a><video></video></div>`
+      const video = root.querySelector('video')!
+      expect(threadsAdapter.postKeyFromVideoElement?.(video, '/totally/unrelated/path')).toBe(
+        'post:code:CODE10',
+      )
+      expect(threadsAdapter.postKeyFromVideoElement?.(video, '/@zuck/post/CODE10')).toBe(
+        'post:code:CODE10',
+      )
     })
   })
 
@@ -452,7 +487,7 @@ describe('threadsAdapter', () => {
       const root = document.createElement('div')
       root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE1">link</a><video></video></div>`
       const video = root.querySelector('video')!
-      const key = threadsAdapter.postKeyFromVideoElement!(video)!
+      const key = threadsAdapter.postKeyFromVideoElement!(video, '/')!
       const teedVideo = {
         id: 'BBB',
         platform: 'threads' as const,
@@ -474,7 +509,7 @@ describe('threadsAdapter', () => {
       const root = document.createElement('div')
       root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE1">link</a><video></video></div>`
       const video = root.querySelector('video')!
-      const key = threadsAdapter.postKeyFromVideoElement!(video)!
+      const key = threadsAdapter.postKeyFromVideoElement!(video, '/')!
       expect(threadsAdapter.canResolveHoverItem(video, key, new Map())).toBe(false)
       expect(threadsAdapter.resolveHoverItem(video, key, new Map(), '/@zuck/post/CODE1')).toBeNull()
     })
