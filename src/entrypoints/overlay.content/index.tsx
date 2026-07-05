@@ -371,14 +371,6 @@ const rectOf = (el: Element): Rect => {
   return { top: r.top, left: r.left, width: r.width, height: r.height }
 }
 
-/** Alpha of a computed `backgroundColor` (`rgb(…)` / `rgba(…)` / keyword). */
-const bgAlpha = (color: string): number => {
-  const m = /^rgba?\(([^)]+)\)$/.exec(color)
-  if (!m) return color === 'transparent' ? 0 : 1
-  const parts = m[1]!.split(',')
-  return parts.length === 4 ? Number(parts[3]) : 1
-}
-
 /**
  * A media element inside `container` that's invisible to `elementsFromPoint`
  * because it's `pointer-events: none` — the real photo/video pixels are still
@@ -415,10 +407,24 @@ const nonInteractiveMediaAt = (
 /**
  * The topmost hoverable media element in the hit-test `stack`, unless something
  * visually occludes it: this extension's own shadow host (launcher pill / grab
- * ring), a modal layer the media sits outside of (lightbox backdrop, compose
- * scrim), or any opaque layer. X's transparent hit-target divs over their own
- * media pass through. `stack` is the `elementsFromPoint` result for the point;
- * `x`/`y` are that same point, threaded through to {@link nonInteractiveMediaAt}.
+ * ring), or a modal layer the media sits outside of (lightbox backdrop, compose
+ * scrim — detected via `[aria-modal="true"], [role="dialog"]`, the same
+ * selector `x/reveal.ts`'s `REVEAL_SCOPE_SEL` and this file's own lightbox-badge
+ * check already trust as X's canonical "is this actually a modal" signal). X's
+ * transparent hit-target divs over their own media pass through. `stack` is
+ * the `elementsFromPoint` result for the point; `x`/`y` are that same point,
+ * threaded through to {@link nonInteractiveMediaAt}.
+ *
+ * Deliberately does NOT bail on an ad-hoc "background alpha looks opaque-ish"
+ * heuristic (a prior version did, at >= 0.5): LIVE-VERIFIED 2026-07-05 on a
+ * real Instagram Reels permalink (instagram.com/reel/DaHL9NxPBWz/) that a
+ * legitimate, see-through caption-legibility scrim over the video player is
+ * `rgba(0,0,0,0.5)` — exactly the old threshold — which silently blocked
+ * hover-grab on every Reel with that (very common) UI treatment, despite the
+ * video being fully visible to the user. Real hidden-behind-a-modal cases are
+ * already caught by the explicit ARIA check above; a translucent decorative
+ * layer sitting on top of clearly-visible media is not equivalent to a real
+ * opaque cover and should never veto a resolution by itself.
  */
 const mediaAtPoint = (
   stack: readonly Element[],
@@ -446,7 +452,6 @@ const mediaAtPoint = (
     if (el.contains(media)) continue
     const modal = el.closest('[aria-modal="true"], [role="dialog"]')
     if (modal && !modal.contains(media)) return null
-    if (bgAlpha(getComputedStyle(el).backgroundColor) >= 0.5) return null
   }
   return media
 }
