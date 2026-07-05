@@ -93,4 +93,20 @@ export interface PlatformAdapter {
    * pages, so it never needs this fallback).
    */
   postKeyFromVideoElement?(video: HTMLVideoElement, pathname: string): string | null
+
+  /**
+   * Optional: the URL shortcode of the post CONTAINING `el` (any element — a
+   * photo `<img>`, a `<video>`, or a wrapper), via this platform's DOM post
+   * anchor — or null if `el` isn't inside a recognizable post. The overlay maps
+   * this shortcode back to the tee's own `postId` (via
+   * `DetectionStore.postIdForCode`) to grab the WHOLE post under the cursor,
+   * even when the hovered media's own url key never matched a tee item
+   * (Instagram/Threads photos, whose rendered `<img>` basename can differ from
+   * the tee's captured basename, so they resolve to a placeholder whose postId
+   * groups nothing). `pathname` is the current page path, for the
+   * standalone-permalink fallback — same role and platform split as
+   * {@link postKeyFromVideoElement}. X omits this: its `/status/{id}` anchor is
+   * already the identity, with no code→postId indirection.
+   */
+  postCodeFromElement?(el: Element, pathname: string): string | null
 }

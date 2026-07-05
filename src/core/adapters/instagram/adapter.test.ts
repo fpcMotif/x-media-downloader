@@ -456,6 +456,21 @@ describe('instagramAdapter', () => {
     })
   })
 
+  describe('postCodeFromElement', () => {
+    it('returns the /p/{code}/ shortcode of the post containing any element (a photo)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<article><a href="/p/CODE9/">link</a><img src="x.jpg" /></article>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/')).toBe('CODE9')
+    })
+    it('returns null when the element is not inside a post', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div><img src="x.jpg" /></div>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/explore/')).toBeNull()
+    })
+  })
+
   describe('resolveHoverItem/canResolveHoverItem for a <video> resolved via a post-level key', () => {
     it('resolves via detected when the key is a registered post:{code} string', () => {
       const root = document.createElement('div')

@@ -482,6 +482,21 @@ describe('threadsAdapter', () => {
     })
   })
 
+  describe('postCodeFromElement', () => {
+    it('returns the /@user/post/{code} shortcode of the containing post (a photo)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE9">link</a><img src="x.jpg" /></div>`
+      const img = root.querySelector('img')!
+      expect(threadsAdapter.postCodeFromElement?.(img, '/')).toBe('CODE9')
+    })
+    it('returns null when not inside a pressable-container', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div><img src="x.jpg" /></div>`
+      const img = root.querySelector('img')!
+      expect(threadsAdapter.postCodeFromElement?.(img, '/')).toBeNull()
+    })
+  })
+
   describe('resolveHoverItem/canResolveHoverItem for a <video> resolved via a post-level key', () => {
     it('resolves via detected when the key is a registered post:{code} string', () => {
       const root = document.createElement('div')

@@ -152,6 +152,15 @@ export interface DetectionStore {
    * once both have run.
    */
   registerPostCode(postId: string, code: string): void
+  /**
+   * The tee's own `postId` for a DOM-derived post shortcode — the inverse of
+   * {@link registerPostCode}'s linkage — or `undefined` if no tracked response
+   * has linked that `code` yet. Lets a whole-post grab resolve every media item
+   * of the hovered post from its DOM shortcode even when the hovered media's own
+   * url key never matched a tee item (Instagram/Threads photos, whose rendered
+   * `<img>` basename can differ from the tee's captured basename).
+   */
+  postIdForCode(code: string): string | undefined
   /** How many Media Items are detected (the Bulk count). */
   readonly count: number
   /** Drop everything — items, keys, recovered-key provenance, and attempts. */
@@ -291,6 +300,7 @@ export function makeDetectionStore(deps: {
       syncPostVideoKey(postId) // re-sync NOW in case the video(s) were already
       // added before the code linkage arrived (order-independent)
     },
+    postIdForCode: (code) => codeToPostId.get(code),
     get count() {
       return byId.size
     },

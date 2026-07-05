@@ -269,6 +269,11 @@ export const instagramAdapter: PlatformAdapter = {
     // deletes that bare key the moment a post has 2+ videos.
     return postVideoKeyIndexed(code, slideIndexFromDom(li))
   },
+  // The post's own `/p/{code}/` shortcode for ANY hovered element (photo or
+  // video), so the overlay's whole-post grab can map it → the tee's real postId
+  // even when a hovered photo's `<img>` basename never matched a tee item. Same
+  // DOM anchor `postKeyFromVideoElement` uses, just returning the raw code.
+  postCodeFromElement: (el, pathname) => postIdFromDom(el, pathname),
   // No findMediaNeedingRecovery: Instagram has no public/no-auth fallback
   // (oEmbed is Meta-app-registration-gated) — confirmed by research, per the
   // design spec's PlatformAdapter interface comment.

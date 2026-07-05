@@ -170,6 +170,13 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
     expect(s.keysForTweet('nope')).toEqual([])
   })
 
+  it('postIdForCode inverts registerPostCode (DOM shortcode → tee postId)', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('17900000000000001', 'Cabc123')
+    expect(s.postIdForCode('Cabc123')).toBe('17900000000000001')
+    expect(s.postIdForCode('unknown')).toBeUndefined()
+  })
+
   it('needsRecovery wraps videoTweetsNeedingRecovery with the store keys', () => {
     const root = document.createElement('div')
     root.innerHTML = `

@@ -243,6 +243,12 @@ export const threadsAdapter: PlatformAdapter = {
     const domSlot = videoDomSlotAmongMountedSlides(wrapper, track)
     return postVideoKeyByDomSlot(code, domSlot)
   },
+  // The post's own `/@user/post/{code}` shortcode for ANY hovered element
+  // (photo or video), so the overlay's whole-post grab can map it → the tee's
+  // real postId even when a hovered photo's `<img>` basename never matched a
+  // tee item. Same DOM anchor `postKeyFromVideoElement` uses (pathname unused,
+  // as above), just returning the raw code.
+  postCodeFromElement: (el, _pathname) => postIdFromDom(el),
   // findMediaNeedingRecovery intentionally omitted: no public/no-auth
   // recovery fallback exists for Threads (oEmbed is Meta-app-registration-
   // gated), confirmed by the design spec's research — not merely unbuilt.
