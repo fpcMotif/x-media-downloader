@@ -143,6 +143,18 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
     expect(s.valuesForTweet('t2').map((i) => i.id)).toEqual(['b'])
   })
 
+  it('keysForTweet returns every by-key entry of a post, [] for an unknown post', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.addDetected([photo('a', 'KA', 't1'), photo('b', 'KB', 't2'), video('v', 'MP4', 'POST', 't1')])
+    const t1 = s.keysForTweet('t1')
+    expect(t1).toContain('KA') // t1 photo
+    expect(t1).toContain('MP4') // t1 video mp4 key
+    expect(t1).toContain('POST') // t1 video poster key
+    expect(t1).not.toContain('KB') // KB belongs to t2
+    expect(s.keysForTweet('t2')).toEqual(['KB'])
+    expect(s.keysForTweet('nope')).toEqual([])
+  })
+
   it('needsRecovery wraps videoTweetsNeedingRecovery with the store keys', () => {
     const root = document.createElement('div')
     root.innerHTML = `

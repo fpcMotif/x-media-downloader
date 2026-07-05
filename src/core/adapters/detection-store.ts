@@ -124,6 +124,9 @@ export interface DetectionStore {
   values(): MediaItem[]
   /** Detected Media Items belonging to one tweet. */
   valuesForTweet(tweetId: string): MediaItem[]
+  /** Every media-key the by-key index holds for one post (url, poster, and
+   *  `post:…` video keys alike) — the whole-post grab marks all of these. */
+  keysForTweet(tweetId: string): string[]
   /**
    * Register postId <-> DOM-shortcode linkage (Instagram/Threads only — see
    * `PlatformAdapter.extractPostCodes`) so a DOM-derived shortcode (which
@@ -265,6 +268,11 @@ export function makeDetectionStore(deps: {
     get: (id) => byId.get(id),
     values: () => [...byId.values()],
     valuesForTweet: (tweetId) => [...byId.values()].filter((i) => i.postId === tweetId),
+    keysForTweet: (tweetId) => {
+      const out: string[] = []
+      for (const [key, item] of byKey) if (item.postId === tweetId) out.push(key)
+      return out
+    },
     registerPostCode: (postId, code) => {
       codeToPostId.set(code, postId)
       syncPostVideoKey(postId) // re-sync NOW in case the video(s) were already
