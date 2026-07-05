@@ -125,3 +125,11 @@ export function markGrabbed(state: QuickGrabState, key: string): QuickGrabState 
   grabbed.add(key)
   return { ...state, grabbed }
 }
+
+/** Record that every key in `keys` was grabbed this press (idempotent; returns
+ *  the same state object when nothing changed). */
+export function markAllGrabbed(state: QuickGrabState, keys: Iterable<string>): QuickGrabState {
+  let next = state
+  for (const key of keys) next = markGrabbed(next, key)
+  return next
+}

@@ -12,6 +12,7 @@ import {
   syncModifierFromFlags,
   allAugmentModifier,
   postGrabActive,
+  markAllGrabbed,
 } from './quickgrab'
 
 const flags = (over: Partial<Record<'altKey' | 'shiftKey' | 'ctrlKey' | 'metaKey', boolean>>) => ({
@@ -137,5 +138,22 @@ describe('postGrabActive', () => {
   })
   it('is false when the augment modifier is not held', () => {
     expect(postGrabActive(true, flags({ altKey: true }), 'alt', true)).toBe(false)
+  })
+})
+
+describe('markAllGrabbed', () => {
+  it('marks every key grabbed so none re-fire this press', () => {
+    const s = markAllGrabbed(pressModifier(idleQuickGrab), ['A', 'B'])
+    expect(canGrab(s, 'A')).toBe(false)
+    expect(canGrab(s, 'B')).toBe(false)
+    expect(canGrab(s, 'C')).toBe(true)
+  })
+  it('is a no-op (same reference) when every key is already grabbed', () => {
+    const once = markAllGrabbed(pressModifier(idleQuickGrab), ['A', 'B'])
+    expect(markAllGrabbed(once, ['A', 'B'])).toBe(once)
+  })
+  it('is a no-op (same reference) for an empty key list', () => {
+    const s = pressModifier(idleQuickGrab)
+    expect(markAllGrabbed(s, [])).toBe(s)
   })
 })
