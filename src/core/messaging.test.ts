@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isContextInvalidatedError, safeSend } from './messaging'
+import { isContextInvalidatedError, safeSend, expectReply } from './messaging'
 
 describe('isContextInvalidatedError', () => {
   it('recognizes the dead-context wordings that mean "reload the tab"', () => {
@@ -67,5 +67,31 @@ describe('safeSend', () => {
         throw thrown
       }),
     ).toEqual({ status: 'error', error: thrown })
+  })
+})
+
+describe('expectReply', () => {
+  it('reclassifies an "ok" outcome with an undefined reply as "unclaimed"', () => {
+    // The guard-drop / decode-fail signature: the background's onMessage listener
+    // returned `false` without ever calling `sendResponse`, so Chrome resolves the
+    // sender's promise with `reply: undefined` — structurally identical to a
+    // legitimate handler that resolved with nothing, until this reclassifies it.
+    expect(expectReply({ status: 'ok', reply: undefined })).toEqual({ status: 'unclaimed' })
+  })
+
+  it('passes an "ok" outcome with a defined reply through unchanged', () => {
+    const reply = { completed: 1, total: 1 }
+    expect(expectReply({ status: 'ok', reply })).toEqual({ status: 'ok', reply })
+  })
+
+  it('passes a "context-invalidated" outcome through unchanged', () => {
+    expect(expectReply({ status: 'context-invalidated' })).toEqual({
+      status: 'context-invalidated',
+    })
+  })
+
+  it('passes an "error" outcome through unchanged', () => {
+    const error = new Error('boom')
+    expect(expectReply({ status: 'error', error })).toEqual({ status: 'error', error })
   })
 })

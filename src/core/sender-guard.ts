@@ -1,3 +1,5 @@
+import type { Message } from './schema'
+
 /**
  * Sender authorization for the background service worker's `runtime.onMessage`
  * router. That router triggers downloads, OAuth flows, cloud byte egress, and
@@ -18,8 +20,13 @@
  */
 
 /** The message tags the overlay content script legitimately sends. Every other
- *  tag is UI-only and is accepted from internal popup/options surfaces only. */
-export const CONTENT_SCRIPT_TAGS: ReadonlySet<string> = new Set([
+ *  tag is UI-only and is accepted from internal popup/options surfaces only.
+ *  Typed against `Message['_tag']` (not a bare `string`) so adding a new tag to
+ *  the `Message` union forces a decision here — this exact hole (a tag silently
+ *  missing from this set) dropped every Instagram/Threads overlay message with
+ *  no error signal until 670d5a6 caught it live. See `expectReply` in
+ *  `./messaging` for the caller-side half of that same invariant. */
+export const CONTENT_SCRIPT_TAGS: ReadonlySet<Message['_tag']> = new Set([
   'DownloadRequest',
   'DownloadTraceEvent',
   'RecoverTweetMediaRequest',
@@ -77,7 +84,7 @@ function isContentScript(sender: MessageSenderLike): boolean {
  * or a UI-only tag from a content script all return false.
  */
 export function isMessageAllowed(
-  tag: string,
+  tag: Message['_tag'],
   sender: MessageSenderLike | undefined,
   ownId: string,
 ): boolean {

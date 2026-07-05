@@ -234,6 +234,7 @@ export const QueueUpdate = Schema.TaggedStruct('QueueUpdate', {
     Schema.Array(Schema.Struct({ itemId: Schema.String, reason: Schema.String })),
   ),
 })
+export type QueueUpdate = typeof QueueUpdate.Type
 export const MetricsRequest = Schema.TaggedStruct('MetricsRequest', {})
 export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {
   snapshot: MetricsSnapshot,
@@ -490,6 +491,7 @@ export const Message = Schema.Union([
   CloudBackfillRequest,
   SweepEnqueueRequest,
   RecoverTweetMediaRequest,
+  RecoverTweetMediaResponse,
   TransferOutcome,
   SavedStatusRequest,
   SavedStatusResponse,
