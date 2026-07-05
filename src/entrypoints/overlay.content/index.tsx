@@ -377,16 +377,67 @@ const bgAlpha = (color: string): number => {
 }
 
 /**
+ * A media element inside `container` that's invisible to `elementsFromPoint`
+ * because it's `pointer-events: none` — the real photo/video pixels are still
+ * there, just non-interactive. LIVE-VERIFIED 2026-07-05 (Chrome Canary,
+ * Threads' multi-column card layout — e.g. the Saved/Liked columns): the
+ * rendered `<img>` is `position:absolute; pointer-events:none`, so a hovered
+ * point resolves to its plain `<div>` wrapper instead — `elementsFromPoint`
+ * excludes `pointer-events:none` elements per spec, so the `<img>` never
+ * appeared in the hit-test stack at all, and `mediaAtPoint`'s stack search
+ * came up empty on every real Threads card despite the photo being right
+ * there (this is what "hover-grab doesn't work on Threads" actually was).
+ * Instagram's own single-column feed `<img>` has no such CSS (confirmed the
+ * same visit) and is hit-tested normally, so this is a no-op there — a
+ * platform DIFFERENCE, not a platform CHECK, same posture as `videoAnchorAt`
+ * below (X's hidden `<video>`, reached through its player container instead
+ * of the hit-test stack). Only trusts a candidate whose OWN rect covers
+ * `(x, y)`, so a large container that merely happens to also hold an
+ * unrelated image elsewhere is never mistaken for the hovered one.
+ */
+const nonInteractiveMediaAt = (
+  container: Element,
+  x: number,
+  y: number,
+): HoverMediaElement | null => {
+  for (const el of container.querySelectorAll('img,video')) {
+    if (!isImageElement(el) && !isVideoElement(el)) continue
+    if (getComputedStyle(el).pointerEvents !== 'none') continue
+    const r = el.getBoundingClientRect()
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return el
+  }
+  return null
+}
+
+/**
  * The topmost hoverable media element in the hit-test `stack`, unless something
  * visually occludes it: this extension's own shadow host (launcher pill / grab
  * ring), a modal layer the media sits outside of (lightbox backdrop, compose
  * scrim), or any opaque layer. X's transparent hit-target divs over their own
- * media pass through. `stack` is the `elementsFromPoint` result for the point.
+ * media pass through. `stack` is the `elementsFromPoint` result for the point;
+ * `x`/`y` are that same point, threaded through to {@link nonInteractiveMediaAt}.
  */
-const mediaAtPoint = (stack: readonly Element[]): HoverMediaElement | null => {
-  const at = stack.findIndex((el) => isImageElement(el) || isVideoElement(el))
-  if (at < 0) return null
-  const media = stack[at] as HoverMediaElement
+const mediaAtPoint = (
+  stack: readonly Element[],
+  x: number,
+  y: number,
+): HoverMediaElement | null => {
+  let at = -1
+  let media: HoverMediaElement | null = null
+  for (const [i, el] of stack.entries()) {
+    if (isImageElement(el) || isVideoElement(el)) {
+      at = i
+      media = el
+      break
+    }
+    const reach = nonInteractiveMediaAt(el, x, y)
+    if (reach) {
+      at = i
+      media = reach
+      break
+    }
+  }
+  if (at < 0 || !media) return null
   for (const el of stack.slice(0, at)) {
     if (el.tagName === 'XMD-OVERLAY') return null
     if (el.contains(media)) continue
@@ -426,7 +477,7 @@ const resolveHoverMedia = (
   const direct = target?.closest('img,video') as HoverMediaElement | null
   if (direct) return direct
   const stack = document.elementsFromPoint(x, y)
-  return mediaAtPoint(stack) ?? videoAnchorAt(target, stack)
+  return mediaAtPoint(stack, x, y) ?? videoAnchorAt(target, stack)
 }
 
 // A reloaded/updated extension orphans this content script: the runtime channel
