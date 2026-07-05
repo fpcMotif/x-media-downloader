@@ -74,6 +74,8 @@ import type {
   CaptureTweets,
   ClearScope,
   MediaItem,
+  QueueUpdate,
+  RecoverTweetMediaResponse,
   Settings,
   SavedStatusResponse,
 } from '../../core/schema'
@@ -275,6 +277,11 @@ async function dismissFeedbackStub(cell: Element | null): Promise<void> {
 // mutations collapses into one overlay→background round-trip + chip pass.
 const SAVED_SWEEP_DEBOUNCE_MS = 500
 
+/** Type-only narrowing (no runtime decode) — pins an `unknown` reply to the
+ *  schema type that already describes it, in place of an `as` assertion. */
+const isSavedStatusResponse = (reply: unknown): reply is SavedStatusResponse =>
+  reply !== null && typeof reply === 'object' && 'saved' in reply
+
 /** Ask the background which of these tweetIds are already downloaded (cross-device).
  *  Fail-safe: a context-invalidated / errored / malformed reply yields no marks. */
 const requestSavedStatus = async (tweetIds: string[]): Promise<string[]> => {
@@ -282,10 +289,7 @@ const requestSavedStatus = async (tweetIds: string[]): Promise<string[]> => {
     browser.runtime.sendMessage({ _tag: 'SavedStatusRequest', tweetIds }),
   )
   if (out.status !== 'ok') return []
-  const reply = out.reply
-  return reply !== null && typeof reply === 'object' && 'saved' in reply
-    ? [...(reply as SavedStatusResponse).saved]
-    : []
+  return isSavedStatusResponse(out.reply) ? [...out.reply.saved] : []
 }
 /** Numeric tweetIds of every tweet article mounted right now. */
 const mountedTweetIds = (): string[] => {
@@ -509,14 +513,7 @@ const sendTracked = (
       console.warn('[XMD] DownloadRequest send FAILED —', out.error)
       return false
     }
-    const r = out.reply as
-      | {
-          completed?: number
-          total?: number
-          skipped?: SkipSummary
-          failures?: ReadonlyArray<{ itemId: string; reason: string }>
-        }
-      | undefined
+    const r = out.reply as QueueUpdate | undefined
     reportSkipped(r?.skipped)
     reportFailures(r?.failures)
     return r?.completed !== undefined && r.completed === r.total
@@ -793,7 +790,7 @@ export default defineContentScript({
             store.unmarkAttempted(tweetId)
             return
           }
-          const body = (out.reply as { body?: string } | undefined)?.body
+          const body = (out.reply as RecoverTweetMediaResponse | undefined)?.body
           if (body === undefined) return
           try {
             if (store.addRecovered(parseSyndicationTweet(JSON.parse(body))).length > 0) rerender()

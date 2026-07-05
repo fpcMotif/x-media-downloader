@@ -44,13 +44,21 @@ describe('Tweet Harvest capture tags', () => {
   })
 
   it('forbids a content script from triggering export/clear/summary (UI-only)', () => {
-    for (const tag of ['ExportCaptureRequest', 'ClearCaptureRequest', 'CaptureSummaryRequest']) {
+    for (const tag of [
+      'ExportCaptureRequest',
+      'ClearCaptureRequest',
+      'CaptureSummaryRequest',
+    ] as const) {
       expect(isMessageAllowed(tag, cs, OWN)).toBe(false)
     }
   })
 
   it('allows the options page (no tab) to drive export/clear/summary', () => {
-    for (const tag of ['ExportCaptureRequest', 'ClearCaptureRequest', 'CaptureSummaryRequest']) {
+    for (const tag of [
+      'ExportCaptureRequest',
+      'ClearCaptureRequest',
+      'CaptureSummaryRequest',
+    ] as const) {
       expect(isMessageAllowed(tag, ui, OWN)).toBe(true)
     }
   })

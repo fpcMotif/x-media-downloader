@@ -1141,6 +1141,14 @@ const buildCaptureExport = async (
 // Typed message-router table. Each entry returns the value to send back; the
 // listener pipes it to sendResponse and keeps the channel open. `handle` narrows
 // the union member for the entry while keeping the table's value type uniform.
+//
+// SEAM INVARIANT: every content-script-visible handler here must reply a
+// defined object on every code path — never legitimately resolve `undefined`.
+// The router's own `.catch` below upholds this on the failure path too (it
+// turns a rejection into `{ ok: false, ... }`, not a bare `undefined`). This is
+// what lets the caller treat `reply === undefined` as uniquely meaning
+// "unclaimed" (guard-dropped or decode-rejected) — see `expectReply` in
+// `../core/messaging`, the caller-side half of this same invariant.
 /** The slice of the message sender the handlers need: the originating tab id, so a
  *  download's clear can be sent back to the tab it came from. */
 type MsgSender = { readonly tab?: { readonly id?: number | undefined } | undefined }
@@ -1311,14 +1319,20 @@ export default defineBackground(() => {
   browser.downloads.onChanged.addListener((delta) => void onDownloadChanged(delta))
 
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Returning `false` here without calling `sendResponse` is a GUARD DROP, not a
+    // reply: Chrome resolves the sender's `safeSend` with `{status: 'ok', reply:
+    // undefined}` — structurally identical to a handler that legitimately replied
+    // with nothing. Two shipped incidents had exactly this signature (a missing
+    // CONTENT_SCRIPT_TAGS entry, then a missing sender-guard origin) and were only
+    // diagnosed live in a browser. Warn on every dropped tag — not just Capture
+    // ones — so the next hole is visible in the SW console instead. See
+    // `expectReply` in `../core/messaging` for the caller-side half of this
+    // invariant.
     const decoded = Schema.decodeUnknownResult(Message)(message)
     if (Result.isFailure(decoded)) {
       const rawTag = (message as { _tag?: unknown } | null)?._tag
-      if (typeof rawTag === 'string' && rawTag.startsWith('Capture'))
-        console.warn(
-          `[XMD] capture message ${rawTag} FAILED schema decode (dropped):`,
-          decoded.failure,
-        )
+      if (typeof rawTag === 'string')
+        console.warn(`[XMD] message ${rawTag} FAILED schema decode (dropped):`, decoded.failure)
       return false
     }
     const msg = decoded.success
@@ -1326,10 +1340,9 @@ export default defineBackground(() => {
     // content script, or a content script reaching for a UI-only tag — before
     // any download / OAuth / cloud-egress / clear handler runs.
     if (!isMessageAllowed(msg._tag, sender, browser.runtime.id)) {
-      if (msg._tag.startsWith('Capture'))
-        console.warn(
-          `[XMD] capture message ${msg._tag} BLOCKED by sender guard (contentScript=${sender?.tab !== undefined && sender?.tab !== null})`,
-        )
+      console.warn(
+        `[XMD] message ${msg._tag} BLOCKED by sender guard (contentScript=${sender?.tab !== undefined && sender?.tab !== null})`,
+      )
       return false
     }
     const h = messageHandlers[msg._tag]
