@@ -7,6 +7,7 @@ import {
   extFromMetaImgUrl,
 } from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
+import { META_CDN_HOSTS } from '../meta-shared/cdn'
 import { postVideoKey, postVideoKeyByDomSlot } from '../detection-store'
 import type { MediaItem } from '../../schema'
 
@@ -169,6 +170,8 @@ function resolveMetaImageElement(img: HTMLImageElement): MediaItem | null {
 export const threadsAdapter: PlatformAdapter = {
   platform: 'threads',
   hostMatch: THREADS_HOST_MATCH,
+  // Same Meta CDN family as Instagram — see meta-shared/cdn.ts's module doc.
+  cdnHosts: META_CDN_HOSTS,
   matchesUrl: isThreadsUrl,
   // Second (`requestHeaders`) param accepted for interface conformance only,
   // unused today — a future revision may switch to header-based matching

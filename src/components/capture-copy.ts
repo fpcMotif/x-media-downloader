@@ -8,8 +8,10 @@ export const plural = (n: number, noun: string): string => `${n} ${noun}${n === 
 export const fmtDay = (ms: number): string =>
   new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
-export const confirmClearArchiveCopy = (count: number): string =>
-  `Delete all ${plural(count, 'captured tweet')}? This cannot be undone.`
+// Erase (Tier 1 — local data wipe) is the verb; "Clear" is retired from every
+// user-facing surface (2026-07-11 Stage redesign, design contract line 3).
+export const confirmEraseArchiveCopy = (count: number): string =>
+  `Erase all ${plural(count, 'captured tweet')}? This cannot be undone.`
 
-export const clearedArchiveCopy = (count: number): string =>
-  `Cleared ${plural(count, 'tweet')} from the archive.`
+export const erasedArchiveCopy = (count: number): string =>
+  `Erased ${plural(count, 'tweet')} from the archive.`

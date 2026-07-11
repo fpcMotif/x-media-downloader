@@ -1,7 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import type { MediaItem } from '../../core/schema'
 import { recordFromMediaItem, applyOutcome } from '../../core/history/record'
-import { groupByAuthor, formatRecord, historyEmptyLabel, fetchHistory } from './history-section'
+import {
+  groupByAuthor,
+  formatRecord,
+  historyEmptyLabel,
+  confirmEraseHistoryCopy,
+  fetchHistory,
+} from './history-section'
 
 const rec = (id: string, handle: string, at: number) =>
   recordFromMediaItem(
@@ -50,12 +56,26 @@ describe('historyEmptyLabel', () => {
     expect(historyEmptyLabel(false, 5)).toBe('Turn on to keep a local history')
   })
 
-  it('shows an empty hint when on with no records', () => {
-    expect(historyEmptyLabel(true, 0)).toBe('No downloads yet')
+  it('shows an empty hint when on with no records (finding 12: teaches instead of a bare label)', () => {
+    expect(historyEmptyLabel(true, 0)).toBe('No downloads yet — files you save will appear here.')
   })
 
   it('is empty when on with records', () => {
     expect(historyEmptyLabel(true, 3)).toBe('')
+  })
+})
+
+describe('confirmEraseHistoryCopy', () => {
+  it('pluralizes "download record" and states files on disk are untouched', () => {
+    expect(confirmEraseHistoryCopy(0)).toBe(
+      'Erase all 0 download records? This cannot be undone. Files on disk are not touched.',
+    )
+    expect(confirmEraseHistoryCopy(1)).toBe(
+      'Erase all 1 download record? This cannot be undone. Files on disk are not touched.',
+    )
+    expect(confirmEraseHistoryCopy(2)).toBe(
+      'Erase all 2 download records? This cannot be undone. Files on disk are not touched.',
+    )
   })
 })
 

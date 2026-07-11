@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { defineConfig } from 'wxt'
 import preact from '@preact/preset-vite'
 import tailwindcss from '@tailwindcss/vite'
-import { allAdapterHostMatch } from './src/core/adapters/registry'
+import { allAdapterHostMatch, cdnMatchPatternsForAllAdapters } from './src/core/adapters/registry'
 
 // When a local `.env` pre-seeds Cloud Sync (WXT_CONVEX_URL), promote the Convex
 // origin from an optional to a REQUIRED host permission for THIS build only —
@@ -29,6 +29,12 @@ const CONVEX_ORIGIN = 'https://*.convex.cloud/*'
 const PLATFORM_HOST_PERMISSIONS = allAdapterHostMatch().map(
   (m) => `https://${m.split('://')[1]?.split('/')[0]}/*`,
 )
+
+// Every registered adapter's CDN match pattern (docs/adr/0019), already in
+// `https://host/*` / `https://*.host/*` manifest shape — no transform needed
+// (unlike PLATFORM_HOST_PERMISSIONS above, which starts from match-pattern
+// syntax). Adding a platform's CDN to the registry needs no edit here.
+const CDN_HOST_PERMISSIONS = cdnMatchPatternsForAllAdapters()
 
 // https://wxt.dev/api/config.html
 export default defineConfig({
@@ -62,21 +68,20 @@ export default defineConfig({
     ],
     // Requested at runtime only when Download Strategy = Fetched (ADR-0003):
     optional_permissions: ['offscreen'],
-    // twimg CDN = Fetched (ADR-0003) AND the Cloud Upload byte source (ADR-0013);
+    // Every registered adapter's CDN = Fetched (ADR-0003) AND the Cloud Upload
+    // byte source (ADR-0013), derived from the adapter registry (docs/adr/0019)
+    // rather than hand-listed — twimg's exact host pair plus Meta's
+    // `*.cdninstagram.com` wildcard (Instagram/Threads serve signed media off
+    // numbered `scontent` subdomains rather than one fixed host). HEAD-probes
+    // for the size/budget filters, the 'fetched' strategy, and Cloud Upload's
+    // byte source all need this fetch-level host access, on top of the
+    // page-origin host_permissions already granted for the content script.
     // localhost = aria2 JSON-RPC opt-in (ADR-0006); convex.cloud = Cloud Sync
     // opt-in (ADR-0009), unless a local `.env` pre-seeds it (then it's required,
     // above); the googleapis/dropboxapi origins = Cloud Upload provider APIs
     // (ADR-0013), requested at provider-connect time.
     optional_host_permissions: [
-      'https://pbs.twimg.com/*',
-      'https://video.twimg.com/*',
-      // Instagram/Threads media CDN — same rationale as the twimg pair above
-      // (HEAD-probes for the size/budget filters, the 'fetched' strategy, and
-      // Cloud Upload's byte source all need fetch-level host access, on top of
-      // the page-origin host_permissions already granted for the content
-      // script). Meta serves signed media off numbered `scontent` subdomains
-      // rather than one fixed host, hence the wildcard.
-      'https://*.cdninstagram.com/*',
+      ...CDN_HOST_PERMISSIONS,
       'http://localhost/*',
       'https://www.googleapis.com/*',
       'https://oauth2.googleapis.com/*',

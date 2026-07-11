@@ -4,7 +4,10 @@ import {
   INSTAGRAM_HOST_MATCH,
   isInstagramUrl,
   isTrackedInstagramResponseUrl,
+  postCodeFromPathname,
+  visibleAreaInViewport,
 } from './adapter'
+import { META_CDN_HOSTS } from '../meta-shared/cdn'
 
 describe('INSTAGRAM_HOST_MATCH / isInstagramUrl', () => {
   it('is the single www.instagram.com host pattern', () => {
@@ -61,6 +64,13 @@ describe('instagramAdapter', () => {
   it('reports the instagram platform tag and host patterns', () => {
     expect(instagramAdapter.platform).toBe('instagram')
     expect(instagramAdapter.hostMatch).toBe(INSTAGRAM_HOST_MATCH)
+  })
+
+  it('reports the shared Meta CDN hosts', () => {
+    expect(instagramAdapter.cdnHosts).toBe(META_CDN_HOSTS)
+    expect(instagramAdapter.cdnHosts).toEqual([
+      { host: 'cdninstagram.com', includeSubdomains: true },
+    ])
   })
 
   it('matchesUrl delegates to isInstagramUrl', () => {
@@ -423,29 +433,164 @@ describe('instagramAdapter', () => {
         )
       })
 
-      it('does NOT apply the pathname fallback when multiple sibling <video>s with no <article> ancestor are mounted at once (Reels immersive player)', () => {
+      describe('Reels immersive player: viewport-dominance gate on the multi-video branch', () => {
         // LIVE-VERIFIED 2026-07-05: Instagram's Reels immersive player
-        // (/reels/{code}/) mounts many sibling <video> elements simultaneously
-        // (6-11 observed live, off-screen ones included) with NO <article>/<li>
-        // ancestor for any of them, and `location.pathname` reflects only
-        // whichever reel is currently scrolled into view. A naive "no
-        // <article> -> trust the pathname" fallback would resolve EVERY
-        // mounted sibling to the SAME post code — reproduced directly against
-        // the pre-fix code, where two distinct sibling videos returned the
-        // identical key. The permalink-page case this fallback exists for
-        // (`/p/{code}/`, `/reel(s)/{code}/` landed on directly) always has
-        // exactly ONE <video> mounted (also live-verified) — so gating the
-        // fallback on "exactly one <video> in the whole document" cleanly
-        // distinguishes the two cases without any viewport/geometry check
-        // (which happy-dom can't compute anyway).
-        const root = document.createElement('div')
-        root.innerHTML = `
-          <div><video></video></div>
-          <div><video></video></div>`
-        const [video1, video2] = [...root.querySelectorAll('video')]
-        expect(instagramAdapter.postKeyFromVideoElement?.(video1!, '/reels/CODE_A/')).toBeNull()
-        expect(instagramAdapter.postKeyFromVideoElement?.(video2!, '/reels/CODE_A/')).toBeNull()
+        // (/reels/{code}/) mounts several sibling <video> elements
+        // simultaneously (2 observed 2026-07-05, 6-11 observed 2026-07-06),
+        // off-screen ones included, with NO <article>/<li> ancestor for any
+        // of them — and `location.pathname` reflects only whichever reel is
+        // currently scrolled into view. A naive "no <article> -> trust the
+        // pathname" fallback resolves EVERY mounted sibling to the SAME post
+        // code (the original bug: two distinct sibling videos returned the
+        // identical key) — but always refusing the fallback whenever 2+
+        // videos are mounted regressed the real reels player entirely, since
+        // it ALWAYS has 2+ mounted videos: hover never resolved there at all
+        // (the user-reported bug, https://www.instagram.com/reels/DaH4la4pRtC/).
+        //
+        // The fix: trust the pathname for the multi-video case too, but ONLY
+        // for the video that is the viewport-dominant one — strictly the
+        // largest on-screen area among every mounted video, with a non-zero
+        // area required. `location.pathname` always reflects the reel
+        // scrolled into view, so the dominant video is the one the pathname
+        // actually describes; an off-screen (zero-area) sibling, or a
+        // smaller-area sibling mid-transition, must NOT also claim that same
+        // code. An exact area tie is treated as "don't know which one is
+        // active" and resolves to null on both sides, rather than guessing.
+        const rect = (top: number, left: number, width: number, height: number) => () =>
+          ({ top, left, right: left + width, bottom: top + height, width, height }) as DOMRect
+
+        it('dominant hovered video (fills the 1024x768 viewport) resolves to post:code:{pathnameCode}, and postCodeFromElement returns the raw code', () => {
+          const root = document.createElement('div')
+          root.innerHTML = `
+            <div><video></video></div>
+            <div><video></video></div>`
+          const [dominant, offscreen] = [...root.querySelectorAll('video')]
+          dominant!.getBoundingClientRect = rect(0, 0, 1024, 768) // full viewport: area 786432
+          offscreen!.getBoundingClientRect = rect(-500, -500, 100, 100) // fully off-screen: area 0
+          expect(instagramAdapter.postKeyFromVideoElement?.(dominant!, '/reels/CODE_A/')).toBe(
+            'post:code:CODE_A',
+          )
+          expect(instagramAdapter.postCodeFromElement?.(dominant!, '/reels/CODE_A/')).toBe('CODE_A')
+        })
+
+        it('non-dominant (smaller-area) sibling resolves to null even though pathname matches', () => {
+          const root = document.createElement('div')
+          root.innerHTML = `
+            <div><video></video></div>
+            <div><video></video></div>`
+          const [dominant, smaller] = [...root.querySelectorAll('video')]
+          dominant!.getBoundingClientRect = rect(0, 0, 1024, 768)
+          smaller!.getBoundingClientRect = rect(0, 0, 200, 200) // area 40000, less than dominant
+          expect(instagramAdapter.postKeyFromVideoElement?.(smaller!, '/reels/CODE_A/')).toBeNull()
+        })
+
+        it('fully off-screen sibling (zero visible area) resolves to null', () => {
+          const root = document.createElement('div')
+          root.innerHTML = `
+            <div><video></video></div>
+            <div><video></video></div>`
+          const [dominant, offscreen] = [...root.querySelectorAll('video')]
+          dominant!.getBoundingClientRect = rect(0, 0, 1024, 768)
+          offscreen!.getBoundingClientRect = rect(1000, 1000, 50, 50) // entirely past the 1024x768 viewport
+          expect(
+            instagramAdapter.postKeyFromVideoElement?.(offscreen!, '/reels/CODE_A/'),
+          ).toBeNull()
+        })
+
+        it('exact-tie visible areas resolve to null for BOTH videos (mid-transition, cannot tell which is active)', () => {
+          const root = document.createElement('div')
+          root.innerHTML = `
+            <div><video></video></div>
+            <div><video></video></div>`
+          const [video1, video2] = [...root.querySelectorAll('video')]
+          video1!.getBoundingClientRect = rect(0, 0, 500, 500)
+          video2!.getBoundingClientRect = rect(0, 0, 500, 500) // identical area — a tie
+          expect(instagramAdapter.postKeyFromVideoElement?.(video1!, '/reels/CODE_A/')).toBeNull()
+          expect(instagramAdapter.postKeyFromVideoElement?.(video2!, '/reels/CODE_A/')).toBeNull()
+        })
+
+        it('happy-dom default (unstubbed) rects are all-zero for every video, so hover resolves to null deterministically', () => {
+          // Covers the real getBoundingClientRect wiring (no stubbing at all):
+          // happy-dom computes no layout, so every video's rect area is 0,
+          // which correctly fails the "> 0" dominance requirement.
+          const root = document.createElement('div')
+          root.innerHTML = `
+            <div><video></video></div>
+            <div><video></video></div>`
+          const [video1, video2] = [...root.querySelectorAll('video')]
+          expect(instagramAdapter.postKeyFromVideoElement?.(video1!, '/reels/CODE_A/')).toBeNull()
+          expect(instagramAdapter.postKeyFromVideoElement?.(video2!, '/reels/CODE_A/')).toBeNull()
+        })
+
+        it('3+ mounted videos: only the single strictly-largest one is dominant', () => {
+          const root = document.createElement('div')
+          root.innerHTML = `
+            <div><video></video></div>
+            <div><video></video></div>
+            <div><video></video></div>`
+          const [v1, v2, v3] = [...root.querySelectorAll('video')]
+          v1!.getBoundingClientRect = rect(0, 0, 100, 100) // area 10000
+          v2!.getBoundingClientRect = rect(0, 0, 1024, 768) // area 786432 — dominant
+          v3!.getBoundingClientRect = rect(0, 0, 300, 300) // area 90000
+          expect(instagramAdapter.postKeyFromVideoElement?.(v1!, '/reels/CODE_B/')).toBeNull()
+          expect(instagramAdapter.postKeyFromVideoElement?.(v2!, '/reels/CODE_B/')).toBe(
+            'post:code:CODE_B',
+          )
+          expect(instagramAdapter.postKeyFromVideoElement?.(v3!, '/reels/CODE_B/')).toBeNull()
+        })
       })
+    })
+  })
+
+  describe('postCodeFromPathname: /reels/audio/ hardening', () => {
+    // LIVE-OBSERVED: instagram.com/reels/audio/{id}/ is a real, distinct page
+    // (an audio-track's own reels listing) whose pathname shape otherwise
+    // matches INSTAGRAM_PERMALINK_PATTERN, which would wrongly capture the
+    // reserved literal segment "audio" as if it were a post code.
+    it('returns null for a /reels/audio/{id}/ pathname instead of the bogus code "audio"', () => {
+      expect(postCodeFromPathname('/reels/audio/27720128614248805/')).toBeNull()
+    })
+
+    it('still resolves a real reel code that is not the reserved "audio" segment', () => {
+      expect(postCodeFromPathname('/reels/DaH4la4pRtC/')).toBe('DaH4la4pRtC')
+    })
+  })
+
+  describe('visibleAreaInViewport', () => {
+    it('returns the full rect area when the rect is entirely inside the viewport', () => {
+      expect(
+        visibleAreaInViewport(
+          { top: 0, left: 0, right: 100, bottom: 50 },
+          { width: 1024, height: 768 },
+        ),
+      ).toBe(5000)
+    })
+
+    it('clips a rect that overflows the viewport on the right/bottom', () => {
+      expect(
+        visibleAreaInViewport(
+          { top: 700, left: 1000, right: 1100, bottom: 800 },
+          { width: 1024, height: 768 },
+        ),
+      ).toBe(24 * 68) // clipped to [1000,1024) x [700,768)
+    })
+
+    it('returns 0 for a rect entirely off-screen to the top/left (negative coordinates)', () => {
+      expect(
+        visibleAreaInViewport(
+          { top: -100, left: -100, right: -10, bottom: -10 },
+          { width: 1024, height: 768 },
+        ),
+      ).toBe(0)
+    })
+
+    it('returns 0 for a rect entirely past the viewport bounds', () => {
+      expect(
+        visibleAreaInViewport(
+          { top: 1000, left: 1000, right: 1100, bottom: 1100 },
+          { width: 1024, height: 768 },
+        ),
+      ).toBe(0)
     })
   })
 

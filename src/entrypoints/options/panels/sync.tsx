@@ -17,7 +17,7 @@ const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
 }
 
-export function CloudPanel({ settings, update, reload }: PanelProps) {
+export function SyncPanel({ settings, update, reload }: PanelProps) {
   const [convexGranted, setConvexGranted] = useState<boolean | null>(null)
   const [testingSync, setTestingSync] = useState(false)
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
@@ -127,7 +127,7 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
   return (
     <>
       <PanelHeader
-        title="Cloud"
+        title="Sync"
         description="Back up to your own cloud — opt-in, and you hold the keys."
       />
 
@@ -187,6 +187,7 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
                 type="button"
                 variant="outline"
                 size="sm"
+                className="min-h-10"
                 disabled={
                   testingSync || settings.convexUrl === '' || settings.convexSyncSecret === ''
                 }
@@ -199,6 +200,7 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
                   type="button"
                   variant="secondary"
                   size="sm"
+                  className="min-h-10"
                   onClick={() => void requestConvexAccess()}
                 >
                   Grant access
@@ -211,7 +213,7 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
             {syncStatus && (
               <p
                 className={cn(
-                  'text-sm leading-snug',
+                  'text-sm leading-snug text-pretty',
                   syncStatus.ok ? 'text-success' : 'text-destructive',
                 )}
               >
@@ -241,7 +243,7 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
 
         {settings.cloudUploadEnabled && (
           <>
-            <FieldDescription>
+            <FieldDescription className="text-pretty">
               Uploads run automatically as you download — there's no separate step. Use “Back up
               past downloads” to sync media you saved earlier.
             </FieldDescription>
@@ -268,20 +270,20 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
                 type="button"
                 variant="outline"
                 size="sm"
-                className="self-start"
+                className="min-h-10 self-start"
                 onClick={() => void backfillUploads()}
               >
                 Back up past downloads
               </Button>
             )}
             {connectMsg && (
-              <p className="text-sm leading-snug text-muted-foreground">{connectMsg}</p>
+              <p className="text-sm leading-snug text-pretty text-muted-foreground">{connectMsg}</p>
             )}
             {cloudStatus && (
               <div className="flex items-center justify-between gap-2">
                 <p
                   className={cn(
-                    'text-sm leading-snug',
+                    'text-sm leading-snug text-pretty',
                     cloudStatus.lastError ? 'text-destructive' : 'text-muted-foreground',
                   )}
                 >
@@ -292,6 +294,7 @@ export function CloudPanel({ settings, update, reload }: PanelProps) {
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="min-h-10"
                     onClick={() => void retryUploads()}
                   >
                     Retry failed
@@ -362,6 +365,7 @@ function CloudProviderRow({
             }
             target="_blank"
             rel="noreferrer"
+            className="rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             Where do I get this? →
           </a>
@@ -372,13 +376,20 @@ function CloudProviderRow({
           type="button"
           variant={connected ? 'outline' : 'default'}
           size="sm"
+          className="min-h-10"
           disabled={connecting || draft === ''}
           onClick={() => onConnect(draft)}
         >
           {connecting ? 'Connecting…' : connected ? 'Reconnect' : 'Connect'}
         </Button>
         {connected && (
-          <Button type="button" variant="outline" size="sm" onClick={onDisconnect}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="min-h-10"
+            onClick={onDisconnect}
+          >
             Disconnect
           </Button>
         )}

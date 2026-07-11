@@ -8,6 +8,7 @@ import {
   sweepSavedStatus,
   isSavedStatusScope,
   savedStatusVisible,
+  dispatchOverlayMessage,
 } from './handlers'
 import type { HandlerDeps } from './handlers'
 import { findArticle } from '../../core/clear/clearer'
@@ -332,5 +333,165 @@ describe('savedStatusVisible — setting gate × scope', () => {
   })
   it('is false on an out-of-scope page even when the toggle is on', () => {
     expect(savedStatusVisible('/jack', true)).toBe(false)
+  })
+})
+
+// dispatchOverlayMessage is the overlay's single `runtime.onMessage` entry point:
+// decode-gate against the inventoried inbound set, THEN table dispatch. These tests
+// pin the gate mechanics with the REAL sender literals (copied verbatim from the
+// sender code), not synthetic shapes — a schema drift that stops matching the real
+// senders must fail here, not silently drop production traffic.
+describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('RefreshMediaUrlRequest — the real background sender literal (media-url-refresh.ts) dispatches', () => {
+    const raw = {
+      _tag: 'RefreshMediaUrlRequest',
+      itemId: 'media-1',
+      tweetId: '123',
+      index: 0,
+      type: 'photo',
+    }
+    const deps = {
+      store: { get: () => undefined, addDetected: () => [], values: () => [] },
+      adapter: { platform: 'x', detectRenderedMedia: () => [] },
+      document,
+      location: { pathname: '/home' } as Location,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = dispatchOverlayMessage(raw, deps, sendResponse)
+    expect(kept).toBe(true)
+    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'RefreshMediaUrlResponse' })
+  })
+
+  it('ClearTweetRequest — the real tab-broadcaster.sendClearToTabs literal dispatches', () => {
+    const raw = {
+      _tag: 'ClearTweetRequest',
+      tweetId: 't99',
+      scopes: ['bookmark', 'like'],
+      allLists: true,
+    }
+    const deps = {
+      adapter: { platform: 'instagram' },
+      document,
+      location: { pathname: '/jack' } as Location,
+      clearLog: () => {},
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    dispatchOverlayMessage(raw, deps, sendResponse)
+    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearTweetResponse', results: [] })
+  })
+
+  it('ClearVisibleRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
+    const raw = { _tag: 'ClearVisibleRequest' }
+    const deps = {
+      adapter: { platform: 'threads' },
+      location: { pathname: '/jack/bookmarks' } as Location,
+      clearLog: () => {},
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    dispatchOverlayMessage(raw, deps, sendResponse)
+    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 0 })
+  })
+
+  it('ClearWholeListRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
+    const raw = { _tag: 'ClearWholeListRequest' }
+    const deps = {
+      adapter: { platform: 'threads' },
+      location: { pathname: '/jack/bookmarks' } as Location,
+      document,
+      clearLog: () => {},
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = dispatchOverlayMessage(raw, deps, sendResponse)
+    expect(kept).toBe(true)
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'ClearWholeListResponse',
+      cleared: 0,
+      reason: 'not-x',
+    })
+  })
+
+  it('DrainPageRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
+    const raw = { _tag: 'DrainPageRequest' }
+    const deps = {
+      store: { values: () => [] },
+      location: { pathname: '/home' } as Location,
+      clearLog: () => {},
+      sendTracked: vi.fn<HandlerDeps['sendTracked']>(async () => true),
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = dispatchOverlayMessage(raw, deps, sendResponse)
+    expect(kept).toBe(true)
+    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'DrainPageResponse', count: 0 })
+  })
+
+  it('SweepPageRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
+    const raw = { _tag: 'SweepPageRequest' }
+    const deps = {
+      location: { pathname: '/jack' } as Location, // not a Likes/Bookmarks list page
+      clearLog: () => {},
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = dispatchOverlayMessage(raw, deps, sendResponse)
+    expect(kept).toBe(true)
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'SweepPageResponse',
+      ok: false,
+      queued: 0,
+      skipped: 0,
+      reason: 'not-list-page',
+    })
+  })
+
+  it('a Message-union broadcast tag the table also handles (TransferOutcome) still dispatches', () => {
+    const raw = { _tag: 'TransferOutcome', requestId: 'req-1', outcome: 'complete', at: 1234 }
+    const deps = {
+      getBadge: () => ({ key: null }),
+      getBadgeMedia: () => null,
+      getBadgeRequestId: () => null,
+      getBadgeRequestKey: () => null,
+      getLauncherBatchIds: () => new Set<string>(),
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    // handleTransferOutcome is fire-and-forget: `false`, distinct from the
+    // `undefined` a DROPPED (decode-failed / unmapped) message returns below.
+    expect(dispatchOverlayMessage(raw, deps, sendResponse)).toBe(false)
+  })
+
+  it('drops a malformed known-tag payload without dispatching, and warns UNCONDITIONALLY (parity with background.ts)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const deps = { adapter: { platform: 'x' } } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = dispatchOverlayMessage(
+      { _tag: 'ClearTweetRequest', tweetId: 5 },
+      deps,
+      sendResponse,
+    )
+    expect(kept).toBeUndefined()
+    expect(sendResponse).not.toHaveBeenCalled()
+    // NOT DEV-gated: the silent-drop signature must be visible in any build.
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]![0]).toContain('ClearTweetRequest FAILED overlay schema decode')
+    warn.mockRestore()
+  })
+
+  it('drops an unknown/garbage tag without dispatching (warns only when a string tag exists to name)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const deps = { adapter: { platform: 'x' } } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = dispatchOverlayMessage({ _tag: 'NotARealTag', foo: 1 }, deps, sendResponse)
+    expect(kept).toBeUndefined()
+    expect(sendResponse).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledTimes(1)
+    // Tagless garbage: dropped silently — no string tag to name (same gate as
+    // background.ts's `typeof rawTag === 'string'`).
+    expect(dispatchOverlayMessage('garbage', deps, sendResponse)).toBeUndefined()
+    expect(dispatchOverlayMessage(null, deps, sendResponse)).toBeUndefined()
+    expect(sendResponse).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
   })
 })

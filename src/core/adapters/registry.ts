@@ -1,4 +1,4 @@
-import type { PlatformAdapter } from './types'
+import type { CdnHost, PlatformAdapter } from './types'
 import { xAdapter } from './x/adapter'
 import { instagramAdapter } from './instagram/adapter'
 import { threadsAdapter } from './threads/adapter'
@@ -72,4 +72,34 @@ export function originsForAllAdapters(): ReadonlySet<string> {
  *  host_permissions and browser.tabs.query source of truth. */
 export function allAdapterHostMatch(): readonly string[] {
   return [...new Set(ALL_ADAPTERS.flatMap((a) => a.hostMatch))]
+}
+
+/** Every registered adapter's `cdnHosts`, flattened and deduplicated by
+ *  `host`+`includeSubdomains` (Instagram and Threads both list the same
+ *  Meta CDN entry — this collapses it to one) — the single source of truth
+ *  the SSRF allow-list (`core/sync/url-guard.ts`) and the Fetched-strategy
+ *  optional-permission request (`core/download/fetched-strategy.ts`) both
+ *  derive from. */
+export function cdnHostsForAllAdapters(): readonly CdnHost[] {
+  const seen = new Set<string>()
+  const out: CdnHost[] = []
+  for (const adapter of ALL_ADAPTERS) {
+    for (const entry of adapter.cdnHosts) {
+      const key = `${entry.host}|${entry.includeSubdomains}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(entry)
+    }
+  }
+  return out
+}
+
+/** {@link cdnHostsForAllAdapters}, each entry mapped to a Chrome match
+ *  pattern: an exact host becomes `https://<host>/*`; `includeSubdomains`
+ *  becomes `https://*.<host>/*` — note a `*.host` match pattern ALSO matches
+ *  the bare host, so no separate exact-host entry is needed alongside it. */
+export function cdnMatchPatternsForAllAdapters(): readonly string[] {
+  return cdnHostsForAllAdapters().map((entry) =>
+    entry.includeSubdomains ? `https://*.${entry.host}/*` : `https://${entry.host}/*`,
+  )
 }

@@ -93,8 +93,12 @@ function makePorts(
 }
 
 describe('FETCHED_HOST_PATTERNS', () => {
-  it('covers twimg photo and video CDN hosts', () => {
-    expect(FETCHED_HOST_PATTERNS).toEqual(['https://pbs.twimg.com/*', 'https://video.twimg.com/*'])
+  it('covers every registered adapter CDN — twimg photo/video hosts plus the Meta CDN wildcard', () => {
+    expect(FETCHED_HOST_PATTERNS).toEqual([
+      'https://pbs.twimg.com/*',
+      'https://video.twimg.com/*',
+      'https://*.cdninstagram.com/*',
+    ])
   })
 })
 

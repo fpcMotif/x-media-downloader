@@ -117,3 +117,28 @@ true today.
   Rejected per the explicit non-decision above — one adapter is not a seam,
   and a speculative field would itself be an untested, unexercised copy of a
   fact nothing yet needs.
+
+## Amendment (2026-07-11) — CDN-host identity
+
+The same registry-derivation principle now covers a platform's media-CDN
+hosts too, not just its page-origin identity. `PlatformAdapter` gained a
+required `cdnHosts` field — `{ host, includeSubdomains }`, exact hostnames
+with opt-in dot-anchored subdomain matching (`sub.host`, never a suffix
+look-alike like `evilhost.com`).
+
+Derived consumers, all reading `ALL_ADAPTERS` through registry helpers rather
+than a hand-maintained list: the Cloud Upload SSRF allow-list
+(`src/core/sync/url-guard.ts`), the Fetched-strategy optional-permission
+request (`src/core/download/fetched-strategy.ts`), and the manifest's CDN
+`optional_host_permissions` (`wxt.config.ts`).
+
+The SSRF guard's semantics are unchanged by this: exact-Set / dot-anchored
+matching only, never wildcard matching. A pinned test in `url-guard.test.ts`
+forces a conscious update whenever a new adapter (or a new `cdnHosts` entry
+on an existing one) is registered, rather than silently widening what the
+guard accepts.
+
+This closes a live gap: Cloud Upload and Fetched mode were twimg-only, so
+neither worked for Instagram/Threads media — the same drift shape flagged in
+commit 670d5a6's message for page-origin identity, recurring here for CDN
+identity.

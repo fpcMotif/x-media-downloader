@@ -29,14 +29,26 @@ export function pathFamily(pathname: string): string | null {
 
 /**
  * Whether a path family is real POST CONTENT (a photo/video asset) rather
- * than a profile picture/avatar. LIVE-VERIFIED 2026-07-05: content families
- * end in `-15` (`t51.82787-15` on both Instagram and Threads, `t51.71878-15`
- * also seen on Threads); avatar families end in `-19` (`t51.2885-19` on
- * Instagram, `t51.82787-19` on Threads — the numeric prefix varies, ONLY the
- * trailing `-15`/`-19` is the load-bearing signal).
+ * than a profile picture/avatar. This gate's actual job is EXCLUDING
+ * profile-picture/avatar assets, not allowlisting content families — it is
+ * a denylist, not an allowlist. Every avatar family ever observed live ends
+ * in `-19` (`t51.2885-19` on Instagram, `t51.82787-19` on Threads, both
+ * 2026-07-05 — the numeric prefix varies, only the trailing `-19` is the
+ * load-bearing signal), so that's the one suffix excluded.
+ *
+ * FALSIFIED LIVE 2026-07-06: this used to be a `-15`-only allowlist, which
+ * returned false for a real Instagram post photo (instagram.com/p/DaM2wDWCH-C/)
+ * served on family `t39.30808-6` — a Facebook-style family Meta has started
+ * also using for Instagram post content. An allowlist breaks every time Meta
+ * introduces a new content family (silently killing the grab affordance on
+ * real content, with no visible symptom besides "nothing happens"); a
+ * denylist only breaks if a NEW avatar family appears, and that failure mode
+ * is a spurious grab affordance offered on an avatar (benign, visible, easy
+ * to notice) rather than a silently dead grab on real content (the bug
+ * actually reported). Prefer the denylist's failure mode.
  */
 export function isContentPathFamily(family: string): boolean {
-  return family.endsWith('-15')
+  return !family.endsWith('-19')
 }
 
 /**

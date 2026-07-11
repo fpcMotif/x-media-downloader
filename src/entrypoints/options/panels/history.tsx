@@ -3,10 +3,12 @@ import type { DownloadRecord } from '@/core/history/record'
 import { Badge } from '@/components/ui/badge'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
+import { ConfirmStrip } from '@/components/confirm-strip'
 import {
   groupByAuthor,
   formatRecord,
   historyEmptyLabel,
+  confirmEraseHistoryCopy,
   fetchHistory,
 } from '@/entrypoints/popup/history-section'
 import { PanelHeader, Section, type PanelProps } from '../ui'
@@ -18,7 +20,7 @@ export function HistoryPanel({ settings, update }: PanelProps) {
     void fetchHistory().then(setHistory)
   }, [])
 
-  const clearHistory = async (): Promise<void> => {
+  const eraseHistory = async (): Promise<void> => {
     await browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' }).catch(() => {})
     setHistory([])
   }
@@ -66,7 +68,7 @@ export function HistoryPanel({ settings, update }: PanelProps) {
                           {f.status}
                         </Badge>
                         <a
-                          className="truncate text-muted-foreground hover:text-foreground"
+                          className="truncate rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
                           href={f.link}
                           target="_blank"
                           rel="noreferrer"
@@ -79,16 +81,25 @@ export function HistoryPanel({ settings, update }: PanelProps) {
                 </ol>
               </div>
             ))}
-            <button
-              type="button"
-              className="self-start text-[13px] text-destructive hover:underline"
-              onClick={() => void clearHistory()}
+            <ConfirmStrip
+              sentence={confirmEraseHistoryCopy(history.length)}
+              confirmLabel="Erase history"
+              kind="one-shot"
+              onConfirm={() => void eraseHistory()}
             >
-              Clear history…
-            </button>
+              {(arm) => (
+                <button
+                  type="button"
+                  className="self-start rounded-sm text-[13px] text-destructive outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50"
+                  onClick={arm}
+                >
+                  Erase history…
+                </button>
+              )}
+            </ConfirmStrip>
           </>
         ) : (
-          <FieldDescription>
+          <FieldDescription className="text-pretty">
             {historyEmptyLabel(settings.downloadHistoryEnabled, history.length)}
           </FieldDescription>
         )}

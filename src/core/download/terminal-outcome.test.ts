@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decideTerminalOutcome, type OutcomeState } from './terminal-outcome'
+import { decideEnqueueOutcome, decideTerminalOutcome, type OutcomeState } from './terminal-outcome'
 import { emptyMetrics, recordOutcome, type MetricsState } from './metrics'
 import { emptyTracker, trackTransfer, type TrackerState } from './transfer-tracker'
 import { syncEventId } from '../sync/events'
@@ -103,5 +103,71 @@ describe('decideTerminalOutcome', () => {
     expect(state.transfers.transfers).toHaveLength(1)
     expect(state.metrics?.completed).toBe(0)
     expect(before).toBe(1) // recordOutcome sanity: the reducer it composes does count
+  })
+})
+
+describe('decideEnqueueOutcome', () => {
+  it('failed-to-start, non-sidecar: emits the failed sync event + history action', () => {
+    const fx = decideEnqueueOutcome({ id: 'e1', outcome: 'failed', now: NOW, deviceId: DEVICE })
+
+    expect(fx).toEqual({
+      syncEvent: {
+        eventId: syncEventId(DEVICE, 'e1', 'failed'),
+        kind: 'failed',
+        requestId: 'e1',
+        deviceId: DEVICE,
+        at: NOW,
+      },
+      historyAction: { kind: 'failed', requestId: 'e1', at: NOW },
+    })
+  })
+
+  it('aria2 hand-off complete, non-sidecar: emits the completed sync event + history action', () => {
+    const fx = decideEnqueueOutcome({ id: 'e2', outcome: 'complete', now: NOW, deviceId: DEVICE })
+
+    expect(fx).toEqual({
+      syncEvent: {
+        eventId: syncEventId(DEVICE, 'e2', 'completed'),
+        kind: 'completed',
+        requestId: 'e2',
+        deviceId: DEVICE,
+        at: NOW,
+      },
+      historyAction: { kind: 'completed', requestId: 'e2', at: NOW },
+    })
+  })
+
+  it('failed-to-start sidecar: suppresses the sync event, still records history', () => {
+    const fx = decideEnqueueOutcome({
+      id: 'e3.json',
+      outcome: 'failed',
+      now: NOW,
+      deviceId: DEVICE,
+    })
+
+    expect(fx).toEqual({
+      syncEvent: null,
+      historyAction: { kind: 'failed', requestId: 'e3.json', at: NOW },
+    })
+  })
+
+  it('complete sidecar: suppresses the sync event, still records history', () => {
+    const fx = decideEnqueueOutcome({
+      id: 'e4.json',
+      outcome: 'complete',
+      now: NOW,
+      deviceId: DEVICE,
+    })
+
+    expect(fx).toEqual({
+      syncEvent: null,
+      historyAction: { kind: 'completed', requestId: 'e4.json', at: NOW },
+    })
+  })
+
+  it('has no backlink field, structurally — unlike decideTerminalOutcome', () => {
+    const fx = decideEnqueueOutcome({ id: 'e5', outcome: 'complete', now: NOW, deviceId: DEVICE })
+
+    expect('backlink' in fx).toBe(false)
   })
 })

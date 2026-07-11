@@ -13,9 +13,10 @@ import {
 import {
   plural,
   fmtDay,
-  confirmClearArchiveCopy,
-  clearedArchiveCopy,
+  confirmEraseArchiveCopy,
+  erasedArchiveCopy,
 } from '@/components/capture-copy'
+import { ConfirmStrip } from '@/components/confirm-strip'
 
 // The archive browser loads the newest ARCHIVE_FETCH_LIMIT conversations in one
 // message and pages through them client-side — no per-click round-trips. Archives
@@ -24,8 +25,14 @@ const ARCHIVE_FETCH_LIMIT = 1000
 const PAGE_SIZE = 20
 const PAGE_STEP = 50
 
+// Shared focus-ring fragment for the raw text-link buttons on this surface
+// (JSON / Markdown / Export all / Erase archive) — audit finding 10: keep the
+// bare-link register, just make it focusable/visible. No `active:scale` here
+// (adjudicated: scaling plain underlined text on a full page reads as broken).
+const LINK_FOCUS = 'rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
+
 // Takes no PanelProps — the archive is a pure data browser, not a setting; it
-// only talks to the extension worker for its own summary/export/clear messages.
+// only talks to the extension worker for its own summary/export/erase messages.
 export function ArchivePanel() {
   const [summary, setSummary] = useState<CaptureSummary | null>(null)
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
@@ -45,14 +52,13 @@ export function ArchivePanel() {
     flashStatus(outcome.detail)
   }
 
-  const clearArchive = async (): Promise<void> => {
+  const eraseArchive = async (): Promise<void> => {
     const tweets = summary?.tweets ?? 0
-    if (!confirm(confirmClearArchiveCopy(tweets))) return
     await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
     setSummary({ tweets: 0, conversations: 0, recent: [] })
     setQuery('')
     setVisible(PAGE_SIZE)
-    flashStatus(clearedArchiveCopy(tweets))
+    flashStatus(erasedArchiveCopy(tweets))
   }
 
   const loaded = summary?.recent ?? []
@@ -77,7 +83,13 @@ export function ArchivePanel() {
         title="Conversations"
         description="Search by handle or text, export a tree or Markdown copy of any conversation, or pull everything as JSONL."
         action={
-          <Button type="button" variant="ghost" size="sm" onClick={refreshSummary}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="min-h-10"
+            onClick={refreshSummary}
+          >
             Refresh
           </Button>
         }
@@ -94,12 +106,14 @@ export function ArchivePanel() {
             }}
             className="min-w-[12rem] flex-1"
           />
-          <span className="shrink-0 font-mono text-xs text-muted-foreground">
+          <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
             {plural(summary?.tweets ?? 0, 'tweet')} · {plural(conversations, 'conversation')}
           </span>
         </div>
 
-        {shown.length > 0 ? (
+        {summary === null ? (
+          <FieldDescription>Loading…</FieldDescription>
+        ) : shown.length > 0 ? (
           <ol className="grid gap-0 divide-y divide-border" aria-label="Captured conversations">
             {shown.map((c) => (
               <li
@@ -109,7 +123,7 @@ export function ArchivePanel() {
                 <div className="grid min-w-0 gap-0.5">
                   <span className="truncate">
                     <span className="font-medium">@{c.rootHandle}</span>
-                    <span className="font-mono text-muted-foreground">
+                    <span className="font-mono tabular-nums text-muted-foreground">
                       {' '}
                       · {plural(c.count, 'tweet')} · {fmtDay(c.lastAt)}
                     </span>
@@ -119,7 +133,7 @@ export function ArchivePanel() {
                 <div className="flex shrink-0 items-center gap-1.5 text-xs">
                   <button
                     type="button"
-                    className="text-primary hover:underline"
+                    className={`text-primary hover:underline ${LINK_FOCUS}`}
                     onClick={() => void doExport('tree', c.conversationId)}
                   >
                     JSON
@@ -129,7 +143,7 @@ export function ArchivePanel() {
                   </span>
                   <button
                     type="button"
-                    className="text-primary hover:underline"
+                    className={`text-primary hover:underline ${LINK_FOCUS}`}
                     onClick={() => void doExport('markdown', c.conversationId)}
                   >
                     Markdown
@@ -139,9 +153,11 @@ export function ArchivePanel() {
             ))}
           </ol>
         ) : loaded.length > 0 ? (
-          <FieldDescription>No conversations match “{query.trim()}”.</FieldDescription>
+          <FieldDescription className="text-pretty">
+            No conversations match “{query.trim()}”.
+          </FieldDescription>
         ) : (
-          <FieldDescription>
+          <FieldDescription className="text-pretty">
             Nothing captured yet. Turn on Capture tweets and browse X.
           </FieldDescription>
         )}
@@ -151,15 +167,16 @@ export function ArchivePanel() {
             type="button"
             variant="outline"
             size="sm"
-            className="self-start"
+            className="min-h-10 self-start"
             onClick={() => setVisible((v) => v + PAGE_STEP)}
           >
-            Show {Math.min(PAGE_STEP, remaining)} more
-            <span className="font-mono">({remaining} remaining)</span>
+            Show <span className="font-mono tabular-nums">{Math.min(PAGE_STEP, remaining)}</span>{' '}
+            more
+            <span className="font-mono tabular-nums">({remaining} remaining)</span>
           </Button>
         )}
         {conversations > loaded.length && (
-          <FieldDescription className="font-mono">
+          <FieldDescription className="font-mono tabular-nums text-pretty">
             Showing the newest {loaded.length} of {conversations} conversations — Export all (JSONL)
             includes everything.
           </FieldDescription>
@@ -168,20 +185,30 @@ export function ArchivePanel() {
         <div className="flex flex-wrap items-center gap-4">
           <button
             type="button"
-            className="self-start text-[13px] text-primary hover:underline"
+            className={`self-start text-[13px] text-primary hover:underline ${LINK_FOCUS}`}
             onClick={() => void doExport('jsonl')}
           >
             Export all · JSONL
           </button>
-          <button
-            type="button"
-            className="ml-auto flex items-center gap-1.5 text-[13px] text-destructive hover:underline"
-            onClick={() => void clearArchive()}
-          >
-            <EraserIcon className="size-3.5" />
-            Clear archive…
-          </button>
         </div>
+
+        <ConfirmStrip
+          sentence={confirmEraseArchiveCopy(summary?.tweets ?? 0)}
+          confirmLabel="Erase the archive"
+          kind="one-shot"
+          onConfirm={() => void eraseArchive()}
+        >
+          {(arm) => (
+            <button
+              type="button"
+              className={`flex items-center gap-1.5 text-[13px] text-destructive hover:underline ${LINK_FOCUS}`}
+              onClick={arm}
+            >
+              <EraserIcon className="size-3.5" />
+              Erase archive…
+            </button>
+          )}
+        </ConfirmStrip>
 
         <div aria-live="polite">
           {statusMsg && <FieldDescription>{statusMsg}</FieldDescription>}

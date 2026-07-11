@@ -7,7 +7,7 @@
 // `handleClearDetectedMedia` still read AND write the same live state they did
 // when inlined. The dispatch table at the bottom maps each message `_tag` to its
 // handler; the router in index.tsx collapses to a single table lookup.
-import { Option } from 'effect'
+import { Option, Result, Schema } from 'effect'
 import { resolveOutcome, type BadgeState } from '../../core/badge'
 import { resolveOutcomeAll, type LauncherPhase } from '../../core/launcher'
 import type { PlatformAdapter } from '../../core/adapters/types'
@@ -27,6 +27,12 @@ import {
 } from '../../core/clear/clearer'
 import type { makeDetectionStore } from '../../core/adapters/detection-store'
 import type { ClearScope, MediaItem } from '../../core/schema'
+import {
+  TAB_MESSAGE_MEMBERS,
+  TransferOutcome,
+  SavedStatusUpdate,
+  ClearDetectedMediaRequest,
+} from '../../core/schema'
 
 type HoverMediaElement = HTMLImageElement | HTMLVideoElement
 type DetectionStore = ReturnType<typeof makeDetectionStore>
@@ -491,6 +497,9 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
 // currently return `[]`, a separate and intentional TODO, not a gating concern here).
 // Gating this handler would silently break "Clear detected media" for Instagram/
 // Threads users, who have nothing X-specific to protect against in the first place.
+//
+// TODO: currently unreachable from the UI — its only sender was dropped by the
+// in-flight popup rewrite; kept wired pending that rewrite settling.
 export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResponse) => {
   const cleared = deps.store.count
   deps.store.clear()
@@ -526,4 +535,44 @@ export const messageHandlers: Record<string, MessageHandler> = {
   SweepPageRequest: handleSweepPage,
   ClearTweetRequest: handleClearTweet,
   ClearDetectedMediaRequest: handleClearDetectedMedia,
+}
+
+/** The overlay's TRUE inbound set, decode-gated before any dispatch: the six
+ *  tab-targeted (`browser.tabs.sendMessage`) tags — spread from the SAME
+ *  `TAB_MESSAGE_MEMBERS` array `TabMessage` itself is built from, so the two
+ *  unions can never drift — plus the three broadcast `Message`-union tags
+ *  `messageHandlers` above also answers (`TransferOutcome`, `SavedStatusUpdate`,
+ *  `ClearDetectedMediaRequest`) — NOT the full `Message` union, most of which
+ *  the overlay never receives. */
+const OverlayInboundMessage = Schema.Union([
+  ...TAB_MESSAGE_MEMBERS,
+  TransferOutcome,
+  SavedStatusUpdate,
+  ClearDetectedMediaRequest,
+])
+
+/** The overlay's single `runtime.onMessage` entry point: decode-gate, then table
+ *  dispatch. A message whose tag/shape falls outside the inventoried set above is
+ *  DROPPED before it ever reaches a handler — the same "no entry" no-op the table
+ *  already gives an unmapped tag, so a forged or garbled message degrades exactly
+ *  like an unknown one, never a thrown decode error. */
+export const dispatchOverlayMessage: MessageHandler = (message, deps, sendResponse) => {
+  const decoded = Schema.decodeUnknownResult(OverlayInboundMessage)(message)
+  if (Result.isFailure(decoded)) {
+    // Warn UNCONDITIONALLY (not DEV-gated), mirroring background.ts's decode
+    // gate: a silently-dropped message is exactly the signature two shipped
+    // incidents had — diagnosed only live in a browser console.
+    const rawTag = (message as { _tag?: unknown } | null)?._tag
+    if (typeof rawTag === 'string')
+      console.warn(
+        `[XMD] message ${rawTag} FAILED overlay schema decode (dropped):`,
+        decoded.failure,
+      )
+    // `undefined` ≡ `false` to the WebExtension onMessage API (channel not kept
+    // open) — the same drop background.ts spells as an explicit `return false`.
+    return
+  }
+  const handler = messageHandlers[decoded.success._tag]
+  if (handler === undefined) return
+  return handler(decoded.success, deps, sendResponse)
 }

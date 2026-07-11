@@ -10,6 +10,13 @@ import {
   DownloadTraceEntry,
   SavedStatusRequest,
   SavedStatusResponse,
+  TabMessage,
+  RefreshMediaUrlRequest,
+  ClearTweetRequest,
+  ClearVisibleRequest,
+  ClearWholeListRequest,
+  DrainPageRequest,
+  SweepPageRequest,
 } from './index'
 
 const validMediaRaw = {
@@ -196,5 +203,87 @@ describe('Message schema', () => {
     const entry = Schema.decodeUnknownSync(DownloadTraceEntry)(raw)
     expect(entry.source).toBe('quickgrab')
     expect(entry.elapsedMs).toBe(501)
+  })
+})
+
+// TabMessage rides `browser.tabs.sendMessage` (popup/background → content
+// script) — a DIFFERENT transport from the `Message` union above
+// (`runtime.sendMessage`). These six tags must decode via `TabMessage` and must
+// NOT be reachable through `Message`.
+describe('TabMessage schema', () => {
+  it('decodes the four no-payload page-action requests', () => {
+    for (const tag of [
+      'ClearVisibleRequest',
+      'ClearWholeListRequest',
+      'DrainPageRequest',
+      'SweepPageRequest',
+    ] as const) {
+      const msg = Schema.decodeUnknownSync(TabMessage)({ _tag: tag })
+      expect(msg._tag).toBe(tag)
+    }
+  })
+
+  it('round-trips the real ClearVisibleRequest/ClearWholeListRequest/DrainPageRequest/SweepPageRequest literals', () => {
+    expect(
+      Schema.decodeUnknownSync(ClearVisibleRequest)({ _tag: 'ClearVisibleRequest' })._tag,
+    ).toBe('ClearVisibleRequest')
+    expect(
+      Schema.decodeUnknownSync(ClearWholeListRequest)({ _tag: 'ClearWholeListRequest' })._tag,
+    ).toBe('ClearWholeListRequest')
+    expect(Schema.decodeUnknownSync(DrainPageRequest)({ _tag: 'DrainPageRequest' })._tag).toBe(
+      'DrainPageRequest',
+    )
+    expect(Schema.decodeUnknownSync(SweepPageRequest)({ _tag: 'SweepPageRequest' })._tag).toBe(
+      'SweepPageRequest',
+    )
+  })
+
+  it('decodes the real RefreshMediaUrlRequest sender literal (background → content, refresh-before-retry)', () => {
+    const raw = {
+      _tag: 'RefreshMediaUrlRequest',
+      itemId: 'media-1',
+      tweetId: '123',
+      index: 0,
+      type: 'photo',
+    }
+    const viaTabMessage = Schema.decodeUnknownSync(TabMessage)(raw)
+    expect(viaTabMessage._tag).toBe('RefreshMediaUrlRequest')
+    const req = Schema.decodeUnknownSync(RefreshMediaUrlRequest)(raw)
+    expect(req.itemId).toBe('media-1')
+    expect(req.index).toBe(0)
+    expect(req.type).toBe('photo')
+  })
+
+  it('decodes the real ClearTweetRequest sender literal (tab-broadcaster.sendClearToTabs)', () => {
+    const raw = {
+      _tag: 'ClearTweetRequest',
+      tweetId: 't99',
+      scopes: ['bookmark', 'like'],
+      allLists: true,
+    }
+    const viaTabMessage = Schema.decodeUnknownSync(TabMessage)(raw)
+    expect(viaTabMessage._tag).toBe('ClearTweetRequest')
+    const req = Schema.decodeUnknownSync(ClearTweetRequest)(raw)
+    expect(req.tweetId).toBe('t99')
+    expect(req.scopes).toEqual(['bookmark', 'like'])
+    expect(req.allLists).toBe(true)
+  })
+
+  it('rejects a malformed / unknown-tag payload', () => {
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(TabMessage)({ _tag: 'ClearTweetRequest' })),
+    ).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(TabMessage)({ _tag: 'NotARealTag' }))).toBe(
+      true,
+    )
+  })
+
+  it('does NOT decode via the runtime-broadcast Message union — the two transports are disjoint', () => {
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(Message)({ _tag: 'ClearVisibleRequest' })),
+    ).toBe(true)
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(Message)({ _tag: 'DrainPageRequest' })),
+    ).toBe(true)
   })
 })

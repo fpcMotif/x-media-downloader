@@ -1,0 +1,20 @@
+/* Shared brand primitives — the ONLY values both surface stylesheets must agree
+   on. src/app.css (popup + options, flat R4 instrument) and
+   src/entrypoints/overlay.content/style.css (on-page liquid-glass overlay) each
+   keep their own surface identity; this file holds just the cross-surface
+   constants so they can't drift. Both build pipelines inline this import at
+   build time (Tailwind's compiler for app.css, Vite's CSS plugin for the
+   content script), so the emitted CSS stays self-contained.
+
+   Deliberately NOT here: the accent hue family (overlay 245–248 vs popup
+   250 light / 240 dark) and danger hue (overlay 28 vs popup 25 light / 22 dark)
+   are tuned per surface, and the concentric radii steps are popup-only. */
+:host,
+:root {
+  /* Brand motion: every eased transition on both surfaces rides this curve. */
+  --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  /* OKLCH hue anchors. Neutral casts every ink/surface/line/shadow tint;
+     success is the shared "saved" green family. */
+  --xmd-hue-neutral: 255;
+  --xmd-hue-success: 160;
+}

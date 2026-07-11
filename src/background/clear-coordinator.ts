@@ -2,6 +2,7 @@ import { storage } from 'wxt/utils/storage'
 import type { DownloadTraceEntry, Settings } from '../core/schema'
 import {
   createEntry,
+  hookScopes,
   reduce as reduceLedger,
   isFullyCleared,
   isTrulyComplete,
@@ -31,16 +32,21 @@ const SETTLE_CONFIRM_MS = 1500
 
 const SWEEP_WORKLIST_MAX = 5000
 
-/** The auto-hook's enabled clear scopes, derived from the per-scope kill
- *  switches — the single mapping shared by ledger seeding and re-checks. The
- *  page the download happens on decides which of these is actually clicked
- *  (handleClearTweet's onScope): un-bookmark/un-like on a list page, "Not
- *  interested" on the For You feed; the off-page scopes no-op. */
-export const hookScopes = (s: Settings): Scope[] => [
-  ...(s.autoUnbookmarkOnSave ? (['bookmark'] as Scope[]) : []),
-  ...(s.autoUnlikeOnSave ? (['like'] as Scope[]) : []),
-  ...(s.autoNotInterestedOnSave ? (['notInterested'] as Scope[]) : []),
-]
+/** Local clock port for the settle-confirm window — smallest interface for the
+ *  one call site below (schedule-only; the window never cancels). Kept local to
+ *  this module, not shared: Clock Ports are per-module shapes (see retry-plan.ts's
+ *  RetryClock for the sibling instance in this same SW context). */
+export interface SettleClock {
+  readonly schedule: (fn: () => void, ms: number) => void
+}
+
+/** The real clock: wraps `setTimeout`. Used when no `clock` dep is supplied —
+ *  tests inject a hand-rolled fake instead (see clear-coordinator.test.ts). */
+const realSettleClock: SettleClock = {
+  schedule: (fn, ms) => {
+    setTimeout(fn, ms)
+  },
+}
 
 /** CAS-claim each still-enabled scope, returning the CAS-updated entry (the
  *  caller MUST persist `entry` — the rebind carries the won claims) and the list
@@ -61,6 +67,11 @@ const claimEnabledScopes = (
   }
   return { entry: e, claimed }
 }
+
+/** Which scopes may clear NOW: a sweep entry uses its OWN list scope only; the
+ *  auto-hook re-derives from its (mid-flight-toggleable) per-scope kill switches. */
+const enabledScopesFor = (entry: LedgerEntry, settings: Settings): Set<Scope> =>
+  entry.origin === 'sweep' ? new Set<Scope>(entry.scopes) : new Set(hookScopes(settings))
 
 export interface ClearCoordinator {
   /** Seed the clear ledger for a download batch (one entry per tweet). */
@@ -115,10 +126,14 @@ export interface ClearCoordinatorDeps {
    *  SW; a fixture row in tests. Resolves `undefined` when the row is gone or the
    *  search throws — `decideSettle` fails that closed (no Clear). */
   readonly settleProbe: (downloadId: number) => Promise<DownloadProbe | undefined>
+  /** Injected timer port for the settle-confirm window. Defaults to the real
+   *  `setTimeout` wrapper when omitted — tests supply a hand-rolled fake instead. */
+  readonly clock?: SettleClock
 }
 
 export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinator => {
   const { getSettings, trace, sendClearToTabs, settleProbe } = deps
+  const clock = deps.clock ?? realSettleClock
 
   // Clear-on-complete ledger (worklist un-bookmark/un-like). In-memory v1: a SW
   // recycle simply skips the Clear — it can never wrong-clear — and durable
@@ -153,11 +168,6 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
       if (next !== wl) await sweepWorklistItem.setValue(next)
     })
   }
-
-  /** Which scopes may clear NOW: a sweep entry uses its OWN list scope only; the
-   *  auto-hook re-derives from its (mid-flight-toggleable) per-scope kill switches. */
-  const enabledScopesFor = (entry: LedgerEntry, settings: Settings): Set<Scope> =>
-    entry.origin === 'sweep' ? new Set<Scope>(entry.scopes) : new Set(hookScopes(settings))
 
   /** Truly Complete → claim the still-enabled scopes (CAS), DOM-clear them in-page,
    *  resolve each latch from the verified flip, prune once every scope is cleared.
@@ -270,7 +280,7 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
         clearLedger.set(tweetId, reduceLedger(e, { type: 'Complete', mediaId: requestId }))
       }
     })
-    setTimeout(() => {
+    clock.schedule(() => {
       clearQueue.push(async () => {
         const e = clearLedger.get(tweetId)
         if (e === undefined) return

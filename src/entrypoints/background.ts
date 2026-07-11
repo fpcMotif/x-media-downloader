@@ -14,7 +14,7 @@ import {
   setSettings,
   watchSettings,
 } from '../core/settings'
-import { queuedEvent, outcomeEvent, type SyncEvent } from '../core/sync/events'
+import { queuedEvent, type SyncEvent } from '../core/sync/events'
 import { makeConvexHttpPort, queryDownloadedAmong } from '../core/sync/convex'
 import { makeSavedIndex, type QueryConvex } from '../core/sync/saved-index'
 import { refreshMediaUrlFromTabs } from '../core/download/media-url-refresh'
@@ -61,10 +61,22 @@ import {
   type ReconcileRow,
   type TrackerState,
 } from '../core/download/transfer-tracker'
-import { decideTerminalOutcome } from '../core/download/terminal-outcome'
+import {
+  decideEnqueueOutcome,
+  decideTerminalOutcome,
+  type EnqueueOutcomeEffects,
+  type TerminalOutcome,
+} from '../core/download/terminal-outcome'
+import {
+  decodeRequestMetaStore,
+  emptyRequestMetaStore,
+  planMetaReconcile,
+  type PersistedRequestMeta,
+} from '../core/download/request-meta'
 import { decodeStore, emptyStore } from '../core/history/store'
 import { planHistory, type HistoryAction } from '../core/history/wiring'
 import { type Scope } from '../core/clear/ledger'
+import { planClearSeed } from '../core/clear/seed'
 import type { ClearScope, SweepEnqueueResponse } from '../core/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
@@ -73,9 +85,8 @@ import { makeCloudUpload } from '../background/cloud-upload'
 import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
-import { makeClearCoordinator, hookScopes } from '../background/clear-coordinator'
+import { makeClearCoordinator } from '../background/clear-coordinator'
 import { makeRetryPlanApplier } from '../background/retry-plan'
-import { isClearableTweetId } from '../core/clear/clearer'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
 import {
@@ -120,13 +131,24 @@ let traceEvents: DownloadTraceEntry[] = []
 // never reach `total`. Duplicates are dropped while the original is in flight.
 const inFlight = new Set<string>()
 
-// Browser download metadata for interrupted auto-retry (url/filename + attempt).
-interface RequestMeta {
-  readonly url: string
-  readonly filename: string
-  readonly item?: MediaItem
-}
+// Browser download metadata for interrupted auto-retry (url/filename + item).
+// Aliased to the persisted codec's decoded type so the in-memory shape and the
+// `session:requestMeta` twin below cannot drift apart.
+type RequestMeta = PersistedRequestMeta
 const requestMetaById = new Map<string, RequestMeta>()
+// `requestMetaById`'s durable twin (ADR-0005: session bucket, this SW is the sole
+// writer). `session:transfers` re-seeds still-in-progress downloads on boot, but
+// `TrackedTransfer` stays narrow (downloadId → terminal outcome only, per its own
+// module doc) — it does NOT carry retry meta. Without this record, a re-seeded
+// transfer that later interrupts finds no url/filename to retry with and fails
+// immediately instead of auto-retrying. Ids the retry queue owns are restored from
+// `session:interruptRetries` instead (see `planMetaReconcile`), never from here;
+// they stay mirrored while pending and are reaped at settle.
+// `unknown` + `decodeRequestMetaStore` at every read (mirrors `historyItem`'s
+// `decodeStore` pattern) — a corrupt/foreign value never throws, it decodes empty.
+const requestMetaItem = storage.defineItem<unknown>('session:requestMeta', {
+  fallback: emptyRequestMetaStore,
+})
 const interruptAttemptById = new Map<string, number>()
 const pendingRetries = new Map<string, PendingInterruptRetry>()
 
@@ -174,7 +196,9 @@ const clearInterruptRetryState = (id: string): void => {
   applier.cancel(id)
   pendingRetries.delete(id)
   interruptAttemptById.delete(id)
-  requestMetaById.delete(id)
+  // Persist gated on the delete: the admit loop calls this per request before
+  // seeding meta, and an unconditional write there would be N+1 identical snapshots.
+  if (requestMetaById.delete(id)) persistRequestMeta()
   syncPendingRetries()
 }
 
@@ -231,6 +255,14 @@ const persistTransfers = (): void => {
 // window); ordered on the same chain as the fire-and-forget persists.
 const flushTransfers = (): Promise<unknown> =>
   transfersQueue.run(() => transfersItem.setValue(transfersState))
+
+// Same serialized-write shape as `transfersQueue`, for `requestMetaById`'s durable
+// twin. Reads `requestMetaById` at run time (not a captured snapshot), so the last
+// queued write always reflects whatever the map holds when it actually runs.
+const requestMetaQueue = makeSerialQueue(queueError('requestMeta'))
+const persistRequestMeta = (): void => {
+  requestMetaQueue.push(() => requestMetaItem.setValue(Object.fromEntries(requestMetaById)))
+}
 
 // Cloud Sync outbox (ADR-0009) — metadata-only events drained FIFO; owns its
 // own queue + storage. `recordSync` mirrors state transitions (fire-and-forget).
@@ -543,6 +575,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
   const url = await resolveRetryUrl(meta)
   if (url !== meta.url) {
     requestMetaById.set(id, { ...meta, url })
+    persistRequestMeta() // a recycle mid-retry must restore the refreshed url, not the stale one
     traceBackground('url-refreshed', { itemId: id, detail: 'cdn url updated before retry' })
   }
   try {
@@ -586,6 +619,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
       filename: meta.filename,
       ...(meta.item ? { item: meta.item } : {}),
       reason: 'NETWORK_FAILED',
+      traceLabel: 'start-failed',
       now: Date.now(),
     })
   }
@@ -604,33 +638,31 @@ const scheduleInterruptRetry = (
   }
   // The applier now computes `attempt` + decides via planInterruptRetry
   // internally, so the scheduled-vs-exhausted branch can't be pre-checked here
-  // without duplicating that decision (out of scope). Instead, gate the
-  // transfer-ledger settle — which ONLY ever ran on the schedule branch — on the
-  // boolean `apply()` resolves with, in a `.then()`. This is a deliberate,
-  // disclosed microtask-scale reorder versus the original fully-synchronous body
-  // (the ledger-settle now happens a tick after `apply()`'s internal work,
-  // instead of before it); safe because `settleTransfer`/`decideTerminalOutcome`
-  // are idempotent on a missing/already-settled id (see decideTerminalOutcome's
-  // doc comment). `scheduleInterruptRetry` itself stays synchronous/non-blocking
-  // — its `onDownloadChanged` caller does not and should not await it.
-  void applier
-    .apply({
-      id,
-      downloadId,
-      url: meta.url,
-      filename: meta.filename,
-      ...(meta.item ? { item: meta.item } : {}),
-      reason,
-      now,
-    })
-    .then((scheduled) => {
-      if (!scheduled) return
+  // without duplicating that decision (out of scope). Instead, the ledger-settle
+  // — which ONLY ever ran on the schedule branch — is passed in as `onScheduled`,
+  // a synchronous hook `apply()` invokes the instant it decides to schedule,
+  // before its own state mutation and internal `await persistSnapshot`. This
+  // preserves the original fully-synchronous, atomic ordering (ledger-settle
+  // still runs in the same tick as the decision, ahead of any await) rather than
+  // deferring it into a post-await `.then()`. `scheduleInterruptRetry` itself
+  // stays synchronous/non-blocking — its `onDownloadChanged` caller does not and
+  // should not await it.
+  void applier.apply({
+    id,
+    downloadId,
+    url: meta.url,
+    filename: meta.filename,
+    ...(meta.item ? { item: meta.item } : {}),
+    reason,
+    now,
+    onScheduled: () => {
       requestIdByDownloadId.delete(downloadId)
       // The dead downloadId leaves the active ledger; the retry is now tracked by
       // the durable retry queue (`session:interruptRetries`) until it fires a fresh one.
       transfersState = settleTransfer(transfersState, id)
       persistTransfers()
-    })
+    },
+  })
 }
 
 const rehydrateInterruptRetries = async (): Promise<void> => {
@@ -647,6 +679,7 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
     inFlight.add(item.id)
     applier.rehydrateTimer(item, now)
   }
+  if (queued.length > 0) persistRequestMeta()
 }
 
 /**
@@ -657,7 +690,10 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
  * overlays, instead of being silently lost when the in-memory correlation died.
  * In-progress transfers re-seed the correlation + dedup sets so live `onChanged`
  * tracking resumes and a re-request is de-duplicated; a purged record is `unknown`
- * and merely traced (no fabricated outcome).
+ * and merely traced (no fabricated outcome). Re-seeded transfers also get their
+ * retry meta restored from `session:requestMeta` (`planMetaReconcile`) and the
+ * stuck-download watchdog re-armed — without these two, a re-seeded transfer that
+ * later interrupts has no url/filename to retry with and no watchdog covering it.
  *
  * Runs AFTER `rehydrateInterruptRetries`, which is authoritative for ids it owns —
  * a crash could leave an id in both ledgers, so those are deferred to the retry
@@ -669,11 +705,20 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
 const reconcileTransfersOnBoot = async (): Promise<void> => {
   const persisted = await transfersItem.getValue()
   transfersState = persisted
-  if (persisted.transfers.length === 0) return
-  const now = Date.now()
   // The dual-ledger tie-break is now a typed input: rehydrate ran first, so
   // `pendingRetries` is authoritative for the ids it owns and reconcile defers them.
   const retryOwnedIds = new Set(pendingRetries.keys())
+  if (persisted.transfers.length === 0) {
+    // No transfers to reconcile, but the sibling meta record still needs its boot
+    // GC — orphaned entries must die on ANY boot, not only one with in-flight
+    // transfers. Nothing re-seeds, so the plan is prune-only (restore is empty by
+    // construction) and applying it is just rewriting the store from the live map.
+    const store = decodeRequestMetaStore(await requestMetaItem.getValue())
+    const gc = planMetaReconcile({ reSeedIds: [], retryOwnedIds, persisted: store })
+    if (gc.prune.length > 0) persistRequestMeta()
+    return
+  }
+  const now = Date.now()
   const { owned } = partitionOwnership(persisted.transfers, retryOwnedIds)
   const rows = new Map<number, ReconcileRow>()
   const threw = new Set<number>()
@@ -705,6 +750,20 @@ const reconcileTransfersOnBoot = async (): Promise<void> => {
   }
   transfersState = plan.nextState
   persistTransfers()
+  // Restore retry meta for what was just re-seeded (the actual fix: without this,
+  // a re-seeded transfer that later interrupts has no url/filename to retry with).
+  // The persist also GCs true orphans (entries with no live owner) so the record
+  // can't grow unbounded across recycles. Retry-owned ids are excluded from
+  // restore — rehydrate already restored them from `session:interruptRetries` —
+  // but stay mirrored while pending, reaped at settle (`planMetaReconcile`'s doc).
+  const metaPlan = planMetaReconcile({
+    reSeedIds: plan.reSeed.map((t) => t.id),
+    retryOwnedIds,
+    persisted: decodeRequestMetaStore(await requestMetaItem.getValue()),
+  })
+  for (const [id, meta] of metaPlan.restore) requestMetaById.set(id, meta)
+  if (metaPlan.restore.length > 0 || metaPlan.prune.length > 0) persistRequestMeta()
+  if (plan.reSeed.length > 0) ensureStuckPoll() // re-seeded in-flight downloads need the watchdog armed too
   for (const t of plan.unknownToTrace) {
     traceBackground('reconcile-unknown', {
       itemId: t.id,
@@ -838,6 +897,7 @@ const handleDownload = (
         ...(item ? { item } : {}),
       })
     }
+    persistRequestMeta()
 
     // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
     // accumulator (and keep the downloadId map) so the monitor reflects both;
@@ -902,65 +962,45 @@ const handleDownload = (
 
     // Clear-on-complete ledger: one entry per tweet (expected = its media request
     // ids). Membership is filtered in-page at clear time. Seeded only when enabled,
-    // before downloads fire (spec §4.1). aria2 is excluded entirely — an aria2
-    // entry is never Truly Complete (hand-off ≠ bytes-to-disk), so it could never
-    // clear and would only leak into the in-memory map, never pruned. Every skip
-    // logs WHY (clear-skip) so a "nothing happened" is never silent.
-    // Clearing is gated by the "Clear after download" option (clearOnSave) for
-    // BOTH paths — a sweep only un-likes/un-bookmarks when the user has that
-    // option on; otherwise it just downloads. A sweep is strictly list-scoped:
-    // seed ONLY the page's scope (origin 'sweep'), so it can never touch the
-    // other list. It reads the option but NEVER mutates it. The auto-hook keeps
-    // its per-scope toggles; the sweep clears exactly the page's scope.
-    const clearScopes: Scope[] = sweep
-      ? settings.clearAllListsOnSave
-        ? [...new Set([sweep.scope, ...hookScopes(settings).filter((s) => s !== 'notInterested')])]
-        : [sweep.scope]
-      : hookScopes(settings)
-    const clearOrigin = sweep ? 'sweep' : 'hook'
-    if (settings.downloadStrategy === 'aria2') {
-      traceBackground('clear-skip', { detail: 'aria2 hand-offs are not byte-verifiable; excluded' })
-    } else if (!settings.clearOnSave) {
-      traceBackground('clear-skip', { detail: 'Clear after download is OFF — download only' })
-    } else if (clearScopes.length === 0) {
-      traceBackground('clear-skip', { detail: 'both Un-bookmark and Un-like are OFF' })
+    // before downloads fire (spec §4.1). The composition (scope selection, skip
+    // reasons, quote-card filtering, clearExpect widening) is pure — see
+    // core/clear/seed.ts for the sweep-vs-hook scope-widening asymmetry it pins.
+    const clearVerdict = planClearSeed({
+      requests,
+      mediaById,
+      settings,
+      ...(sweep ? { sweep } : {}),
+      ...(clearExpect ? { clearExpect } : {}),
+    })
+    if (clearVerdict.decision === 'skip') {
+      // Every skip logs WHY (clear-skip) so a "nothing happened" is never silent.
+      switch (clearVerdict.reason) {
+        case 'aria2':
+          traceBackground('clear-skip', {
+            detail: 'aria2 hand-offs are not byte-verifiable; excluded',
+          })
+          break
+        case 'clear-off':
+          traceBackground('clear-skip', { detail: 'Clear after download is OFF — download only' })
+          break
+        case 'no-scopes':
+          traceBackground('clear-skip', { detail: 'both Un-bookmark and Un-like are OFF' })
+          break
+      }
     } else {
-      const byTweet = new Map<string, string[]>()
-      const unclearable = new Set<string>()
-      for (const r of requests) {
-        const item = mediaById.get(r.id)
-        if (item === undefined) continue
-        // The Clear can only LOCATE a post by its numeric /status/ id (findArticle).
-        // The X adapter falls back to the media KEY as tweetId when a photo's tweet
-        // context can't be resolved (e.g. a quote-card image, whose id belongs to a
-        // DIFFERENT post). Such an id never matches a mounted article, so seeding it
-        // would only defer-then-drop and silently leave the post in its lists — and
-        // un-liking by a stray match would hit the WRONG post. Skip it: downloads
-        // still run (they key off `requests`, not `byTweet`); only the doomed,
-        // unsafe clear is dropped, and visibly (trace below) instead of silently.
-        if (!isClearableTweetId(item.postId)) {
-          unclearable.add(item.postId)
-          continue
-        }
-        byTweet.set(item.postId, [...(byTweet.get(item.postId) ?? []), r.id])
-      }
-      if (unclearable.size > 0)
+      if (clearVerdict.unclearableCount > 0)
         traceBackground('clear-skip', {
-          detail: `${unclearable.size} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
+          detail: `${clearVerdict.unclearableCount} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
         })
-      // For You: widen `expected` to the post's FULL media set so the clear waits
-      // for every photo — a 1-of-4 grab must never mark the post Truly Complete and
-      // "Not interested"-hide it, losing the other three. Only widens tweets in this
-      // batch; the un-grabbed ids stay pending until they too are downloaded.
-      for (const e of clearExpect ?? []) {
-        const cur = byTweet.get(e.tweetId)
-        if (cur !== undefined) byTweet.set(e.tweetId, [...new Set([...cur, ...e.ids])])
-      }
       // Remember which tab this download came from, so the eventual clear is sent
       // there first (the feed the user is actually looking at).
       if (originTabId !== undefined)
-        for (const tweetId of byTweet.keys()) rememberClearOrigin(tweetId, originTabId)
-      clearCoordinator.seedClearLedger(byTweet, clearScopes, clearOrigin)
+        for (const tweetId of clearVerdict.byTweet.keys()) rememberClearOrigin(tweetId, originTabId)
+      clearCoordinator.seedClearLedger(
+        clearVerdict.byTweet,
+        clearVerdict.scopes,
+        clearVerdict.origin,
+      )
     }
 
     const res = yield* queue.enqueue(requests)
@@ -975,14 +1015,27 @@ const handleDownload = (
     // CDN error) — sent back in the reply so "why didn't this download?" is
     // answerable from the requesting tab's own console, not just the SW's.
     const failures: { itemId: string; reason: string }[] = []
+    // Terminal-at-enqueue outcomes (failed-to-start, aria2 hand-off) carry no
+    // retry duty — no downloadId ever interrupts — so their retry meta is dead
+    // the moment the outcome lands. Drop it here (and mirror below), or the
+    // persisted record only ever shrinks via the browser settle path and grows
+    // unbounded for non-browser strategies.
+    let droppedMeta = false
+    const applyEnqueueFx = (fx: EnqueueOutcomeEffects): void => {
+      if (fx.syncEvent) syncEvents.push(fx.syncEvent)
+      historyActions.push(fx.historyAction)
+    }
     for (const o of res.outcomes) {
       const media = mediaById.get(o.id)
       if (!o.ok) {
         inFlight.delete(o.id)
+        droppedMeta = requestMetaById.delete(o.id) || droppedMeta
         recordClearFailure(media?.postId, o.id)
-        live = recordOutcome(live, o.id, 'failed', now)
-        syncEvents.push(outcomeEvent(o.id, 'failed', settings.cloudDeviceId, now))
-        historyActions.push({ kind: 'failed', requestId: o.id, at: now })
+        const outcome: TerminalOutcome = 'failed'
+        live = recordOutcome(live, o.id, outcome, now)
+        applyEnqueueFx(
+          decideEnqueueOutcome({ id: o.id, outcome, now, deviceId: settings.cloudDeviceId }),
+        )
         const reason = o.error ?? 'unknown'
         failures.push({ itemId: o.id, reason })
         traceBackground('start-failed', {
@@ -1010,9 +1063,12 @@ const handleDownload = (
         })
       } else {
         inFlight.delete(o.id)
-        live = recordOutcome(live, o.id, 'complete', now)
-        syncEvents.push(outcomeEvent(o.id, 'completed', settings.cloudDeviceId, now))
-        historyActions.push({ kind: 'completed', requestId: o.id, at: now })
+        droppedMeta = requestMetaById.delete(o.id) || droppedMeta
+        const outcome: TerminalOutcome = 'complete'
+        live = recordOutcome(live, o.id, outcome, now)
+        applyEnqueueFx(
+          decideEnqueueOutcome({ id: o.id, outcome, now, deviceId: settings.cloudDeviceId }),
+        )
         traceBackground('external-complete', {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
@@ -1020,6 +1076,7 @@ const handleDownload = (
         })
       }
     }
+    if (droppedMeta) persistRequestMeta()
     recordSync(settings, syncEvents)
     recordHistory(settings, historyActions)
     persistTransfers()
@@ -1114,6 +1171,7 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   stopStuckPollIfIdle() // map emptied → tear the watchdog down
   requestStartedAt.clear()
   requestMetaById.clear()
+  persistRequestMeta()
   interruptAttemptById.clear()
   // Iterate the keys BEFORE clearing pendingRetries, so every pending id's timer
   // gets cancelled (applier.cancel only wraps the timer-clear, not the map delete).

@@ -6,6 +6,7 @@ import {
   extFromMetaImgUrl,
 } from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
+import { META_CDN_HOSTS } from '../meta-shared/cdn'
 import { postVideoKey, postVideoKeyIndexed } from '../detection-store'
 import type { MediaItem } from '../../schema'
 import type { PlatformAdapter } from '../types'
@@ -34,9 +35,50 @@ export const INSTAGRAM_PERMALINK_PATTERN = /^\/(?:p|reels?)\/([A-Za-z0-9_-]+)/
 
 /** The post code carried by the CURRENT page's own `pathname` (a standalone
  *  permalink page's url), or null if `pathname` isn't a permalink shape at
- *  all (e.g. the home feed root, `/`, or a profile page). */
+ *  all (e.g. the home feed root, `/`, or a profile page).
+ *
+ *  Rejects the reserved literal segment "audio": `instagram.com/reels/audio/
+ *  {id}/` is a real, distinct page (a sound's own reels listing, live-observed
+ *  href shape) whose pathname otherwise matches `INSTAGRAM_PERMALINK_PATTERN`
+ *  and would wrongly capture "audio" itself as if it were a post code. */
 export function postCodeFromPathname(pathname: string): string | null {
-  return INSTAGRAM_PERMALINK_PATTERN.exec(pathname)?.[1] ?? null
+  const code = INSTAGRAM_PERMALINK_PATTERN.exec(pathname)?.[1] ?? null
+  return code === 'audio' ? null : code
+}
+
+/** Visible-in-viewport area of a DOMRect-like box against a `{width,height}`
+ *  viewport — clips the box to the viewport bounds on all four sides before
+ *  multiplying, so a box partially or fully off-screen (negative coordinates,
+ *  or past `viewport.width`/`viewport.height`) contributes less area or
+ *  exactly 0, never a negative number. Pure and DOMRect-shape-agnostic (only
+ *  reads `top`/`left`/`right`/`bottom`) so it's trivially testable with plain
+ *  object literals, no real `DOMRect`/layout engine required. */
+export function visibleAreaInViewport(
+  rect: { top: number; left: number; right: number; bottom: number },
+  viewport: { width: number; height: number },
+): number {
+  const visibleWidth = Math.max(0, Math.min(rect.right, viewport.width) - Math.max(rect.left, 0))
+  const visibleHeight = Math.max(0, Math.min(rect.bottom, viewport.height) - Math.max(rect.top, 0))
+  return visibleWidth * visibleHeight
+}
+
+/**
+ * Whether `video` is the viewport-dominant one among every `<video>` reachable
+ * from `root` — strictly the largest visible-in-viewport area, and that area
+ * must be > 0. Ties (including a 0-vs-0 tie, e.g. happy-dom's default
+ * all-zero rects, or two on-screen videos transiently the same size) are NOT
+ * dominant on EITHER side — `postIdFromDom` only trusts `pathname` when
+ * there's a single unambiguous "the one the user is looking at" video. */
+function isViewportDominantVideo(video: Element, root: Document | DocumentFragment): boolean {
+  const viewport = { width: window.innerWidth, height: window.innerHeight }
+  const ownArea = visibleAreaInViewport(video.getBoundingClientRect(), viewport)
+  if (ownArea <= 0) return false
+  for (const other of root.querySelectorAll('video')) {
+    if (other === video) continue
+    const otherArea = visibleAreaInViewport(other.getBoundingClientRect(), viewport)
+    if (otherArea >= ownArea) return false
+  }
+  return true
 }
 
 /**
@@ -61,23 +103,44 @@ export function postCodeFromPathname(pathname: string): string | null {
  * unconditionally once no `<article>` ancestor is found, per that clean
  * (if not exhaustively proven) live negative result.
  *
- * SECOND GUARD, LIVE-VERIFIED 2026-07-05 (found via correctness review, not
- * the original design): Instagram's Reels IMMERSIVE player
- * (`/reels/{code}/`) is ALSO `<article>`-less, but unlike a `/p/{code}/`
- * permalink page (always exactly 1 mounted `<video>`), it mounts 6-11
- * sibling `<video>` elements simultaneously (off-screen ones included) while
- * `location.pathname` only ever reflects whichever reel is currently
- * scrolled into view. Applying the pathname fallback there would resolve
- * EVERY mounted sibling to the SAME post code — reproduced directly
- * pre-fix (two distinct sibling `<video>`s returned the identical key). The
- * permalink-page case this fallback exists for always has exactly one
- * `<video>` on the whole page (also live-verified), so gating on "exactly
- * one `<video>` reachable from `el`'s own root" cleanly separates the two
- * cases with no viewport/geometry check needed (geometry is also unusable
- * here: happy-dom computes no real layout, so any such check would be
- * untestable without mocking). `getRootNode()` is used rather than
- * `el.ownerDocument` so this counts correctly against a detached test
- * fixture too, not just a real attached page.
+ * REELS IMMERSIVE PLAYER (`/reels/{code}/`), VIEWPORT-DOMINANCE GATE
+ * (live-verified 2026-07-05 and again 2026-07-06 — sibling count observed
+ * both as 2 and as 6-11 across sessions, so treat the count as unbounded
+ * ≥2, not a fixed number): this player is ALSO `<article>`-less, but unlike
+ * a `/p/{code}/` permalink page (always exactly 1 mounted `<video>`), it
+ * mounts 2+ sibling `<video>` elements simultaneously (off-screen ones
+ * included) — live-verified: zero `data-*`/`id`/`aria-*` identity anywhere
+ * in the ancestor chain from the visible video up to the React mount root,
+ * and no `<a href>` in the whole document carries the reel's own code.
+ * `location.pathname` is the ONLY signal of which reel is active, and it
+ * always reflects whichever reel is currently scrolled into view.
+ *
+ * Originally this branch refused the pathname fallback entirely whenever
+ * more than one `<video>` was reachable (gating on "exactly one `<video>`
+ * reachable from `el`'s own root"), to stop every mounted sibling resolving
+ * to the SAME post code (reproduced pre-fix: two distinct sibling `<video>`s
+ * returned the identical key). That over-corrected: the reels player ALWAYS
+ * has 2+ mounted videos, so hover never resolved there AT ALL — the
+ * user-reported bug (cannot download instagram.com/reels/DaH4la4pRtC/).
+ *
+ * Fix: trust the pathname for the multi-video case too, but ONLY for the
+ * video that is VIEWPORT-DOMINANT — strictly the largest visible-in-viewport
+ * area among every mounted `<video>` in the same root, and that area must be
+ * > 0 (`isViewportDominantVideo`/`visibleAreaInViewport`). Since `pathname`
+ * always reflects the reel scrolled into view, the dominant video is the one
+ * `pathname` actually describes — an off-screen sibling has 0 area and never
+ * qualifies (preserving the old guarantee that off-screen siblings don't
+ * false-positive), and an exact area tie (mid-scroll-transition, or
+ * happy-dom's unstubbed all-zero rects in a test) resolves to null on BOTH
+ * sides rather than guessing which one the user meant. The single-video
+ * branch is untouched — unconditional pathname fallback, no dominance check
+ * needed when there's nothing else it could be.
+ *
+ * `getRootNode()` is used rather than `el.ownerDocument` so this counts
+ * correctly against a detached test fixture too, not just a real attached
+ * page. `window.innerWidth`/`innerHeight` stand in for "the viewport" —
+ * acceptable here because this whole code path only ever runs in a real
+ * browser tab (a content script), never in a headless/offscreen context.
  */
 function postIdFromDom(el: Element, pathname: string): string | null {
   const container = findPostContainer(el, INSTAGRAM_POST_SELECTOR)
@@ -91,8 +154,12 @@ function postIdFromDom(el: Element, pathname: string): string | null {
   // DocumentFragment) — never a bare Element — so this covers every real
   // case `getRootNode()` can return.
   const root = el.getRootNode() as Document | DocumentFragment
-  if (root.querySelectorAll('video').length !== 1) return null
-  return postCodeFromPathname(pathname)
+  const videos = root.querySelectorAll('video')
+  if (videos.length === 1) return postCodeFromPathname(pathname)
+  if (el instanceof HTMLVideoElement && isViewportDominantVideo(el, root)) {
+    return postCodeFromPathname(pathname)
+  }
+  return null
 }
 
 /** The 0-based carousel slide index of `li` (an <li> of the post's slide
@@ -203,6 +270,8 @@ function resolveMetaImageElement(img: HTMLImageElement): MediaItem | null {
 export const instagramAdapter: PlatformAdapter = {
   platform: 'instagram',
   hostMatch: INSTAGRAM_HOST_MATCH,
+  // Same Meta CDN family as Threads — see meta-shared/cdn.ts's module doc.
+  cdnHosts: META_CDN_HOSTS,
   matchesUrl: isInstagramUrl,
   // `requestHeaders` is accepted for interface conformance but unused here —
   // same posture as X's isGraphqlMediaUrl. A future revision may switch to

@@ -18,21 +18,102 @@ describe('popup platform identity derives from the adapter registry (ADR-0019)',
     expect(popupSource).toContain("const onXTab = tabAdapter?.platform === 'x'")
   })
 
-  it('recomputes the list-page check from the adapter directly, independent of the other effect', () => {
-    expect(popupSource).toContain("adapterForUrl(url)?.platform === 'x'")
+  // Stage redesign (§2.2): the list-page/platform-context check is now
+  // centralized in `context.ts`'s `tabContext()` — imported and unit-tested
+  // there (context.test.ts) rather than re-derived inline in App.tsx. This is
+  // a stronger form of the same ADR-0019 safety property (never derive
+  // list-page-ness from an X-specific URL matcher; always route through the
+  // adapter registry's `platform` field): the guarantee now lives in one
+  // pure, directly-tested function instead of a string grep on a duplicated
+  // inline expression.
+  it('derives the tab-context matrix via context.ts, independently of the tabAdapter effect', () => {
+    expect(popupSource).toContain("from './context'")
+    expect(popupSource).toContain('setCtx(tabContext(url))')
+    expect(popupSource).toContain('setScope(tabScope(url))')
+  })
+})
+
+describe('Stage zone gates its buttons X-only via onXTab, mirroring the pre-redesign gates', () => {
+  it('keeps the drain/sweep gates X-only', () => {
+    expect(popupSource).toContain('disabled={!onXTab || drainBusy}')
+    expect(popupSource).toContain('disabled={!onXTab || sweepBusy}')
   })
 
-  it('names the recognized platform for a non-X adapter instead of implying total inactivity', () => {
-    expect(popupSource).toContain('Open X, Instagram, or Threads')
-    expect(popupSource).toContain('Ready on this X tab')
-    expect(popupSource).toContain('clear/sweep are X-only')
-    expect(popupSource).toContain('PLATFORM_LABEL[tabAdapter.platform] ?? tabAdapter.platform')
+  it('renders the Release cluster (page + whole-list release) only inside the X-context branch', () => {
+    expect(popupSource).toContain('ReleaseCluster')
+    expect(popupSource).toContain("(ctx === 'x' || ctx === 'x-list') &&")
   })
 
-  it('keeps all four worklist button gates X-only via the onXTab-equivalent condition', () => {
-    expect(popupSource).toContain('disabled={!onXTab || drain.busy}')
-    expect(popupSource).toContain('disabled={!onXTab || sweep.busy}')
-    expect(popupSource).toContain('disabled={!onXTab || clearVisible.busy}')
-    expect(popupSource).toContain('disabled={!onListPage || clearWholeList.busy}')
+  it('gates the whole-list release row to list pages via onListPage, never rendering a disabled ghost', () => {
+    // The old design disabled a "Clear list…" button off-list with a title
+    // tooltip; the redesign instead renders the whole-list row only inside
+    // the onListPage branch of ReleaseCluster (spec §2.2 table: "not
+    // rendered" off-list, no tooltip-disabled ghost).
+    const onListPageIdx = popupSource.indexOf('onListPage ?')
+    const wholeListIdx = popupSource.indexOf('ClearWholeListRequest')
+    expect(onListPageIdx).toBeGreaterThan(-1)
+    expect(wholeListIdx).toBeGreaterThan(onListPageIdx)
+  })
+})
+
+describe('no native confirm() and no accesskey (safety properties, spec §6.3)', () => {
+  it('popup App.tsx contains neither', () => {
+    expect(popupSource).not.toMatch(/\bconfirm\(/u)
+    expect(popupSource).not.toContain('accesskey')
+  })
+})
+
+describe('every ConfirmStrip confirm label restates the literal action, never the bare word "Confirm"', () => {
+  it('does not render a button literally labeled Confirm', () => {
+    expect(popupSource).not.toMatch(/>Confirm</u)
+  })
+})
+
+describe('cluster status lines auto-clear after 6s unless persistent (spec §2.6)', () => {
+  it('imports isPersistentStatus alongside the actionable-error constants', () => {
+    expect(popupSource).toContain('isPersistentStatus')
+  })
+
+  it('gates a 6000ms clear effect on downloadMsg behind isPersistentStatus', () => {
+    const idx = popupSource.indexOf(
+      'if (downloadMsg === null || isPersistentStatus(downloadMsg)) return',
+    )
+    expect(idx).toBeGreaterThan(-1)
+    expect(popupSource.slice(idx, idx + 200)).toContain(
+      'setTimeout(() => setDownloadMsg(null), 6000)',
+    )
+  })
+
+  it('gates a 6000ms clear effect on releaseMsg behind isPersistentStatus', () => {
+    const idx = popupSource.indexOf(
+      'if (releaseMsg === null || isPersistentStatus(releaseMsg)) return',
+    )
+    expect(idx).toBeGreaterThan(-1)
+    expect(popupSource.slice(idx, idx + 200)).toContain(
+      'setTimeout(() => setReleaseMsg(null), 6000)',
+    )
+  })
+})
+
+describe('zone hairlines never stack (spec §2.9 adjacent-zone fix)', () => {
+  it('ContextStrip supplies its separator as a shadow, not a border-b', () => {
+    const headerIdx = popupSource.indexOf('function ContextStrip')
+    const nextFnIdx = popupSource.indexOf('function FirstRunStrip')
+    const header = popupSource.slice(headerIdx, nextFnIdx)
+    expect(header).toContain('shadow-[0_1px_0_0_var(--border)]')
+    expect(header).not.toContain('border-b')
+  })
+
+  it("FirstRunStrip drops border-b, deferring to the next zone's border-t", () => {
+    const stripIdx = popupSource.indexOf('function FirstRunStrip')
+    const nextFnIdx = popupSource.indexOf('function MonitorZone')
+    const strip = popupSource.slice(stripIdx, nextFnIdx)
+    expect(strip).not.toContain('border-b')
+  })
+})
+
+describe('unsupported-context headline balances instead of prettifying (spec §2.3)', () => {
+  it('uses text-balance on the single-line headline', () => {
+    expect(popupSource).toContain('<p className="text-balance text-[13px] font-medium">')
   })
 })

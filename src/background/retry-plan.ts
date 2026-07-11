@@ -54,6 +54,16 @@ export interface ApplyRetryPlanArgs {
   readonly item?: MediaItem
   readonly reason: string | undefined
   readonly now: number
+  /** Overrides the trace-log vocabulary term (defaults to `reason ?? 'unknown'`).
+   *  `fireInterruptRetry`'s catch passes `'start-failed'` here to keep "launch
+   *  itself threw" distinguishable in the trace stream from an ordinary
+   *  onChanged-driven interrupt of an already-launched download. */
+  readonly traceLabel?: string
+  /** Synchronous hook invoked exactly when apply() decides to schedule a retry,
+   *  before any state mutation (including the internal `await persistSnapshot`).
+   *  Lets a caller keep its own ledger-settle atomic with the decision instead of
+   *  deferring it into a `.then()` after apply()'s async work resolves. */
+  readonly onScheduled?: () => void
 }
 
 export interface RetryPlanApplier {
@@ -103,13 +113,15 @@ export const makeRetryPlanApplier = (deps: RetryPlanApplierDeps): RetryPlanAppli
   }
 
   const apply = async (args: ApplyRetryPlanArgs): Promise<boolean> => {
-    const { id, downloadId, url, filename, item, reason, now } = args
+    const { id, downloadId, url, filename, item, reason, now, traceLabel, onScheduled } = args
     const attempt = interruptAttemptById.get(id) ?? 0
     const plan = planInterruptRetry({ reason, attempt })
     if (!plan.schedule) {
       await failBrowserDownload(id, downloadId, now)
       return false
     }
+
+    onScheduled?.()
 
     interruptAttemptById.set(id, plan.nextAttempt)
     recordRetry(id)
@@ -129,7 +141,7 @@ export const makeRetryPlanApplier = (deps: RetryPlanApplierDeps): RetryPlanAppli
 
     trace('interrupt-retry-scheduled', {
       itemId: id,
-      detail: `${reason ?? 'unknown'} in ${plan.delayMs}ms attempt ${plan.nextAttempt}`,
+      detail: `${traceLabel ?? reason ?? 'unknown'} in ${plan.delayMs}ms attempt ${plan.nextAttempt}`,
     })
     await persistSnapshot(now)
     return true

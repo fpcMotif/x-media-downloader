@@ -1,4 +1,5 @@
 import type { DownloadRecord } from '../../core/history/record'
+import { plural } from '@/components/capture-copy'
 
 /** Group download records by author handle, preserving newest-first order. */
 export function groupByAuthor(
@@ -37,9 +38,15 @@ export function formatRecord(r: DownloadRecord): {
 /** Empty/disabled state text for the section. */
 export function historyEmptyLabel(enabled: boolean, count: number): string {
   if (!enabled) return 'Turn on to keep a local history'
-  if (count === 0) return 'No downloads yet'
+  if (count === 0) return 'No downloads yet — files you save will appear here.'
   return ''
 }
+
+// Erase (Tier 1 — local data wipe) is the verb here too: the options History
+// panel's "Erase history…" previously wiped with NO confirmation at all
+// (audit finding 9, P1) — this is its ConfirmStrip sentence.
+export const confirmEraseHistoryCopy = (count: number): string =>
+  `Erase all ${plural(count, 'download record')}? This cannot be undone. Files on disk are not touched.`
 
 /** Ask the background for the durable download history; never throws (returns [] on failure). */
 export async function fetchHistory(): Promise<ReadonlyArray<DownloadRecord>> {

@@ -43,9 +43,15 @@ const traceFields = {
 export const DownloadTraceEntry = Schema.Struct(traceFields)
 export type DownloadTraceEntry = typeof DownloadTraceEntry.Type
 
+/** The filename template the schema defaults to today. Single source of truth —
+ *  both the decoding default below and the legacy-template migration
+ *  (`core/settings/template-migration.ts`) read this constant, so a future
+ *  default change only has to happen in one place. */
+export const CURRENT_DEFAULT_TEMPLATE = '{platform}/{tweetId}_{index}.{ext}'
+
 export const Settings = Schema.Struct({
   filenameTemplate: Schema.String.pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed('{platform}/{tweetId}_{index}.{ext}')),
+    Schema.withDecodingDefaultKey(Effect.succeed(CURRENT_DEFAULT_TEMPLATE)),
   ),
   downloadConcurrency: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(3))),
   authFallbackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
@@ -192,10 +198,6 @@ export const MetricsSnapshot = Schema.Struct({
 })
 export type MetricsSnapshot = typeof MetricsSnapshot.Type
 
-export const DetectRequest = Schema.TaggedStruct('DetectRequest', { tweetId: Schema.String })
-export const MediaDetected = Schema.TaggedStruct('MediaDetected', {
-  items: Schema.Array(MediaItem),
-})
 export const DownloadRequest = Schema.TaggedStruct('DownloadRequest', {
   items: Schema.Array(MediaItem),
   // For the For You "Not interested" clear: the FULL detected media id set per
@@ -236,9 +238,6 @@ export const QueueUpdate = Schema.TaggedStruct('QueueUpdate', {
 })
 export type QueueUpdate = typeof QueueUpdate.Type
 export const MetricsRequest = Schema.TaggedStruct('MetricsRequest', {})
-export const MetricsUpdate = Schema.TaggedStruct('MetricsUpdate', {
-  snapshot: MetricsSnapshot,
-})
 export const DownloadTraceEvent = Schema.TaggedStruct('DownloadTraceEvent', traceFields)
 
 export const ClearDetectedMediaRequest = Schema.TaggedStruct('ClearDetectedMediaRequest', {
@@ -470,13 +469,57 @@ export type ExportCaptureRequest = typeof ExportCaptureRequest.Type
 export const ClearCaptureRequest = Schema.TaggedStruct('ClearCaptureRequest', {})
 export type ClearCaptureRequest = typeof ClearCaptureRequest.Type
 
+// ── Tab-targeted messages (popup → content script, `browser.tabs.sendMessage`) ──
+// A DIFFERENT transport from the `Message` union below (`runtime.sendMessage`,
+// content/popup → background): these six tags (this section's four plus
+// `RefreshMediaUrlRequest` and `ClearTweetRequest` above) never enter `Message` —
+// the overlay content script decode-gates its inbound dispatch on a union built
+// from the same `TAB_MESSAGE_MEMBERS` array as `TabMessage`, plus the few
+// broadcast tags it also answers (`entrypoints/overlay.content/handlers.ts`).
+
+/** popup → content: "Drain this page" — hand every currently-detected item to the
+ *  download queue. No payload; `{ count }` rides back via `sendResponse`. */
+export const DrainPageRequest = Schema.TaggedStruct('DrainPageRequest', {})
+export type DrainPageRequest = typeof DrainPageRequest.Type
+
+/** popup → content: the durable one-by-one sweep for the current list page (see
+ *  `handleSweepPage`). No payload; `{ ok, queued, skipped, reason? }` rides back. */
+export const SweepPageRequest = Schema.TaggedStruct('SweepPageRequest', {})
+export type SweepPageRequest = typeof SweepPageRequest.Type
+
+/** popup → content: one-shot "clear this page now" — un-bookmark/un-like every
+ *  MOUNTED post. Page-scoped by the content script's own URL read, so no payload;
+ *  `{ cleared }` rides back. */
+export const ClearVisibleRequest = Schema.TaggedStruct('ClearVisibleRequest', {})
+export type ClearVisibleRequest = typeof ClearVisibleRequest.Type
+
+/** popup → content: "clear entire list" — auto-scroll the whole Likes/Bookmarks
+ *  list, clearing every post as it mounts. No payload; `{ cleared, reason? }` back. */
+export const ClearWholeListRequest = Schema.TaggedStruct('ClearWholeListRequest', {})
+export type ClearWholeListRequest = typeof ClearWholeListRequest.Type
+
+/** The six tab-targeted schemas as ONE shared array: `TabMessage` below and the
+ *  overlay's inbound gate (`entrypoints/overlay.content/handlers.ts`) are BOTH
+ *  composed from it, so the two unions cannot drift apart. */
+export const TAB_MESSAGE_MEMBERS = [
+  RefreshMediaUrlRequest,
+  ClearTweetRequest,
+  ClearVisibleRequest,
+  ClearWholeListRequest,
+  DrainPageRequest,
+  SweepPageRequest,
+] as const
+
+/** The full tab-targeted set the overlay content script may receive over
+ *  `browser.tabs.sendMessage` — disjoint from `Message` (see the transport note
+ *  above). */
+export const TabMessage = Schema.Union(TAB_MESSAGE_MEMBERS)
+export type TabMessage = typeof TabMessage.Type
+
 export const Message = Schema.Union([
-  DetectRequest,
-  MediaDetected,
   DownloadRequest,
   QueueUpdate,
   MetricsRequest,
-  MetricsUpdate,
   DownloadTraceEvent,
   ClearDetectedMediaRequest,
   ClearDownloadMonitorRequest,

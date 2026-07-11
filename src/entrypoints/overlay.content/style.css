@@ -1,22 +1,28 @@
+/* Cross-surface brand primitives (ease curve, hue anchors) — shared with
+   src/app.css. Vite inlines this at build time, so the content-script CSS
+   stays self-contained. */
+@import '../../theme/tokens.css';
+
 :host,
 :root {
-  --xmd-ink: oklch(0.19 0.01 255);
-  --xmd-surface: oklch(0.995 0.002 255);
-  --xmd-surface-dark: oklch(0.18 0.012 255 / 0.96);
-  --xmd-surface-dark-hover: oklch(0.13 0.012 255 / 0.98);
-  --xmd-muted-on-dark: oklch(0.88 0.006 255 / 0.76);
+  --xmd-ink: oklch(0.19 0.01 var(--xmd-hue-neutral));
+  --xmd-surface: oklch(0.995 0.002 var(--xmd-hue-neutral));
+  --xmd-surface-dark: oklch(0.18 0.012 var(--xmd-hue-neutral) / 0.96);
+  --xmd-surface-dark-hover: oklch(0.13 0.012 var(--xmd-hue-neutral) / 0.98);
+  --xmd-muted-on-dark: oklch(0.88 0.006 var(--xmd-hue-neutral) / 0.76);
   --xmd-accent: oklch(0.62 0.18 245);
   --xmd-accent-hover: oklch(0.56 0.19 248);
-  --xmd-success: oklch(0.7 0.16 160);
+  --xmd-success: oklch(0.7 0.16 var(--xmd-hue-success));
   --xmd-danger: oklch(0.64 0.2 28);
-  --xmd-focus: oklch(0.68 0.17 240 / 0.34);
-  --xmd-badge-scrim: oklch(0.18 0.012 255 / 0.88);
+  --xmd-danger-glyph: oklch(0.82 0.13 28);
+  --xmd-focus: oklch(0.55 0.19 250 / 0.85);
+  --xmd-badge-scrim: oklch(0.18 0.012 var(--xmd-hue-neutral) / 0.88);
   --xmd-badge-ring: oklch(0.62 0.18 245 / 0.5);
   --xmd-badge-glow: oklch(0.62 0.18 245 / 0.18);
   --xmd-badge-glyph: oklch(0.72 0.16 245);
-  --xmd-badge-saved-surface: oklch(0.32 0.06 160 / 0.92);
-  --xmd-badge-saved-ring: oklch(0.7 0.16 160 / 0.7);
-  --xmd-badge-saved-glyph: oklch(0.84 0.14 160);
+  --xmd-badge-saved-surface: oklch(0.32 0.06 var(--xmd-hue-success) / 0.92);
+  --xmd-badge-saved-ring: oklch(0.7 0.16 var(--xmd-hue-success) / 0.7);
+  --xmd-badge-saved-glyph: oklch(0.84 0.14 var(--xmd-hue-success));
   /* Liquid-glass download badge: a translucent tinted lens with a bright
      specular rim that refracts the media beneath it (Apple "Liquid Glass"). */
   --xmd-glass-tint: oklch(1 0 0 / 0.09);
@@ -32,13 +38,13 @@
   --xmd-dock-glass-filter: blur(16px) saturate(1.8) brightness(1.06);
   --xmd-line-dark: oklch(1 0 0 / 0.14);
   --xmd-shadow: 0 1px 2px oklch(0 0 0 / 0.26), 0 10px 18px -14px oklch(0 0 0 / 0.95);
-  --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
   font-family:
     system-ui,
     -apple-system,
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Download-all dock: a compact vertical two-button stack hugging bottom-left,
@@ -73,7 +79,6 @@
     opacity 200ms var(--xmd-ease),
     transform 200ms var(--xmd-ease);
   user-select: none;
-  -webkit-font-smoothing: antialiased;
 
   @starting-style {
     opacity: 0;
@@ -127,7 +132,7 @@
 /* The count stays readable without color: a frosted dark pill with a white rim,
    matching the monochrome lens instead of the solid pill's blue chip. */
 .xmd-launcher--glass .xmd-launcher__count {
-  background: oklch(0.2 0.012 255 / 0.55);
+  background: oklch(0.2 0.012 var(--xmd-hue-neutral) / 0.6);
   box-shadow:
     inset 0 0 0 1px oklch(1 0 0 / 0.24),
     0 1px 4px oklch(0 0 0 / 0.4);
@@ -137,7 +142,7 @@
 
 /* A mid-grey rule reads on both bright and dark backdrops through clear glass. */
 .xmd-launcher--glass .xmd-launcher__rule {
-  background: oklch(0.62 0.004 255 / 0.4);
+  background: oklch(0.62 0.004 var(--xmd-hue-neutral) / 0.4);
 }
 
 .xmd-launcher__dl,
@@ -263,7 +268,7 @@
 }
 
 .xmd-launcher--failed .xmd-launcher__glyph {
-  color: oklch(0.82 0.13 28);
+  color: var(--xmd-danger-glyph);
 }
 
 /* Detected-media count, riding the dock's top-right shoulder. */
@@ -292,8 +297,8 @@
   position: absolute;
   left: calc(100% + 12px);
   top: 50%;
-  background: oklch(0.13 0.012 255 / 0.96);
-  color: oklch(0.97 0.003 255);
+  background: oklch(0.13 0.012 var(--xmd-hue-neutral) / 0.96);
+  color: oklch(0.97 0.003 var(--xmd-hue-neutral));
   font:
     600 12px/1 system-ui,
     sans-serif;
@@ -342,7 +347,7 @@
   }
 
   .xmd-launcher__rescan:hover {
-    color: oklch(0.97 0.003 255);
+    color: oklch(0.97 0.003 var(--xmd-hue-neutral));
   }
 
   /* Hover stays glassy: a faint frost lift + a soft thin ring — never an opaque
@@ -373,10 +378,11 @@
 .xmd-grab {
   --ring: oklch(0.72 0.2 238);
   --glow: oklch(0.68 0.2 238 / 0.58);
+  --xmd-grab-radius: clamp(8px, 12%, 16px);
   position: fixed;
   z-index: 2147483646;
   box-sizing: border-box;
-  border-radius: clamp(8px, 12%, 16px);
+  border-radius: var(--xmd-grab-radius);
   pointer-events: none;
   opacity: 1;
   transform: scale(1);
@@ -393,7 +399,7 @@
 .xmd-grab--saved,
 .xmd-grab--noted {
   --ring: var(--xmd-success);
-  --glow: oklch(0.7 0.16 160 / 0.46);
+  --glow: oklch(0.7 0.16 var(--xmd-hue-success) / 0.46);
 }
 
 .xmd-grab--queued {
@@ -446,13 +452,14 @@
   max-width: calc(100% - 16px);
   overflow: hidden;
   border-radius: 999px;
-  background: oklch(0.16 0.012 255 / 0.96);
+  background: oklch(0.16 0.012 var(--xmd-hue-neutral) / 0.96);
   color: oklch(1 0 0);
   padding: 3px 8px;
   font:
     650 11px/1.15 system-ui,
     sans-serif;
   letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   text-overflow: ellipsis;
   box-shadow: 0 2px 8px oklch(0 0 0 / 0.3);
@@ -479,13 +486,13 @@
 }
 
 .xmd-grab--failed .xmd-grab__badge {
-  color: oklch(0.82 0.13 28);
+  color: var(--xmd-danger-glyph);
 }
 
 .xmd-grab__frame {
   position: absolute;
   inset: -2px;
-  border-radius: inherit;
+  border-radius: calc(var(--xmd-grab-radius) + 2px);
   overflow: hidden;
   filter: drop-shadow(0 0 12px var(--glow)) drop-shadow(0 0 2px oklch(1 0 0 / 0.5));
 }
@@ -631,7 +638,6 @@
   transition-duration: 180ms;
   transition-property: box-shadow, color, opacity, transform;
   transition-timing-function: var(--xmd-ease);
-  -webkit-font-smoothing: antialiased;
   touch-action: manipulation;
 }
 
@@ -678,7 +684,7 @@
 /* `backwards` (not `both`): once the entrance/nudge finishes, the animation
    releases the transform so the :active press and hover transitions work. */
 .xmd-badge--shown {
-  animation: xmd-badge-in 480ms cubic-bezier(0.23, 1, 0.32, 1) backwards;
+  animation: xmd-badge-in 480ms var(--xmd-ease) backwards;
 }
 
 .xmd-badge--nudged {
@@ -688,13 +694,13 @@
 .xmd-badge--saved {
   background:
     radial-gradient(120% 120% at 30% 12%, var(--xmd-glass-sheen), oklch(1 0 0 / 0) 50%),
-    oklch(0.6 0.15 160 / 0.26);
+    oklch(0.6 0.15 var(--xmd-hue-success) / 0.26);
   color: oklch(1 0 0);
   box-shadow:
     inset 0 1px 0.5px var(--xmd-glass-rim),
     inset 0 0 0 1px var(--xmd-glass-edge),
-    inset 0 -6px 10px -6px oklch(0.3 0.09 160 / 0.4),
-    0 4px 14px -3px oklch(0.3 0.1 160 / 0.45),
+    inset 0 -6px 10px -6px oklch(0.3 0.09 var(--xmd-hue-success) / 0.4),
+    0 4px 14px -3px oklch(0.3 0.1 var(--xmd-hue-success) / 0.45),
     0 1px 2px oklch(0 0 0 / 0.3);
 }
 
@@ -754,7 +760,7 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .xmd-badge:hover {
+  .xmd-badge:hover:not(:active) {
     background:
       radial-gradient(120% 120% at 30% 12%, oklch(1 0 0 / 0.5), oklch(1 0 0 / 0) 50%),
       oklch(1 0 0 / 0.2);
@@ -770,7 +776,7 @@
   .xmd-badge--saved:hover {
     background:
       radial-gradient(120% 120% at 30% 12%, oklch(1 0 0 / 0.4), oklch(1 0 0 / 0) 50%),
-      oklch(0.6 0.15 160 / 0.36);
+      oklch(0.6 0.15 var(--xmd-hue-success) / 0.36);
   }
 }
 
@@ -875,6 +881,12 @@
     filter: none;
     transition-property: opacity;
   }
+
+  .xmd-launcher--rescanning .xmd-launcher__rescan svg,
+  .xmd-launcher--queued .xmd-launcher__icon--spinner svg,
+  .xmd-badge--queued .xmd-badge__icon--spinner svg {
+    animation: none;
+  }
 }
 
 /* Cross-device "Saved ✓" status chip, injected onto already-downloaded timeline
@@ -893,9 +905,9 @@
   font-weight: 700;
   line-height: 1.3;
   letter-spacing: 0.01em;
-  color: var(--xmd-badge-saved-glyph, oklch(0.84 0.14 160));
-  background: var(--xmd-badge-saved-surface, oklch(0.32 0.06 160 / 0.92));
-  border: 1px solid var(--xmd-badge-saved-ring, oklch(0.7 0.16 160 / 0.7));
+  color: var(--xmd-badge-saved-glyph, oklch(0.84 0.14 var(--xmd-hue-success)));
+  background: var(--xmd-badge-saved-surface, oklch(0.32 0.06 var(--xmd-hue-success) / 0.92));
+  border: 1px solid var(--xmd-badge-saved-ring, oklch(0.7 0.16 var(--xmd-hue-success) / 0.7));
   border-radius: 9999px;
   pointer-events: none;
   backdrop-filter: blur(6px);

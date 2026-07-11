@@ -1,12 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { Settings } from '../../core/schema'
 
 const popupCss = readFileSync('src/app.css', 'utf8')
 const popupHtml = readFileSync('src/entrypoints/popup/index.html', 'utf8')
 const popupSource = readFileSync('src/entrypoints/popup/App.tsx', 'utf8')
-const generalSource = readFileSync('src/entrypoints/options/panels/general.tsx', 'utf8')
 const captureQuickActionsSource = readFileSync(
   'src/entrypoints/popup/capture-quick-actions.tsx',
   'utf8',
@@ -23,40 +20,47 @@ const ruleBody = (selector: string): string => {
   return popupCss.slice(bodyStart + 1, bodyEnd)
 }
 
-describe('popup layout CSS', () => {
-  it('keeps the extension popup inside Chrome action popup bounds', () => {
+describe('popup layout CSS — content-driven height (spec §2.9)', () => {
+  it('lets the popup render its content height: min 360 / max 600, scroll beyond', () => {
     const popupRule = ruleBody('.xmd-popup')
 
     expect(popupRule).toContain('width: min(380px, 100vw);')
-    expect(popupRule).toContain('height: 600px;')
+    expect(popupRule).toContain('min-height: 360px;')
     expect(popupRule).toContain('max-height: 600px;')
-    expect(popupRule).toContain('overflow: auto;')
+    expect(popupRule).toContain('overflow-y: auto;')
+    expect(popupRule).not.toMatch(/(?<!max-)(?<!min-)height: 600px;/u)
   })
 
-  it('anchors the popup document to the action viewport', () => {
+  it('does not pin a fixed height on the document shell', () => {
     const documentRule = ruleBody('html,\nbody,\n#app')
 
     expect(documentRule).toContain('width: 380px;')
     expect(documentRule).toContain('min-width: 380px;')
-    expect(documentRule).toContain('height: 600px;')
-    expect(documentRule).toContain('min-height: 600px;')
     expect(documentRule).toContain('margin: 0;')
-    expect(documentRule).toContain('overflow: hidden;')
+    expect(documentRule).not.toContain('height:')
+    expect(documentRule).not.toContain('max-height:')
+    expect(documentRule).not.toContain('overflow: hidden;')
   })
 
-  it('renders a non-empty fallback before the popup app hydrates', () => {
+  it('gives the loading frame the same 360px floor so hydrate never jumps', () => {
+    const loadingRule = ruleBody('.xmd-popup--loading')
+    expect(loadingRule).toContain('min-height: 360px;')
+  })
+
+  it('renders a non-empty fallback before the popup app hydrates, matching the 360px floor', () => {
     expect(popupHtml).toMatch(/html,\s*body,\s*#app/u)
-    expect(popupHtml).toContain('height: 600px')
+    expect(popupHtml).toContain('min-height: 360px')
+    expect(popupHtml).not.toContain('height: 600px')
     expect(popupHtml).toContain('class="xmd-boot-fallback"')
     expect(popupHtml).toContain('Loading...')
   })
 })
 
-describe('popup is a focused action surface (R4 instrument grammar)', () => {
-  it('keeps the page worklist actions and a route into the settings page', () => {
+describe('popup Stage zone hosts the X page actions (spec §2.3)', () => {
+  it('keeps the page-action verbs and a route into the settings page', () => {
     expect(popupSource).toContain('Download this page')
     expect(popupSource).toContain('One by one')
-    expect(popupSource).toContain('openOptionsPage')
+    expect(popupSource).toContain('openOptions')
   })
 
   it('no longer hosts the configuration sections (they moved to the options page)', () => {
@@ -74,37 +78,74 @@ describe('popup is a focused action surface (R4 instrument grammar)', () => {
     expect(popupSource).not.toContain('GearIcon')
     expect(popupSource).toContain('Settings')
   })
-})
 
-describe('settings controls live on the options page', () => {
-  it('hosts the download badge toggle alongside the Quick Grab controls in the General panel', () => {
-    expect(generalSource).toContain('checked={settings.quickGrabEnabled}')
-    expect(generalSource).toContain('aria-label="Download badge"')
-    expect(generalSource).toContain('Show download badge on media')
-    expect(generalSource).toContain('checked={settings.downloadBadgeEnabled}')
-    expect(generalSource).toContain('downloadBadgeEnabled: checked')
-  })
-
-  it('renders the badge toggle on under default settings', () => {
-    const defaults = Schema.decodeUnknownSync(Settings)({})
-    expect(defaults.downloadBadgeEnabled).toBe(true)
-    expect(generalSource).toContain('checked={settings.downloadBadgeEnabled}')
+  it('drops the popup wordmark from the context strip (spec §2.1 zone table)', () => {
+    expect(popupSource).not.toContain('X Media Downloader')
   })
 })
 
-describe('popup hosts whole-list clear', () => {
-  it('offers a list-page-gated whole-list clear that messages the new handler', () => {
+// The "settings controls live on the options page" badge-toggle assertions
+// that used to grep `panels/general.tsx` directly moved to
+// `options/panels/saving.test.ts` — that file no longer exists, General having
+// been absorbed into the merged Saving panel (Stage redesign §3.3).
+
+describe('the bare "Clear" verb is retired everywhere in the popup (design contract line 3)', () => {
+  it('never renders "Clear page", "Clear list", or "Clear archive"', () => {
+    expect(popupSource).not.toContain('Clear page')
+    expect(popupSource).not.toContain('Clear list')
+    expect(popupSource).not.toContain('Clear archive')
+    expect(captureQuickActionsSource).not.toContain('Clear archive')
+  })
+
+  it('uses the three-verb system instead: Reset / Erase / Release', () => {
+    expect(popupSource).toContain('Release this page')
+    expect(popupSource).toContain('Release the whole list')
+    expect(popupSource).toContain('Reset')
+    expect(captureQuickActionsSource).toContain('Erase archive')
+    expect(captureQuickActionsSource).toContain('Erase the archive')
+  })
+})
+
+describe('no native confirm() and no accesskey anywhere in the popup (design contract line 5)', () => {
+  it('popup App.tsx', () => {
+    expect(popupSource).not.toMatch(/\bconfirm\(/u)
+    expect(popupSource).not.toContain('accesskey')
+  })
+
+  it('capture-quick-actions.tsx', () => {
+    expect(captureQuickActionsSource).not.toMatch(/\bconfirm\(/u)
+    expect(captureQuickActionsSource).not.toContain('accesskey')
+  })
+})
+
+describe('no transition-all anywhere in the popup (spec §2.7)', () => {
+  it('popup App.tsx and capture-quick-actions.tsx', () => {
+    expect(popupSource).not.toContain('transition-all')
+    expect(captureQuickActionsSource).not.toContain('transition-all')
+  })
+})
+
+describe('popup hosts the whole-list release, gated to list pages via the tab-context matrix', () => {
+  it('messages the release handlers and gates the whole-list row to onListPage', () => {
+    expect(popupSource).toContain('ClearVisibleRequest')
     expect(popupSource).toContain('ClearWholeListRequest')
-    expect(popupSource).toContain('Clear list')
     expect(popupSource).toContain('onListPage')
+    // ordering pin: the whole-list release request only appears after the
+    // onListPage-gated branch of ReleaseCluster begins.
+    const onListPageIdx = popupSource.indexOf('onListPage ?')
+    const wholeListIdx = popupSource.indexOf('ClearWholeListRequest')
+    expect(onListPageIdx).toBeGreaterThan(-1)
+    expect(wholeListIdx).toBeGreaterThan(onListPageIdx)
+  })
+
+  it('renders the Release cluster only inside the X-context branch', () => {
+    expect(popupSource).toContain('ReleaseCluster')
+    expect(popupSource).toContain("(ctx === 'x' || ctx === 'x-list') &&")
   })
 })
 
-describe('popup collapses per-surface clear scopes into a mono summary + Edit link', () => {
-  it('summarizes the active clear scopes instead of hosting three live switches', () => {
-    // R4: the popup is an action surface, not a configuration surface — editing
-    // which scopes clear now happens in Settings → Clearing; the popup only
-    // reads the three scope settings to render a compact summary.
+describe('popup collapses per-surface release scopes into a mono summary + Edit link', () => {
+  it('summarizes the active release scopes instead of hosting three live switches', () => {
     expect(popupSource).toContain('clearScopeSummary')
     expect(popupSource).toContain('autoUnbookmarkOnSave')
     expect(popupSource).toContain('autoUnlikeOnSave')
@@ -112,9 +153,10 @@ describe('popup collapses per-surface clear scopes into a mono summary + Edit li
     expect(popupSource).not.toContain('ScopeToggle')
   })
 
-  it('links out to the Clearing settings panel to edit scopes', () => {
-    expect(popupSource).toContain('openClearingSettings')
-    expect(popupSource).toContain("openOptionsSection('clearing')")
+  it('links out to the Release settings panel (deep-link updated from #clearing to #release)', () => {
+    expect(popupSource).toContain('openReleaseSettings')
+    expect(popupSource).toContain("openOptionsSection('release')")
+    expect(popupSource).not.toContain("openOptionsSection('clearing')")
   })
 })
 
@@ -142,30 +184,56 @@ describe('popup hosts a minimal capture toggle', () => {
     expect(captureQuickActionsSource).toContain('Export all')
   })
 
-  it('surfaces the archive size as a deep link into the Knowledge Capture settings panel', () => {
-    expect(popupSource).toContain('captureSummary?.tweets')
-    // openOptionsPage always lands on General; the capture card must deep-link
+  it('surfaces the archive size as a deep link into the Capture settings panel', () => {
+    expect(popupSource).toContain('captureSummary')
+    // openOptionsPage always lands on Saving; the capture card must deep-link
     // straight to #capture so the options app opens on the Capture panel.
     expect(popupSource).toContain("openOptionsSection('capture')")
     expect(popupSource).toContain('openCaptureArchive')
   })
+
+  it('hides Recent Captures entirely on Instagram/Threads tabs (capture is X-only)', () => {
+    expect(popupSource).toContain('isMetaContext')
+    expect(popupSource).toContain('{!isMetaContext && (')
+  })
 })
 
-describe('popup folds monitor-clear into the monitor block', () => {
-  it('nests the clear-monitor trigger inside the Download monitor section rather than a separate button above it', () => {
+describe('popup folds monitor-reset into the monitor block', () => {
+  it('nests the reset trigger inside the Download monitor section rather than a separate button above it', () => {
     const monitorIdx = popupSource.indexOf('aria-label="Download monitor"')
-    const clearTriggerIdx = popupSource.indexOf('clearMonitor()')
+    const resetTriggerIdx = popupSource.indexOf('onClick={onReset}')
     expect(monitorIdx).toBeGreaterThan(-1)
-    expect(clearTriggerIdx).toBeGreaterThan(monitorIdx)
+    expect(resetTriggerIdx).toBeGreaterThan(monitorIdx)
+  })
+
+  it('drops the dead clearFeedback flash state (monitor unmounts immediately on success)', () => {
+    expect(popupSource).not.toContain('clearFeedback')
+    expect(popupSource).not.toContain("'Cleared'")
   })
 })
 
 describe('CaptureQuickActions renders a popup-sized recent-archive disclosure', () => {
-  it('starts collapsed, is hidden with nothing captured, and wires export + clear', () => {
+  it('starts collapsed, is hidden with nothing captured, and wires export + Confirm-Strip-gated erase', () => {
     expect(captureQuickActionsSource).toContain('useState(false)')
-    expect(captureQuickActionsSource).toContain('if (tweets === 0) return null')
+    // tweets===0 alone must NOT unmount the block — it has to stay mounted
+    // while an erase flash is pending (Batch B adversarial review fix).
+    expect(captureQuickActionsSource).toContain(
+      'if (tweets === 0 && statusMsg === null) return null',
+    )
     expect(captureQuickActionsSource).toContain("_tag: 'ClearCaptureRequest'")
     expect(captureQuickActionsSource).toContain('Export all')
-    expect(captureQuickActionsSource).toContain('Clear archive')
+    expect(captureQuickActionsSource).toContain('ConfirmStrip')
+  })
+})
+
+describe('the first-run teaching strip is wired to local:xmd-popup-intro (spec §2.2)', () => {
+  it('records opens on mount and dismisses via markDone', () => {
+    expect(popupSource).toContain('recordOpen')
+    expect(popupSource).toContain('markDone')
+    expect(popupSource).toContain('shouldShowIntro')
+  })
+
+  it('only shows on X contexts (isXContext), never on IG/Threads/unsupported', () => {
+    expect(popupSource).toContain('isXContext(ctx)')
   })
 })

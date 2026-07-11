@@ -38,12 +38,25 @@ describe('pathFamily', () => {
   it('returns null when no such segment exists', () => {
     expect(pathFamily('/v/no-family-here/abc.jpg')).toBe(null)
   })
+
+  // LIVE-VERIFIED 2026-07-06: a real Instagram post photo
+  // (instagram.com/p/DaM2wDWCH-C/) served the Facebook-style family
+  // `t39.30808-6` off scontent-lga3-1.cdninstagram.com — confirms the regex
+  // matches this shape too, not just the `t51.*` families seen previously.
+  it('matches the t39.30808-6 family observed on a real post photo', () => {
+    expect(pathFamily('/v/t39.30808-6/489abc123_n.jpg')).toBe('t39.30808-6')
+  })
 })
 
 describe('isContentPathFamily', () => {
-  it('is true for -15 families and false for -19 families', () => {
+  // Denylist semantics (fixed 2026-07-06): the gate's real job is excluding
+  // avatar families, not allowlisting content families. -15 and the newly
+  // observed -6 (t39.30808-6) both count as content; only -19 (the only
+  // avatar suffix ever observed live) is excluded.
+  it('is true for -15 and -6 families, false for -19 families', () => {
     expect(isContentPathFamily('t51.82787-15')).toBe(true)
     expect(isContentPathFamily('t51.71878-15')).toBe(true)
+    expect(isContentPathFamily('t39.30808-6')).toBe(true)
     expect(isContentPathFamily('t51.2885-19')).toBe(false)
     expect(isContentPathFamily('t51.82787-19')).toBe(false)
   })
@@ -63,6 +76,18 @@ describe('isGrabbableMetaPhotoUrl', () => {
     ).toBe(true)
     expect(
       isGrabbableMetaPhotoUrl('https://scontent.cdninstagram.com/v/t51.71878-15/abc_n.jpg'),
+    ).toBe(true)
+  })
+
+  // LIVE-VERIFIED 2026-07-06: a real Instagram post photo
+  // (instagram.com/p/DaM2wDWCH-C/) served this Facebook-style content
+  // family off scontent-lga3-1.cdninstagram.com; the previous -15-only
+  // allowlist returned false for it (the reported bug).
+  it('accepts a real content photo url on the t39.30808-6 family', () => {
+    expect(
+      isGrabbableMetaPhotoUrl(
+        'https://scontent-lga3-1.cdninstagram.com/v/t39.30808-6/489abc123_n.jpg?stp=dst-jpg&_nc_ht=x',
+      ),
     ).toBe(true)
   })
 
@@ -101,6 +126,16 @@ describe('mediaKeyFromMetaUrl', () => {
         'https://scontent-lga3-2.cdninstagram.com/v/t51.82787-15/731448209_18446489893184644_2626552789731070694_n.jpg?stp=dst-jpg',
       ),
     ).toBe('731448209_18446489893184644_2626552789731070694_n')
+  })
+
+  // LIVE-VERIFIED 2026-07-06: same real post photo as above — confirms the
+  // fix resolves a hover key for it (previously null, the reported bug).
+  it('extracts the basename key for the t39.30808-6 content family', () => {
+    expect(
+      mediaKeyFromMetaUrl(
+        'https://scontent-lga3-1.cdninstagram.com/v/t39.30808-6/489abc123_n.jpg?stp=dst-jpg&_nc_ht=x',
+      ),
+    ).toBe('489abc123_n')
   })
 
   it('matches a DOM src against a differently-sized rendition sharing the same basename', () => {

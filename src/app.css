@@ -1,5 +1,8 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
+/* Cross-surface brand primitives (ease curve, hue anchors) — shared with the
+   overlay content script's stylesheet. Tailwind inlines this at build time. */
+@import './theme/tokens.css';
 
 /* The popup follows the OS theme, so drive shadcn's `dark:` variant from the
    system preference rather than a `.dark` class toggle. */
@@ -10,26 +13,25 @@
 }
 
 :root {
-  --xmd-bg: oklch(0.982 0.004 255);
+  --xmd-bg: oklch(0.982 0.004 var(--xmd-hue-neutral));
   --xmd-surface: oklch(1 0 0);
-  --xmd-surface-raised: oklch(0.962 0.006 255);
-  --xmd-ink: oklch(0.205 0.012 255);
-  --xmd-muted: oklch(0.47 0.018 255);
-  --xmd-faint: oklch(0.62 0.014 255);
+  --xmd-surface-raised: oklch(0.962 0.006 var(--xmd-hue-neutral));
+  --xmd-ink: oklch(0.205 0.012 var(--xmd-hue-neutral));
+  --xmd-muted: oklch(0.47 0.018 var(--xmd-hue-neutral));
+  --xmd-faint: oklch(0.62 0.014 var(--xmd-hue-neutral));
   /* R4 "instrument, not dashboard": structure comes from hairlines, not cards —
      these sit at 7-8% so a divider reads as a seam, not a border. */
-  --xmd-line: oklch(0.205 0.012 255 / 0.08);
-  --xmd-line-strong: oklch(0.205 0.012 255 / 0.14);
-  --xmd-accent: oklch(0.58 0.176 250);
-  --xmd-accent-hover: oklch(0.52 0.18 250);
+  --xmd-line: oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.08);
+  --xmd-line-strong: oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.14);
+  --xmd-accent: oklch(0.5 0.176 250);
+  --xmd-accent-hover: oklch(0.44 0.19 250);
   --xmd-accent-soft: oklch(0.58 0.176 250 / 0.12);
-  --xmd-success: oklch(0.58 0.145 160);
+  --xmd-success: oklch(0.58 0.145 var(--xmd-hue-success));
   /* R4 uses this bare as destructive TEXT (never a filled slab), so it needs to
      clear AA (4.5:1) on its own — L=0.58 only hit ~4.47:1 against --xmd-bg. */
   --xmd-danger: oklch(0.48 0.19 25);
-  --xmd-shadow-1: 0 1px 2px oklch(0.205 0.012 255 / 0.08);
-  --xmd-shadow-2: 0 8px 14px -12px oklch(0.205 0.012 255 / 0.42);
-  --xmd-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --xmd-shadow-1: 0 1px 2px oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.08);
+  --xmd-shadow-2: 0 8px 14px -12px oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.42);
   /* Concentric radii (R4 Foundations): 12 outer → 10 → 8 → 6 innermost. */
   --xmd-radius-1: 12px;
   --xmd-radius-2: 10px;
@@ -68,7 +70,7 @@
   --accent-foreground: var(--xmd-ink);
   --destructive: var(--xmd-danger);
   --destructive-foreground: oklch(1 0 0);
-  --success: oklch(0.46 0.14 160);
+  --success: oklch(0.46 0.14 var(--xmd-hue-success));
   --success-foreground: oklch(0.99 0 0);
   --border: var(--xmd-line);
   --input: var(--xmd-line-strong);
@@ -143,21 +145,21 @@ body,
 #app {
   width: 380px;
   min-width: 380px;
-  height: 600px;
-  min-height: 600px;
-  max-height: 600px;
   margin: 0;
-  overflow: hidden;
   background: var(--xmd-bg);
 }
+/* height pins removed: no height/min-height/max-height/overflow-hidden here —
+   the popup renders its content's height (spec §2.9). */
 
 /* Scroll container for the action popup; sticky header lives inside it. Flat
-   fill — R4 drops the frosted-glass wash along with every other card surface. */
+   fill — R4 drops the frosted-glass wash along with every other card surface.
+   Content-driven height: min 360 / max 600 (Chrome caps action popups at
+   600×800), scroll beyond the cap. */
 .xmd-popup {
   width: min(380px, 100vw);
-  height: 600px;
+  min-height: 360px;
   max-height: 600px;
-  overflow: auto;
+  overflow-y: auto;
   background: var(--xmd-bg);
   color: var(--xmd-ink);
   font:
@@ -169,7 +171,7 @@ body,
 }
 
 .xmd-popup--loading {
-  min-height: 120px;
+  min-height: 360px;
   display: grid;
   place-items: center;
   color: var(--xmd-muted);
@@ -190,24 +192,24 @@ body,
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --xmd-bg: oklch(0.145 0.006 255);
-    --xmd-surface: oklch(0.19 0.008 255);
-    --xmd-surface-raised: oklch(0.24 0.01 255);
-    --xmd-ink: oklch(0.965 0.004 255);
-    --xmd-muted: oklch(0.75 0.012 255);
-    --xmd-faint: oklch(0.62 0.012 255);
-    --xmd-line: oklch(0.965 0.004 255 / 0.08);
-    --xmd-line-strong: oklch(0.965 0.004 255 / 0.14);
+    --xmd-bg: oklch(0.145 0.006 var(--xmd-hue-neutral));
+    --xmd-surface: oklch(0.19 0.008 var(--xmd-hue-neutral));
+    --xmd-surface-raised: oklch(0.24 0.01 var(--xmd-hue-neutral));
+    --xmd-ink: oklch(0.965 0.004 var(--xmd-hue-neutral));
+    --xmd-muted: oklch(0.75 0.012 var(--xmd-hue-neutral));
+    --xmd-faint: oklch(0.62 0.012 var(--xmd-hue-neutral));
+    --xmd-line: oklch(0.965 0.004 var(--xmd-hue-neutral) / 0.08);
+    --xmd-line-strong: oklch(0.965 0.004 var(--xmd-hue-neutral) / 0.14);
     --xmd-accent: oklch(0.72 0.15 240);
     --xmd-accent-hover: oklch(0.78 0.13 230);
     --xmd-accent-soft: oklch(0.72 0.15 240 / 0.18);
-    --xmd-success: oklch(0.78 0.14 160);
+    --xmd-success: oklch(0.78 0.14 var(--xmd-hue-success));
     /* Lighter than the light-mode value (same reason accent/success go lighter
        in dark mode): L=0.58 only cleared ~4.21:1 against the dark --xmd-bg. */
     --xmd-danger: oklch(0.7 0.17 22);
     --xmd-shadow-1: 0 1px 2px oklch(0 0 0 / 0.24);
     --xmd-shadow-2: 0 8px 14px -12px oklch(0 0 0 / 0.9);
-    --success: oklch(0.82 0.14 160);
+    --success: oklch(0.82 0.14 var(--xmd-hue-success));
 
     /* Flat dark surfaces — same "no glass" rule as light mode, just raised a
        touch above --xmd-bg instead of translucent over it. */
@@ -216,6 +218,16 @@ body,
     --secondary: var(--xmd-surface-raised);
     --muted: var(--xmd-surface-raised);
     --accent: var(--xmd-surface-raised);
+  }
+
+  /* --primary-foreground stays white for switch.tsx's checked-thumb fill
+     (dark:data-[state=checked]:bg-primary-foreground), so it can't flip to ink
+     globally. Scope the AA fix to the filled controls that actually pair
+     --primary-foreground as bg-primary TEXT: button default variant, badge
+     default variant, and the popup's Download CTA (App.tsx:367) all carry
+     both `bg-primary` and `text-primary-foreground` on the same element. */
+  .bg-primary.text-primary-foreground {
+    --color-primary-foreground: oklch(0.145 0.006 var(--xmd-hue-neutral));
   }
 }
 

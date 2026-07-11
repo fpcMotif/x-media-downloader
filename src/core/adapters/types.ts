@@ -1,5 +1,14 @@
 import type { MediaItem, Platform } from '../schema'
 
+/** One CDN host a platform serves Original-quality media bytes from.
+ *  `includeSubdomains` extends the exact `host` to dot-anchored subdomains
+ *  only (`sub.host`, never a `host`-suffix look-alike like `evilhost.com`) —
+ *  see {@link PlatformAdapter.cdnHosts} for what consumes this. */
+export interface CdnHost {
+  readonly host: string
+  readonly includeSubdomains: boolean
+}
+
 /**
  * The contract every platform (X, Instagram, Threads) implements — the seam
  * that keeps the popup/options UI, download queue, admission gate, cloud
@@ -13,6 +22,12 @@ export interface PlatformAdapter {
   /** Manifest content-script match patterns AND the `browser.tabs.query`
    *  filter — single source of truth (mirrors X_HOST_MATCH's role today). */
   readonly hostMatch: readonly string[]
+
+  /** CDN hosts this platform serves Original-quality media bytes from.
+   *  Security-relevant: consumed by the Cloud Upload SSRF guard (url-guard)
+   *  and the Fetched-strategy optional-permission request. `includeSubdomains`
+   *  extends the exact host to dot-anchored subdomains only. */
+  readonly cdnHosts: readonly CdnHost[]
 
   /** Whether `url` is a page on this platform. */
   matchesUrl(url: string): boolean

@@ -5,6 +5,8 @@ import {
   adapterForHostname,
   originsForAllAdapters,
   allAdapterHostMatch,
+  cdnHostsForAllAdapters,
+  cdnMatchPatternsForAllAdapters,
 } from './registry'
 import { xAdapter } from './x/adapter'
 import { instagramAdapter } from './instagram/adapter'
@@ -94,5 +96,32 @@ describe('allAdapterHostMatch', () => {
     expect(allAdapterHostMatch().toSorted()).toEqual(
       [...new Set([...X_HOST_MATCH, ...INSTAGRAM_HOST_MATCH, ...THREADS_HOST_MATCH])].toSorted(),
     )
+  })
+})
+
+describe('cdnHostsForAllAdapters', () => {
+  it('returns the deduplicated union of every adapter cdnHosts, in registration order', () => {
+    expect(cdnHostsForAllAdapters()).toEqual([
+      { host: 'pbs.twimg.com', includeSubdomains: false },
+      { host: 'video.twimg.com', includeSubdomains: false },
+      { host: 'cdninstagram.com', includeSubdomains: true },
+    ])
+  })
+
+  it('dedups the cdninstagram.com entry Instagram and Threads both share (by host+includeSubdomains), not listing it twice', () => {
+    const cdninstagramEntries = cdnHostsForAllAdapters().filter(
+      (h) => h.host === 'cdninstagram.com',
+    )
+    expect(cdninstagramEntries).toHaveLength(1)
+  })
+})
+
+describe('cdnMatchPatternsForAllAdapters', () => {
+  it('maps an exact host to a bare match pattern, and an includeSubdomains host to a *.host wildcard', () => {
+    expect(cdnMatchPatternsForAllAdapters()).toEqual([
+      'https://pbs.twimg.com/*',
+      'https://video.twimg.com/*',
+      'https://*.cdninstagram.com/*',
+    ])
   })
 })

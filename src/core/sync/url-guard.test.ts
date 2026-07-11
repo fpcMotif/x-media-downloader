@@ -5,6 +5,7 @@ import {
   assertAllowedMediaUrls,
   guardedFetch,
 } from './url-guard'
+import { cdnHostsForAllAdapters } from '../adapters/registry'
 
 const thrown = (fn: () => unknown): unknown => {
   try {
@@ -112,6 +113,69 @@ describe('assertAllowedMediaUrl', () => {
     expect(e).toBeInstanceOf(UnsafeUrlError)
     expect((e as UnsafeUrlError)._tag).toBe('UnsafeUrlError')
     expect((e as UnsafeUrlError).reason).toMatch(/host/)
+  })
+})
+
+describe('assertAllowedMediaUrl — registry-derived Meta CDN allow-list', () => {
+  it('allows a region-prefixed cdninstagram.com subdomain', () => {
+    expect(() =>
+      assertAllowedMediaUrl('https://scontent-lax3-1.cdninstagram.com/v/t51.82787-15/AAA_n.jpg'),
+    ).not.toThrow()
+  })
+
+  it('allows the bare cdninstagram.com host', () => {
+    expect(() =>
+      assertAllowedMediaUrl('https://cdninstagram.com/v/t51.82787-15/AAA_n.jpg'),
+    ).not.toThrow()
+  })
+
+  it('rejects a look-alike host that merely starts with the allowed name (dot-anchoring)', () => {
+    expect(() => assertAllowedMediaUrl('https://evilcdninstagram.com/x')).toThrow(UnsafeUrlError)
+  })
+
+  it('rejects a look-alike host that merely ends with the allowed name (suffix attack)', () => {
+    expect(() => assertAllowedMediaUrl('https://cdninstagram.com.evil.com/x')).toThrow(
+      UnsafeUrlError,
+    )
+  })
+
+  it('still allows pbs.twimg.com', () => {
+    expect(() => assertAllowedMediaUrl('https://pbs.twimg.com/media/AAA.jpg')).not.toThrow()
+  })
+
+  it('rejects a subdomain of pbs.twimg.com — X hosts are exact-only, no includeSubdomains', () => {
+    expect(() => assertAllowedMediaUrl('https://foo.pbs.twimg.com/media/AAA.jpg')).toThrow(
+      UnsafeUrlError,
+    )
+  })
+
+  // Security pin: the FULL derived allow-list content, spelled out exactly.
+  // A new adapter (or a new cdnHosts entry on an existing one) widens what
+  // guardedFetch/Cloud Upload can reach — this must fail and be consciously
+  // updated (not silently pass) whenever that set changes. Unlike
+  // registry.test.ts's structural pin on the same list, this one is proved
+  // through url-guard's OWN public surface — assertAllowedMediaUrl's
+  // accept/reject behavior — not registry data equality alone.
+  it('pins the exact registry-derived CDN allow-list, exercised through assertAllowedMediaUrl', () => {
+    const pinned: ReadonlyArray<{ host: string; includeSubdomains: boolean }> = [
+      { host: 'pbs.twimg.com', includeSubdomains: false },
+      { host: 'video.twimg.com', includeSubdomains: false },
+      { host: 'cdninstagram.com', includeSubdomains: true },
+    ]
+    expect(cdnHostsForAllAdapters()).toEqual(pinned)
+
+    // The canonical representative URL for every pinned host is accepted.
+    for (const { host } of pinned) {
+      expect(assertAllowedMediaUrl(`https://${host}/media`).hostname).toBe(host)
+    }
+
+    // A subdomain is accepted only for hosts that opt into includeSubdomains.
+    for (const { host } of pinned.filter((entry) => entry.includeSubdomains)) {
+      expect(assertAllowedMediaUrl(`https://sub.${host}/media`).hostname).toBe(`sub.${host}`)
+    }
+    for (const { host } of pinned.filter((entry) => !entry.includeSubdomains)) {
+      expect(() => assertAllowedMediaUrl(`https://sub.${host}/media`)).toThrow(UnsafeUrlError)
+    }
   })
 })
 

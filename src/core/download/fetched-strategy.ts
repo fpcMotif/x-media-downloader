@@ -2,13 +2,12 @@ import { Effect } from 'effect'
 import { DownloadError, OffscreenSaveError } from '../errors'
 import { errorReason } from '../error'
 import { bindFetch } from '../fetch'
+import { cdnMatchPatternsForAllAdapters } from '../adapters/registry'
 import type { DownloadStrategy, SaveRequest } from './strategy'
 
-/** twimg CDN match patterns requested at runtime when Fetched is enabled (ADR-0003). */
-export const FETCHED_HOST_PATTERNS = [
-  'https://pbs.twimg.com/*',
-  'https://video.twimg.com/*',
-] as const
+/** Every registered adapter's CDN match pattern (docs/adr/0019), requested at
+ *  runtime when Fetched is enabled (ADR-0003). */
+export const FETCHED_HOST_PATTERNS = cdnMatchPatternsForAllAdapters()
 
 export const FETCHED_PERMISSIONS = ['offscreen'] as const
 

@@ -1,11 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
-import {
-  makeSyncOutbox,
-  type ConvexPort,
-  type PermissionsPort,
-  type SyncOutboxDeps,
-} from './sync-outbox'
+import { makeSyncOutbox, type PermissionsPort, type SyncOutboxDeps } from './sync-outbox'
+import type { ConvexPort } from './convex-port'
 import { Settings as SettingsSchema, type Settings } from '../core/schema'
 import { append, decodeOutbox, emptyOutbox, type OutboxState } from '../core/sync/outbox'
 import { outcomeEvent } from '../core/sync/events'

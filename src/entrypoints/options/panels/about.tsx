@@ -24,10 +24,16 @@ export function AboutPanel() {
         <p className="text-[13px] text-muted-foreground">
           No remote telemetry · No scraping · Cloud sync is opt-in · Bytes go provider-direct
         </p>
-        <FieldDescription>
+        <FieldDescription className="text-pretty">
           Cloud Sync mirrors download metadata only — never file bytes. Cloud Upload sends media
           bytes straight from your browser to your own Drive/Dropbox, never through our servers.
         </FieldDescription>
+      </Section>
+
+      <Section title="Appearance">
+        <p className="text-[13px] text-pretty text-muted-foreground">
+          Follows your system light/dark setting. There is no in-app theme override.
+        </p>
       </Section>
 
       {redirectUrl !== '' && (

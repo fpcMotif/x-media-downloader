@@ -63,8 +63,14 @@ export function CapturePanel({ settings, update }: PanelProps) {
                 'Also mirror captured tweets to your Convex deployment'
               ) : (
                 <>
-                  <span className="font-mono">Uses your Cloud connection</span> — set that up first
-                  (<a href="#cloud">Cloud ›</a>)
+                  <span className="font-mono">Uses your Sync connection</span> — set that up first (
+                  <a
+                    href="#sync"
+                    className="rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                  >
+                    Sync ›
+                  </a>
+                  )
                 </>
               )}
             </FieldDescription>
@@ -82,9 +88,9 @@ export function CapturePanel({ settings, update }: PanelProps) {
       <Section title="Archive" description="Everything captured so far, on this device.">
         <a
           href="#archive"
-          className="-mx-1 flex items-center justify-between gap-3 rounded-[8px] px-1 py-0.5 text-sm no-underline transition-colors hover:bg-muted"
+          className="-mx-1 flex min-h-10 items-center justify-between gap-3 rounded-[var(--xmd-radius-3)] px-1 py-0.5 text-sm no-underline outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
         >
-          <span className="font-mono text-muted-foreground">
+          <span className="font-mono tabular-nums text-muted-foreground">
             {plural(summary?.tweets ?? 0, 'tweet')} ·{' '}
             {plural(summary?.conversations ?? 0, 'conversation')}
           </span>

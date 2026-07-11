@@ -26,16 +26,12 @@ import { makeFetchServiceLive } from '../core/fetch-service'
 import { makeConvexHttpPort } from '../core/sync/convex'
 import { makeSerialQueue } from '../core/serial-queue'
 import { isSyncConfigured } from './sync-config'
+import type { ConvexPort } from './convex-port'
 
 /** Storage seam for the durable mirror ledger (`local:captureOutbox` by default). */
 export interface LedgerStorage {
   get(): Promise<unknown>
   set(value: unknown): Promise<void>
-}
-
-/** Convex transport seam — one `mutation` call, built per drain from settings. */
-export interface ConvexPort {
-  mutation(name: string, args: unknown): Promise<unknown>
 }
 
 export interface CaptureOutbox {

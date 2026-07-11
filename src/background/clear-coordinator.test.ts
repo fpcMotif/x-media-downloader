@@ -1,29 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fakeBrowser } from 'wxt/testing'
 import { Schema } from 'effect'
-import { hookScopes, makeClearCoordinator, type ClearCoordinatorDeps } from './clear-coordinator'
+import {
+  makeClearCoordinator,
+  type ClearCoordinatorDeps,
+  type SettleClock,
+} from './clear-coordinator'
 import { Settings as SettingsSchema, type Settings } from '../core/schema'
-
-/** hookScopes reads only the three per-scope toggles; cast a minimal partial. */
-const toggles = (bookmark: boolean, like: boolean, notInterested: boolean): Settings =>
-  ({
-    autoUnbookmarkOnSave: bookmark,
-    autoUnlikeOnSave: like,
-    autoNotInterestedOnSave: notInterested,
-  }) as Settings
-
-describe('hookScopes', () => {
-  it('maps each per-scope toggle to its clear scope (incl. For You notInterested)', () => {
-    expect(hookScopes(toggles(true, true, true))).toEqual(['bookmark', 'like', 'notInterested'])
-    expect(hookScopes(toggles(true, false, false))).toEqual(['bookmark'])
-    expect(hookScopes(toggles(false, true, false))).toEqual(['like'])
-    // Regression guard: the For You toggle alone MUST seed 'notInterested', or the
-    // timeline clear is dead code — the ledger never gets the scope to claim. (This
-    // is exactly the wiring that was missing on the first cut of the feature.)
-    expect(hookScopes(toggles(false, false, true))).toEqual(['notInterested'])
-    expect(hookScopes(toggles(false, false, false))).toEqual([])
-  })
-})
 
 // ── Settle Port seam ──
 //
@@ -44,18 +27,46 @@ const mountedFlip = { mounted: true, results: [{ scope: 'bookmark' as const, ok:
 const probeFn = (impl: ClearCoordinatorDeps['settleProbe']) =>
   vi.fn<ClearCoordinatorDeps['settleProbe']>(impl)
 
+/** Hand-rolled fake clock (the retry-plan.ts idiom) — NOT vi.useFakeTimers().
+ *  Records every (fn, ms) schedule call; the test fires callbacks explicitly and
+ *  waits (via vi.waitFor's real-timer polling) for the resulting async settle
+ *  chain to drain, rather than fast-forwarding a fake clock. */
+const makeFakeClock = (): SettleClock & {
+  readonly calls: { fn: () => void; ms: number }[]
+} => {
+  const calls: { fn: () => void; ms: number }[] = []
+  const schedule: SettleClock['schedule'] = (fn, ms) => {
+    calls.push({ fn, ms })
+  }
+  return { schedule, calls }
+}
+
 const makeDeps = (over: Partial<ClearCoordinatorDeps> = {}) => {
   const sendClearToTabs = vi.fn<ClearCoordinatorDeps['sendClearToTabs']>(async () => mountedFlip)
   const settleProbe = over.settleProbe ?? probeFn(async () => ({ state: 'complete', exists: true }))
+  const clock = makeFakeClock()
   const deps: ClearCoordinatorDeps = {
     queueError: () => () => {},
     getSettings: async () => CLEAR_ON,
     trace: () => {},
     sendClearToTabs,
+    clock,
     ...over,
     settleProbe,
   }
-  return { deps, sendClearToTabs, settleProbe }
+  return { deps, sendClearToTabs, settleProbe, clock }
+}
+
+/** Fire every settle-window callback the fake clock captured, then wait for every
+ *  probe to have run — vi.waitFor's real-timer polling forces the queued settle
+ *  chain (probe → reduce → maybe-clear) to fully drain before the caller asserts. */
+const fireSettleWindow = async (
+  clock: ReturnType<typeof makeFakeClock>,
+  settleProbe: ClearCoordinatorDeps['settleProbe'],
+): Promise<void> => {
+  const n = clock.calls.length
+  clock.calls.forEach(({ fn }) => fn())
+  await vi.waitFor(() => expect(settleProbe).toHaveBeenCalledTimes(n))
 }
 
 /** Seed a tweet's media as one batch, then record each complete with its OWN
@@ -68,41 +79,41 @@ const seedAndComplete = (
   for (const m of media) c.recordClearComplete('T', m.id, m.downloadId)
 }
 
-/** Seed one tweet, record its only media complete, then run out the settle window. */
-const downloadAndSettle = async (c: ReturnType<typeof makeClearCoordinator>): Promise<void> => {
+/** Seed one tweet, record its only media complete, then settle. */
+const downloadAndSettle = async (
+  c: ReturnType<typeof makeClearCoordinator>,
+  clock: ReturnType<typeof makeFakeClock>,
+  settleProbe: ClearCoordinatorDeps['settleProbe'],
+): Promise<void> => {
   seedAndComplete(c, [{ id: 'm0', downloadId: 123 }])
-  await vi.runAllTimersAsync()
+  await fireSettleWindow(clock, settleProbe)
 }
 
 describe('Settle Port gate (irreversible Clear)', () => {
   beforeEach(() => {
     fakeBrowser.reset()
-    vi.useFakeTimers()
-  })
-  afterEach(() => {
-    vi.useRealTimers()
   })
 
   it('fires the Clear once the probe confirms the byte landed', async () => {
-    const { deps, sendClearToTabs } = makeDeps()
-    await downloadAndSettle(makeClearCoordinator(deps))
+    const { deps, sendClearToTabs, settleProbe, clock } = makeDeps()
+    await downloadAndSettle(makeClearCoordinator(deps), clock, settleProbe)
     expect(sendClearToTabs).toHaveBeenCalledTimes(1)
     // allLists defaults false → page-scoped clear (current page's list only).
     expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark'], false)
   })
 
   it('passes allLists=true when "Clear from every list" is on', async () => {
-    const { deps, sendClearToTabs } = makeDeps({
+    const { deps, sendClearToTabs, settleProbe, clock } = makeDeps({
       getSettings: async () =>
         settings({ clearOnSave: true, autoUnbookmarkOnSave: true, clearAllListsOnSave: true }),
     })
-    await downloadAndSettle(makeClearCoordinator(deps))
+    await downloadAndSettle(makeClearCoordinator(deps), clock, settleProbe)
     expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark'], true)
   })
 
   it('probes the exact download id recorded for the tweet', async () => {
-    const { deps, settleProbe } = makeDeps()
-    await downloadAndSettle(makeClearCoordinator(deps))
+    const { deps, settleProbe, clock } = makeDeps()
+    await downloadAndSettle(makeClearCoordinator(deps), clock, settleProbe)
     expect(settleProbe).toHaveBeenCalledWith(123)
   })
 
@@ -110,34 +121,34 @@ describe('Settle Port gate (irreversible Clear)', () => {
   // withheld the Clear — so a future wiring regression (no probe / no timer) goes
   // red here too, not just a vacuous not.toHaveBeenCalled() on a path that never ran.
   it('NEVER fires the Clear when the probe is missing (search threw / no row)', async () => {
-    const { deps, sendClearToTabs, settleProbe } = makeDeps({
+    const { deps, sendClearToTabs, settleProbe, clock } = makeDeps({
       settleProbe: probeFn(async () => undefined),
     })
-    await downloadAndSettle(makeClearCoordinator(deps))
+    await downloadAndSettle(makeClearCoordinator(deps), clock, settleProbe)
     expect(settleProbe).toHaveBeenCalledWith(123)
     expect(sendClearToTabs).not.toHaveBeenCalled()
   })
 
   it('NEVER fires the Clear when the file vanished after completing (exists:false)', async () => {
-    const { deps, sendClearToTabs, settleProbe } = makeDeps({
+    const { deps, sendClearToTabs, settleProbe, clock } = makeDeps({
       settleProbe: probeFn(async () => ({ state: 'complete', exists: false })),
     })
-    await downloadAndSettle(makeClearCoordinator(deps))
+    await downloadAndSettle(makeClearCoordinator(deps), clock, settleProbe)
     expect(settleProbe).toHaveBeenCalledWith(123)
     expect(sendClearToTabs).not.toHaveBeenCalled()
   })
 
   it('NEVER fires the Clear on a late post-complete interrupt', async () => {
-    const { deps, sendClearToTabs, settleProbe } = makeDeps({
+    const { deps, sendClearToTabs, settleProbe, clock } = makeDeps({
       settleProbe: probeFn(async () => ({ state: 'interrupted' })),
     })
-    await downloadAndSettle(makeClearCoordinator(deps))
+    await downloadAndSettle(makeClearCoordinator(deps), clock, settleProbe)
     expect(settleProbe).toHaveBeenCalledWith(123)
     expect(sendClearToTabs).not.toHaveBeenCalled()
   })
 
   it('clears a multi-media tweet only once EVERY media verifiably lands', async () => {
-    const { deps, sendClearToTabs } = makeDeps({
+    const { deps, sendClearToTabs, settleProbe, clock } = makeDeps({
       settleProbe: probeFn(async () => ({ state: 'complete', exists: true })),
     })
     const c = makeClearCoordinator(deps)
@@ -145,7 +156,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       { id: 'm0', downloadId: 10 },
       { id: 'm1', downloadId: 20 },
     ])
-    await vi.runAllTimersAsync()
+    await fireSettleWindow(clock, settleProbe)
     expect(sendClearToTabs).toHaveBeenCalledTimes(1)
     expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark'], false)
   })
@@ -158,19 +169,19 @@ describe('Settle Port gate (irreversible Clear)', () => {
     const settleProbe = probeFn(async (downloadId) =>
       downloadId === 10 ? { state: 'complete', exists: true } : { state: 'interrupted' },
     )
-    const { deps, sendClearToTabs } = makeDeps({ settleProbe })
+    const { deps, sendClearToTabs, clock } = makeDeps({ settleProbe })
     const c = makeClearCoordinator(deps)
     seedAndComplete(c, [
       { id: 'm0', downloadId: 10 },
       { id: 'm1', downloadId: 20 },
     ])
-    await vi.runAllTimersAsync()
+    await fireSettleWindow(clock, settleProbe)
     expect(settleProbe).toHaveBeenCalledTimes(2)
     expect(sendClearToTabs).not.toHaveBeenCalled()
   })
 
   it('supports multiple scopes for sweep when clearAllListsOnSave is true', async () => {
-    const { deps, sendClearToTabs } = makeDeps({
+    const { deps, sendClearToTabs, settleProbe, clock } = makeDeps({
       getSettings: async () =>
         settings({
           clearOnSave: true,
@@ -182,12 +193,12 @@ describe('Settle Port gate (irreversible Clear)', () => {
     const c = makeClearCoordinator(deps)
     c.seedClearLedger(new Map([['T', ['m0']]]), ['bookmark', 'like'], 'sweep')
     c.recordClearComplete('T', 'm0', 123)
-    await vi.runAllTimersAsync()
+    await fireSettleWindow(clock, settleProbe)
     expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark', 'like'], true)
   })
 
   it('keeps single scope for sweep when clearAllListsOnSave is false', async () => {
-    const { deps, sendClearToTabs } = makeDeps({
+    const { deps, sendClearToTabs, settleProbe, clock } = makeDeps({
       getSettings: async () =>
         settings({
           clearOnSave: true,
@@ -199,7 +210,39 @@ describe('Settle Port gate (irreversible Clear)', () => {
     const c = makeClearCoordinator(deps)
     c.seedClearLedger(new Map([['T', ['m0']]]), ['bookmark'], 'sweep')
     c.recordClearComplete('T', 'm0', 123)
-    await vi.runAllTimersAsync()
+    await fireSettleWindow(clock, settleProbe)
     expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark'], false)
+  })
+
+  // Mirrors retry-plan.test.ts's 'default real clock' block: proves the
+  // `deps.clock ?? realSettleClock` fallback actually schedules via the real
+  // `setTimeout`, for the one call site (background.ts) that never injects a clock.
+  describe('default real clock', () => {
+    it('makeClearCoordinator without an explicit clock settles the window via real timers', async () => {
+      vi.useFakeTimers()
+      try {
+        const sendClearToTabs = vi.fn<ClearCoordinatorDeps['sendClearToTabs']>(
+          async () => mountedFlip,
+        )
+        const settleProbe = probeFn(async () => ({ state: 'complete', exists: true }))
+        const deps: ClearCoordinatorDeps = {
+          queueError: () => () => {},
+          getSettings: async () => CLEAR_ON,
+          trace: () => {},
+          sendClearToTabs,
+          settleProbe,
+        }
+        const c = makeClearCoordinator(deps)
+        c.seedClearLedger(new Map([['T', ['m0']]]), ['bookmark'], 'hook')
+        c.recordClearComplete('T', 'm0', 123)
+
+        await vi.advanceTimersByTimeAsync(1500) // SETTLE_CONFIRM_MS
+
+        expect(settleProbe).toHaveBeenCalledWith(123)
+        expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark'], false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })

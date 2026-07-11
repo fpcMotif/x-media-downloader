@@ -1,6 +1,7 @@
 import './style.css'
 import { render } from 'preact'
 import { adapterForHostname, ALL_ADAPTERS } from '../../core/adapters/registry'
+import type { PlatformAdapter } from '../../core/adapters/types'
 import { makeDetectionStore, postGrabItems } from '../../core/adapters/detection-store'
 import { harvestTweets } from '../../core/capture/harvest'
 import type { Source, TweetRecord } from '../../core/capture/record'
@@ -67,12 +68,13 @@ import {
 import { Option } from 'effect'
 import {
   clearMountedTweet,
-  messageHandlers,
+  dispatchOverlayMessage,
   sweepSavedStatus,
   savedStatusVisible,
   type HandlerDeps,
 } from './handlers'
 import { makeScrollDrain } from '../../core/clear/scroll-drain'
+import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type {
   CaptureTweets,
   ClearScope,
@@ -691,6 +693,50 @@ function PhaseGlyphs({ block }: { readonly block: 'xmd-badge' | 'xmd-launcher' }
   )
 }
 
+// Preview src for a hovered media element: a video's poster (X only — no
+// platform besides X has a DOM-derivable video identity; Instagram/Threads
+// stay tee-map-only for video, see the design's Honest Gaps). Off-X this is
+// inert rather than unreachable-by-luck: `VIDEO_PLAYER_SEL`
+// (`[data-testid="videoPlayer"]` etc.) never matches Instagram/Threads
+// markup, so `video.closest(...)` finds nothing, and `videoPosterUrl`'s own
+// `pbs.twimg.com`-gated check independently also rejects any cdninstagram
+// poster even if one were found — so calling it unconditionally here is a
+// deliberate no-op off-X, not an omission.
+const previewSrcFromMedia = (media: HoverMediaElement): string =>
+  isVideoElement(media)
+    ? (videoPosterUrl(media) ?? (media.poster || media.currentSrc || media.src))
+    : media.currentSrc || media.src
+
+// Dispatches through the boot-resolved adapter's own `mediaKeyFromUrl` —
+// for X this is the same two-step gate (`isGrabbableMediaPreviewUrl` then
+// `mediaKeyFromUrl`) this function ran inline before, just relocated so it
+// takes `adapter` explicitly (module scope, no closure); for Instagram/Threads
+// it resolves a hovered `<img>` to the same basename key the tee derives
+// (photos only — a hovered `<video>`'s `blob:`/empty src never passes the
+// platform's own grabbability gate, so it falls through to null).
+//
+// For a video with no URL-derivable key (Instagram/Threads' blob: src, no
+// poster), fall back to a DOM-derived post-level key so the hover/badge
+// state machine has a non-null, stable `key` to arm on at all — the
+// adapter's own resolveHoverItem/canResolveHoverItem then decide whether
+// that key ACTUALLY resolves to a tee-detected single-video item (v1
+// scope: exactly one video per post — see
+// core/adapters/meta-shared/post-anchor.ts's module doc). X is
+// unaffected: `previewSrcFromMedia`'s poster-first branch already yields a
+// real twimg key for X video, so `mediaKeyFromUrl` never returns null
+// there and this fallback never triggers off-X callers reaching it.
+const previewKeyFromMedia = (
+  adapter: PlatformAdapter,
+  media: HoverMediaElement | null,
+): string | null => {
+  if (!media) return null
+  const urlKey = adapter.mediaKeyFromUrl(previewSrcFromMedia(media))
+  if (urlKey) return urlKey
+  return isVideoElement(media)
+    ? (adapter.postKeyFromVideoElement?.(media, location.pathname) ?? null)
+    : null
+}
+
 /** Is `media` still under the pointer? A hidden X `<video>` is never in
  *  `elementsFromPoint`, so accept when the cursor is still over its player. */
 const mediaStillUnderPointer = (media: HoverMediaElement, x: number, y: number): boolean => {
@@ -732,47 +778,6 @@ export default defineContentScript({
     // script isn't live on this tab (old build loaded, or the tab predates the
     // extension reload) — reload the extension AND refresh the tab.
     console.info('[XMD] overlay content script loaded @', location.href, adapter.platform)
-
-    // Preview src for a hovered media element: a video's poster (X only — no
-    // platform besides X has a DOM-derivable video identity; Instagram/Threads
-    // stay tee-map-only for video, see the design's Honest Gaps). Off-X this is
-    // inert rather than unreachable-by-luck: `VIDEO_PLAYER_SEL`
-    // (`[data-testid="videoPlayer"]` etc.) never matches Instagram/Threads
-    // markup, so `video.closest(...)` finds nothing, and `videoPosterUrl`'s own
-    // `pbs.twimg.com`-gated check independently also rejects any cdninstagram
-    // poster even if one were found — so calling it unconditionally here is a
-    // deliberate no-op off-X, not an omission.
-    const previewSrcFromMedia = (media: HoverMediaElement): string =>
-      isVideoElement(media)
-        ? (videoPosterUrl(media) ?? (media.poster || media.currentSrc || media.src))
-        : media.currentSrc || media.src
-
-    // Dispatches through the boot-resolved adapter's own `mediaKeyFromUrl` —
-    // for X this is the same two-step gate (`isGrabbableMediaPreviewUrl` then
-    // `mediaKeyFromUrl`) this function ran inline before, just relocated so it
-    // can close over `adapter`; for Instagram/Threads it resolves a hovered
-    // `<img>` to the same basename key the tee derives (photos only — a
-    // hovered `<video>`'s `blob:`/empty src never passes the platform's own
-    // grabbability gate, so it falls through to null).
-    //
-    // For a video with no URL-derivable key (Instagram/Threads' blob: src, no
-    // poster), fall back to a DOM-derived post-level key so the hover/badge
-    // state machine has a non-null, stable `key` to arm on at all — the
-    // adapter's own resolveHoverItem/canResolveHoverItem then decide whether
-    // that key ACTUALLY resolves to a tee-detected single-video item (v1
-    // scope: exactly one video per post — see
-    // core/adapters/meta-shared/post-anchor.ts's module doc). X is
-    // unaffected: `previewSrcFromMedia`'s poster-first branch already yields a
-    // real twimg key for X video, so `mediaKeyFromUrl` never returns null
-    // there and this fallback never triggers off-X callers reaching it.
-    const previewKeyFromMedia = (media: HoverMediaElement | null): string | null => {
-      if (!media) return null
-      const urlKey = adapter.mediaKeyFromUrl(previewSrcFromMedia(media))
-      if (urlKey) return urlKey
-      return isVideoElement(media)
-        ? (adapter.postKeyFromVideoElement?.(media, location.pathname) ?? null)
-        : null
-    }
 
     const store = makeDetectionStore({ mediaKeyFromUrl: adapter.mediaKeyFromUrl })
     let host: HTMLElement | null = null
@@ -1031,7 +1036,9 @@ export default defineContentScript({
     // twimg key, and under the pointer. A hidden X `<video>` is matched via its
     // player container by `mediaStillUnderPointer`.
     const holdsKey = (m: HoverMediaElement, key: string): boolean =>
-      m.isConnected && previewKeyFromMedia(m) === key && mediaStillUnderPointer(m, lastX, lastY)
+      m.isConnected &&
+      previewKeyFromMedia(adapter, m) === key &&
+      mediaStillUnderPointer(m, lastX, lastY)
 
     // The media to grab once the dwell elapses. Prefer the armed node, but X's
     // timeline is virtualized: it can recycle that exact node out from under the
@@ -1137,7 +1144,8 @@ export default defineContentScript({
           ...store.keysForTweet(item.postId),
           ...(codePostId ? store.keysForTweet(codePostId) : []),
         ])
-        // TEMP DIAG (grab-all) — REMOVE after confirming on live IG/Threads.
+        // TEMP DIAG (grab-all) — DEV-gated (see below), REMOVE after confirming
+        // on live IG/Threads.
         // Breaks the payload down by media TYPE and by postId so a missing-video
         // report can be pinned to the right boundary: `sendingTypes` lacking the
         // videos ⇒ they never got RESOLVED into the payload (a postId/resolution
@@ -1145,37 +1153,41 @@ export default defineContentScript({
         // resolved and the dedup/size gate dropped them downstream. `videosInStore`
         // + `postIdCounts` expose a postId split (videos indexed under a different
         // postId than `codePostId`, so `valuesForTweet(codePostId)` misses them).
-        const typeCounts = (arr: readonly MediaItem[]): Record<string, number> =>
-          arr.reduce<Record<string, number>>((a, i) => {
-            a[i.type] = (a[i.type] ?? 0) + 1
-            return a
-          }, {})
-        console.info(
-          '[XMD grab-all diag]',
-          JSON.stringify({
-            platform: adapter.platform,
-            hoveredType: item.type,
-            hoveredPostId: item.postId,
-            hoveredId: item.id,
-            hoveredInStore: store.get(item.id) !== undefined,
-            domCode: code,
-            codePostId: codePostId ?? null,
-            codeMatchesHovered: (codePostId ?? null) === item.postId,
-            teePostCount: teePost.length,
-            teeTypes: typeCounts(teePost),
-            sending: items.length,
-            sendingTypes: typeCounts(items),
-            videosInStore: store
-              .values()
-              .filter((i) => i.type === 'video')
-              .map((i) => ({ postId: i.postId, index: i.index, id: i.id })),
-            postIdCounts: store.values().reduce<Record<string, number>>((a, i) => {
-              a[i.postId] = (a[i.postId] ?? 0) + 1
+        // The whole block — including the per-call type/postId scans and the
+        // JSON.stringify — is skipped in prod builds.
+        if (import.meta.env.DEV) {
+          const typeCounts = (arr: readonly MediaItem[]): Record<string, number> =>
+            arr.reduce<Record<string, number>>((a, i) => {
+              a[i.type] = (a[i.type] ?? 0) + 1
               return a
-            }, {}),
-            storeCount: store.count,
-          }),
-        )
+            }, {})
+          console.info(
+            '[XMD grab-all diag]',
+            JSON.stringify({
+              platform: adapter.platform,
+              hoveredType: item.type,
+              hoveredPostId: item.postId,
+              hoveredId: item.id,
+              hoveredInStore: store.get(item.id) !== undefined,
+              domCode: code,
+              codePostId: codePostId ?? null,
+              codeMatchesHovered: (codePostId ?? null) === item.postId,
+              teePostCount: teePost.length,
+              teeTypes: typeCounts(teePost),
+              sending: items.length,
+              sendingTypes: typeCounts(items),
+              videosInStore: store
+                .values()
+                .filter((i) => i.type === 'video')
+                .map((i) => ({ postId: i.postId, index: i.index, id: i.id })),
+              postIdCounts: store.values().reduce<Record<string, number>>((a, i) => {
+                a[i.postId] = (a[i.postId] ?? 0) + 1
+                return a
+              }, {}),
+              storeCount: store.count,
+            }),
+          )
+        }
       }
       // After the dwell completes, move out of the charge state immediately.
       // The background reply then confirms whether the browser/aria2 handoff started.
@@ -1309,7 +1321,7 @@ export default defineContentScript({
       if (!media || !key || next === badge) return
       // The node may have been recycled or detached during the entrance (X's
       // timeline is virtualized) — bail unless it is still the same media.
-      if (!media.isConnected || previewKeyFromMedia(media) !== key) {
+      if (!media.isConnected || previewKeyFromMedia(adapter, media) !== key) {
         resetBadge()
         rerender()
         return
@@ -1482,6 +1494,7 @@ export default defineContentScript({
             left: `${r.left + inset}px`,
           }}
           aria-label={BADGE_ARIA[type ?? 'photo']}
+          aria-busy={badge.phase === 'queued'}
           onClick={onBadgeClick}
         >
           <PhaseGlyphs block="xmd-badge" />
@@ -1678,6 +1691,28 @@ export default defineContentScript({
       if (adapter.platform === 'x') harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
     })
 
+    // Cold-navigation blind spot: on a direct navigation to a reel/post URL,
+    // the MAIN-world XHR/fetch tee above sees nothing for the first item —
+    // its data arrives server-embedded in an inline <script>, not over the
+    // network. LIVE-VERIFIED 2026-07-06 (real
+    // https://www.instagram.com/reels/DaH4la4pRtC/ session): the first reel's
+    // data sat in a RelayPrefetchedStreamCache preloader payload inside a
+    // <script type="application/json">, and no <a href> or DOM node anywhere
+    // in the document carried that reel's own code/pk. Run once at startup,
+    // AFTER the listener above is attached, and replay every candidate inline
+    // payload through the exact same 'xmd:media-response' event so it goes
+    // through the identical, already-tested JSON.parse → detect →
+    // registerPostCode path — no separate ingestion code to maintain. SPA
+    // route changes after this are already teed live, so this is a one-shot,
+    // not a MutationObserver.
+    if (postGrabEligible) {
+      for (const body of inlineDataPayloads(document.scripts)) {
+        document.dispatchEvent(
+          new CustomEvent('xmd:media-response', { detail: { path: 'inline:document', body } }),
+        )
+      }
+    }
+
     // Don't lose a sub-debounce batch when the tab is navigated away or unloaded.
     ctx.addEventListener(window, 'pagehide', flushCaptures)
     ctx.addEventListener(document, 'visibilitychange', () => {
@@ -1686,7 +1721,8 @@ export default defineContentScript({
 
     // Quick Grab hover tracking: hold the configured modifier and hover a real
     // X media image/poster for the dwell window. No competing per-hover buttons.
-    // TEMP hover diag — throttle key, REMOVE after debugging grab failures.
+    // TEMP hover diag — throttle key, DEV-gated (see below), REMOVE after
+    // debugging grab failures.
     let hoverProbeLast: Element | null = null
     ctx.addEventListener(document, 'mousemove', (event) => {
       const e = event as MouseEvent
@@ -1704,41 +1740,46 @@ export default defineContentScript({
       // the media underneath it — the entrance would hide before the click.
       if (target?.tagName === 'XMD-OVERLAY') return
       const media = resolveHoverMedia(target, e.clientX, e.clientY)
-      const key = previewKeyFromMedia(media)
+      const key = previewKeyFromMedia(adapter, media)
       // TEMP hover diag — logs (once per element) WHY a hovered media does/doesn't
-      // resolve, but only while the grab modifier is held. REMOVE after debugging.
-      if (grabbing && target && target !== hoverProbeLast) {
-        hoverProbeLast = target
-        const src = media
-          ? isVideoElement(media)
-            ? media.poster || media.currentSrc || media.src
-            : media.currentSrc || media.src
-          : ''
-        let host = ''
-        let family: string | null = null
-        try {
-          const u = new URL(src)
-          host = u.hostname
-          family = u.pathname.split('/').find((p) => /^t\d+(\.\d+-\d+)?$/.test(p)) ?? null
-        } catch {
-          /* blob: or empty src */
+      // resolve, but only while the grab modifier is held. DEV-gated: the whole
+      // block (including the URL parse and JSON.stringify) is skipped in prod
+      // builds. REMOVE after debugging.
+      if (import.meta.env.DEV) {
+        if (grabbing && target && target !== hoverProbeLast) {
+          hoverProbeLast = target
+          const src = media
+            ? isVideoElement(media)
+              ? media.poster || media.currentSrc || media.src
+              : media.currentSrc || media.src
+            : ''
+          let host = ''
+          let family: string | null = null
+          try {
+            const u = new URL(src)
+            host = u.hostname
+            family = u.pathname.split('/').find((p) => /^t\d+(\.\d+-\d+)?$/.test(p)) ?? null
+          } catch {
+            /* blob: or empty src */
+          }
+          console.info(
+            '[XMD hover diag]',
+            JSON.stringify({
+              mediaTag: media?.tagName ?? null,
+              key,
+              host,
+              family,
+              srcKind: src.startsWith('blob:') ? 'blob:' : src.slice(0, 44),
+              targetTag: target.tagName,
+              targetClass:
+                typeof target.className === 'string' ? target.className.slice(0, 70) : '',
+              hasArticle: target.closest('article') !== null,
+              domCode: media
+                ? (adapter.postCodeFromElement?.(media, location.pathname) ?? null)
+                : null,
+            }),
+          )
         }
-        console.info(
-          '[XMD hover diag]',
-          JSON.stringify({
-            mediaTag: media?.tagName ?? null,
-            key,
-            host,
-            family,
-            srcKind: src.startsWith('blob:') ? 'blob:' : src.slice(0, 44),
-            targetTag: target.tagName,
-            targetClass: typeof target.className === 'string' ? target.className.slice(0, 70) : '',
-            hasArticle: target.closest('article') !== null,
-            domCode: media
-              ? (adapter.postCodeFromElement?.(media, location.pathname) ?? null)
-              : null,
-          }),
-        )
       }
       if (grabbing) focusHover(media, key)
       focusBadge(media, key)
@@ -1760,7 +1801,7 @@ export default defineContentScript({
         return
       }
       const media = resolveHoverMedia(top ?? null, lastX, lastY)
-      const key = previewKeyFromMedia(media)
+      const key = previewKeyFromMedia(adapter, media)
       if (media === badgeMedia && key === badge.key) {
         if (badge.phase !== 'hidden') rerender()
       } else if (badge.phase !== 'hidden') {
@@ -1817,7 +1858,7 @@ export default defineContentScript({
         const media = pointerSeen
           ? resolveHoverMedia(document.elementsFromPoint(lastX, lastY)[0] ?? null, lastX, lastY)
           : null
-        const key = previewKeyFromMedia(media)
+        const key = previewKeyFromMedia(adapter, media)
         hoverMedia = media
         hoverKey = key
         if (media && key) armHover(media, key)
@@ -1877,7 +1918,7 @@ export default defineContentScript({
       getBadgeRequestKey: () => badgeRequestKey,
       clearBadgeTimers,
       resetBadge,
-      previewKeyFromMedia,
+      previewKeyFromMedia: (media) => previewKeyFromMedia(adapter, media),
       getLauncher: () => launcher,
       setLauncher: (p) => {
         launcher = p
@@ -1904,12 +1945,7 @@ export default defineContentScript({
       message: unknown,
       _sender: unknown,
       sendResponse: (r: unknown) => void,
-    ): boolean | void => {
-      const tag = (message as Record<string, unknown>)?._tag
-      const handler = typeof tag === 'string' ? messageHandlers[tag] : undefined
-      if (handler === undefined) return
-      return handler(message, handlerDeps, sendResponse)
-    }
+    ): boolean | void => dispatchOverlayMessage(message, handlerDeps, sendResponse)
     browser.runtime.onMessage.addListener(handleRuntimeMessage)
 
     ctx.onInvalidated(() => {

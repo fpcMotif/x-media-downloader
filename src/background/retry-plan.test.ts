@@ -112,6 +112,58 @@ describe('makeRetryPlanApplier', () => {
       fn()
       expect(deps.fire).toHaveBeenCalledWith('m0')
     })
+
+    it('traces the reason as-is when no traceLabel override is given', async () => {
+      const deps = makeDeps()
+      const applier = makeRetryPlanApplier(deps)
+
+      await applier.apply(baseArgs)
+
+      expect(deps.trace).toHaveBeenCalledWith(
+        'interrupt-retry-scheduled',
+        expect.objectContaining({ detail: expect.stringContaining('NETWORK_FAILED in') }),
+      )
+    })
+
+    it('traceLabel overrides reason in the trace detail', async () => {
+      const deps = makeDeps()
+      const applier = makeRetryPlanApplier(deps)
+
+      await applier.apply({ ...baseArgs, traceLabel: 'start-failed' })
+
+      expect(deps.trace).toHaveBeenCalledWith(
+        'interrupt-retry-scheduled',
+        expect.objectContaining({ detail: expect.stringContaining('start-failed in') }),
+      )
+    })
+
+    it('invokes onScheduled synchronously before persistSnapshot, only on the schedule path', async () => {
+      const order: string[] = []
+      const deps = makeDeps({
+        persistSnapshot: async () => {
+          order.push('persistSnapshot')
+        },
+      })
+      const applier = makeRetryPlanApplier(deps)
+      const onScheduled = vi.fn<() => void>(() => order.push('onScheduled'))
+
+      await applier.apply({ ...baseArgs, onScheduled })
+
+      expect(onScheduled).toHaveBeenCalledTimes(1)
+      expect(order).toEqual(['onScheduled', 'persistSnapshot'])
+    })
+
+    it('does not invoke onScheduled on the exhausted path', async () => {
+      const deps = makeDeps({
+        interruptAttemptById: new Map([['m0', INTERRUPT_RETRY_MAX]]),
+      })
+      const applier = makeRetryPlanApplier(deps)
+      const onScheduled = vi.fn<() => void>()
+
+      await applier.apply({ ...baseArgs, onScheduled })
+
+      expect(onScheduled).not.toHaveBeenCalled()
+    })
   })
 
   describe('apply — exhausted path', () => {

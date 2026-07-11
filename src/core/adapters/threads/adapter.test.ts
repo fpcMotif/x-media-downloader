@@ -5,6 +5,7 @@ import {
   isTrackedThreadsResponseUrl,
   threadsAdapter,
 } from './adapter'
+import { META_CDN_HOSTS } from '../meta-shared/cdn'
 
 describe('THREADS_HOST_MATCH', () => {
   it('covers both the pre- and post-migration hosts', () => {
@@ -61,6 +62,11 @@ describe('threadsAdapter', () => {
   it('reports the threads platform tag and THREADS_HOST_MATCH host patterns', () => {
     expect(threadsAdapter.platform).toBe('threads')
     expect(threadsAdapter.hostMatch).toBe(THREADS_HOST_MATCH)
+  })
+
+  it('reports the shared Meta CDN hosts', () => {
+    expect(threadsAdapter.cdnHosts).toBe(META_CDN_HOSTS)
+    expect(threadsAdapter.cdnHosts).toEqual([{ host: 'cdninstagram.com', includeSubdomains: true }])
   })
 
   it('matchesUrl delegates to isThreadsUrl', () => {

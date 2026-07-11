@@ -13,7 +13,8 @@
  * returns the next state plus the I/O intents as plain data — the `OutcomeEffects`.
  * The background shell runs them in order (`applyOutcomeEffects`); that ordering and
  * the storage/broadcast I/O stay imperative (ADR-0014). aria2 hand-offs are terminal
- * at enqueue (ADR-0006) and never produce a Terminal Outcome.
+ * at enqueue (ADR-0006) and never produce a Terminal Outcome — their fan-out (and a
+ * failed-to-start's) is this module's sibling decision, `decideEnqueueOutcome`.
  *
  * Sidecar `.json` requests are not user media: they carry no badge and were never
  * mirrored at queue time, so they emit NO sync event and NO backlink. The history
@@ -75,5 +76,33 @@ export function decideTerminalOutcome(
     historyActions: [{ kind, requestId: id, at: now }],
     backlink: isSidecar(id) ? null : { _tag: 'TransferOutcome', requestId: id, outcome, at: now },
     persistSnapshot: true,
+  }
+}
+
+/** Everything one outcome terminal AT ENQUEUE (failed-to-start, aria2 hand-off —
+ *  no downloadId ever issued, so no Transfer Tracker entry either) must record.
+ *  No `backlink` field at all, unlike `OutcomeEffects`: ADR-0014 gives a badge
+ *  backlink only to a transfer that got a Download Handle, and this one never did
+ *  — the absence is structural, not a suppressed value. */
+export interface EnqueueOutcomeEffects {
+  readonly syncEvent: SyncEvent | null
+  readonly historyAction: HistoryAction
+}
+
+/** Same sidecar policy as `decideTerminalOutcome`: sync event suppressed, history
+ *  recorded regardless (sidecar history is an idempotent no-op downstream for an
+ *  id that was never queued). The metrics delta is the caller's `outcome` verbatim
+ *  — nothing to decide, so it is not echoed back here. */
+export function decideEnqueueOutcome(args: {
+  readonly id: string
+  readonly outcome: TerminalOutcome
+  readonly now: number
+  readonly deviceId: string
+}): EnqueueOutcomeEffects {
+  const { id, outcome, now, deviceId } = args
+  const kind = recordedKind(outcome)
+  return {
+    syncEvent: isSidecar(id) ? null : outcomeEvent(id, kind, deviceId, now),
+    historyAction: { kind, requestId: id, at: now },
   }
 }

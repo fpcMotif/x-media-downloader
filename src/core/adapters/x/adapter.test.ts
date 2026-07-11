@@ -1,11 +1,19 @@
 import { describe, it, expect } from 'vitest'
-import { xAdapter } from './adapter'
+import { xAdapter, X_CDN_HOSTS } from './adapter'
 import { X_HOST_MATCH } from './index'
 
 describe('xAdapter', () => {
   it('reports the x platform tag and X_HOST_MATCH host patterns', () => {
     expect(xAdapter.platform).toBe('x')
     expect(xAdapter.hostMatch).toBe(X_HOST_MATCH)
+  })
+
+  it('reports X_CDN_HOSTS, both exact-only (no subdomains)', () => {
+    expect(xAdapter.cdnHosts).toBe(X_CDN_HOSTS)
+    expect(xAdapter.cdnHosts).toEqual([
+      { host: 'pbs.twimg.com', includeSubdomains: false },
+      { host: 'video.twimg.com', includeSubdomains: false },
+    ])
   })
 
   it('matchesUrl delegates to isXUrl', () => {

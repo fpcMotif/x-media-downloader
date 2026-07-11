@@ -1,10 +1,12 @@
 import { Data } from 'effect'
 import { bindFetch } from '../fetch'
+import { cdnHostsForAllAdapters } from '../adapters/registry'
 
 /**
  * SSRF guard for the cloud-destinations byte path (ADR-0013 §5.3). The extension
- * (and any server-side fetcher) must dereference *only* X's public media CDNs and
- * nothing else — never an internal address reached via a crafted or redirected URL.
+ * (and any server-side fetcher) must dereference *only* a registered platform's
+ * public media CDN and nothing else — never an internal address reached via a
+ * crafted or redirected URL.
  *
  * `assertAllowedMediaUrl` is a pure check (no I/O); `guardedFetch` is the single
  * egress wrapper that re-runs the check on every redirect hop. Validate both a
@@ -15,8 +17,21 @@ export class UnsafeUrlError extends Data.TaggedError('UnsafeUrlError')<{
   readonly reason: string
 }> {}
 
-/** Exact hostnames — X's public media CDNs. Suffix/subdomain look-alikes are rejected. */
-const ALLOWED_HOSTS: ReadonlySet<string> = new Set(['pbs.twimg.com', 'video.twimg.com'])
+/** The adapter-registry-derived CDN allow-list (docs/adr/0019) — the single
+ *  source of truth every registered platform's `cdnHosts` feeds into. Adding
+ *  a platform, or a CDN host to an existing platform, widens this set purely
+ *  by editing that adapter; nothing here needs to change. */
+const ALLOWED_CDN_HOSTS = cdnHostsForAllAdapters()
+
+/** `host` is on the allow-list iff it exactly matches an entry's `host`, or
+ *  that entry opts into `includeSubdomains` AND `host` is a dot-anchored
+ *  subdomain of it (`sub.host`, never a suffix look-alike like
+ *  `evilhost.com` or `host.evil.com`). */
+function isAllowedCdnHost(host: string): boolean {
+  return ALLOWED_CDN_HOSTS.some(
+    (entry) => host === entry.host || (entry.includeSubdomains && host.endsWith(`.${entry.host}`)),
+  )
+}
 
 /** Default redirect-hop ceiling for {@link guardedFetch}. */
 export const MAX_REDIRECTS = 5
@@ -71,7 +86,7 @@ export function assertAllowedMediaUrl(raw: string): URL {
       isPrivateIpv4(host) ? 'private/link-local ip' : 'ip-literal host not allowed',
     )
   }
-  if (!ALLOWED_HOSTS.has(host)) return reject(raw, `host not on allow-list: ${host}`)
+  if (!isAllowedCdnHost(host)) return reject(raw, `host not on allow-list: ${host}`)
   return u
 }
 

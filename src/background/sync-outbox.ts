@@ -15,6 +15,7 @@ import { convexOriginPattern, makeConvexHttpPort } from '../core/sync/convex'
 import { classifySyncError, describeSyncOk, type SyncStatus } from '../core/sync/status'
 import { makeSerialQueue, type SerialQueue } from '../core/serial-queue'
 import { isSyncConfigured } from './sync-config'
+import type { ConvexPort } from './convex-port'
 
 /** Durable outbox storage seam (`local:syncOutbox` by default, ADR-0005). */
 export interface OutboxStorage {
@@ -27,11 +28,6 @@ export interface OutboxStorage {
 export interface StatusStore {
   get(): Promise<SyncStatus | null>
   set(value: SyncStatus | null): Promise<void>
-}
-
-/** Convex transport seam — one `mutation` call, built per drain from settings. */
-export interface ConvexPort {
-  mutation(name: string, args: unknown): Promise<unknown>
 }
 
 /** Host-permission probe seam (`browser.permissions.contains` by default). Unlike an
