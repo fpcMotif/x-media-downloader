@@ -4,6 +4,7 @@ import {
   FETCHED_HOST_PATTERNS,
   isAllowedContentType,
   mimeBase,
+  ensureFetchedPermissions,
   makeFetchedStrategy,
   makeFetchPort,
   makeOffscreenPort,
@@ -526,5 +527,71 @@ describe('makeOffscreenPort', () => {
 
     expect(createDocument).toHaveBeenCalledTimes(2)
     expect(closeDocument).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('ensureFetchedPermissions', () => {
+  it('returns true if port.contains returns true', async () => {
+    const { permissions, permissionCalls } = makePorts({
+      permissions: {
+        contains: async () => true,
+        request: async (pr) => {
+          permissionCalls.push({
+            ...(pr.permissions ? { permissions: [...pr.permissions] } : {}),
+            ...(pr.origins ? { origins: [...pr.origins] } : {}),
+          })
+          return true
+        },
+      },
+    })
+    const result = await ensureFetchedPermissions(permissions)
+    expect(result).toBe(true)
+    expect(permissionCalls).toEqual([])
+  })
+
+  it('requests permissions and returns true if port.contains returns false and request returns true', async () => {
+    const { permissions, permissionCalls } = makePorts({
+      permissions: {
+        contains: async () => false,
+        request: async (pr) => {
+          permissionCalls.push({
+            ...(pr.permissions ? { permissions: [...pr.permissions] } : {}),
+            ...(pr.origins ? { origins: [...pr.origins] } : {}),
+          })
+          return true
+        },
+      },
+    })
+    const result = await ensureFetchedPermissions(permissions)
+    expect(result).toBe(true)
+    expect(permissionCalls).toEqual([
+      {
+        permissions: ['offscreen'],
+        origins: FETCHED_HOST_PATTERNS,
+      },
+    ])
+  })
+
+  it('returns false if port.contains returns false and request returns false', async () => {
+    const { permissions, permissionCalls } = makePorts({
+      permissions: {
+        contains: async () => false,
+        request: async (pr) => {
+          permissionCalls.push({
+            ...(pr.permissions ? { permissions: [...pr.permissions] } : {}),
+            ...(pr.origins ? { origins: [...pr.origins] } : {}),
+          })
+          return false
+        },
+      },
+    })
+    const result = await ensureFetchedPermissions(permissions)
+    expect(result).toBe(false)
+    expect(permissionCalls).toEqual([
+      {
+        permissions: ['offscreen'],
+        origins: FETCHED_HOST_PATTERNS,
+      },
+    ])
   })
 })
