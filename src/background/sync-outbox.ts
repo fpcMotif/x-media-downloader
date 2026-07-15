@@ -1,6 +1,5 @@
-import { Effect, Option } from 'effect'
+import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import { makeFetchServiceLive } from '../core/fetch-service'
 import type { Settings } from '../core/schema'
 import type { SyncEvent } from '../core/sync/events'
 import {
@@ -11,7 +10,7 @@ import {
   markFailed,
   takeBatch,
 } from '../core/sync/outbox'
-import { convexOriginPattern, makeConvexHttpPort } from '../core/sync/convex'
+import { convexOriginPattern, makeConvexPromisePort } from '../core/sync/convex'
 import { classifySyncError, describeSyncOk, type SyncStatus } from '../core/sync/status'
 import { makeSerialQueue, type SerialQueue } from '../core/serial-queue'
 import { isSyncConfigured } from './sync-config'
@@ -84,22 +83,12 @@ const defaultStatusStore = (): StatusStore => {
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
-/** The live Convex transport: the shared HTTP port over a bound fetch. The port reads
- *  FetchService from R (ADR-0017); the boundary is crossed at this airlock so the drain
- *  loop stays a plain Promise and a tagged error reverts to the rejection classifySyncError
- *  already handles. */
+/** The live Convex transport: the shared Promise airlock (core/sync/convex.ts) over the
+ *  bound fetch, built per drain from settings. */
 const defaultConnect =
   (fetchImpl: typeof fetch) =>
-  (settings: Settings): ConvexPort => {
-    const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl })
-    const layer = makeFetchServiceLive(fetchImpl)
-    return {
-      mutation: (name, args) =>
-        Effect.runPromise(
-          port.mutation(name, args as Record<string, unknown>).pipe(Effect.provide(layer)),
-        ),
-    }
-  }
+  (settings: Settings): ConvexPort =>
+    makeConvexPromisePort({ deploymentUrl: settings.convexUrl }, fetchImpl)
 
 /** The live host-permission probe (`browser.permissions`). */
 const defaultPermissions = (): PermissionsPort => ({

@@ -3,13 +3,19 @@ import { Effect, Layer, Option } from 'effect'
 import {
   buildFunctionCall,
   convexOriginPattern,
+  ConvexFunctionError,
   makeConvexHttpPort,
+  makeConvexPromisePort,
   queryDownloadedAmong,
   queryDownloadedMediaIdsAmong,
   type ConvexPort,
 } from './convex'
 import { classifySyncError } from './status'
 import { FetchService, FetchError } from '../fetch-service'
+
+/** A Promise `fetch` (what the airlock takes, vs the FetchService layer above). */
+const promiseFetch = (respond: (url: string, init?: RequestInit) => Response): typeof fetch =>
+  (async (url: string | URL, init?: RequestInit) => respond(String(url), init)) as typeof fetch
 
 const recordingFetch = (respond: (url: string, init?: RequestInit) => Response) => {
   const calls: { url: string; init: RequestInit | undefined }[] = []
@@ -234,6 +240,39 @@ describe('makeConvexHttpPort', () => {
         'sync:downloadedAmong',
       ),
     ).rejects.toThrow(/convex: malformed response/)
+  })
+})
+
+describe('makeConvexPromisePort', () => {
+  it('resolves with the success envelope value', async () => {
+    const port = makeConvexPromisePort(
+      { deploymentUrl: 'https://x.convex.cloud/' },
+      promiseFetch(
+        () =>
+          ({
+            ok: true,
+            json: async () => ({ status: 'success', value: { inserted: 2 } }),
+          }) as Response,
+      ),
+    )
+    expect(await port.mutation('sync:recordEvents', { events: [] })).toEqual({ inserted: 2 })
+  })
+
+  it('rejects with the same tagged error makeConvexHttpPort produces, so classifySyncError switches on it', async () => {
+    const port = makeConvexPromisePort(
+      { deploymentUrl: 'https://x.convex.cloud' },
+      promiseFetch(
+        () =>
+          ({
+            ok: true,
+            json: async () => ({ status: 'error', errorMessage: 'unauthorized' }),
+          }) as Response,
+      ),
+    )
+    const err = await port.mutation('sync:recordEvents', {}).catch((e) => e)
+    expect(err).toBeInstanceOf(ConvexFunctionError)
+    expect((err as { _tag: string })._tag).toBe('ConvexFunctionError')
+    expect(classifySyncError(err)).toMatch(/Secret rejected/)
   })
 })
 

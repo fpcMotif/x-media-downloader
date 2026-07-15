@@ -5,7 +5,7 @@
  * convex SDK and no WebSocket client inside the MV3 service worker (ADR-0009).
  */
 import { Data, Effect, Option } from 'effect'
-import { FetchService, FetchError } from '../fetch-service'
+import { FetchService, FetchError, makeFetchServiceLive } from '../fetch-service'
 
 /**
  * A non-2xx answer from the deployment edge. `status` is the HTTP code so the
@@ -120,6 +120,24 @@ export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): Con
   return {
     mutation: (path, args) => call('mutation', path, args),
     query: (path, args) => call('query', path, args),
+  }
+}
+
+/** The Effect→Promise airlock: the canonical live implementation of the background's
+ *  `ConvexPort` type. `fetchImpl` must be a BOUND fetch (MV3 illegal-invocation — see
+ *  core/fetch.ts); the port's tagged errors surface as the Promise rejection, exactly
+ *  what classifySyncError consumes. */
+export function makeConvexPromisePort(
+  cfg: { readonly deploymentUrl: string },
+  fetchImpl: typeof fetch,
+): { mutation: (name: string, args: unknown) => Promise<unknown> } {
+  const port = makeConvexHttpPort(cfg)
+  const layer = makeFetchServiceLive(fetchImpl)
+  return {
+    mutation: (name, args) =>
+      Effect.runPromise(
+        port.mutation(name, args as Record<string, unknown>).pipe(Effect.provide(layer)),
+      ),
   }
 }
 
