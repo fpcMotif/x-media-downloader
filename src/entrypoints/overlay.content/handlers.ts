@@ -11,6 +11,7 @@ import { Option, Result, Schema } from 'effect'
 import { resolveOutcome, type BadgeState } from '../../core/badge'
 import { resolveOutcomeAll, type LauncherPhase } from '../../core/launcher'
 import type { PlatformAdapter } from '../../core/adapters/types'
+import type { HoverMediaElement } from '../../core/adapters/hover-resolve'
 import { safeSend } from '../../core/messaging'
 import { findFreshMediaItem } from '../../core/download/media-url-refresh'
 import { makeListClear } from '../../core/clear/list-clear'
@@ -34,7 +35,6 @@ import {
   ClearDetectedMediaRequest,
 } from '../../core/schema'
 
-type HoverMediaElement = HTMLImageElement | HTMLVideoElement
 type DetectionStore = ReturnType<typeof makeDetectionStore>
 
 /**

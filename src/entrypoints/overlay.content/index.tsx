@@ -1,12 +1,18 @@
 import './style.css'
 import { render } from 'preact'
 import { adapterForHostname, ALL_ADAPTERS } from '../../core/adapters/registry'
-import type { PlatformAdapter } from '../../core/adapters/types'
 import { makeDetectionStore, postGrabItems } from '../../core/adapters/detection-store'
 import { harvestTweets } from '../../core/capture/harvest'
 import type { Source, TweetRecord } from '../../core/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
-import { videoPosterUrl, VIDEO_PLAYER_SEL, VIDEO_PREVIEW_SECTIONS } from '../../core/adapters/x/dom'
+import { VIDEO_PREVIEW_SECTIONS } from '../../core/adapters/x/dom'
+import {
+  isVideoElement,
+  mediaStillUnderPointer,
+  previewKeyFromMedia,
+  resolveHoverMedia,
+  type HoverMediaElement,
+} from '../../core/adapters/hover-resolve'
 import {
   idleQuickGrab,
   pressModifier,
@@ -91,8 +97,6 @@ interface Rect {
   readonly width: number
   readonly height: number
 }
-
-type HoverMediaElement = HTMLImageElement | HTMLVideoElement
 
 /** Verbose clear-on-save tracing → the X PAGE console (content-script world).
  *  Open DevTools on the X tab to watch the un-bookmark/un-like decision live.
@@ -365,129 +369,9 @@ const GRAB_CURSOR_CSS = `${[
   ]),
 ].join(',')}{cursor:copy}`
 
-const isImageElement = (el: Element): el is HTMLImageElement => el.tagName === 'IMG'
-const isVideoElement = (el: Element): el is HTMLVideoElement => el.tagName === 'VIDEO'
-
 const rectOf = (el: Element): Rect => {
   const r = el.getBoundingClientRect()
   return { top: r.top, left: r.left, width: r.width, height: r.height }
-}
-
-/**
- * A media element inside `container` that's invisible to `elementsFromPoint`
- * because it's `pointer-events: none` — the real photo/video pixels are still
- * there, just non-interactive. LIVE-VERIFIED 2026-07-05 (Chrome Canary,
- * Threads' multi-column card layout — e.g. the Saved/Liked columns): the
- * rendered `<img>` is `position:absolute; pointer-events:none`, so a hovered
- * point resolves to its plain `<div>` wrapper instead — `elementsFromPoint`
- * excludes `pointer-events:none` elements per spec, so the `<img>` never
- * appeared in the hit-test stack at all, and `mediaAtPoint`'s stack search
- * came up empty on every real Threads card despite the photo being right
- * there (this is what "hover-grab doesn't work on Threads" actually was).
- * Instagram's own single-column feed `<img>` has no such CSS (confirmed the
- * same visit) and is hit-tested normally, so this is a no-op there — a
- * platform DIFFERENCE, not a platform CHECK, same posture as `videoAnchorAt`
- * below (X's hidden `<video>`, reached through its player container instead
- * of the hit-test stack). Only trusts a candidate whose OWN rect covers
- * `(x, y)`, so a large container that merely happens to also hold an
- * unrelated image elsewhere is never mistaken for the hovered one.
- */
-const nonInteractiveMediaAt = (
-  container: Element,
-  x: number,
-  y: number,
-): HoverMediaElement | null => {
-  for (const el of container.querySelectorAll('img,video')) {
-    if (!isImageElement(el) && !isVideoElement(el)) continue
-    if (getComputedStyle(el).pointerEvents !== 'none') continue
-    const r = el.getBoundingClientRect()
-    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return el
-  }
-  return null
-}
-
-/**
- * The topmost hoverable media element in the hit-test `stack`, unless something
- * visually occludes it: this extension's own shadow host (launcher pill / grab
- * ring), or a modal layer the media sits outside of (lightbox backdrop, compose
- * scrim — detected via `[aria-modal="true"], [role="dialog"]`, the same
- * selector `x/reveal.ts`'s `REVEAL_SCOPE_SEL` and this file's own lightbox-badge
- * check already trust as X's canonical "is this actually a modal" signal). X's
- * transparent hit-target divs over their own media pass through. `stack` is
- * the `elementsFromPoint` result for the point; `x`/`y` are that same point,
- * threaded through to {@link nonInteractiveMediaAt}.
- *
- * Deliberately does NOT bail on an ad-hoc "background alpha looks opaque-ish"
- * heuristic (a prior version did, at >= 0.5): LIVE-VERIFIED 2026-07-05 on a
- * real Instagram Reels permalink (instagram.com/reel/DaHL9NxPBWz/) that a
- * legitimate, see-through caption-legibility scrim over the video player is
- * `rgba(0,0,0,0.5)` — exactly the old threshold — which silently blocked
- * hover-grab on every Reel with that (very common) UI treatment, despite the
- * video being fully visible to the user. Real hidden-behind-a-modal cases are
- * already caught by the explicit ARIA check above; a translucent decorative
- * layer sitting on top of clearly-visible media is not equivalent to a real
- * opaque cover and should never veto a resolution by itself.
- */
-const mediaAtPoint = (
-  stack: readonly Element[],
-  x: number,
-  y: number,
-): HoverMediaElement | null => {
-  let at = -1
-  let media: HoverMediaElement | null = null
-  for (const [i, el] of stack.entries()) {
-    if (isImageElement(el) || isVideoElement(el)) {
-      at = i
-      media = el
-      break
-    }
-    const reach = nonInteractiveMediaAt(el, x, y)
-    if (reach) {
-      at = i
-      media = reach
-      break
-    }
-  }
-  if (at < 0 || !media) return null
-  for (const el of stack.slice(0, at)) {
-    if (el.tagName === 'XMD-OVERLAY') return null
-    if (el.contains(media)) continue
-    const modal = el.closest('[aria-modal="true"], [role="dialog"]')
-    if (modal && !modal.contains(media)) return null
-  }
-  return media
-}
-
-/** The `<video>` for the X video player under the cursor, or null. The real
- *  `<video>` is `visibility:hidden`, so it never appears in `mediaAtPoint`; we
- *  reach it through its `VIDEO_PLAYER_SEL` container instead. `stack` is the
- *  shared `elementsFromPoint` result, walked a single time per frame. */
-const videoAnchorAt = (
-  target: Element | null,
-  stack: readonly Element[],
-): HTMLVideoElement | null => {
-  const fromTarget = target?.closest(VIDEO_PLAYER_SEL)?.querySelector('video')
-  if (fromTarget) return fromTarget
-  for (const el of stack) {
-    if (el.tagName === 'XMD-OVERLAY') return null
-    const video = el.closest(VIDEO_PLAYER_SEL)?.querySelector('video')
-    if (video) return video
-  }
-  return null
-}
-
-/** A real visible `<img>`/`<video>` under the cursor, else the hovered X video
- *  player. Walks the `elementsFromPoint(x, y)` stack ONCE and threads it to both
- *  `mediaAtPoint` and `videoAnchorAt`. */
-const resolveHoverMedia = (
-  target: Element | null,
-  x: number,
-  y: number,
-): HoverMediaElement | null => {
-  const direct = target?.closest('img,video') as HoverMediaElement | null
-  if (direct) return direct
-  const stack = document.elementsFromPoint(x, y)
-  return mediaAtPoint(stack, x, y) ?? videoAnchorAt(target, stack)
 }
 
 // A reloaded/updated extension orphans this content script: the runtime channel
@@ -691,60 +575,6 @@ function PhaseGlyphs({ block }: { readonly block: 'xmd-badge' | 'xmd-launcher' }
       </span>
     </>
   )
-}
-
-// Preview src for a hovered media element: a video's poster (X only — no
-// platform besides X has a DOM-derivable video identity; Instagram/Threads
-// stay tee-map-only for video, see the design's Honest Gaps). Off-X this is
-// inert rather than unreachable-by-luck: `VIDEO_PLAYER_SEL`
-// (`[data-testid="videoPlayer"]` etc.) never matches Instagram/Threads
-// markup, so `video.closest(...)` finds nothing, and `videoPosterUrl`'s own
-// `pbs.twimg.com`-gated check independently also rejects any cdninstagram
-// poster even if one were found — so calling it unconditionally here is a
-// deliberate no-op off-X, not an omission.
-const previewSrcFromMedia = (media: HoverMediaElement): string =>
-  isVideoElement(media)
-    ? (videoPosterUrl(media) ?? (media.poster || media.currentSrc || media.src))
-    : media.currentSrc || media.src
-
-// Dispatches through the boot-resolved adapter's own `mediaKeyFromUrl` —
-// for X this is the same two-step gate (`isGrabbableMediaPreviewUrl` then
-// `mediaKeyFromUrl`) this function ran inline before, just relocated so it
-// takes `adapter` explicitly (module scope, no closure); for Instagram/Threads
-// it resolves a hovered `<img>` to the same basename key the tee derives
-// (photos only — a hovered `<video>`'s `blob:`/empty src never passes the
-// platform's own grabbability gate, so it falls through to null).
-//
-// For a video with no URL-derivable key (Instagram/Threads' blob: src, no
-// poster), fall back to a DOM-derived post-level key so the hover/badge
-// state machine has a non-null, stable `key` to arm on at all — the
-// adapter's own resolveHoverItem/canResolveHoverItem then decide whether
-// that key ACTUALLY resolves to a tee-detected single-video item (v1
-// scope: exactly one video per post — see
-// core/adapters/meta-shared/post-anchor.ts's module doc). X is
-// unaffected: `previewSrcFromMedia`'s poster-first branch already yields a
-// real twimg key for X video, so `mediaKeyFromUrl` never returns null
-// there and this fallback never triggers off-X callers reaching it.
-const previewKeyFromMedia = (
-  adapter: PlatformAdapter,
-  media: HoverMediaElement | null,
-): string | null => {
-  if (!media) return null
-  const urlKey = adapter.mediaKeyFromUrl(previewSrcFromMedia(media))
-  if (urlKey) return urlKey
-  return isVideoElement(media)
-    ? (adapter.postKeyFromVideoElement?.(media, location.pathname) ?? null)
-    : null
-}
-
-/** Is `media` still under the pointer? A hidden X `<video>` is never in
- *  `elementsFromPoint`, so accept when the cursor is still over its player. */
-const mediaStillUnderPointer = (media: HoverMediaElement, x: number, y: number): boolean => {
-  const stack = document.elementsFromPoint(x, y)
-  if (stack.includes(media)) return true
-  if (!isVideoElement(media)) return false
-  const container = media.closest(VIDEO_PLAYER_SEL)
-  return !!container && stack.some((el) => container.contains(el))
 }
 
 /**
@@ -1037,8 +867,8 @@ export default defineContentScript({
     // player container by `mediaStillUnderPointer`.
     const holdsKey = (m: HoverMediaElement, key: string): boolean =>
       m.isConnected &&
-      previewKeyFromMedia(adapter, m) === key &&
-      mediaStillUnderPointer(m, lastX, lastY)
+      previewKeyFromMedia(adapter, m, location.pathname) === key &&
+      mediaStillUnderPointer(m, document.elementsFromPoint(lastX, lastY))
 
     // The media to grab once the dwell elapses. Prefer the armed node, but X's
     // timeline is virtualized: it can recycle that exact node out from under the
@@ -1048,11 +878,8 @@ export default defineContentScript({
     // matches. Null ⇒ the media truly moved on; drop the grab.
     const liveGrabTarget = (armed: HoverMediaElement, key: string): HoverMediaElement | null => {
       if (holdsKey(armed, key)) return armed
-      const live = resolveHoverMedia(
-        document.elementsFromPoint(lastX, lastY)[0] ?? null,
-        lastX,
-        lastY,
-      )
+      const stack = document.elementsFromPoint(lastX, lastY)
+      const live = resolveHoverMedia(stack[0] ?? null, stack, lastX, lastY)
       return live && holdsKey(live, key) ? live : null
     }
 
@@ -1321,7 +1148,7 @@ export default defineContentScript({
       if (!media || !key || next === badge) return
       // The node may have been recycled or detached during the entrance (X's
       // timeline is virtualized) — bail unless it is still the same media.
-      if (!media.isConnected || previewKeyFromMedia(adapter, media) !== key) {
+      if (!media.isConnected || previewKeyFromMedia(adapter, media, location.pathname) !== key) {
         resetBadge()
         rerender()
         return
@@ -1739,8 +1566,9 @@ export default defineContentScript({
       // Hovering this extension's own UI (the badge) must not read as leaving
       // the media underneath it — the entrance would hide before the click.
       if (target?.tagName === 'XMD-OVERLAY') return
-      const media = resolveHoverMedia(target, e.clientX, e.clientY)
-      const key = previewKeyFromMedia(adapter, media)
+      const stack = document.elementsFromPoint(e.clientX, e.clientY)
+      const media = resolveHoverMedia(target, stack, e.clientX, e.clientY)
+      const key = previewKeyFromMedia(adapter, media, location.pathname)
       // TEMP hover diag — logs (once per element) WHY a hovered media does/doesn't
       // resolve, but only while the grab modifier is held. DEV-gated: the whole
       // block (including the URL parse and JSON.stringify) is skipped in prod
@@ -1795,13 +1623,14 @@ export default defineContentScript({
       if (!pointerSeen || (!grab.active && badge.phase === 'hidden')) return
       // Pointer parked on our own badge: the media underneath didn't change,
       // only its rect did — refresh in place rather than re-hit-testing.
-      const top = document.elementsFromPoint(lastX, lastY)[0] as Element | undefined
+      const stack = document.elementsFromPoint(lastX, lastY)
+      const top = stack[0] as Element | undefined
       if (top?.tagName === 'XMD-OVERLAY') {
         if (badge.phase !== 'hidden') rerender()
         return
       }
-      const media = resolveHoverMedia(top ?? null, lastX, lastY)
-      const key = previewKeyFromMedia(adapter, media)
+      const media = resolveHoverMedia(top ?? null, stack, lastX, lastY)
+      const key = previewKeyFromMedia(adapter, media, location.pathname)
       if (media === badgeMedia && key === badge.key) {
         if (badge.phase !== 'hidden') rerender()
       } else if (badge.phase !== 'hidden') {
@@ -1855,10 +1684,12 @@ export default defineContentScript({
         resetBadge()
         // Arm the media under the cursor — but only if a real pointer position is
         // known (no mousemove yet ⇒ lastX/lastY are still 0,0, not a real hover).
-        const media = pointerSeen
-          ? resolveHoverMedia(document.elementsFromPoint(lastX, lastY)[0] ?? null, lastX, lastY)
-          : null
-        const key = previewKeyFromMedia(adapter, media)
+        let media: HoverMediaElement | null = null
+        if (pointerSeen) {
+          const stack = document.elementsFromPoint(lastX, lastY)
+          media = resolveHoverMedia(stack[0] ?? null, stack, lastX, lastY)
+        }
+        const key = previewKeyFromMedia(adapter, media, location.pathname)
         hoverMedia = media
         hoverKey = key
         if (media && key) armHover(media, key)
@@ -1918,7 +1749,7 @@ export default defineContentScript({
       getBadgeRequestKey: () => badgeRequestKey,
       clearBadgeTimers,
       resetBadge,
-      previewKeyFromMedia: (media) => previewKeyFromMedia(adapter, media),
+      previewKeyFromMedia: (media) => previewKeyFromMedia(adapter, media, location.pathname),
       getLauncher: () => launcher,
       setLauncher: (p) => {
         launcher = p
