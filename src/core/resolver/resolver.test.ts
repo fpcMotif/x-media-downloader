@@ -132,7 +132,7 @@ describe('resolveTweetMedia', () => {
   })
 
   it('derives an id and jpg fallback ext from a dot-less, query-less media url', () => {
-    // basenameId/extFromUrl take their else branches when the url has no dot at all.
+    // mediaBasenameKey/extFromUrl take their no-extension branch when the url has no dot.
     const items = resolveTweetMedia({
       tweetId: '7',
       handle: 'carol',
@@ -158,6 +158,41 @@ describe('resolveTweetMedia', () => {
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({ type: 'video', url: 'https://v/nobr.mp4' })
     expect('bitrate' in items[0]!).toBe(false)
+  })
+
+  it('skips a photo whose upgraded url has an empty basename instead of pooling it under id "" (ADR-0016)', () => {
+    // A degenerate url ending in `/` yielded id '' on the tee path but null on the hover
+    // path — two ids for one media. The canonical rule is null-on-empty, so the resolver
+    // SKIPS the entry rather than minting a phantom '' item that dedups all such garbage.
+    const items = resolveTweetMedia({
+      tweetId: '1',
+      handle: 'a',
+      media: [
+        { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/' },
+        { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/REAL.jpg' },
+      ],
+    })
+    expect(items).toHaveLength(1)
+    expect(items[0]!.id).toBe('REAL')
+  })
+
+  it('skips a video whose chosen variant url has an empty basename (ADR-0016 skip)', () => {
+    const items = resolveTweetMedia({
+      tweetId: '1',
+      handle: 'a',
+      media: [
+        {
+          type: 'video',
+          media_url_https: 'https://pbs.twimg.com/x/T.jpg',
+          video_info: {
+            variants: [{ content_type: 'video/mp4', bitrate: 1, url: 'https://video.twimg.com/' }],
+          },
+        },
+        { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/REAL.jpg' },
+      ],
+    })
+    expect(items).toHaveLength(1)
+    expect(items[0]!.id).toBe('REAL')
   })
 
   it('de-duplicates repeated media by id', () => {

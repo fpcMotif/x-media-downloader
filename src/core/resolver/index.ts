@@ -1,4 +1,5 @@
 import { Option } from 'effect'
+import { mediaBasenameKey } from '../media-key'
 import type { MediaItem } from '../schema'
 
 export interface Variant {
@@ -24,18 +25,9 @@ export interface RawTweet {
 // part of the generalized MediaItem contract) — only the MediaItem literals
 // built below use the generalized `postId`/`author`/`platform`.
 
-/* v8 ignore next -- String.split always yields a non-empty array; `?? url` is unreachable */
-const stripQuery = (url: string): string => url.split('?')[0] ?? url
-
-function basenameId(url: string): string {
-  const path = stripQuery(url)
-  const base = path.slice(path.lastIndexOf('/') + 1)
-  const dot = base.lastIndexOf('.')
-  return dot >= 0 ? base.slice(0, dot) : base
-}
-
 function extFromUrl(url: string, fallback: string): string {
-  const path = stripQuery(url)
+  /* v8 ignore next -- String.split always yields a non-empty array; `?? url` is unreachable */
+  const path = url.split('?')[0] ?? url
   const dot = path.lastIndexOf('.')
   return dot >= 0 ? path.slice(dot + 1) : fallback
 }
@@ -53,8 +45,9 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
       const url = upgradePhotoUrl(m.media_url_https)
       // Identity is the media key (the resolved-url basename) — the SAME value the
       // tee, the DOM resolver, and syndication each derive for this media, so one
-      // media is one item no matter which path saw it (ADR-0016).
-      const id = basenameId(url)
+      // media is one item no matter which path saw it (ADR-0016, core/media-key.ts).
+      const id = mediaBasenameKey(url)
+      if (id === null) return
       if (seen.has(id)) return
       seen.add(id)
       out.push({
@@ -72,7 +65,8 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
     }
     const variant = m.video_info ? pickVideoVariant(m.video_info.variants) : Option.none()
     if (Option.isNone(variant)) return
-    const id = basenameId(variant.value.url)
+    const id = mediaBasenameKey(variant.value.url)
+    if (id === null) return
     if (seen.has(id)) return
     seen.add(id)
     out.push({

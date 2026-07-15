@@ -1,3 +1,4 @@
+import { mediaBasenameKey } from '../../media-key'
 import type { MediaItem } from '../../schema'
 import type { Registry } from '../../selection'
 
@@ -24,10 +25,7 @@ export function mediaKeyFromUrl(url: string): string | null {
   // Exact host or a real `.twimg.com` subdomain — `endsWith('twimg.com')` alone
   // would also accept a spoofed `evil-twimg.com`.
   if (u.hostname !== 'pbs.twimg.com' && !u.hostname.endsWith('.twimg.com')) return null
-  const base = lastSegment(u.pathname)
-  const dot = base.lastIndexOf('.')
-  const key = dot >= 0 ? base.slice(0, dot) : base
-  return key.length > 0 ? key : null
+  return mediaBasenameKey(u.pathname)
 }
 
 /**
