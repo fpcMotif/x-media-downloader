@@ -34,7 +34,7 @@ const SWEEP_WORKLIST_MAX = 5000
 
 /** Local clock port for the settle-confirm window — smallest interface for the
  *  one call site below (schedule-only; the window never cancels). Kept local to
- *  this module, not shared: Clock Ports are per-module shapes (see retry-plan.ts's
+ *  this module, not shared: Clock Ports are per-module shapes (see core/download/retry-queue.ts's
  *  RetryClock for the sibling instance in this same SW context). */
 export interface SettleClock {
   readonly schedule: (fn: () => void, ms: number) => void

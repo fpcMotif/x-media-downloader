@@ -86,7 +86,7 @@ import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator } from '../background/clear-coordinator'
-import { makeRetryPlanApplier } from '../background/retry-plan'
+import { makeRetryQueue } from '../core/download/retry-queue'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
 import {
@@ -149,17 +149,10 @@ const requestMetaById = new Map<string, RequestMeta>()
 const requestMetaItem = storage.defineItem<unknown>('session:requestMeta', {
   fallback: emptyRequestMetaStore,
 })
-const interruptAttemptById = new Map<string, number>()
-const pendingRetries = new Map<string, PendingInterruptRetry>()
-
 const retryQueueItem = storage.defineItem<ReadonlyArray<PendingInterruptRetry>>(
   'session:interruptRetries',
   { fallback: [] },
 )
-
-const syncPendingRetries = (): void => {
-  void retryQueueItem.setValue([...pendingRetries.values()])
-}
 
 // Durable in-flight browser-transfer ledger (Transfer Tracker). The in-memory
 // `requestIdByDownloadId` correlation dies with the SW (ADR-0002); this survives
@@ -184,22 +177,14 @@ const resolveRetryUrl = async (meta: RequestMeta): Promise<string> => {
   return fresh ?? meta.url
 }
 
-// `clearInterruptRetryState` needs `applier.cancel`, but `applier` isn't
-// constructed until after `failBrowserDownload`/`traceBackground`/`persistSnapshot`
-// are all declared (it takes them by direct reference, not a deferred closure, so
-// unlike `fire` it CANNOT be a forward reference — TDZ). `applier` itself is built
-// further down, right before `fireInterruptRetry`; `clearInterruptRetryState` is
-// only ever CALLED at runtime (never at module-eval time), so referencing
-// `applier` here before its textual declaration is safe for the same reason `fire`
-// is safe below.
+// `retryQueue` is built further down (its deps aren't declared yet — TDZ), but
+// `clearInterruptRetryState` is only ever CALLED at runtime, never at
+// module-eval time, so the forward reference is safe.
 const clearInterruptRetryState = (id: string): void => {
-  applier.cancel(id)
-  pendingRetries.delete(id)
-  interruptAttemptById.delete(id)
+  retryQueue.forget(id)
   // Persist gated on the delete: the admit loop calls this per request before
   // seeding meta, and an unconditional write there would be N+1 identical snapshots.
   if (requestMetaById.delete(id)) persistRequestMeta()
-  syncPendingRetries()
 }
 
 const withTraceEvents = (snap: MetricsSnapshot): MetricsSnapshot =>
@@ -547,16 +532,18 @@ const failBrowserDownload = (id: string, downloadId: number, now: number): Promi
 const completeBrowserDownload = (id: string, downloadId: number, now: number): Promise<void> =>
   settleBrowserDownload(id, downloadId, 'complete', now)
 
-// Retry Scheduler shell (CONTEXT.md's Clock Port entry): the applier owns
-// `attempt`-compute + `planInterruptRetry` decide + the timer/state/trace/persist
-// bookkeeping that used to be duplicated at three call sites below. `fire` is a
-// forward reference to `fireInterruptRetry` (declared next) — legal JS: the
-// closure only resolves it when actually CALLED, long after every module-level
-// `const` here has run at SW startup.
-const applier = makeRetryPlanApplier({
-  interruptAttemptById,
-  pendingRetries,
-  syncPendingRetries,
+// Retry Scheduler shell (CONTEXT.md's Clock Port entry): the queue owns the
+// whole interrupt-retry state machine — attempt counter, queue row, live timer,
+// and the durable `session:interruptRetries` mirror move together behind its
+// interface (core/download/retry-queue). `fire` is a forward reference to
+// `fireInterruptRetry` (declared next) — legal JS: the closure only resolves it
+// when actually CALLED, long after every module-level `const` here has run at
+// SW startup.
+const retryQueue = makeRetryQueue({
+  store: {
+    get: () => retryQueueItem.getValue(),
+    set: (rows) => void retryQueueItem.setValue([...rows]),
+  },
   recordRetry: (id) => {
     if (live) live = recordRetry(live, id)
   },
@@ -589,10 +576,10 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     // Remove from the retry queue BEFORE adding to the transfers ledger (mirrors
     // scheduleInterruptRetry's safe remove-then-add): a crash in this window then
     // leaves the id in NEITHER ledger — a lost retry, never a double-drive where
-    // both rehydrate and reconcile fire the same id on the next boot.
-    applier.cancel(id)
-    pendingRetries.delete(id)
-    syncPendingRetries()
+    // both rehydrate and reconcile fire the same id on the next boot. `drop`
+    // deliberately KEEPS the attempt counter (it only resets at settle, via
+    // `forget`) — see the queue's own contract.
+    retryQueue.drop(id)
     transfersState = trackTransfer(transfersState, {
       id,
       downloadId,
@@ -612,7 +599,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     // `failBrowserDownload(id, -1, ...)` sentinel usage elsewhere in this file.
     // This path never had a transfer-ledger entry, so unlike scheduleInterruptRetry
     // there is nothing to settle on the scheduled branch (decision 4 in the handoff).
-    await applier.apply({
+    await retryQueue.schedule({
       id,
       downloadId: -1,
       url,
@@ -636,18 +623,18 @@ const scheduleInterruptRetry = (
     void failBrowserDownload(id, downloadId, now)
     return
   }
-  // The applier now computes `attempt` + decides via planInterruptRetry
-  // internally, so the scheduled-vs-exhausted branch can't be pre-checked here
-  // without duplicating that decision (out of scope). Instead, the ledger-settle
+  // The queue computes `attempt` + decides via planInterruptRetry internally,
+  // so the scheduled-vs-exhausted branch can't be pre-checked here without
+  // duplicating that decision (out of scope). Instead, the ledger-settle
   // — which ONLY ever ran on the schedule branch — is passed in as `onScheduled`,
-  // a synchronous hook `apply()` invokes the instant it decides to schedule,
+  // a synchronous hook `schedule()` invokes the instant it decides to schedule,
   // before its own state mutation and internal `await persistSnapshot`. This
   // preserves the original fully-synchronous, atomic ordering (ledger-settle
   // still runs in the same tick as the decision, ahead of any await) rather than
   // deferring it into a post-await `.then()`. `scheduleInterruptRetry` itself
   // stays synchronous/non-blocking — its `onDownloadChanged` caller does not and
   // should not await it.
-  void applier.apply({
+  void retryQueue.schedule({
     id,
     downloadId,
     url: meta.url,
@@ -666,18 +653,17 @@ const scheduleInterruptRetry = (
 }
 
 const rehydrateInterruptRetries = async (): Promise<void> => {
-  const queued = await retryQueueItem.getValue()
-  const now = Date.now()
+  // The queue restores its own attempt/row/timer state and returns the rows so
+  // the broader-than-retry side state (request meta, in-flight dedup) can be
+  // seeded here, where it lives.
+  const queued = await retryQueue.rehydrate(Date.now())
   for (const item of queued) {
     requestMetaById.set(item.id, {
       url: item.url,
       filename: item.filename,
       ...(item.item ? { item: item.item } : {}),
     })
-    interruptAttemptById.set(item.id, item.attempt)
-    pendingRetries.set(item.id, item)
     inFlight.add(item.id)
-    applier.rehydrateTimer(item, now)
   }
   if (queued.length > 0) persistRequestMeta()
 }
@@ -706,8 +692,8 @@ const reconcileTransfersOnBoot = async (): Promise<void> => {
   const persisted = await transfersItem.getValue()
   transfersState = persisted
   // The dual-ledger tie-break is now a typed input: rehydrate ran first, so
-  // `pendingRetries` is authoritative for the ids it owns and reconcile defers them.
-  const retryOwnedIds = new Set(pendingRetries.keys())
+  // the retry queue is authoritative for the ids it owns and reconcile defers them.
+  const retryOwnedIds = retryQueue.ownedIds()
   if (persisted.transfers.length === 0) {
     // No transfers to reconcile, but the sibling meta record still needs its boot
     // GC — orphaned entries must die on ANY boot, not only one with in-flight
@@ -804,8 +790,7 @@ const reconcileStuckDownloads = async (): Promise<void> => {
   const stuck = [...requestIdByDownloadId.entries()].filter(
     ([, id]) =>
       // The durable interrupt-retry queue owns its ids — never double-drive them here.
-      !pendingRetries.has(id) &&
-      now - (requestStartedAt.get(id) ?? now) >= STUCK_RECONCILE_AFTER_MS,
+      !retryQueue.has(id) && now - (requestStartedAt.get(id) ?? now) >= STUCK_RECONCILE_AFTER_MS,
   )
   // oxlint-disable no-await-in-loop -- few items; outcome side-effects are serial
   for (const [downloadId, id] of stuck) {
@@ -1172,16 +1157,9 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   requestStartedAt.clear()
   requestMetaById.clear()
   persistRequestMeta()
-  interruptAttemptById.clear()
-  // Iterate the keys BEFORE clearing pendingRetries, so every pending id's timer
-  // gets cancelled (applier.cancel only wraps the timer-clear, not the map delete).
-  // Relies on the invariant that every pendingRetries entry has a live timer in the
-  // applier's private map (true today — apply() always sets both together); if that
-  // ever drifts, cancel()'s no-op-on-missing-handle behavior means this would
-  // silently under-cancel rather than throw.
-  for (const id of pendingRetries.keys()) applier.cancel(id)
-  pendingRetries.clear()
-  void retryQueueItem.setValue([])
+  // Timer/row/attempt/mirror teardown is atomic inside the queue — no
+  // cross-module iterate-then-clear invariant to keep in sync here anymore.
+  retryQueue.cancelAll()
   transfersState = emptyTracker
   persistTransfers()
   clearCoordinator.resetLedger() // the manual reset bounds the in-memory clear ledger too
@@ -1319,7 +1297,7 @@ export default defineBackground(() => {
       `[XMD] background booted · clearOnSave=${s.clearOnSave} unbookmark=${s.autoUnbookmarkOnSave} unlike=${s.autoUnlikeOnSave} strategy=${s.downloadStrategy}`,
     ),
   )
-  // Rehydrate the retry queue FIRST so `pendingRetries` is populated before the
+  // Rehydrate the retry queue FIRST so its owned ids are populated before the
   // reconcile decides ownership — an id the retry queue owns must not also be
   // driven to a terminal by reconcile (the dual-ledger tie-break).
   void (async () => {

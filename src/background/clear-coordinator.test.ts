@@ -27,7 +27,7 @@ const mountedFlip = { mounted: true, results: [{ scope: 'bookmark' as const, ok:
 const probeFn = (impl: ClearCoordinatorDeps['settleProbe']) =>
   vi.fn<ClearCoordinatorDeps['settleProbe']>(impl)
 
-/** Hand-rolled fake clock (the retry-plan.ts idiom) — NOT vi.useFakeTimers().
+/** Hand-rolled fake clock (the retry-queue.ts idiom) — NOT vi.useFakeTimers().
  *  Records every (fn, ms) schedule call; the test fires callbacks explicitly and
  *  waits (via vi.waitFor's real-timer polling) for the resulting async settle
  *  chain to drain, rather than fast-forwarding a fake clock. */
@@ -214,7 +214,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
     expect(sendClearToTabs).toHaveBeenCalledWith('T', ['bookmark'], false)
   })
 
-  // Mirrors retry-plan.test.ts's 'default real clock' block: proves the
+  // Mirrors retry-queue.test.ts's 'default real clock' block: proves the
   // `deps.clock ?? realSettleClock` fallback actually schedules via the real
   // `setTimeout`, for the one call site (background.ts) that never injects a clock.
   describe('default real clock', () => {
