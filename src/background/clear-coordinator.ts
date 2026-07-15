@@ -20,6 +20,7 @@ import {
   type SweepState,
 } from '../core/clear/worklist'
 import { decideSettle, type DownloadProbe } from '../core/clear/settle'
+import { flippedScopes, formatClearResults, type ClearScopeResult } from '../core/clear/result'
 import { makeSerialQueue } from '../core/serial-queue'
 
 // The irreversible Clear is gated on a SETTLE confirmed through the Settle Port
@@ -119,7 +120,7 @@ export interface ClearCoordinatorDeps {
     allLists: boolean,
   ) => Promise<{
     mounted: boolean
-    results: ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>
+    results: ReadonlyArray<ClearScopeResult>
   }>
   /** The Settle Port: probe a browser download's final state to confirm the byte
    *  landed before the irreversible Clear. Real `chrome.downloads.search` in the
@@ -223,18 +224,14 @@ export const makeClearCoordinator = (deps: ClearCoordinatorDeps): ClearCoordinat
     // verifiably failed never marks the post cleared just because the un-bookmark
     // no-op'd. (Sweep entries are seeded with only the page scope, so in practice
     // `flipped` already holds just that scope.)
-    const flipped = results.filter((r) => r.ok && !r.noop).map((r) => r.scope)
+    const flipped = flippedScopes(results)
     if (flipped.length > 0) setSweepState(tweetId, flipped, 'cleared')
     clearLedger.set(tweetId, after)
     trace('clear-resolve', {
       tweetId,
-      // `ok` alone hid a no-op (a scope that didn't fire — off-page/not-a-member —
-      // reports ok:true so the ledger settles) behind the same token as a REAL flip,
-      // so a log reading `like:ok` could mean "un-liked" OR "skipped". Split them:
-      // ok = verified flip, noop = deliberately not fired, fail = clicked but no flip.
-      detail: results
-        .map((r) => `${r.scope}:${r.ok ? (r.noop ? 'noop' : 'ok') : 'fail'}`)
-        .join(' '),
+      // ok = verified flip, noop = deliberately not fired, fail = clicked but no flip
+      // (see core/clear/result for why `ok` alone hid a no-op).
+      detail: formatClearResults(results),
     })
     if (prunable(after)) clearLedger.delete(tweetId)
   }

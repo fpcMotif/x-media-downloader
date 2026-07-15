@@ -3,6 +3,7 @@ import type { Message } from '../core/schema'
 import type { ClearTweetResponse } from '../core/schema'
 import type { TabMessagingPort } from '../core/download/media-url-refresh'
 import type { Scope } from '../core/clear/ledger'
+import type { ClearScopeResult } from '../core/clear/result'
 
 /** The narrow tab-messaging surface every tab fan-out routes through. Owns no
  *  module state — `queryXTabs` is the single tabs.query the messaging paths share,
@@ -37,7 +38,7 @@ export interface TabBroadcaster {
     allLists?: boolean,
   ) => Promise<{
     mounted: boolean
-    results: ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>
+    results: ReadonlyArray<ClearScopeResult>
   }>
 }
 
@@ -109,7 +110,7 @@ export const makeTabBroadcaster = (tabs: TabsPort = defaultTabsPort()): TabBroad
     allLists?: boolean,
   ): Promise<{
     mounted: boolean
-    results: ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>
+    results: ReadonlyArray<ClearScopeResult>
   }> => {
     const ids = await queryXTabs()
     // Try the originating tab FIRST (where the user downloaded): if the post is still

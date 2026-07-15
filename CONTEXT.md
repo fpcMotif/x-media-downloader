@@ -87,9 +87,11 @@ use these words, they mean exactly this.
   `list-clear.ts`) and, as of `src/background/retry-plan.ts`, by the **Retry
   Scheduler**'s own minimal port (a deliberately different shape from the Drain's
   `{ sleep, after }` Clock — retry-specific, not shared). **Settle**'s
-  confirm-window timer (`clear-coordinator.ts`) is still raw `setTimeout` (its
-  tests still use `vi.useFakeTimers()`) — migrating Settle onto an injected clock
-  is a queued follow-on, not yet built. The temporal sibling of the **Settle
+  confirm-window timer (`clear-coordinator.ts`) is now behind its own injected
+  `SettleClock` — a schedule-only `{ schedule(fn, ms) }` port that defaults to a
+  `setTimeout` wrapper and takes a hand-rolled fake in tests. Like the Retry
+  Scheduler's, it is deliberately module-local (the third per-module Clock Port
+  shape, not a shared one). The temporal sibling of the **Settle
   Port**: this one *schedules* work, that one *observes* a download's bytes.
 - **Settle** — the confirmation that a browser **Download Handle**'s recorded
   `complete` truly landed on disk. After a short window the byte is re-probed

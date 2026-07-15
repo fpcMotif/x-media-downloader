@@ -18,6 +18,7 @@ import { Option } from 'effect'
 import type { ClearScope } from '../schema'
 import { pageScope } from './clearer'
 import { addPending, makeDrainQueue, readyToClear, type DrainQueue } from './drain'
+import { formatClearResults, type ClearScopeResult } from './result'
 
 const DRAIN_DEBOUNCE_MS = 1200
 const DRAIN_SCROLL_SETTLE_MS = 600
@@ -55,14 +56,6 @@ export interface Clock {
   readonly after: (ms: number, fn: () => void) => () => void
 }
 
-/** One scope's clear outcome — the structural shape the drain reports on (a subset of
- *  the overlay's ClearResult, kept here so `core` never imports the entrypoint). */
-export interface ClearOutcome {
-  readonly scope: ClearScope
-  readonly ok: boolean
-  readonly noop?: boolean
-}
-
 export interface ScrollDrainDeps {
   readonly scroll: ScrollPort
   readonly clock: Clock
@@ -75,7 +68,7 @@ export interface ScrollDrainDeps {
     tweetId: string,
     scopes: ReadonlyArray<ClearScope>,
     allLists: boolean,
-  ) => Promise<ReadonlyArray<ClearOutcome>>
+  ) => Promise<ReadonlyArray<ClearScopeResult>>
   /** Progress trace sink (drain-start / cleared / drain-end). */
   readonly report: (stage: string, detail: string, tweetId?: string) => void
 }
@@ -118,11 +111,7 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
           pendingClears.delete(id)
           const results = await deps.clearMounted(id, p.scopes, p.allLists)
           clearedThisPass += 1
-          deps.report(
-            'cleared',
-            results.map((r) => `${r.scope}:${r.ok ? (r.noop ? 'noop' : 'ok') : 'fail'}`).join(' '),
-            id,
-          )
+          deps.report('cleared', formatClearResults(results), id)
         }
         if (pendingClears.size === 0) break
         const before = deps.scroll.position()
