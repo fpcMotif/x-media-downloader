@@ -26,6 +26,7 @@ import {
   refreshAccessToken,
 } from '../core/cloud/oauth'
 import {
+  applyUploadOutcome,
   capLedger,
   claim,
   decodeLedger,
@@ -34,12 +35,9 @@ import {
   MAX_ATTEMPTS,
   readyJobs,
   recordFailure,
-  recordSourceGone,
-  recordSuccess,
   retry as retryUploadJob,
   summarize,
   toWireUploadJob,
-  type JobLedger,
   type UploadJob,
 } from '../core/cloud/upload-job'
 import { PROVIDERS, revokeViaRecipe } from '../core/cloud/provider'
@@ -472,19 +470,10 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
       const after = decodeLedger(await store.get())
       const tnow = nowFn()
-      let next: JobLedger
-      if (outcome.kind === 'success') {
-        next = recordSuccess(after, job.jobId, token, tnow, {
-          bytes: outcome.bytes,
-          ...(outcome.remoteId !== undefined ? { remoteId: outcome.remoteId } : {}),
-        }).ledger
-      } else if (outcome.kind === 'sourceGone') {
-        next = recordSourceGone(after, job.jobId, token, outcome.reason).ledger
-      } else {
-        next = recordFailure(after, job.jobId, token, tnow, outcome.reason).ledger
+      const { ledger: next, settled } = applyUploadOutcome(after, job.jobId, token, tnow, outcome)
+      if (outcome.kind === 'failure') {
         lastUploadError = classifyUploadError(outcome.reason, outcome.status)
       }
-      const settled = next.find((j) => j.jobId === job.jobId)
       await store.set(capLedger(next))
       if (settled !== undefined) await mirrorUploadJob(settings, settled)
     }

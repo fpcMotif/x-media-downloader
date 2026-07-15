@@ -1,6 +1,6 @@
 import { Schema } from 'effect'
 import { CLOUD_PROVIDERS } from '../schema'
-import type { CloudProviderId, UploadTarget } from './types'
+import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
 
 /**
  * UploadJob ledger — the pure state machine for the client-side cloud byte path
@@ -316,6 +316,31 @@ export function recordSourceGone(
     leaseUntil: null,
     error: reason,
   }))
+}
+
+/** Consume one provider outcome: dispatch to the right transition and return the
+ *  settled job so the caller stops re-finding it. Same CAS-lease semantics as the
+ *  underlying transitions (stale token ⇒ ledger unchanged, `settled` reflects the
+ *  stored job as-is). */
+export function applyUploadOutcome(
+  ledger: JobLedger,
+  jobId: string,
+  token: number,
+  now: number,
+  outcome: UploadOutcome,
+): { readonly ledger: JobLedger; readonly settled: UploadJob | undefined } {
+  let next: JobLedger
+  if (outcome.kind === 'success') {
+    next = recordSuccess(ledger, jobId, token, now, {
+      bytes: outcome.bytes,
+      ...(outcome.remoteId !== undefined ? { remoteId: outcome.remoteId } : {}),
+    }).ledger
+  } else if (outcome.kind === 'sourceGone') {
+    next = recordSourceGone(ledger, jobId, token, outcome.reason).ledger
+  } else {
+    next = recordFailure(ledger, jobId, token, now, outcome.reason).ledger
+  }
+  return { ledger: next, settled: next.find((j) => j.jobId === jobId) }
 }
 
 /** Operator escape: move a `dead`/`failed` job back to `pending`. */
