@@ -1006,10 +1006,11 @@ export default defineContentScript({
         })
       }, SAVED_SWEEP_DEBOUNCE_MS)
     }
+    let savedSweepObserver: MutationObserver | null = null
     // X-only: SavedIndex/Convex queries + TWEET_ARTICLE_SEL/tweetIdOfArticle are
     // X-DOM-specific — never construct this observer on Instagram/Threads tabs.
     if (adapter.platform === 'x') {
-      const savedSweepObserver = new MutationObserver(scheduleSavedSweep)
+      savedSweepObserver = new MutationObserver(scheduleSavedSweep)
       savedSweepObserver.observe(document.body, { childList: true, subtree: true })
     }
 
@@ -1721,9 +1722,6 @@ export default defineContentScript({
 
     // Quick Grab hover tracking: hold the configured modifier and hover a real
     // X media image/poster for the dwell window. No competing per-hover buttons.
-    // TEMP hover diag — throttle key, DEV-gated (see below), REMOVE after
-    // debugging grab failures.
-    let hoverProbeLast: Element | null = null
     ctx.addEventListener(document, 'mousemove', (event) => {
       const e = event as MouseEvent
       lastX = e.clientX
@@ -1741,46 +1739,6 @@ export default defineContentScript({
       if (target?.tagName === 'XMD-OVERLAY') return
       const media = resolveHoverMedia(target, e.clientX, e.clientY)
       const key = previewKeyFromMedia(adapter, media)
-      // TEMP hover diag — logs (once per element) WHY a hovered media does/doesn't
-      // resolve, but only while the grab modifier is held. DEV-gated: the whole
-      // block (including the URL parse and JSON.stringify) is skipped in prod
-      // builds. REMOVE after debugging.
-      if (import.meta.env.DEV) {
-        if (grabbing && target && target !== hoverProbeLast) {
-          hoverProbeLast = target
-          const src = media
-            ? isVideoElement(media)
-              ? media.poster || media.currentSrc || media.src
-              : media.currentSrc || media.src
-            : ''
-          let host = ''
-          let family: string | null = null
-          try {
-            const u = new URL(src)
-            host = u.hostname
-            family = u.pathname.split('/').find((p) => /^t\d+(\.\d+-\d+)?$/.test(p)) ?? null
-          } catch {
-            /* blob: or empty src */
-          }
-          console.info(
-            '[XMD hover diag]',
-            JSON.stringify({
-              mediaTag: media?.tagName ?? null,
-              key,
-              host,
-              family,
-              srcKind: src.startsWith('blob:') ? 'blob:' : src.slice(0, 44),
-              targetTag: target.tagName,
-              targetClass:
-                typeof target.className === 'string' ? target.className.slice(0, 70) : '',
-              hasArticle: target.closest('article') !== null,
-              domCode: media
-                ? (adapter.postCodeFromElement?.(media, location.pathname) ?? null)
-                : null,
-            }),
-          )
-        }
-      }
       if (grabbing) focusHover(media, key)
       focusBadge(media, key)
     })
@@ -1967,6 +1925,19 @@ export default defineContentScript({
       revealObserver = null
       stubObserver?.disconnect()
       stubObserver = null
+      savedSweepObserver?.disconnect()
+      savedSweepObserver = null
+      if (savedSweepTimer !== null) {
+        clearTimeout(savedSweepTimer)
+        savedSweepTimer = null
+      }
+      // Runtime is already dead here — a flush could not deliver; dropping the
+      // sub-debounce tail is the honest outcome.
+      if (captureFlushTimer !== null) {
+        clearTimeout(captureFlushTimer)
+        captureFlushTimer = null
+      }
+      captureBuffer = []
       stubStyle?.remove()
       stubStyle = null
       // `browser.runtime` is already undefined once the context is invalidated.
