@@ -295,16 +295,13 @@ describe('threadsAdapter', () => {
       const img = root.querySelector('img')!
       const key = threadsAdapter.mediaKeyFromUrl(img.src)!
 
+      // Full placeholder shape is asserted in meta-shared/dom.test.ts; here we
+      // only prove the routing + 'threads' platform tag.
       expect(threadsAdapter.canResolveHoverItem(img, key, new Map())).toBe(true)
-      expect(threadsAdapter.resolveHoverItem(img, key, new Map(), '/')).toEqual({
+      expect(threadsAdapter.resolveHoverItem(img, key, new Map(), '/')).toMatchObject({
         id: key,
         platform: 'threads',
         postId: key,
-        author: '',
-        type: 'photo',
-        url: img.src,
-        ext: 'jpg',
-        index: 0,
       })
     })
 
@@ -328,15 +325,10 @@ describe('threadsAdapter', () => {
       Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
       const key = threadsAdapter.mediaKeyFromUrl(img.src)!
       expect(threadsAdapter.canResolveHoverItem(img, key, new Map())).toBe(true)
-      expect(threadsAdapter.resolveHoverItem(img, key, new Map(), '/')).toEqual({
+      expect(threadsAdapter.resolveHoverItem(img, key, new Map(), '/')).toMatchObject({
         id: key,
         platform: 'threads',
         postId: key,
-        author: '',
-        type: 'photo',
-        url: img.src,
-        ext: 'jpg',
-        index: 0,
       })
     })
   })

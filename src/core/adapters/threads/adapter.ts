@@ -1,15 +1,13 @@
 import type { PlatformAdapter } from '../types'
 import { detectMediaItems, postCodesInResponse } from '../meta-shared/detect'
 import {
-  mediaKeyFromMetaUrl,
   mediaKeyFromMetaCombinedUrl,
   isGrabbableMetaPhotoUrl,
-  extFromMetaImgUrl,
+  resolveMetaImageElement,
 } from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
 import { META_CDN_HOSTS } from '../meta-shared/cdn'
 import { postVideoKey, postVideoKeyByDomSlot } from '../detection-store'
-import type { MediaItem } from '../../schema'
 
 /** Threads' post-boundary selector — LIVE-VERIFIED 2026-07-05: zero
  *  <article>/[role=article] elements exist; the real per-post boundary is
@@ -139,29 +137,6 @@ export function isTrackedThreadsResponseUrl(
 }
 
 /**
- * Resolve one hovered `<img>` into a placeholder photo MediaItem when the tee
- * hasn't already seen it. Identical shape to Instagram's own resolver — same
- * shared CDN, same key rule (`meta-shared/dom.ts`), no Threads-specific
- * variant. See `instagram/adapter.ts`'s `resolveMetaImageElement` for the
- * full carousel-transient-grouping caveat (applies here too, unchanged).
- */
-function resolveMetaImageElement(img: HTMLImageElement): MediaItem | null {
-  const src = img.currentSrc || img.src
-  const key = mediaKeyFromMetaUrl(src)
-  if (!key) return null
-  return {
-    id: key,
-    platform: 'threads',
-    postId: key,
-    author: '',
-    type: 'photo',
-    url: src,
-    ext: extFromMetaImgUrl(src),
-    index: 0,
-  }
-}
-
-/**
  * Threads' `PlatformAdapter`. Detection is entirely the shared meta-shared
  * pipeline (`detectMediaItems`, tagged 'threads') — Threads and Instagram are,
  * per research, the same backend media schema, so there is no Threads-only
@@ -215,7 +190,7 @@ export const threadsAdapter: PlatformAdapter = {
   resolveHoverItem: (el, key, detected) => {
     const teed = detected.get(key)
     if (teed !== undefined) return teed
-    return el instanceof HTMLImageElement ? resolveMetaImageElement(el) : null
+    return el instanceof HTMLImageElement ? resolveMetaImageElement(el, 'threads') : null
   },
   canResolveHoverItem: (el, key, detected) => {
     if (detected.has(key)) return true

@@ -6,6 +6,7 @@ import {
   isGrabbableMetaPhotoUrl,
   mediaKeyFromMetaUrl,
   extFromMetaImgUrl,
+  resolveMetaImageElement,
   videoPathFamily,
   isGrabbableMetaVideoUrl,
   mediaKeyFromMetaVideoUrl,
@@ -178,6 +179,50 @@ describe('extFromMetaImgUrl', () => {
 
   it('falls back to jpg for a malformed url', () => {
     expect(extFromMetaImgUrl('not a url')).toBe('jpg')
+  })
+})
+
+describe('resolveMetaImageElement', () => {
+  const grabbable = 'https://scontent-lga3-2.cdninstagram.com/v/t51.82787-15/AAA_n.jpg'
+
+  it('mints a placeholder photo item from currentSrc, tagged instagram, with id === postId === key', () => {
+    const img = document.createElement('img')
+    Object.defineProperty(img, 'currentSrc', { value: grabbable, configurable: true })
+    const key = mediaKeyFromMetaUrl(grabbable)!
+    expect(resolveMetaImageElement(img, 'instagram')).toEqual({
+      id: key,
+      platform: 'instagram',
+      postId: key,
+      author: '',
+      type: 'photo',
+      url: grabbable,
+      ext: 'jpg',
+      index: 0,
+    })
+  })
+
+  it('falls back to .src when currentSrc is empty and honours the threads tag', () => {
+    const img = document.createElement('img')
+    img.src = grabbable
+    Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
+    const key = mediaKeyFromMetaUrl(grabbable)!
+    expect(resolveMetaImageElement(img, 'threads')).toEqual({
+      id: key,
+      platform: 'threads',
+      postId: key,
+      author: '',
+      type: 'photo',
+      url: grabbable,
+      ext: 'jpg',
+      index: 0,
+    })
+  })
+
+  it('returns null when the src yields no media key (avatar family)', () => {
+    const img = document.createElement('img')
+    img.src = 'https://scontent.cdninstagram.com/v/t51.2885-19/avatar_n.jpg'
+    Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
+    expect(resolveMetaImageElement(img, 'instagram')).toBeNull()
   })
 })
 
