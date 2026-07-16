@@ -14,7 +14,7 @@ import {
   setSettings,
   watchSettings,
 } from '../core/settings'
-import { queuedEvent, type SyncEvent } from '../core/sync/events'
+import type { SyncEvent } from '../core/sync/events'
 import { makeConvexHttpPort, queryDownloadedAmong } from '../core/sync/convex'
 import { makeSavedIndex, type QueryConvex } from '../core/sync/saved-index'
 import { refreshMediaUrlFromTabs } from '../core/download/media-url-refresh'
@@ -40,8 +40,6 @@ import { type BudgetRecord } from '../core/download/daily-budget'
 import { type SkipReason } from '../core/download/admission'
 import { bindFetch } from '../core/fetch'
 import {
-  emptyMetrics,
-  extendTotal,
   recordOutcome,
   recordRetry,
   recordSample,
@@ -49,6 +47,7 @@ import {
   snapshot,
   type MetricsState,
 } from '../core/download/metrics'
+import { decideQueueStart } from '../core/download/queue-start'
 import type { PendingInterruptRetry } from '../core/download/interrupt-retry'
 import { syndicationUrl } from '../core/adapters/x/syndication'
 import {
@@ -76,7 +75,6 @@ import {
 import { decodeStore, emptyStore } from '../core/history/store'
 import { planHistory, type HistoryAction } from '../core/history/wiring'
 import { type Scope } from '../core/clear/ledger'
-import { planClearSeed } from '../core/clear/seed'
 import type { ClearScope, SweepEnqueueResponse } from '../core/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
@@ -85,7 +83,8 @@ import { makeCloudUpload } from '../background/cloud-upload'
 import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
-import { makeClearCoordinator } from '../background/clear-coordinator'
+import { makeClearSession } from '../background/clear-session'
+import { applyQueueStartEffects } from '../background/queue-start-applier'
 import { makeRetryPlanApplier } from '../background/retry-plan'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
@@ -319,36 +318,14 @@ const recordHistory = (settings: Settings, actions: ReadonlyArray<HistoryAction>
   })
 }
 
-// The tab a tweet's download came from, so its clear is sent THERE first (the
-// originating tab where the user is looking) — a background Bookmarks/Likes tab
-// can't win the broadcast and un-bookmark a post meant only for its feed's clear.
-// In-memory; keyed by tweetId; lost on SW recycle (the clear simply falls back to
-// the broadcast then). Set at seed time, read when the clear fires. Entries are
-// never individually retired (the clear path has no completion hook back here),
-// so the map is capped — oldest-inserted evicted first; an evicted tweet's clear
-// degrades to the broadcast, same as after a recycle.
-const CLEAR_ORIGIN_TAB_CAP = 512
-const clearOriginTab = new Map<string, number>()
-const rememberClearOrigin = (tweetId: string, tabId: number): void => {
-  clearOriginTab.delete(tweetId) // re-insert to refresh its eviction position
-  clearOriginTab.set(tweetId, tabId)
-  for (const oldest of clearOriginTab.keys()) {
-    if (clearOriginTab.size <= CLEAR_ORIGIN_TAB_CAP) break
-    clearOriginTab.delete(oldest)
-  }
-}
-
-// Clear-on-complete coordinator (worklist un-bookmark/un-like). Owns the in-memory
-// clear ledger + its serialized chain AND the durable sweep worklist; routes verified
-// flips through the tab broadcaster's sendClearToTabs seam. (Findings [00]/[07]/[36].)
-const clearCoordinator = makeClearCoordinator({
+// One worker-owned Clear lifecycle: planned seed, settle timers, origin tab,
+// ledger, durable sweep worklist, and tab/Drain dispatch.
+const clearSession = makeClearSession({
   queueError,
   getSettings,
   trace: traceBackground,
-  // Prefer the originating tab for this tweet's clear (falls back to broadcast).
-  // `allLists` (the "Clear from every list" setting) rides into the request.
-  sendClearToTabs: (tweetId, scopes, allLists) =>
-    sendClearToTabs(tweetId, scopes, clearOriginTab.get(tweetId), allLists),
+  dispatchClear: (tweetId, scopes, allLists, preferTabId) =>
+    sendClearToTabs(tweetId, scopes, preferTabId, allLists),
   // Settle Port: the real `chrome.downloads.search`. Returns the row (or undefined
   // when it's gone), swallowing a teardown-time throw to undefined — `decideSettle`
   // fails that closed, so the irreversible Clear never fires on an unconfirmed byte.
@@ -358,7 +335,7 @@ const clearCoordinator = makeClearCoordinator({
       .then((rows) => rows[0])
       .catch(() => undefined),
 })
-const { recordClearComplete, recordClearFailure } = clearCoordinator
+const { recordComplete: recordClearComplete, recordFailure: recordClearFailure } = clearSession
 
 // Cross-device "Saved" status (B+C): the local-first SavedIndex answers overlay
 // sweeps. Seeded from the durable history (this device's completed downloads), fed
@@ -899,109 +876,44 @@ const handleDownload = (
     }
     persistRequestMeta()
 
-    // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
-    // accumulator (and keep the downloadId map) so the monitor reflects both;
-    // only start fresh once everything has settled (D1).
+    // One pure start decision owns monitoring, queued mirrors/uploads, and B's
+    // Clear seed verdict. The shell applies those effects before queue hand-off.
     const startedAt = Date.now()
     for (const r of requests) requestStartedAt.set(r.id, startedAt)
     traceBackground('queue-started', {
       elapsedMs: startedAt - requestReceivedAt,
       detail: `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
     })
-    if (live === null || snapshot(live, startedAt).active === 0) {
-      requestIdByDownloadId.clear()
-      live = emptyMetrics({
-        total: requests.length,
-        concurrencyCap: settings.downloadConcurrency,
-        startedAt,
-      })
-    } else {
-      live = extendTotal(live, requests.length, settings.downloadConcurrency)
-    }
-    yield* Effect.promise(() => persistSnapshot(startedAt))
-
-    // Mirror queued transitions (Cloud Sync). Sidecar data: requests have no
-    // MediaItem (their id is `<media-id>.json`) and are never mirrored.
-    recordSync(
-      settings,
-      requests.flatMap((r) => {
-        const item = mediaById.get(r.id)
-        return item ? [queuedEvent(item, settings.cloudDeviceId, startedAt)] : []
-      }),
-    )
-    // Same derivation, local store: a queued Download Record per Media Item
-    // (sidecar `.json` requests have no MediaItem and are skipped, like the mirror).
-    recordHistory(
-      settings,
-      requests.flatMap((r): HistoryAction[] => {
-        const item = mediaById.get(r.id)
-        return item ? [{ kind: 'queued', item, filename: r.filename, at: startedAt }] : []
-      }),
-    )
-
-    // Cloud upload (ADR-0013): enqueue the real bytes to each connected provider,
-    // in parallel with the local download. Same derivation — sidecar `.json`
-    // requests have no MediaItem and are skipped, like the mirror/history.
-    recordCloudUploads(
-      settings,
-      requests.flatMap((r) => {
-        const item = mediaById.get(r.id)
-        // UploadCandidate.item keeps its own `handle`-named field (cloud-upload.ts
-        // is untouched by the multi-platform rename) — map the generalized
-        // MediaItem.author onto it explicitly.
-        return item
-          ? [
-              {
-                item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
-                filename: r.filename,
-              },
-            ]
-          : []
-      }),
-    )
-
-    // Clear-on-complete ledger: one entry per tweet (expected = its media request
-    // ids). Membership is filtered in-page at clear time. Seeded only when enabled,
-    // before downloads fire (spec §4.1). The composition (scope selection, skip
-    // reasons, quote-card filtering, clearExpect widening) is pure — see
-    // core/clear/seed.ts for the sweep-vs-hook scope-widening asymmetry it pins.
-    const clearVerdict = planClearSeed({
+    const startFx = decideQueueStart({
+      metrics: live,
       requests,
       mediaById,
       settings,
+      startedAt,
       ...(sweep ? { sweep } : {}),
       ...(clearExpect ? { clearExpect } : {}),
+      ...(originTabId === undefined ? {} : { originTabId }),
     })
-    if (clearVerdict.decision === 'skip') {
-      // Every skip logs WHY (clear-skip) so a "nothing happened" is never silent.
-      switch (clearVerdict.reason) {
-        case 'aria2':
-          traceBackground('clear-skip', {
-            detail: 'aria2 hand-offs are not byte-verifiable; excluded',
-          })
-          break
-        case 'clear-off':
-          traceBackground('clear-skip', { detail: 'Clear after download is OFF — download only' })
-          break
-        case 'no-scopes':
-          traceBackground('clear-skip', { detail: 'both Un-bookmark and Un-like are OFF' })
-          break
-      }
-    } else {
-      if (clearVerdict.unclearableCount > 0)
-        traceBackground('clear-skip', {
-          detail: `${clearVerdict.unclearableCount} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
-        })
-      // Remember which tab this download came from, so the eventual clear is sent
-      // there first (the feed the user is actually looking at).
-      if (originTabId !== undefined)
-        for (const tweetId of clearVerdict.byTweet.keys()) rememberClearOrigin(tweetId, originTabId)
-      clearCoordinator.seedClearLedger(
-        clearVerdict.byTweet,
-        clearVerdict.scopes,
-        clearVerdict.origin,
-      )
-    }
+    live = yield* Effect.promise(() =>
+      applyQueueStartEffects(startFx, startedAt, {
+        resetCorrelation: () => requestIdByDownloadId.clear(),
+        setMetrics: (metrics) => {
+          live = metrics
+        },
+        persistSnapshot,
+        recordSync: (events) => recordSync(settings, events),
+        recordHistory: (actions) => recordHistory(settings, actions),
+        recordUploads: (uploadItems) =>
+          recordCloudUploads(
+            settings,
+            uploadItems.map(({ item, filename }) => ({
+              item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
+              filename,
+            })),
+          ),
+        seedClear: clearSession.seedLedger,
+      }),
+    )
 
     const res = yield* queue.enqueue(requests)
 
@@ -1101,7 +1013,7 @@ const handleSweepEnqueue = async (
   scope: ClearScope,
   posts: ReadonlyArray<{ readonly tweetId: string; readonly items: ReadonlyArray<MediaItem> }>,
 ): Promise<SweepEnqueueResponse> => {
-  const { queuedPosts, skipped } = await clearCoordinator.enqueueSweepWorklist(scope, posts)
+  const { queuedPosts, skipped } = await clearSession.enqueueSweep(scope, posts)
   // Fire into the queue with the sweep's explicit list scope — handleDownload
   // seeds the clear ledger with origin 'sweep' (only this scope), independent of
   // the global clearOnSave/per-scope toggles, which the sweep never mutates.
@@ -1184,7 +1096,7 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   void retryQueueItem.setValue([])
   transfersState = emptyTracker
   persistTransfers()
-  clearCoordinator.resetLedger() // the manual reset bounds the in-memory clear ledger too
+  await clearSession.reset()
   traceEvents = []
   live = null
   await metricsItem.setValue(null)

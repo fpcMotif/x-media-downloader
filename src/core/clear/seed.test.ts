@@ -8,7 +8,7 @@ const baseSettings = Schema.decodeUnknownSync(SettingsSchema)({})
 const settings = (over: Partial<Settings> = {}): Settings => ({ ...baseSettings, ...over })
 
 // Clear-on-save + un-bookmark enabled — the minimal settings under which a hook
-// seed actually proceeds (mirrors clear-coordinator.test.ts's CLEAR_ON).
+// seed actually proceeds (mirrors clear-session.test.ts's CLEAR_ON).
 const CLEAR_ON = settings({
   clearOnSave: true,
   autoUnbookmarkOnSave: true,

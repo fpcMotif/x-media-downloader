@@ -349,7 +349,7 @@ const scrollDrain = makeScrollDrain({
   clearMounted: (id, scopes, allLists) => clearMountedTweet(drainDeps(), id, scopes, allLists),
   report: reportClear,
 })
-const queueDrain = scrollDrain.queue
+const runDrain = scrollDrain.run
 
 // Page-level grab-cursor CSS for eligible twimg media previews, built once at
 // module load. The video poster sections come from `VIDEO_PREVIEW_SECTIONS` in
@@ -1937,7 +1937,7 @@ export default defineContentScript({
       notifyContextLost,
       clearLog,
       clearScope,
-      queueDrain,
+      runDrain,
       savedStatusActive: () => savedStatusVisible(location.pathname, savedStatusOn),
     }
 
