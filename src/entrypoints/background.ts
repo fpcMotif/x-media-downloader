@@ -14,7 +14,7 @@ import {
   setSettings,
   watchSettings,
 } from '../core/settings'
-import { queuedEvent, type SyncEvent } from '../core/sync/events'
+import type { SyncEvent } from '../core/sync/events'
 import { makeConvexHttpPort, queryDownloadedAmong } from '../core/sync/convex'
 import { makeSavedIndex, type QueryConvex } from '../core/sync/saved-index'
 import { refreshMediaUrlFromTabs } from '../core/download/media-url-refresh'
@@ -40,8 +40,6 @@ import { type BudgetRecord } from '../core/download/daily-budget'
 import { type SkipReason } from '../core/download/admission'
 import { bindFetch } from '../core/fetch'
 import {
-  emptyMetrics,
-  extendTotal,
   recordOutcome,
   recordRetry,
   recordSample,
@@ -67,6 +65,7 @@ import {
   type EnqueueOutcomeEffects,
   type TerminalOutcome,
 } from '../core/download/terminal-outcome'
+import { decideQueueStart } from '../core/download/queue-start'
 import {
   decodeRequestMetaStore,
   emptyRequestMetaStore,
@@ -76,7 +75,6 @@ import {
 import { decodeStore, emptyStore } from '../core/history/store'
 import { planHistory, type HistoryAction } from '../core/history/wiring'
 import { type Scope } from '../core/clear/ledger'
-import { planClearSeed } from '../core/clear/seed'
 import type { ClearScope, SweepEnqueueResponse } from '../core/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
@@ -89,6 +87,7 @@ import { makeClearCoordinator } from '../background/clear-coordinator'
 import { makeRetryPlanApplier } from '../background/retry-plan'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
+import { applyQueueStartEffects } from '../background/queue-start'
 import {
   emptyCaptureSummary,
   finishCaptureSummary,
@@ -899,109 +898,71 @@ const handleDownload = (
     }
     persistRequestMeta()
 
-    // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
-    // accumulator (and keep the downloadId map) so the monitor reflects both;
-    // only start fresh once everything has settled (D1).
     const startedAt = Date.now()
     for (const r of requests) requestStartedAt.set(r.id, startedAt)
     traceBackground('queue-started', {
       elapsedMs: startedAt - requestReceivedAt,
       detail: `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
     })
-    if (live === null || snapshot(live, startedAt).active === 0) {
-      requestIdByDownloadId.clear()
-      live = emptyMetrics({
-        total: requests.length,
-        concurrencyCap: settings.downloadConcurrency,
-        startedAt,
-      })
-    } else {
-      live = extendTotal(live, requests.length, settings.downloadConcurrency)
-    }
-    yield* Effect.promise(() => persistSnapshot(startedAt))
-
-    // Mirror queued transitions (Cloud Sync). Sidecar data: requests have no
-    // MediaItem (their id is `<media-id>.json`) and are never mirrored.
-    recordSync(
-      settings,
-      requests.flatMap((r) => {
-        const item = mediaById.get(r.id)
-        return item ? [queuedEvent(item, settings.cloudDeviceId, startedAt)] : []
-      }),
-    )
-    // Same derivation, local store: a queued Download Record per Media Item
-    // (sidecar `.json` requests have no MediaItem and are skipped, like the mirror).
-    recordHistory(
-      settings,
-      requests.flatMap((r): HistoryAction[] => {
-        const item = mediaById.get(r.id)
-        return item ? [{ kind: 'queued', item, filename: r.filename, at: startedAt }] : []
-      }),
-    )
-
-    // Cloud upload (ADR-0013): enqueue the real bytes to each connected provider,
-    // in parallel with the local download. Same derivation — sidecar `.json`
-    // requests have no MediaItem and are skipped, like the mirror/history.
-    recordCloudUploads(
-      settings,
-      requests.flatMap((r) => {
-        const item = mediaById.get(r.id)
-        // UploadCandidate.item keeps its own `handle`-named field (cloud-upload.ts
-        // is untouched by the multi-platform rename) — map the generalized
-        // MediaItem.author onto it explicitly.
-        return item
-          ? [
-              {
-                item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
-                filename: r.filename,
-              },
-            ]
-          : []
-      }),
-    )
-
-    // Clear-on-complete ledger: one entry per tweet (expected = its media request
-    // ids). Membership is filtered in-page at clear time. Seeded only when enabled,
-    // before downloads fire (spec §4.1). The composition (scope selection, skip
-    // reasons, quote-card filtering, clearExpect widening) is pure — see
-    // core/clear/seed.ts for the sweep-vs-hook scope-widening asymmetry it pins.
-    const clearVerdict = planClearSeed({
+    const startEffects = decideQueueStart({
+      metrics: live,
       requests,
       mediaById,
       settings,
+      startedAt,
       ...(sweep ? { sweep } : {}),
       ...(clearExpect ? { clearExpect } : {}),
     })
-    if (clearVerdict.decision === 'skip') {
-      // Every skip logs WHY (clear-skip) so a "nothing happened" is never silent.
-      switch (clearVerdict.reason) {
-        case 'aria2':
-          traceBackground('clear-skip', {
-            detail: 'aria2 hand-offs are not byte-verifiable; excluded',
-          })
-          break
-        case 'clear-off':
-          traceBackground('clear-skip', { detail: 'Clear after download is OFF — download only' })
-          break
-        case 'no-scopes':
-          traceBackground('clear-skip', { detail: 'both Un-bookmark and Un-like are OFF' })
-          break
-      }
-    } else {
-      if (clearVerdict.unclearableCount > 0)
-        traceBackground('clear-skip', {
-          detail: `${clearVerdict.unclearableCount} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
-        })
-      // Remember which tab this download came from, so the eventual clear is sent
-      // there first (the feed the user is actually looking at).
-      if (originTabId !== undefined)
-        for (const tweetId of clearVerdict.byTweet.keys()) rememberClearOrigin(tweetId, originTabId)
-      clearCoordinator.seedClearLedger(
-        clearVerdict.byTweet,
-        clearVerdict.scopes,
-        clearVerdict.origin,
-      )
-    }
+    yield* Effect.promise(() =>
+      applyQueueStartEffects(startEffects, {
+        resetCorrelation: () => requestIdByDownloadId.clear(),
+        setMetrics: (metrics) => {
+          live = metrics
+        },
+        persistSnapshot: () => persistSnapshot(startedAt),
+        recordSync: (events) => recordSync(settings, events),
+        recordHistory: (actions) => recordHistory(settings, actions),
+        // UploadCandidate keeps the legacy `handle` field. Queue Start stays
+        // provider-neutral and maps the generalized author only at this adapter.
+        recordCloudUploads: (uploadItems) =>
+          recordCloudUploads(
+            settings,
+            uploadItems.map(({ item, filename }) => ({
+              item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
+              filename,
+            })),
+          ),
+        applyClearSeed: (verdict) => {
+          if (verdict.decision === 'skip') {
+            switch (verdict.reason) {
+              case 'aria2':
+                traceBackground('clear-skip', {
+                  detail: 'aria2 hand-offs are not byte-verifiable; excluded',
+                })
+                break
+              case 'clear-off':
+                traceBackground('clear-skip', {
+                  detail: 'Clear after download is OFF — download only',
+                })
+                break
+              case 'no-scopes':
+                traceBackground('clear-skip', {
+                  detail: 'both Un-bookmark and Un-like are OFF',
+                })
+                break
+            }
+            return
+          }
+          if (verdict.unclearableCount > 0)
+            traceBackground('clear-skip', {
+              detail: `${verdict.unclearableCount} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
+            })
+          if (originTabId !== undefined)
+            for (const tweetId of verdict.byTweet.keys()) rememberClearOrigin(tweetId, originTabId)
+          clearCoordinator.seedClearLedger(verdict.byTweet, verdict.scopes, verdict.origin)
+        },
+      }),
+    )
 
     const res = yield* queue.enqueue(requests)
 
@@ -1032,7 +993,7 @@ const handleDownload = (
         droppedMeta = requestMetaById.delete(o.id) || droppedMeta
         recordClearFailure(media?.postId, o.id)
         const outcome: TerminalOutcome = 'failed'
-        live = recordOutcome(live, o.id, outcome, now)
+        live = recordOutcome(live ?? startEffects.metrics, o.id, outcome, now)
         applyEnqueueFx(
           decideEnqueueOutcome({ id: o.id, outcome, now, deviceId: settings.cloudDeviceId }),
         )
@@ -1055,7 +1016,12 @@ const handleDownload = (
             ...(media?.postId ? { tweetId: media.postId } : {}),
             startedAt: requestStartedAt.get(o.id) ?? startedAt,
           })
-        live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })
+        live = recordSample(live ?? startEffects.metrics, {
+          id: o.id,
+          bytesReceived: 0,
+          totalBytes: -1,
+          t: now,
+        })
         traceBackground('browser-started', {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
@@ -1065,7 +1031,7 @@ const handleDownload = (
         inFlight.delete(o.id)
         droppedMeta = requestMetaById.delete(o.id) || droppedMeta
         const outcome: TerminalOutcome = 'complete'
-        live = recordOutcome(live, o.id, outcome, now)
+        live = recordOutcome(live ?? startEffects.metrics, o.id, outcome, now)
         applyEnqueueFx(
           decideEnqueueOutcome({ id: o.id, outcome, now, deviceId: settings.cloudDeviceId }),
         )
