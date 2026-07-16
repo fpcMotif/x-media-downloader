@@ -18,6 +18,8 @@ export const PROBE_CONCURRENCY = 8
 export interface AdmissionResult {
   readonly admitted: MediaItem[]
   readonly skipped: ReadonlyArray<{ item: MediaItem; reason: SkipReason }>
+  /** HEAD sizes already paid for by admission. Used by terminal-at-hand-off strategies. */
+  readonly sizeById: ReadonlyMap<string, number | null>
 }
 
 export interface AdmissionGate {
@@ -104,7 +106,7 @@ export function makeAdmissionGate(deps: {
       running.count += 1
     }
 
-    return { admitted, skipped }
+    return { admitted, skipped, sizeById }
   }
 
   return { admit }

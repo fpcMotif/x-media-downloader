@@ -4,10 +4,9 @@
  *
  * After hand-off, the background SW observes a transfer's terminal state in
  * `downloads.onChanged` (bytes landed = `complete`, or `failed`). Recording it
- * touches five sinks: the Transfer Tracker (settle), the Metrics accumulator, the
- * Cloud Sync outbox, Download History, and the badge backlink (`TransferOutcome`).
- * That fan-out was hand-replicated in `completeBrowserDownload` /
- * `failBrowserDownload`; this module is the one place that decides it.
+ * touches the Transfer Tracker, Metrics, Sync, History, backlink, Clear notice,
+ * both Saved indexes, and daily budget. This module is the one place that decides
+ * that fan-out.
  *
  * Pure: it advances the in-memory reducers (`settleTransfer`, `recordOutcome`) and
  * returns the next state plus the I/O intents as plain data — the `OutcomeEffects`.
@@ -85,11 +84,36 @@ export interface OutcomeContext {
   readonly downloadId: number
 }
 
+interface CompletionIntents {
+  readonly postSavedMark: PostSavedMark | null
+  readonly mediaSavedMark: MediaSavedMark | null
+  readonly budgetBump: BudgetBump | null
+}
+
 const isSidecar = (id: string): boolean => id.endsWith('.json')
 
 /** Map a terminal outcome to the past-tense kind the sync/history sinks use. */
 const recordedKind = (outcome: TerminalOutcome): 'completed' | 'failed' =>
   outcome === 'complete' ? 'completed' : 'failed'
+
+const decideCompletionIntents = (args: {
+  readonly id: string
+  readonly outcome: TerminalOutcome
+  readonly tweetId?: string
+  readonly bytes: number
+  readonly terminalTransitioned: boolean
+}): CompletionIntents => {
+  const complete = args.outcome === 'complete'
+  const media = !isSidecar(args.id) && complete
+  return {
+    postSavedMark: media && args.tweetId !== undefined ? { tweetId: args.tweetId } : null,
+    mediaSavedMark: media ? { requestId: args.id } : null,
+    budgetBump:
+      media && args.tweetId !== undefined && args.terminalTransitioned
+        ? { bytes: args.bytes, count: 1 }
+        : null,
+  }
+}
 
 /**
  * Decide the full fan-out for one Terminal Outcome. Idempotent on `id`: the
@@ -105,11 +129,12 @@ export function decideTerminalOutcome(
   context?: OutcomeContext,
 ): OutcomeEffects {
   const kind = recordedKind(outcome)
+  const transfers = settleTransfer(state.transfers, id)
   const metrics = state.metrics === null ? null : recordOutcome(state.metrics, id, outcome, now)
   const sidecar = isSidecar(id)
   const complete = outcome === 'complete'
-  const tweetId = context?.tweetId
-  const metricsTransitioned = state.metrics !== null && metrics !== state.metrics
+  const terminalTransitioned =
+    transfers !== state.transfers || (state.metrics !== null && metrics !== state.metrics)
   const progress = state.metrics?.items.get(id)
   const bytes = progress
     ? progress.totalBytes > 0
@@ -127,19 +152,21 @@ export function decideTerminalOutcome(
             downloadId: context.downloadId,
           }
         : { outcome: 'failed', tweetId: context.tweetId, requestId: id }
+  const completion = decideCompletionIntents({
+    id,
+    outcome,
+    ...(context?.tweetId === undefined ? {} : { tweetId: context.tweetId }),
+    bytes,
+    terminalTransitioned,
+  })
   return {
-    transfers: settleTransfer(state.transfers, id),
+    transfers,
     metrics,
     syncEvents: sidecar ? [] : [outcomeEvent(id, kind, deviceId, now)],
     historyActions: [{ kind, requestId: id, at: now }],
     backlink: sidecar ? null : { _tag: 'TransferOutcome', requestId: id, outcome, at: now },
     clearNotice,
-    postSavedMark: !sidecar && complete && tweetId !== undefined ? { tweetId } : null,
-    mediaSavedMark: !sidecar && complete ? { requestId: id } : null,
-    budgetBump:
-      !sidecar && complete && tweetId !== undefined && metricsTransitioned
-        ? { bytes, count: 1 }
-        : null,
+    ...completion,
     persistSnapshot: true,
   }
 }
@@ -150,24 +177,42 @@ export function decideTerminalOutcome(
  *  backlink only to a transfer that got a Download Handle, and this one never did
  *  — the absence is structural, not a suppressed value. */
 export interface EnqueueOutcomeEffects {
+  readonly metrics: MetricsState
   readonly syncEvent: SyncEvent | null
   readonly historyAction: HistoryAction
+  readonly postSavedMark: PostSavedMark | null
+  readonly mediaSavedMark: MediaSavedMark | null
+  readonly budgetBump: BudgetBump | null
 }
 
 /** Same sidecar policy as `decideTerminalOutcome`: sync event suppressed, history
  *  recorded regardless (sidecar history is an idempotent no-op downstream for an
- *  id that was never queued). The metrics delta is the caller's `outcome` verbatim
- *  — nothing to decide, so it is not echoed back here. */
+ *  id that was never queued). aria2 uses the admitted HEAD size when available. */
 export function decideEnqueueOutcome(args: {
+  readonly metrics: MetricsState
   readonly id: string
   readonly outcome: TerminalOutcome
   readonly now: number
   readonly deviceId: string
+  readonly tweetId?: string
+  readonly bytes?: number
 }): EnqueueOutcomeEffects {
-  const { id, outcome, now, deviceId } = args
+  const { id, outcome, now, deviceId, tweetId } = args
   const kind = recordedKind(outcome)
+  const metrics = recordOutcome(args.metrics, id, outcome, now)
+  const sidecar = isSidecar(id)
+  const bytes = args.bytes ?? 0
+  const completion = decideCompletionIntents({
+    id,
+    outcome,
+    ...(tweetId === undefined ? {} : { tweetId }),
+    bytes,
+    terminalTransitioned: metrics !== args.metrics,
+  })
   return {
-    syncEvent: isSidecar(id) ? null : outcomeEvent(id, kind, deviceId, now),
+    metrics,
+    syncEvent: sidecar ? null : outcomeEvent(id, kind, deviceId, now),
     historyAction: { kind, requestId: id, at: now },
+    ...completion,
   }
 }

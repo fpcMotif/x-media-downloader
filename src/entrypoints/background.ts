@@ -42,7 +42,6 @@ import { bindFetch } from '../core/fetch'
 import {
   emptyMetrics,
   extendTotal,
-  recordOutcome,
   recordRetry,
   recordSample,
   samplesFromSearch,
@@ -64,7 +63,6 @@ import {
 import {
   decideEnqueueOutcome,
   decideTerminalOutcome,
-  type EnqueueOutcomeEffects,
   type TerminalOutcome,
 } from '../core/download/terminal-outcome'
 import {
@@ -86,7 +84,7 @@ import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator } from '../background/clear-coordinator'
-import { applyOutcomeEffects } from '../background/outcome-effects'
+import { applyEnqueueOutcomeEffects, applyOutcomeEffects } from '../background/outcome-effects'
 import { makeRetryPlanApplier } from '../background/retry-plan'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
@@ -1013,9 +1011,16 @@ const handleDownload = (
     // persisted record only ever shrinks via the browser settle path and grows
     // unbounded for non-browser strategies.
     let droppedMeta = false
-    const applyEnqueueFx = (fx: EnqueueOutcomeEffects): void => {
-      if (fx.syncEvent) syncEvents.push(fx.syncEvent)
-      historyActions.push(fx.historyAction)
+    const enqueuePorts = {
+      setMetrics: (next: MetricsState) => {
+        live = next
+      },
+      recordSyncEvent: (event: SyncEvent) => syncEvents.push(event),
+      recordHistoryAction: (action: HistoryAction) => historyActions.push(action),
+      markPostSaved: savedStatusCoordinator.onCompleted,
+      bumpBudget: (bytes: number, count: number) =>
+        budgetQueue.push(() => budgetStore.recordCompletion(bytes, count)),
+      markMediaSaved: savedMediaIndex.markSaved,
     }
     for (const o of res.outcomes) {
       const media = mediaById.get(o.id)
@@ -1024,9 +1029,16 @@ const handleDownload = (
         droppedMeta = requestMetaById.delete(o.id) || droppedMeta
         recordClearFailure(media?.postId, o.id)
         const outcome: TerminalOutcome = 'failed'
-        live = recordOutcome(live, o.id, outcome, now)
-        applyEnqueueFx(
-          decideEnqueueOutcome({ id: o.id, outcome, now, deviceId: settings.cloudDeviceId }),
+        applyEnqueueOutcomeEffects(
+          decideEnqueueOutcome({
+            metrics: live,
+            id: o.id,
+            outcome,
+            now,
+            deviceId: settings.cloudDeviceId,
+            ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
+          }),
+          enqueuePorts,
         )
         const reason = o.error ?? 'unknown'
         failures.push({ itemId: o.id, reason })
@@ -1057,9 +1069,17 @@ const handleDownload = (
         inFlight.delete(o.id)
         droppedMeta = requestMetaById.delete(o.id) || droppedMeta
         const outcome: TerminalOutcome = 'complete'
-        live = recordOutcome(live, o.id, outcome, now)
-        applyEnqueueFx(
-          decideEnqueueOutcome({ id: o.id, outcome, now, deviceId: settings.cloudDeviceId }),
+        applyEnqueueOutcomeEffects(
+          decideEnqueueOutcome({
+            metrics: live,
+            id: o.id,
+            outcome,
+            now,
+            deviceId: settings.cloudDeviceId,
+            ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
+            bytes: admission.sizeById.get(o.id) ?? 0,
+          }),
+          enqueuePorts,
         )
         traceBackground('external-complete', {
           itemId: o.id,

@@ -1,5 +1,5 @@
 import type { MetricsState } from '../core/download/metrics'
-import type { OutcomeEffects } from '../core/download/terminal-outcome'
+import type { EnqueueOutcomeEffects, OutcomeEffects } from '../core/download/terminal-outcome'
 import type { TrackerState } from '../core/download/transfer-tracker'
 import type { HistoryAction } from '../core/history/wiring'
 import type { SyncEvent } from '../core/sync/events'
@@ -21,6 +21,15 @@ export interface OutcomeEffectPorts {
   readonly persistSnapshot: (now: number) => Promise<void>
 }
 
+export interface EnqueueOutcomeEffectPorts {
+  readonly setMetrics: (state: MetricsState) => void
+  readonly recordSyncEvent: (event: SyncEvent) => void
+  readonly recordHistoryAction: (action: HistoryAction) => void
+  readonly markPostSaved: (tweetId: string) => void
+  readonly bumpBudget: (bytes: number, count: number) => void
+  readonly markMediaSaved: (requestId: string) => void
+}
+
 /** Apply Terminal Outcome effects in the fixed durable-write order. */
 export async function applyOutcomeEffects(
   effects: OutcomeEffects,
@@ -40,8 +49,20 @@ export async function applyOutcomeEffects(
   ports.recordSync(effects.syncEvents)
   ports.recordHistory(effects.historyActions)
   if (effects.postSavedMark) ports.markPostSaved(effects.postSavedMark.tweetId)
-  if (effects.budgetBump)
-    ports.bumpBudget(effects.budgetBump.bytes, effects.budgetBump.count)
+  if (effects.budgetBump) ports.bumpBudget(effects.budgetBump.bytes, effects.budgetBump.count)
   if (effects.mediaSavedMark) ports.markMediaSaved(effects.mediaSavedMark.requestId)
   if (effects.persistSnapshot) await ports.persistSnapshot(now)
+}
+
+/** Apply a failed start or aria2 hand-off. No Clear or backlink exists here. */
+export function applyEnqueueOutcomeEffects(
+  effects: EnqueueOutcomeEffects,
+  ports: EnqueueOutcomeEffectPorts,
+): void {
+  ports.setMetrics(effects.metrics)
+  if (effects.syncEvent) ports.recordSyncEvent(effects.syncEvent)
+  ports.recordHistoryAction(effects.historyAction)
+  if (effects.postSavedMark) ports.markPostSaved(effects.postSavedMark.tweetId)
+  if (effects.budgetBump) ports.bumpBudget(effects.budgetBump.bytes, effects.budgetBump.count)
+  if (effects.mediaSavedMark) ports.markMediaSaved(effects.mediaSavedMark.requestId)
 }

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { applyOutcomeEffects, type OutcomeEffectPorts } from './outcome-effects'
-import { decideTerminalOutcome } from '../core/download/terminal-outcome'
+import {
+  applyEnqueueOutcomeEffects,
+  applyOutcomeEffects,
+  type EnqueueOutcomeEffectPorts,
+  type OutcomeEffectPorts,
+} from './outcome-effects'
+import { decideEnqueueOutcome, decideTerminalOutcome } from '../core/download/terminal-outcome'
 import { emptyMetrics } from '../core/download/metrics'
 import { emptyTracker, trackTransfer } from '../core/download/transfer-tracker'
 
@@ -81,5 +86,38 @@ describe('applyOutcomeEffects', () => {
     await applyOutcomeEffects(outcome('failed'), ports, 1_000)
 
     expect(calls).toEqual(['clear:failed'])
+  })
+})
+
+describe('applyEnqueueOutcomeEffects', () => {
+  it('applies aria2 Saved marks and budget at hand-off', () => {
+    const calls: string[] = []
+    const ports: EnqueueOutcomeEffectPorts = {
+      setMetrics: () => calls.push('state:metrics'),
+      recordSyncEvent: () => calls.push('sync'),
+      recordHistoryAction: () => calls.push('history'),
+      markPostSaved: () => calls.push('saved:post'),
+      bumpBudget: () => calls.push('budget'),
+      markMediaSaved: () => calls.push('saved:media'),
+    }
+    const effects = decideEnqueueOutcome({
+      metrics: emptyMetrics({ total: 1, concurrencyCap: 1, startedAt: 0 }),
+      id: 'm1',
+      outcome: 'complete',
+      now: 1_000,
+      deviceId: 'device-1',
+      tweetId: 't1',
+    })
+
+    applyEnqueueOutcomeEffects(effects, ports)
+
+    expect(calls).toEqual([
+      'state:metrics',
+      'sync',
+      'history',
+      'saved:post',
+      'budget',
+      'saved:media',
+    ])
   })
 })
