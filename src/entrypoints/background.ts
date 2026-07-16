@@ -1381,6 +1381,12 @@ export default defineBackground(() => {
   // failed jobs retry autonomously without waiting for the next download.
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === cloudUpload.uploadAlarm) uploadQueue.push(() => drainUploadJobs())
+    if (alarm.name === syncOutbox.syncAlarm) {
+      void (async () => {
+        const settings = await getSettings()
+        if (isSyncConfigured(settings)) outboxQueue.push(() => drainOutbox(settings))
+      })().catch(queueError('syncAlarm'))
+    }
   })
   browser.downloads.onChanged.addListener((delta) => void onDownloadChanged(delta))
 

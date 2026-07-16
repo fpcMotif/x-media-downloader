@@ -14,14 +14,12 @@ import {
 import { convexOriginPattern, makeConvexHttpPort } from '../core/sync/convex'
 import { classifySyncError, describeSyncOk, type SyncStatus } from '../core/sync/status'
 import { makeSerialQueue, type SerialQueue } from '../core/serial-queue'
+import { runSerializedRmw, type DurableStore } from '../core/durable-store'
 import { isSyncConfigured } from './sync-config'
 import type { ConvexPort } from './convex-port'
 
 /** Durable outbox storage seam (`local:syncOutbox` by default, ADR-0005). */
-export interface OutboxStorage {
-  get(): Promise<unknown>
-  set(value: unknown): Promise<void>
-}
+export type OutboxStorage = DurableStore
 
 /** Ephemeral sync-status storage seam (`session:syncStatus` by default, ADR-0005 —
  *  a diagnostic, not durable state, so it is kept separate from the outbox). */
@@ -37,6 +35,12 @@ export interface PermissionsPort {
   contains(origins: ReadonlyArray<string>): Promise<boolean>
 }
 
+/** Durable wake-up alarm seam. */
+export interface AlarmPort {
+  create(name: string, when: number): Promise<void>
+  clear(name: string): Promise<void>
+}
+
 export interface SyncOutbox {
   /** The serialized outbox chain — boot drain + the "sync off" reset push onto it. */
   readonly outboxQueue: SerialQueue
@@ -50,6 +54,8 @@ export interface SyncOutbox {
   readonly getSyncStatus: () => Promise<SyncStatus | null>
   /** Clear the outbox + status when the user turns Cloud Sync off. */
   readonly clearOutbox: () => void
+  /** Durable backoff alarm name. The entrypoint owns the listener. */
+  readonly syncAlarm: string
 }
 
 export interface SyncOutboxDeps {
@@ -68,9 +74,13 @@ export interface SyncOutboxDeps {
   readonly connect?: (settings: Settings) => ConvexPort
   /** The host-permission probe (default: `browser.permissions`). */
   readonly permissions?: PermissionsPort
+  /** The backoff wake-up alarm (default: `browser.alarms`). */
+  readonly alarms?: AlarmPort
   /** The clock (default: `Date.now`). Injected so backoff assertions are deterministic. */
   readonly now?: () => number
 }
+
+const SYNC_ALARM = 'sync-outbox-drain'
 
 /** The live durable outbox store: the `local:syncOutbox` key (ADR-0005). */
 const defaultOutboxStore = (): OutboxStorage => {
@@ -106,18 +116,40 @@ const defaultPermissions = (): PermissionsPort => ({
   contains: (origins) => browser.permissions.contains({ origins: [...origins] }),
 })
 
+const defaultAlarmPort = (): AlarmPort => ({
+  create: async (name, when) => {
+    await browser.alarms.create(name, { when })
+  },
+  clear: async (name) => {
+    await browser.alarms.clear(name)
+  },
+})
+
 export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
   // Resolve each side-effect seam to its live binding unless a test injected one.
   const outbox = deps.outbox ?? defaultOutboxStore()
   const status = deps.status ?? defaultStatusStore()
   const connect = deps.connect ?? defaultConnect(deps.fetchImpl)
   const permissions = deps.permissions ?? defaultPermissions()
+  const alarms = deps.alarms ?? defaultAlarmPort()
   const now = deps.now ?? (() => Date.now())
 
   // Outbox read-modify-writes are serialized through this chain: SW event
   // handlers interleave, and a lost update could drop a drained marker. Re-sent
   // batches are harmless regardless — eventIds are idempotent server-side.
   const outboxQueue = makeSerialQueue(deps.queueError('outbox'))
+  const storeQueue = makeSerialQueue(deps.queueError('outboxStore'))
+
+  const readOutbox = (): Promise<ReturnType<typeof decodeOutbox>> =>
+    storeQueue.run(async () => decodeOutbox(await outbox.get()))
+
+  const scheduleSyncWake = async (state?: ReturnType<typeof decodeOutbox>): Promise<void> => {
+    const current = state ?? (await readOutbox())
+    const at = now()
+    if (current.pending.length > 0 && current.nextAttemptAt > at)
+      await alarms.create(SYNC_ALARM, current.nextAttemptAt)
+    else await alarms.clear(SYNC_ALARM)
+  }
 
   /** Drain FIFO until empty or the first failure; backoff state gates retries.
    *  Each outcome is recorded to the status store so a stuck sync is visible in
@@ -126,32 +158,41 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
     const port = connect(settings)
     // oxlint-disable no-await-in-loop -- FIFO: each batch depends on the previous outcome
     for (;;) {
-      const state = decodeOutbox(await outbox.get())
-      if (!isReady(state, now())) return
+      const state = await readOutbox()
+      if (!isReady(state, now())) {
+        await scheduleSyncWake(state)
+        return
+      }
       const batch = takeBatch(state)
-      if (batch.length === 0) return
+      if (batch.length === 0) {
+        await scheduleSyncWake(state)
+        return
+      }
       try {
         await port.mutation('sync:recordEvents', {
           events: batch,
           secret: settings.convexSyncSecret,
         })
-        const next = markDrained(
-          state,
-          batch.map((e) => e.eventId),
+        const sentIds = batch.map((e) => e.eventId)
+        const next = await runSerializedRmw(storeQueue, outbox, decodeOutbox, (current) =>
+          markDrained(current, sentIds),
         )
-        await outbox.set(next)
         await status.set({
           ok: true,
           detail: describeSyncOk(next.pending.length),
           pending: next.pending.length,
         })
       } catch (err) {
-        await outbox.set(markFailed(state, now()))
+        const failedAt = now()
+        const next = await runSerializedRmw(storeQueue, outbox, decodeOutbox, (current) =>
+          markFailed(current, failedAt),
+        )
         await status.set({
           ok: false,
           detail: classifySyncError(err),
-          pending: state.pending.length,
+          pending: next.pending.length,
         })
+        await scheduleSyncWake(next)
         return
       }
     }
@@ -162,7 +203,7 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
    *  An empty batch is accepted only when the URL resolves, the host permission is
    *  granted, and the secret matches — so the result names the exact failure. */
   const runSyncConnectionTest = async (settings: Settings): Promise<SyncStatus> => {
-    const pending = decodeOutbox(await outbox.get()).pending.length
+    const pending = (await readOutbox()).pending.length
     if (settings.convexUrl === '')
       return { ok: false, detail: 'Enter the Convex deployment URL first.', pending }
     if (settings.convexSyncSecret === '')
@@ -196,15 +237,21 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
   const recordSync = (settings: Settings, events: ReadonlyArray<SyncEvent>): void => {
     if (!isSyncConfigured(settings) || events.length === 0) return
     outboxQueue.push(async () => {
-      await outbox.set(append(decodeOutbox(await outbox.get()), events))
+      await runSerializedRmw(storeQueue, outbox, decodeOutbox, (state) => append(state, events))
       await drainOutbox(settings)
     })
   }
 
   const clearOutbox = (): void => {
     outboxQueue.push(async () => {
-      await outbox.set(null)
+      await runSerializedRmw(
+        storeQueue,
+        outbox,
+        (raw) => raw,
+        () => null,
+      )
       await status.set(null)
+      await alarms.clear(SYNC_ALARM)
     })
   }
 
@@ -215,5 +262,6 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
     runSyncConnectionTest,
     getSyncStatus: () => status.get(),
     clearOutbox,
+    syncAlarm: SYNC_ALARM,
   }
 }

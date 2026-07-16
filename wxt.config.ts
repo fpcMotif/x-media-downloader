@@ -47,8 +47,8 @@ export default defineConfig({
     // (ADR-0013). Required (not optional): `identity` is not reliably grantable
     // via chrome.permissions.request. launchWebAuthFlow needs no host permission
     // for the auth window or the chromiumapp.org redirect.
-    // `alarms` powers the Cloud Upload backoff wake-up (ADR-0013) so failed
-    // uploads retry autonomously after the service worker suspends.
+    // `alarms` powers Cloud Upload and Sync Outbox backoff wakes so failed
+    // deliveries retry after the service worker suspends.
     // `unlimitedStorage` keeps the Tweet Harvest IndexedDB store (`xmd-capture`)
     // from being evicted under browser storage pressure — the breadth flag can
     // harvest tens of thousands of text records.
