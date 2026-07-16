@@ -47,7 +47,42 @@ export interface OutcomeEffects {
   readonly syncEvents: ReadonlyArray<SyncEvent>
   readonly historyActions: ReadonlyArray<HistoryAction>
   readonly backlink: TransferOutcome | null
+  readonly clearNotice: ClearNotice | null
+  readonly postSavedMark: PostSavedMark | null
+  readonly mediaSavedMark: MediaSavedMark | null
+  readonly budgetBump: BudgetBump | null
   readonly persistSnapshot: true
+}
+
+export type ClearNotice =
+  | {
+      readonly outcome: 'complete'
+      readonly tweetId: string
+      readonly requestId: string
+      readonly downloadId: number
+    }
+  | {
+      readonly outcome: 'failed'
+      readonly tweetId: string
+      readonly requestId: string
+    }
+
+export interface PostSavedMark {
+  readonly tweetId: string
+}
+
+export interface MediaSavedMark {
+  readonly requestId: string
+}
+
+export interface BudgetBump {
+  readonly bytes: number
+  readonly count: 1
+}
+
+export interface OutcomeContext {
+  readonly tweetId?: string
+  readonly downloadId: number
 }
 
 const isSidecar = (id: string): boolean => id.endsWith('.json')
@@ -67,14 +102,44 @@ export function decideTerminalOutcome(
   outcome: TerminalOutcome,
   now: number,
   deviceId: string,
+  context?: OutcomeContext,
 ): OutcomeEffects {
   const kind = recordedKind(outcome)
+  const metrics = state.metrics === null ? null : recordOutcome(state.metrics, id, outcome, now)
+  const sidecar = isSidecar(id)
+  const complete = outcome === 'complete'
+  const tweetId = context?.tweetId
+  const metricsTransitioned = state.metrics !== null && metrics !== state.metrics
+  const progress = state.metrics?.items.get(id)
+  const bytes = progress
+    ? progress.totalBytes > 0
+      ? progress.totalBytes
+      : progress.bytesReceived
+    : 0
+  const clearNotice: ClearNotice | null =
+    sidecar || context === undefined || context.tweetId === undefined
+      ? null
+      : complete
+        ? {
+            outcome: 'complete',
+            tweetId: context.tweetId,
+            requestId: id,
+            downloadId: context.downloadId,
+          }
+        : { outcome: 'failed', tweetId: context.tweetId, requestId: id }
   return {
     transfers: settleTransfer(state.transfers, id),
-    metrics: state.metrics === null ? null : recordOutcome(state.metrics, id, outcome, now),
-    syncEvents: isSidecar(id) ? [] : [outcomeEvent(id, kind, deviceId, now)],
+    metrics,
+    syncEvents: sidecar ? [] : [outcomeEvent(id, kind, deviceId, now)],
     historyActions: [{ kind, requestId: id, at: now }],
-    backlink: isSidecar(id) ? null : { _tag: 'TransferOutcome', requestId: id, outcome, at: now },
+    backlink: sidecar ? null : { _tag: 'TransferOutcome', requestId: id, outcome, at: now },
+    clearNotice,
+    postSavedMark: !sidecar && complete && tweetId !== undefined ? { tweetId } : null,
+    mediaSavedMark: !sidecar && complete ? { requestId: id } : null,
+    budgetBump:
+      !sidecar && complete && tweetId !== undefined && metricsTransitioned
+        ? { bytes, count: 1 }
+        : null,
     persistSnapshot: true,
   }
 }

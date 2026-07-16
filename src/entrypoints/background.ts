@@ -86,6 +86,7 @@ import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearCoordinator } from '../background/clear-coordinator'
+import { applyOutcomeEffects } from '../background/outcome-effects'
 import { makeRetryPlanApplier } from '../background/retry-plan'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
@@ -480,12 +481,9 @@ const settleBrowserDownload = async (
   outcome: 'complete' | 'failed',
   now: number,
 ): Promise<void> => {
-  const complete = outcome === 'complete'
   const tweetId = requestMetaById.get(id)?.item?.postId
   inFlight.delete(id)
   clearInterruptRetryState(id)
-  if (complete) recordClearComplete(tweetId, id, downloadId)
-  else recordClearFailure(tweetId, id)
   requestIdByDownloadId.delete(downloadId)
   stopStuckPollIfIdle() // last download settled → let the watchdog go quiet
   // The terminal-outcome fan-out is ONE pure decision (core/download/terminal-outcome):
@@ -501,44 +499,38 @@ const settleBrowserDownload = async (
     outcome,
     now,
     settings.cloudDeviceId,
+    { ...(tweetId === undefined ? {} : { tweetId }), downloadId },
   )
-  transfersState = fx.transfers
-  live = fx.metrics
-  await flushTransfers()
-  if (fx.backlink) reportTransferOutcome(fx.backlink.requestId, fx.backlink.outcome, fx.backlink.at)
-  // `.json` sidecars yield no sync event (empty → recordSync no-ops) and no backlink, but
-  // still get a history transition (a no-op for an unqueued id) — the core owns those
-  // asymmetries now, so this shell calls each sink unconditionally.
-  recordSync(settings, fx.syncEvents)
-  recordHistory(settings, fx.historyActions)
-  // Light up the "Saved" status for this post immediately (instant, offline) — the
-  // local-first half of the cross-device index; tweetId is unknown for an unqueued
-  // sidecar, in which case there is nothing to mark.
-  if (complete && tweetId !== undefined) {
-    savedStatusCoordinator.onCompleted(tweetId)
-    // Accrue the daily-budget tally (media completions only — sidecars carry no
-    // tweetId). Prefer the known total size, else last-sampled bytes, else 0.
-    const progress = live?.items.get(id)
-    const bytes = progress
-      ? progress.totalBytes > 0
-        ? progress.totalBytes
-        : progress.bytesReceived
-      : 0
-    budgetQueue.push(() => budgetStore.recordCompletion(bytes, 1))
-  }
-  // Per-item dedup index (admission gate only, see the `savedMediaIndex` comment
-  // above): `id` here is the request id, which always equals item.id/requestId
-  // regardless of whether a postId was resolvable for the badge above. Marking a
-  // sidecar's own id is harmless — sidecar ids are never reused as a photo/video's
-  // item.id, so this can never wrongly dedup real media.
-  if (complete) savedMediaIndex.markSaved(id)
-  traceBackground(complete ? 'browser-complete' : 'browser-failed', {
+  await applyOutcomeEffects(
+    fx,
+    {
+      recordClearComplete,
+      recordClearFailure,
+      setTransfers: (next) => {
+        transfersState = next
+      },
+      setMetrics: (next) => {
+        live = next
+      },
+      flushTransfers,
+      reportBacklink: (backlink) =>
+        reportTransferOutcome(backlink.requestId, backlink.outcome, backlink.at),
+      recordSync: (events) => recordSync(settings, events),
+      recordHistory: (actions) => recordHistory(settings, actions),
+      markPostSaved: savedStatusCoordinator.onCompleted,
+      bumpBudget: (bytes, count) =>
+        budgetQueue.push(() => budgetStore.recordCompletion(bytes, count)),
+      markMediaSaved: savedMediaIndex.markSaved,
+      persistSnapshot,
+    },
+    now,
+  )
+  traceBackground(outcome === 'complete' ? 'browser-complete' : 'browser-failed', {
     itemId: id,
     elapsedMs: now - (requestStartedAt.get(id) ?? now),
     detail: `downloadId ${downloadId}`,
   })
   requestStartedAt.delete(id)
-  if (fx.persistSnapshot) await persistSnapshot(now)
 }
 
 const failBrowserDownload = (id: string, downloadId: number, now: number): Promise<void> =>

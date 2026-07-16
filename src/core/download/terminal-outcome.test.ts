@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { decideEnqueueOutcome, decideTerminalOutcome, type OutcomeState } from './terminal-outcome'
-import { emptyMetrics, recordOutcome, type MetricsState } from './metrics'
+import { emptyMetrics, recordOutcome, recordSample, type MetricsState } from './metrics'
 import { emptyTracker, trackTransfer, type TrackerState } from './transfer-tracker'
 import { syncEventId } from '../sync/events'
 
@@ -16,7 +16,23 @@ const stateWith = (id: string): OutcomeState => ({ transfers: trackerWith(id), m
 
 describe('decideTerminalOutcome', () => {
   it('settles the transfer, counts a completion, and emits sync/history/backlink', () => {
-    const fx = decideTerminalOutcome(stateWith('m1'), 'm1', 'complete', NOW, DEVICE)
+    const state = stateWith('m1')
+    const fx = decideTerminalOutcome(
+      {
+        ...state,
+        metrics: recordSample(state.metrics!, {
+          id: 'm1',
+          bytesReceived: 400,
+          totalBytes: 500,
+          t: NOW - 1,
+        }),
+      },
+      'm1',
+      'complete',
+      NOW,
+      DEVICE,
+      { tweetId: 't1', downloadId: 7 },
+    )
 
     expect(fx.transfers.transfers).toEqual([])
     expect(fx.metrics?.completed).toBe(1)
@@ -38,11 +54,23 @@ describe('decideTerminalOutcome', () => {
       outcome: 'complete',
       at: NOW,
     })
+    expect(fx.clearNotice).toEqual({
+      outcome: 'complete',
+      tweetId: 't1',
+      requestId: 'm1',
+      downloadId: 7,
+    })
+    expect(fx.postSavedMark).toEqual({ tweetId: 't1' })
+    expect(fx.mediaSavedMark).toEqual({ requestId: 'm1' })
+    expect(fx.budgetBump).toEqual({ bytes: 500, count: 1 })
     expect(fx.persistSnapshot).toBe(true)
   })
 
   it('maps a failed outcome to the failed kind across every sink', () => {
-    const fx = decideTerminalOutcome(stateWith('m2'), 'm2', 'failed', NOW, DEVICE)
+    const fx = decideTerminalOutcome(stateWith('m2'), 'm2', 'failed', NOW, DEVICE, {
+      tweetId: 't1',
+      downloadId: 7,
+    })
 
     expect(fx.metrics?.failed).toBe(1)
     expect(fx.metrics?.completed).toBe(0)
@@ -55,11 +83,18 @@ describe('decideTerminalOutcome', () => {
       outcome: 'failed',
       at: NOW,
     })
+    expect(fx.clearNotice).toEqual({ outcome: 'failed', tweetId: 't1', requestId: 'm2' })
+    expect(fx.postSavedMark).toBeNull()
+    expect(fx.mediaSavedMark).toBeNull()
+    expect(fx.budgetBump).toBeNull()
   })
 
   it('excludes sidecar .json from sync and backlink, but still settles + records history', () => {
     const state: OutcomeState = { transfers: emptyTracker, metrics: metrics() }
-    const fx = decideTerminalOutcome(state, 'm3.json', 'complete', NOW, DEVICE)
+    const fx = decideTerminalOutcome(state, 'm3.json', 'complete', NOW, DEVICE, {
+      tweetId: 't1',
+      downloadId: 7,
+    })
 
     expect(fx.syncEvents).toEqual([])
     expect(fx.backlink).toBeNull()
@@ -67,6 +102,21 @@ describe('decideTerminalOutcome', () => {
     // and the tracker settle is a no-op for an id that was never tracked.
     expect(fx.historyActions).toEqual([{ kind: 'completed', requestId: 'm3.json', at: NOW }])
     expect(fx.transfers).toBe(state.transfers)
+    expect(fx.clearNotice).toBeNull()
+    expect(fx.postSavedMark).toBeNull()
+    expect(fx.mediaSavedMark).toBeNull()
+    expect(fx.budgetBump).toBeNull()
+  })
+
+  it('without a Tweet emits no Clear, post-Saved, or budget intent', () => {
+    const fx = decideTerminalOutcome(stateWith('m-no-post'), 'm-no-post', 'complete', NOW, DEVICE, {
+      downloadId: 7,
+    })
+
+    expect(fx.clearNotice).toBeNull()
+    expect(fx.postSavedMark).toBeNull()
+    expect(fx.budgetBump).toBeNull()
+    expect(fx.mediaSavedMark).toEqual({ requestId: 'm-no-post' })
   })
 
   it('passes through a null metrics accumulator (post-recycle) without a delta', () => {
@@ -93,6 +143,7 @@ describe('decideTerminalOutcome', () => {
     expect(second.transfers).toBe(first.transfers)
     expect(second.metrics).toBe(first.metrics)
     expect(second.metrics?.completed).toBe(1)
+    expect(second.budgetBump).toBeNull()
   })
 
   it('does not mutate the input state', () => {
