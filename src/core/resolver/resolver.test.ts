@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { Option } from 'effect'
 import { upgradePhotoUrl, pickVideoVariant, resolveTweetMedia } from './index'
+import { partitionAllowedMediaItems } from '../sync/url-guard'
 
 describe('upgradePhotoUrl', () => {
   it('upgrades name=small to name=orig', () => {
@@ -269,5 +270,40 @@ describe('media combinations (1–4, mixed)', () => {
     ])
     expect(items).toHaveLength(1)
     expect(items[0]!.type).toBe('photo')
+  })
+})
+
+describe('resolveTweetMedia × url-guard composition', () => {
+  it('passes real X CDN items through the guard', () => {
+    const items = resolveTweetMedia({
+      tweetId: '1790',
+      handle: 'alice',
+      media: [
+        { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/A.jpg' },
+        {
+          type: 'video',
+          media_url_https: 'https://pbs.twimg.com/media/V.jpg',
+          video_info: {
+            variants: [{ content_type: 'video/mp4', bitrate: 1000, url: 'https://video.twimg.com/v/V.mp4' }],
+          },
+        },
+      ],
+    } as Parameters<typeof resolveTweetMedia>[0])
+    const { allowed, rejected } = partitionAllowedMediaItems(items)
+    expect(allowed).toHaveLength(items.length)
+    expect(allowed.length).toBeGreaterThan(0)
+    expect(rejected).toEqual([])
+  })
+
+  it('rejects a resolver item whose photo URL points at a hostile host', () => {
+    const items = resolveTweetMedia({
+      tweetId: '1791',
+      handle: 'mallory',
+      media: [{ type: 'photo', media_url_https: 'https://attacker.example/media/E.jpg' }],
+    } as Parameters<typeof resolveTweetMedia>[0])
+    const { allowed, rejected } = partitionAllowedMediaItems(items)
+    expect(allowed).toEqual([])
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]?.reason).toMatch(/host not on allow-list/)
   })
 })

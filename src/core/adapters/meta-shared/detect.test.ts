@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { detectMediaItems, postCodesInResponse } from './detect'
+import { partitionAllowedMediaItems } from '../../sync/url-guard'
 
 describe('detectMediaItems', () => {
   it('resolves a single photo post into one MediaItem, tagged with the given platform', () => {
@@ -219,5 +220,46 @@ describe('postCodesInResponse', () => {
 
   it('returns an empty map for a response with no post-shaped nodes', () => {
     expect(postCodesInResponse({ hello: 'world' }).size).toBe(0)
+  })
+})
+
+describe('detectMediaItems × url-guard composition', () => {
+  // The fixtures above intentionally use `https://cdn.example/...`, which is NOT
+  // on the CDN allow-list. For guard-composition only, clone the parsed item
+  // with an allow-listed URL; the guard itself is never widened.
+  it('passes a parsed item through the guard once its URL is a real Meta CDN URL', () => {
+    const json = {
+      data: {
+        items: [
+          {
+            pk: '111',
+            code: 'CODE1',
+            user: { username: 'alice' },
+            image_versions2: {
+              candidates: [{ url: 'https://cdn.example/media/AAA.jpg', width: 1080, height: 1080 }],
+            },
+          },
+        ],
+      },
+    }
+    const [parsed] = detectMediaItems(json, 'instagram')
+    const { allowed, rejected } = partitionAllowedMediaItems([
+      { ...parsed!, url: 'https://scontent.cdninstagram.com/v/example.jpg' },
+    ])
+    expect(allowed).toHaveLength(1)
+    expect(rejected).toEqual([])
+  })
+
+  it('rejects a parsed item whose hostile URL is left unchanged', () => {
+    const json = {
+      pk: '222',
+      code: 'CODE2',
+      user: { username: 'bob' },
+      video_versions: [{ url: 'https://attacker.example/v/BBB.mp4', width: 720, height: 1280 }],
+    }
+    const [parsed] = detectMediaItems(json, 'threads')
+    const { allowed, rejected } = partitionAllowedMediaItems([parsed!])
+    expect(allowed).toEqual([])
+    expect(rejected.map((r) => r.itemId)).toEqual(['BBB'])
   })
 })

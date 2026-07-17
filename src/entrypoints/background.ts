@@ -17,6 +17,7 @@ import {
 import { queuedEvent, type SyncEvent } from '../core/sync/events'
 import { makeConvexHttpPort, queryDownloadedAmong } from '../core/sync/convex'
 import { makeSavedIndex, type QueryConvex } from '../core/sync/saved-index'
+import { partitionAllowedMediaItems, assertAllowedMediaUrl, UnsafeUrlError } from '../core/sync/url-guard'
 import { refreshMediaUrlFromTabs } from '../core/download/media-url-refresh'
 import {
   makeDirectStrategy,
@@ -573,6 +574,18 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     return
   }
   const url = await resolveRetryUrl(meta)
+  // Fail closed: a refreshed retry URL (e.g. re-read from a hostile page's DOM)
+  // must pass the same CDN allow-list before persistence or download.
+  try {
+    assertAllowedMediaUrl(url)
+  } catch (cause) {
+    traceBackground('interrupt-retry-blocked', {
+      itemId: id,
+      detail: cause instanceof UnsafeUrlError ? cause.reason : 'unsafe media URL',
+    })
+    await failBrowserDownload(id, -1, Date.now())
+    return
+  }
   if (url !== meta.url) {
     requestMetaById.set(id, { ...meta, url })
     persistRequestMeta() // a recycle mid-retry must restore the refreshed url, not the stale one
@@ -866,7 +879,15 @@ const handleDownload = (
     // Admission gate (dedup + filters/caps): decide which media may be scheduled
     // BEFORE planning, so skipped items are never expanded into requests. A pure
     // pass-through when every gate setting is off.
-    const admission = yield* Effect.promise(() => admissionGate.admit(items))
+    // Fail-closed URL boundary (before admission, probes, persistence, or any
+    // strategy): page-derived items may carry forged URLs; a mixed batch keeps
+    // its valid items and reports the rejected ones as failures.
+    const checked = partitionAllowedMediaItems(items)
+    const urlFailures = checked.rejected.map(({ itemId, reason }) => ({
+      itemId,
+      reason: `unsafe media URL: ${reason}`,
+    }))
+    const admission = yield* Effect.promise(() => admissionGate.admit(checked.allowed))
     const skipped = summarizeSkipped(admission.skipped)
     const requests = admission.admitted
       .flatMap((item) =>
@@ -884,7 +905,13 @@ const handleDownload = (
         detail: `${admission.admitted.length} admitted, ${admission.skipped.length} skipped`,
       })
       yield* Effect.promise(() => persistSnapshot(Date.now()))
-      return { _tag: 'QueueUpdate' as const, completed: 0, total: 0, skipped }
+      return {
+        _tag: 'QueueUpdate' as const,
+        completed: 0,
+        total: urlFailures.length,
+        skipped,
+        ...(urlFailures.length > 0 ? { failures: urlFailures } : {}),
+      }
     }
     const mediaById = new Map(admission.admitted.map((i) => [i.id, i]))
     for (const r of requests) {
@@ -1014,7 +1041,7 @@ const handleDownload = (
     // Per-request start failures, WITH the strategy's own reason (a 403/network/
     // CDN error) — sent back in the reply so "why didn't this download?" is
     // answerable from the requesting tab's own console, not just the SW's.
-    const failures: { itemId: string; reason: string }[] = []
+    const failures: { itemId: string; reason: string }[] = [...urlFailures]
     // Terminal-at-enqueue outcomes (failed-to-start, aria2 hand-off) carry no
     // retry duty — no downloadId ever interrupts — so their retry meta is dead
     // the moment the outcome lands. Drop it here (and mirror below), or the
@@ -1085,7 +1112,7 @@ const handleDownload = (
     return {
       _tag: 'QueueUpdate' as const,
       completed: res.completed,
-      total: res.total,
+      total: res.total + urlFailures.length,
       skipped,
       ...(failures.length > 0 ? { failures } : {}),
     }

@@ -74,6 +74,7 @@ import {
   type HandlerDeps,
 } from './handlers'
 import { makeScrollDrain } from '../../core/clear/scroll-drain'
+import { partitionAllowedMediaItems } from '../../core/sync/url-guard'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type {
   CaptureTweets,
@@ -1675,7 +1676,13 @@ export default defineContentScript({
         return /* non-JSON tee body */
       }
       try {
-        if (store.addDetected(adapter.detectFromResponse(detail.path, json)).length > 0) rerender()
+        // Fail-closed trust boundary: page scripts can forge 'xmd:media-response'
+        // events, so only CDN-allow-listed items ever reach the store.
+        const checked = partitionAllowedMediaItems(adapter.detectFromResponse(detail.path, json))
+        if (checked.rejected.length > 0) {
+          console.warn(`[XMD] dropped ${checked.rejected.length} media item(s) with unsafe URLs`)
+        }
+        if (store.addDetected(checked.allowed).length > 0) rerender()
         // Instagram/Threads only (X omits extractPostCodes): links the DOM's
         // URL-shortcode to the tee's own postId (which may differ — e.g.
         // Instagram's numeric pk vs its /p/{code}/ shortcode), so a hovered

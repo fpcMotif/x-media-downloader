@@ -4,8 +4,10 @@ import {
   assertAllowedMediaUrl,
   assertAllowedMediaUrls,
   guardedFetch,
+  partitionAllowedMediaItems,
 } from './url-guard'
 import { cdnHostsForAllAdapters } from '../adapters/registry'
+import type { MediaItem } from '../schema'
 
 const thrown = (fn: () => unknown): unknown => {
   try {
@@ -321,5 +323,74 @@ describe('guardedFetch — adversarial redirect shapes (SSRF)', () => {
     expect(e).toBeInstanceOf(UnsafeUrlError)
     expect((e as UnsafeUrlError).reason).toMatch(/too many redirects/)
     expect(calls).toBe(4) // maxHops(3) + 1
+  })
+})
+
+const partitionItem = (over: Partial<MediaItem>): MediaItem => ({
+  id: 'm1',
+  platform: 'x',
+  postId: 'p1',
+  author: 'alice',
+  type: 'photo',
+  url: 'https://pbs.twimg.com/media/A.jpg',
+  ext: 'jpg',
+  index: 0,
+  ...over,
+})
+
+describe('partitionAllowedMediaItems', () => {
+  it('allows a valid X item', () => {
+    const { allowed, rejected } = partitionAllowedMediaItems([partitionItem({})])
+    expect(allowed).toHaveLength(1)
+    expect(rejected).toEqual([])
+  })
+
+  it('allows a valid Meta item', () => {
+    const { allowed, rejected } = partitionAllowedMediaItems([
+      partitionItem({
+        platform: 'instagram',
+        url: 'https://scontent.cdninstagram.com/v/example.jpg',
+      }),
+    ])
+    expect(allowed).toHaveLength(1)
+    expect(rejected).toEqual([])
+  })
+
+  it('rejects a hostile host with its reason', () => {
+    const { allowed, rejected } = partitionAllowedMediaItems([
+      partitionItem({ url: 'https://attacker.example/payload.exe' }),
+    ])
+    expect(allowed).toEqual([])
+    expect(rejected).toEqual([
+      { itemId: 'm1', reason: 'host not on allow-list: attacker.example' },
+    ])
+  })
+
+  it('rejects a hostile previewUrl even when the media url is allowed', () => {
+    const { allowed, rejected } = partitionAllowedMediaItems([
+      partitionItem({ previewUrl: 'https://attacker.example/preview.jpg' }),
+    ])
+    expect(allowed).toEqual([])
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]?.itemId).toBe('m1')
+  })
+
+  it('keeps valid items in a mixed-order batch and preserves order', () => {
+    const good = partitionItem({ id: 'good-1' })
+    const bad = partitionItem({ id: 'bad-1', url: 'https://evil.com/x.jpg' })
+    const good2 = partitionItem({ id: 'good-2', url: 'https://video.twimg.com/v.mp4' })
+    const { allowed, rejected } = partitionAllowedMediaItems([good, bad, good2])
+    expect(allowed.map((i) => i.id)).toEqual(['good-1', 'good-2'])
+    expect(rejected.map((r) => r.itemId)).toEqual(['bad-1'])
+  })
+
+  it('propagates unexpected (non-guard) errors', () => {
+    const boom = partitionItem({})
+    Object.defineProperty(boom, 'url', {
+      get() {
+        throw new Error('boom')
+      },
+    })
+    expect(() => partitionAllowedMediaItems([boom])).toThrow('boom')
   })
 })
