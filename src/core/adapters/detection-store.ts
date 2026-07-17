@@ -276,7 +276,7 @@ export function makeDetectionStore(deps: {
   return {
     addDetected,
     addRecovered,
-    needsRecovery: (root) => videoTweetsNeedingRecovery(root, new Set(byKey.keys())),
+    needsRecovery: (root) => videoTweetsNeedingRecovery(root, new Set(byKey.keys()), attempted),
     markAttempted: (tweetId) => {
       if (attempted.has(tweetId)) return false
       attempted.add(tweetId)

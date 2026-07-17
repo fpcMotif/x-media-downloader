@@ -608,6 +608,26 @@ describe('videoTweetsNeedingRecovery', () => {
       '2068286123399676218',
     ])
   })
+
+  it('skips attempted tweet ids before any poster work', () => {
+    expect(
+      videoTweetsNeedingRecovery(
+        root(PLAYER(POSTER)),
+        new Set(),
+        new Set(['2068286123399676218']),
+      ),
+    ).toEqual([])
+  })
+
+  it('a poster-less first player does not block a second valid player of the same tweet', () => {
+    const html = `
+      <article data-testid="tweet">
+        <a href="/alice/status/55"><time>now</time></a>
+        <div data-testid="videoPlayer"></div>
+        <div data-testid="videoPlayer"><video></video><img src="${POSTER}" /></div>
+      </article>`
+    expect(videoTweetsNeedingRecovery(root(html), new Set())).toEqual(['55'])
+  })
 })
 
 describe('isXUrl', () => {

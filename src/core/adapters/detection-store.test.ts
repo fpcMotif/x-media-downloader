@@ -192,6 +192,29 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
     expect(s.needsRecovery(root)).toEqual([]) // skipped
   })
 
+  it('needsRecovery skips already-attempted tweets; unmarkAttempted restores them', () => {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <article data-testid="tweet">
+        <a href="/alice/status/55"><time>now</time></a>
+        <div data-testid="videoPlayer"><video></video>
+          <img src="https://pbs.twimg.com/ext_tw_video_thumb/9/pu/img/POST.jpg" />
+        </div>
+      </article>
+      <article data-testid="tweet">
+        <a href="/bob/status/77"><time>now</time></a>
+        <div data-testid="videoPlayer"><video></video>
+          <img src="https://pbs.twimg.com/ext_tw_video_thumb/9/pu/img/OTHER.jpg" />
+        </div>
+      </article>`
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.markAttempted('55')
+    // Tweet 55 is filtered out early; the untouched candidate 77 remains.
+    expect(s.needsRecovery(root)).toEqual(['77'])
+    s.unmarkAttempted('55') // transient send failure re-armed it
+    expect(s.needsRecovery(root)).toEqual(['55', '77'])
+  })
+
   it('clear empties items, keys, recovered keys, and attempts', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
     s.addRecovered([video('v', 'MP4', 'POST')])

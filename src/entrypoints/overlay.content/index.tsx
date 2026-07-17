@@ -286,6 +286,10 @@ async function dismissFeedbackStub(cell: Element | null): Promise<void> {
 // mutations collapses into one overlay→background round-trip + chip pass.
 const SAVED_SWEEP_DEBOUNCE_MS = 500
 
+/** Trailing debounce for the X video-recovery scan after scrolling idles —
+ *  keeps the full player scan off every scroll frame. */
+const VIDEO_RECOVERY_SCROLL_IDLE_MS = 250
+
 /** Type-only narrowing (no runtime decode) — pins an `unknown` reply to the
  *  schema type that already describes it, in place of an `as` assertion. */
 const isSavedStatusResponse = (reply: unknown): reply is SavedStatusResponse =>
@@ -812,6 +816,10 @@ export default defineContentScript({
     let pointerSeen = false
     let hoverArmedAt = 0
     let renderedScanQueued = false
+    let renderedScanNeedsRecovery = false
+    // Trailing scroll-idle video recovery timer (X only) — see
+    // scheduleScrollVideoRecovery.
+    let scrollRecoveryTimer: ReturnType<typeof setTimeout> | null = null
     let scrollHitTestQueued = false
 
     // Download badge (per-media fast path). `badgeEnabled` fails closed like
@@ -895,16 +903,37 @@ export default defineContentScript({
       if (store.addDetected(adapter.detectRenderedMedia(document, location.pathname)).length > 0) {
         rerender()
       }
-      recoverMissingVideos()
     }
 
-    const queueRenderedMediaScan = (): void => {
+    // Recovery (the X-specific full player scan + syndication fetch) is requested
+    // EXPLICITLY: startup/settle/manual paths pass `true`; per-frame scroll scans
+    // stay detection-only and let scheduleScrollVideoRecovery fire one trailing
+    // full scan after the scroll idles.
+    const queueRenderedMediaScan = (recoverVideos = false): void => {
+      renderedScanNeedsRecovery ||= recoverVideos
       if (renderedScanQueued) return
       renderedScanQueued = true
       ctx.requestAnimationFrame(() => {
         renderedScanQueued = false
+        const recover = renderedScanNeedsRecovery
+        renderedScanNeedsRecovery = false
         scanRenderedMedia()
+        if (recover) recoverMissingVideos()
       })
+    }
+
+    // One trailing recovery after scrolling stops: each scroll frame re-arms the
+    // debounce, so the costly player scan runs once per burst, not per frame.
+    const scheduleScrollVideoRecovery = (): void => {
+      if (adapter.platform !== 'x') return
+      if (scrollRecoveryTimer !== null) {
+        clearTimeout(scrollRecoveryTimer)
+        scrollRecoveryTimer = null
+      }
+      scrollRecoveryTimer = setTimeout(() => {
+        scrollRecoveryTimer = null
+        queueRenderedMediaScan(true)
+      }, VIDEO_RECOVERY_SCROLL_IDLE_MS)
     }
 
     // X mounts a video player asynchronously after a navigation / cache render, so
@@ -919,10 +948,16 @@ export default defineContentScript({
     }
     const settleRenderedScan = (): void => {
       clearSettleTimers()
-      queueRenderedMediaScan()
+      // A settle (startup / SPA navigation) supersedes any pending trailing
+      // scroll recovery — the full scans below cover it.
+      if (scrollRecoveryTimer !== null) {
+        clearTimeout(scrollRecoveryTimer)
+        scrollRecoveryTimer = null
+      }
+      queueRenderedMediaScan(true)
       settleTimers = [
-        setTimeout(queueRenderedMediaScan, 700),
-        setTimeout(queueRenderedMediaScan, 2000),
+        setTimeout(() => queueRenderedMediaScan(true), 700),
+        setTimeout(() => queueRenderedMediaScan(true), 2000),
       ]
     }
 
@@ -1892,6 +1927,7 @@ export default defineContentScript({
       'scroll',
       () => {
         queueRenderedMediaScan()
+        scheduleScrollVideoRecovery()
         queueScrollHitTest()
       },
       { capture: true, passive: true },
@@ -2019,8 +2055,13 @@ export default defineContentScript({
       clearLauncherRevert()
       clearRescanSpin()
       clearSettleTimers()
+      if (scrollRecoveryTimer !== null) {
+        clearTimeout(scrollRecoveryTimer)
+        scrollRecoveryTimer = null
+      }
       launcher = 'idle'
       renderedScanQueued = false
+      renderedScanNeedsRecovery = false
       scrollHitTestQueued = false
       revealObserver?.disconnect()
       revealObserver = null
