@@ -21,9 +21,11 @@ import {
   postGrabActive,
   markAllGrabbed,
   type GrabModifier,
+  type ModifierFlags,
   type QuickGrabState,
   type QuickGrabUiPhase,
 } from '../../core/quickgrab'
+import { makeLatestFrameTask } from '../../core/latest-frame'
 import {
   badgeNudgeDelayMs,
   badgeSavedRevertMs,
@@ -1264,8 +1266,8 @@ export default defineContentScript({
       }
     }
 
-    const syncGrabFromPointer = (e: MouseEvent): boolean => {
-      const next = syncModifierFromFlags(grab, e, qgModifier)
+    const syncGrabFromPointer = (flags: ModifierFlags): boolean => {
+      const next = syncModifierFromFlags(grab, flags, qgModifier)
       if (next === grab) return grab.active
       if (!next.active) {
         releaseAll()
@@ -1743,22 +1745,28 @@ export default defineContentScript({
     // TEMP hover diag — throttle key, DEV-gated (see below), REMOVE after
     // debugging grab failures.
     let hoverProbeLast: Element | null = null
-    ctx.addEventListener(document, 'mousemove', (event) => {
-      const e = event as MouseEvent
-      lastX = e.clientX
-      lastY = e.clientY
-      pointerSeen = true
+    // A mousemove sample carries ONLY value data — never the event object or a
+    // resolved DOM node — so nothing stale survives across frames.
+    interface MouseMoveSample extends ModifierFlags {
+      readonly target: Element | null
+      readonly clientX: number
+      readonly clientY: number
+    }
+    // The costly part of mousemove (hit-test → state → maybe render), run at
+    // most once per frame via the latest-sample scheduler below. Branch order
+    // is exactly the old raw listener's.
+    const runMouseHitTest = (sample: MouseMoveSample): void => {
       if (!qgEnabled && !badgeEnabled) return
       // Pointer events are the ground truth. They both self-heal a swallowed
       // keyup and cover the common "hold modifier, then hover media" path where
       // the page never saw the initial keydown.
-      const grabbing = qgEnabled && syncGrabFromPointer(e)
-      refreshPostGrabArmed(postGrabActive(grab.active, e, qgModifier, postGrabEligible))
-      const target = e.target as Element | null
+      const grabbing = qgEnabled && syncGrabFromPointer(sample)
+      refreshPostGrabArmed(postGrabActive(grab.active, sample, qgModifier, postGrabEligible))
+      const target = sample.target
       // Hovering this extension's own UI (the badge) must not read as leaving
       // the media underneath it — the entrance would hide before the click.
       if (target?.tagName === 'XMD-OVERLAY') return
-      const media = resolveHoverMedia(target, e.clientX, e.clientY)
+      const media = resolveHoverMedia(target, sample.clientX, sample.clientY)
       const key = previewKeyFromMedia(adapter, media)
       // TEMP hover diag — logs (once per element) WHY a hovered media does/doesn't
       // resolve, but only while the grab modifier is held. DEV-gated: the whole
@@ -1772,11 +1780,11 @@ export default defineContentScript({
               ? media.poster || media.currentSrc || media.src
               : media.currentSrc || media.src
             : ''
-          let host = ''
+          let hostName = ''
           let family: string | null = null
           try {
             const u = new URL(src)
-            host = u.hostname
+            hostName = u.hostname
             family = u.pathname.split('/').find((p) => /^t\d+(\.\d+-\d+)?$/.test(p)) ?? null
           } catch {
             /* blob: or empty src */
@@ -1786,7 +1794,7 @@ export default defineContentScript({
             JSON.stringify({
               mediaTag: media?.tagName ?? null,
               key,
-              host,
+              host: hostName,
               family,
               srcKind: src.startsWith('blob:') ? 'blob:' : src.slice(0, 44),
               targetTag: target.tagName,
@@ -1802,7 +1810,34 @@ export default defineContentScript({
       }
       if (grabbing) focusHover(media, key)
       focusBadge(media, key)
-    })
+    }
+    // Coalesce a burst of mousemove events into ONE hit-test per frame, keeping
+    // only the newest pointer sample (same cadence as queueScrollHitTest).
+    const mouseHitTest = makeLatestFrameTask<MouseMoveSample>(
+      (run) => ctx.requestAnimationFrame(run),
+      runMouseHitTest,
+    )
+    ctx.addEventListener(
+      document,
+      'mousemove',
+      (event) => {
+        const e = event as MouseEvent
+        lastX = e.clientX
+        lastY = e.clientY
+        pointerSeen = true
+        if (!qgEnabled && !badgeEnabled) return
+        mouseHitTest.push({
+          target: e.target as Element | null,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+        })
+      },
+      { passive: true },
+    )
 
     // The per-scroll hit-test: re-run resolution so the dwell and ring track what
     // is actually under the pointer, and refresh the rect when the same media
@@ -1905,11 +1940,14 @@ export default defineContentScript({
       refreshPostGrabArmed(false)
     })
     ctx.addEventListener(document, 'mouseleave', () => {
+      mouseHitTest.clear()
       focusHover(null, null)
       focusBadge(null, null)
     })
 
     ctx.addEventListener(window, 'wxt:locationchange', () => {
+      // A pre-navigation sample must not re-arm UI against detached DOM.
+      mouseHitTest.clear()
       releaseAll()
       resetBadge()
       focusHover(null, null)
@@ -1972,6 +2010,7 @@ export default defineContentScript({
       // The overlay is about to be torn down (WXT removes the shadow host on
       // invalidation). Say why, once, so a stale tab isn't a silent dead end.
       notifyContextLost()
+      mouseHitTest.clear()
       clearDwell()
       setCursorActive(false)
       grab = idleQuickGrab
