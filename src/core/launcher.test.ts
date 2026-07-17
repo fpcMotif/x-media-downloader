@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   beginSendAll,
+  launcherAriaLabel,
+  launcherStatusMessage,
   launcherSavedRevertMs,
   launcherFailedRevertMs,
   resolveOutcomeAll,
@@ -25,7 +27,10 @@ describe('beginSendAll', () => {
   it('is a no-op while a hand-off is in flight or a confirmation still lingers', () => {
     expect(beginSendAll('queued')).toBe('queued')
     expect(beginSendAll('saved')).toBe('saved')
-    expect(beginSendAll('failed')).toBe('failed')
+  })
+
+  it('makes the visible Retry real: a failed batch re-arms to queued', () => {
+    expect(beginSendAll('failed')).toBe('queued')
   })
 })
 
@@ -73,5 +78,35 @@ describe('resolveOutcomeAll (late per-item outcome)', () => {
     expect(resolveOutcomeAll('idle', false)).toBe('idle')
     expect(resolveOutcomeAll('idle', true)).toBe('idle')
     expect(resolveOutcomeAll('failed', false)).toBe('failed')
+  })
+})
+
+describe('launcher aria name and status copy', () => {
+  it('names idle as the download action and stays silent', () => {
+    expect(launcherAriaLabel('idle', 3)).toBe('Download all detected media (3)')
+    expect(launcherStatusMessage('idle', 3)).toBe('')
+  })
+
+  it('announces the in-flight save', () => {
+    expect(launcherAriaLabel('queued', 3)).toBe('Saving all detected media (3)')
+    expect(launcherStatusMessage('queued', 3)).toBe('Saving 3 media items.')
+  })
+
+  it('announces success', () => {
+    expect(launcherAriaLabel('saved', 3)).toBe('All detected media saved (3)')
+    expect(launcherStatusMessage('saved', 3)).toBe('3 media items saved.')
+  })
+
+  it('offers a truthful retry on failure', () => {
+    expect(launcherAriaLabel('failed', 3)).toBe('Retry all detected media (3)')
+    expect(launcherStatusMessage('failed', 3)).toBe(
+      'Some media failed to save. Retry available.',
+    )
+  })
+
+  it('singularizes one media item', () => {
+    expect(launcherStatusMessage('queued', 1)).toBe('Saving 1 media item.')
+    expect(launcherStatusMessage('saved', 1)).toBe('1 media item saved.')
+    expect(launcherAriaLabel('idle', 1)).toBe('Download all detected media (1)')
   })
 })

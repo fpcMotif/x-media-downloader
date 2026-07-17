@@ -7,10 +7,30 @@ export const launcherSavedRevertMs = 1600
 /** How long the failure notice lingers; idle re-offers the same action, so it may expire. */
 export const launcherFailedRevertMs = 4000
 
-/** Arm a send-all hand-off: idle → queued (one in flight). A click while queued
- *  or while a confirmation still lingers is a no-op; settle to idle re-arms it. */
+/** Arm a send-all hand-off: idle → queued (one in flight). A failed batch may
+ *  be retried (failed → queued — the visible Retry affordance is real); a click
+ *  while queued or while a confirmation still lingers is a no-op. */
 export function beginSendAll(phase: LauncherPhase): LauncherPhase {
-  return phase === 'idle' ? 'queued' : phase
+  return phase === 'idle' || phase === 'failed' ? 'queued' : phase
+}
+
+const mediaItemCount = (count: number): string =>
+  `${count} media ${count === 1 ? 'item' : 'items'}`
+
+/** Accessible pill name per phase — state and action stay truthful. */
+export function launcherAriaLabel(phase: LauncherPhase, count: number): string {
+  if (phase === 'queued') return `Saving all detected media (${count})`
+  if (phase === 'saved') return `All detected media saved (${count})`
+  if (phase === 'failed') return `Retry all detected media (${count})`
+  return `Download all detected media (${count})`
+}
+
+/** Polite live-region text per phase; idle stays silent. */
+export function launcherStatusMessage(phase: LauncherPhase, count: number): string {
+  if (phase === 'queued') return `Saving ${mediaItemCount(count)}.`
+  if (phase === 'saved') return `${mediaItemCount(count)} saved.`
+  if (phase === 'failed') return 'Some media failed to save. Retry available.'
+  return ''
 }
 
 /** The background's start ack (or failure) resolves an in-flight queue, nothing else. */

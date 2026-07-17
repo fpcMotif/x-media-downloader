@@ -1,6 +1,37 @@
 /** Phases of the per-media download badge (Overlay fast path): one entrance at a time. */
 export type BadgePhase = 'hidden' | 'shown' | 'nudged' | 'queued' | 'saved' | 'failed'
 
+import type { MediaType } from './schema'
+
+const MEDIA_NOUN: Record<MediaType, string> = {
+  photo: 'photo',
+  video: 'video',
+  gif: 'GIF',
+}
+const MEDIA_TITLE: Record<MediaType, string> = {
+  photo: 'Photo',
+  video: 'Video',
+  gif: 'GIF',
+}
+
+/** Accessible button name per phase+type — state and action stay truthful. */
+export function badgeAriaLabel(phase: BadgePhase, type: MediaType): string {
+  const noun = MEDIA_NOUN[type]
+  if (phase === 'queued') return `Saving ${noun}`
+  if (phase === 'saved') return `${MEDIA_TITLE[type]} saved`
+  if (phase === 'failed') return `Retry ${noun} download`
+  return `Download ${noun}`
+}
+
+/** Polite live-region text per phase+type; idle phases stay silent. */
+export function badgeStatusMessage(phase: BadgePhase, type: MediaType): string {
+  const noun = MEDIA_NOUN[type]
+  if (phase === 'queued') return `Saving ${noun}.`
+  if (phase === 'saved') return `${MEDIA_TITLE[type]} saved.`
+  if (phase === 'failed') return `${MEDIA_TITLE[type]} save failed. Retry available.`
+  return ''
+}
+
 /**
  * Badge entrance state. `key` is the twimg media key the badge is anchored to;
  * `null` only while hidden. One entrance exists at a time — entering new media

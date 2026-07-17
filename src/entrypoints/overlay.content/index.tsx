@@ -29,6 +29,8 @@ import { makeLatestFrameTask } from '../../core/latest-frame'
 import {
   badgeNudgeDelayMs,
   badgeSavedRevertMs,
+  badgeAriaLabel,
+  badgeStatusMessage,
   beginSave,
   enterMedia,
   hiddenBadge,
@@ -39,6 +41,8 @@ import {
 } from '../../core/badge'
 import {
   beginSendAll,
+  launcherAriaLabel,
+  launcherStatusMessage,
   launcherFailedRevertMs,
   launcherSavedRevertMs,
   resolveSendAll,
@@ -627,13 +631,6 @@ const traceBadge = traceDownloadUi('badge')
 
 /** A source-bound `(stage, opts) => void` trace emitter (grab or badge). */
 type TraceFn = ReturnType<typeof traceDownloadUi>
-
-/** Accessible name for the badge by the one Media Item it downloads. */
-const BADGE_ARIA: Record<MediaItem['type'], string> = {
-  photo: 'Download photo',
-  video: 'Download video',
-  gif: 'Download GIF',
-}
 
 /** Pill copy per launcher phase; the idle copy doubles as the hover-revealed action label. */
 const LAUNCHER_LABEL: Record<LauncherPhase, string> = {
@@ -1532,20 +1529,26 @@ export default defineContentScript({
       const lightbox = media.closest('[aria-modal="true"], [role="dialog"]') !== null
       const inset = lightbox ? 12 : 10
       const type = badge.key ? store.resolve(badge.key)?.type : undefined
+      const mediaType = type ?? 'photo'
       return (
-        <button
-          type="button"
-          class={`xmd-badge xmd-badge--${badge.phase}${lightbox ? ' xmd-badge--lightbox' : ''}`}
-          style={{
-            top: `${r.top + inset}px`,
-            left: `${r.left + inset}px`,
-          }}
-          aria-label={BADGE_ARIA[type ?? 'photo']}
-          aria-busy={badge.phase === 'queued'}
-          onClick={onBadgeClick}
-        >
-          <PhaseGlyphs block="xmd-badge" />
-        </button>
+        <>
+          <button
+            type="button"
+            class={`xmd-badge xmd-badge--${badge.phase}${lightbox ? ' xmd-badge--lightbox' : ''}`}
+            style={{
+              top: `${r.top + inset}px`,
+              left: `${r.left + inset}px`,
+            }}
+            aria-label={badgeAriaLabel(badge.phase, mediaType)}
+            aria-busy={badge.phase === 'queued'}
+            onClick={onBadgeClick}
+          >
+            <PhaseGlyphs block="xmd-badge" />
+          </button>
+          <output class="xmd-sr-only" aria-live="polite" aria-atomic="true">
+            {badgeStatusMessage(badge.phase, mediaType)}
+          </output>
+        </>
       )
     }
 
@@ -1592,7 +1595,7 @@ export default defineContentScript({
               <button
                 type="button"
                 class="xmd-launcher__dl"
-                aria-label={`Download all detected media (${store.count})`}
+                aria-label={launcherAriaLabel(launcher, store.count)}
                 aria-busy={launcher === 'queued'}
                 onClick={onLauncherClick}
               >
@@ -1608,6 +1611,9 @@ export default defineContentScript({
                   {LAUNCHER_LABEL[launcher]}
                 </span>
               </button>
+              <output class="xmd-sr-only" aria-live="polite" aria-atomic="true">
+                {launcherStatusMessage(launcher, store.count)}
+              </output>
               <span class="xmd-launcher__rule" aria-hidden="true" />
               <button
                 type="button"
