@@ -117,3 +117,32 @@ describe('unsupported-context headline balances instead of prettifying (spec §2
     expect(popupSource).toContain('<p className="text-balance text-[13px] font-medium">')
   })
 })
+
+describe('metrics polling cannot rearm or set state after unmount (react-doctor/effect-needs-cleanup)', () => {
+  it('keeps the timer handle optional — cleanup is safe before the first timer', () => {
+    expect(popupSource).toContain(
+      'let handle: ReturnType<typeof setTimeout> | undefined',
+    )
+  })
+
+  it('gates setMetrics behind the active flag', () => {
+    const idx = popupSource.indexOf('setMetrics(snapshot)')
+    expect(idx).toBeGreaterThan(-1)
+    expect(popupSource.slice(Math.max(0, idx - 120), idx)).toContain('if (!active) return')
+  })
+
+  it('guards scheduling in both promise branches', () => {
+    expect(popupSource).toContain('const schedule = (delayMs: number): void => {')
+    expect(popupSource).toContain(
+      'schedule(snapshot && snapshot.total > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS)',
+    )
+    expect(popupSource).toContain('.catch(() => schedule(POLL_IDLE_MS))')
+  })
+
+  it('clears the active flag before clearing the timer on cleanup', () => {
+    const activeIdx = popupSource.indexOf('active = false')
+    const clearIdx = popupSource.indexOf('clearTimeout(handle)')
+    expect(activeIdx).toBeGreaterThan(-1)
+    expect(clearIdx).toBeGreaterThan(activeIdx)
+  })
+})

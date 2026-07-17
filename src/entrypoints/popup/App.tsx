@@ -723,25 +723,36 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    let handle: ReturnType<typeof setTimeout>
+    // `active` gates BOTH the state update and any rearm: the popup can close
+    // before sendMessage settles, and an async completion must never schedule
+    // work (or set state) after unmount.
+    let active = true
+    let handle: ReturnType<typeof setTimeout> | undefined
+
+    const schedule = (delayMs: number): void => {
+      if (!active) return
+      handle = setTimeout(poll, delayMs)
+    }
+
     const poll = (): void => {
       void browser.runtime
         .sendMessage({ _tag: 'MetricsRequest' })
         .then((m) => {
+          if (!active) return
           const snapshot = m as MetricsSnapshot | null
           setMetrics(snapshot)
           // Slow the cadence when no batch is active — the monitor (and thus the
           // snapshot) is only shown while total > 0.
-          const next = snapshot && snapshot.total > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS
-          handle = setTimeout(poll, next)
-          return next
+          schedule(snapshot && snapshot.total > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS)
         })
-        .catch(() => {
-          handle = setTimeout(poll, POLL_IDLE_MS)
-        })
+        .catch(() => schedule(POLL_IDLE_MS))
     }
+
     poll()
-    return () => clearTimeout(handle)
+    return () => {
+      active = false
+      clearTimeout(handle) // no-op while the first timer was never armed
+    }
   }, [])
 
   // Cluster status lines auto-clear after 6s (§2.6) — except the actionable
