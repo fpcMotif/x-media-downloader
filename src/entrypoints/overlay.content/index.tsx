@@ -74,6 +74,7 @@ import {
   type HandlerDeps,
 } from './handlers'
 import { makeScrollDrain } from '../../core/clear/scroll-drain'
+import { makeSavedStatusLifecycle } from './saved-status-lifecycle'
 import { partitionAllowedMediaItems } from '../../core/sync/url-guard'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type {
@@ -990,29 +991,37 @@ export default defineContentScript({
     // request is network-bounded (overlay → background → maybe Convex), so it is
     // debounced; the chip is injected idempotently and only on a positive reply.
     // Scope-gated to the home + List timelines, and gated on the `showSavedStatus`
-    // setting (applySettings keeps `savedStatusOn` live).
+    // setting (applySettings keeps `savedStatusOn` live). The lifecycle controller
+    // owns the observer/timer/sweep — X-only (SavedIndex/Convex queries +
+    // TWEET_ARTICLE_SEL/tweetIdOfArticle are X-DOM-specific), so `isActive`
+    // includes the platform gate and the observer is never constructed off-X.
     let savedStatusOn = false
     // Tweet-text harvest gate + breadth flag (§7); applySettings keeps them live.
     let captureEnabled = false
     let captureAllScrolled = false
-    let savedSweepTimer: ReturnType<typeof setTimeout> | null = null
-    const scheduleSavedSweep = (): void => {
-      if (savedSweepTimer !== null) clearTimeout(savedSweepTimer)
-      savedSweepTimer = setTimeout(() => {
-        savedSweepTimer = null
-        void sweepSavedStatus({
+    let savedStatusAlive = true
+    const savedStatusIsActive = (): boolean =>
+      savedStatusAlive &&
+      adapter.platform === 'x' &&
+      savedStatusVisible(location.pathname, savedStatusOn)
+    const savedStatusLifecycle = makeSavedStatusLifecycle({
+      isActive: savedStatusIsActive,
+      root: document.body,
+      delayMs: SAVED_SWEEP_DEBOUNCE_MS,
+      makeObserver: (notify) => new MutationObserver(notify),
+      clock: {
+        after: (ms, run) => {
+          const t = setTimeout(run, ms)
+          return () => clearTimeout(t)
+        },
+      },
+      sweep: () =>
+        sweepSavedStatus({
           document,
-          inScope: () => savedStatusVisible(location.pathname, savedStatusOn),
+          inScope: savedStatusIsActive,
           requestSavedStatus,
-        })
-      }, SAVED_SWEEP_DEBOUNCE_MS)
-    }
-    // X-only: SavedIndex/Convex queries + TWEET_ARTICLE_SEL/tweetIdOfArticle are
-    // X-DOM-specific — never construct this observer on Instagram/Threads tabs.
-    if (adapter.platform === 'x') {
-      const savedSweepObserver = new MutationObserver(scheduleSavedSweep)
-      savedSweepObserver.observe(document.body, { childList: true, subtree: true })
-    }
+        }),
+    })
 
     const clearDwell = (): void => {
       if (dwell !== null) {
@@ -1450,7 +1459,7 @@ export default defineContentScript({
       // X-only (SavedIndex/Convex queries + TWEET_ARTICLE_SEL are X-DOM-specific):
       // don't even arm the debounce timer on Instagram/Threads.
       savedStatusOn = s.showSavedStatus
-      if (adapter.platform === 'x') scheduleSavedSweep()
+      savedStatusLifecycle.sync()
       // Tweet-text harvest (§7): default OFF. `captureAllScrolled` widens breadth
       // from media/thread tweets to every scrolled text-only tweet.
       captureEnabled = s.captureEnabled
@@ -1667,7 +1676,9 @@ export default defineContentScript({
       }
     }
 
-    document.addEventListener('xmd:media-response', (event) => {
+    // Named so invalidation can remove it — a stale tab must not retain
+    // duplicate response callbacks (body unchanged apart from 001's URL filter).
+    const handleMediaResponse = (event: Event): void => {
       const detail = (event as CustomEvent<{ path: string; body: string }>).detail
       let json: unknown
       try {
@@ -1696,7 +1707,8 @@ export default defineContentScript({
       // Knowledge Capture is X-only-forever (design spec Non-goals): harvestTweets'
       // tree walker assumes X's tweet-node JSON shape, so never call it off-platform.
       if (adapter.platform === 'x') harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
-    })
+    }
+    document.addEventListener('xmd:media-response', handleMediaResponse)
 
     // Cold-navigation blind spot: on a direct navigation to a reel/post URL,
     // the MAIN-world XHR/fetch tee above sees nothing for the first item —
@@ -1902,6 +1914,7 @@ export default defineContentScript({
       resetBadge()
       focusHover(null, null)
       settleRenderedScan()
+      savedStatusLifecycle.sync()
       rerender()
     })
 
@@ -1976,8 +1989,12 @@ export default defineContentScript({
       stubObserver = null
       stubStyle?.remove()
       stubStyle = null
+      // Saved-status lifecycle dies first: no sweep may paint or rearm after this.
+      savedStatusAlive = false
+      savedStatusLifecycle.dispose()
       // `browser.runtime` is already undefined once the context is invalidated.
       browser.runtime?.onMessage?.removeListener(handleRuntimeMessage)
+      document.removeEventListener('xmd:media-response', handleMediaResponse)
     })
   },
 })
