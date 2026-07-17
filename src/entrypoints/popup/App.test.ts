@@ -146,3 +146,16 @@ describe('metrics polling cannot rearm or set state after unmount (react-doctor/
     expect(clearIdx).toBeGreaterThan(activeIdx)
   })
 })
+
+describe('the "Saved" feedback timer is owned (cancel-before-rearm, unmount cleanup)', () => {
+  it('cancels the prior timer before rearming with the same 1200ms delay', () => {
+    expect(popupSource).toContain('clearTimeout(savedTimer.current)')
+    expect(popupSource).toContain('savedTimer.current = setTimeout(() => {')
+    expect(popupSource).toContain('setSaved(false)')
+    expect(popupSource).toContain('}, 1200)')
+  })
+
+  it('unmount cancels the pending saved timer', () => {
+    expect(popupSource).toContain('return () => clearTimeout(savedTimer.current)')
+  })
+})

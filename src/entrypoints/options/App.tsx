@@ -1,5 +1,5 @@
 import type { ComponentType } from 'preact'
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '@/core/settings'
 import type { Settings } from '@/core/schema'
 import { cn } from '@/lib/utils'
@@ -84,10 +84,21 @@ export function App() {
     history.replaceState(null, '', `#${id}`)
   }
 
+  // One owned "Saved" feedback timer: a newer save cancels the older timer
+  // before rearming, and unmount cancels whatever is pending.
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    return () => clearTimeout(savedTimer.current)
+  }, [])
+
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
     setSaved(true)
-    setTimeout(() => setSaved(false), 1400)
+    clearTimeout(savedTimer.current)
+    savedTimer.current = setTimeout(() => {
+      setSaved(false)
+      savedTimer.current = undefined
+    }, 1400)
   }
   const reload = async (): Promise<void> => {
     setSettingsState(await getSettings())

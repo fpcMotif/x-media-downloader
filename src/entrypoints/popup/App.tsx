@@ -738,12 +738,13 @@ export function App() {
       void browser.runtime
         .sendMessage({ _tag: 'MetricsRequest' })
         .then((m) => {
-          if (!active) return
+          if (!active) return false
           const snapshot = m as MetricsSnapshot | null
           setMetrics(snapshot)
           // Slow the cadence when no batch is active — the monitor (and thus the
           // snapshot) is only shown while total > 0.
           schedule(snapshot && snapshot.total > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS)
+          return true
         })
         .catch(() => schedule(POLL_IDLE_MS))
     }
@@ -771,6 +772,13 @@ export function App() {
     return () => clearTimeout(timer)
   }, [releaseMsg])
 
+  // One owned "Saved" feedback timer: a newer save cancels the older timer
+  // before rearming, and unmount cancels whatever is pending.
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    return () => clearTimeout(savedTimer.current)
+  }, [])
+
   if (!settings) {
     return <div className="xmd-popup xmd-popup--loading">Loading...</div>
   }
@@ -782,7 +790,11 @@ export function App() {
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
     setSaved(true)
-    setTimeout(() => setSaved(false), 1200)
+    clearTimeout(savedTimer.current)
+    savedTimer.current = setTimeout(() => {
+      setSaved(false)
+      savedTimer.current = undefined
+    }, 1200)
   }
 
   const dismissFirstRun = (): void => void markDone().then(setIntroState)

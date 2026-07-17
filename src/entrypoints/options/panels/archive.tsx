@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FieldDescription } from '@/components/ui/field'
@@ -38,13 +38,23 @@ export function ArchivePanel() {
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [visible, setVisible] = useState(PAGE_SIZE)
+  // One owned status-flash timer: a newer flash cancels the older timer before
+  // rearming, and unmount cancels whatever is pending.
+  const statusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    return () => clearTimeout(statusTimer.current)
+  }, [])
 
   const refreshSummary = (): void => void fetchCaptureSummary(ARCHIVE_FETCH_LIMIT).then(setSummary)
   useEffect(refreshSummary, [])
 
   const flashStatus = (msg: string): void => {
     setStatusMsg(msg)
-    setTimeout(() => setStatusMsg(null), 5000)
+    clearTimeout(statusTimer.current)
+    statusTimer.current = setTimeout(() => {
+      setStatusMsg(null)
+      statusTimer.current = undefined
+    }, 5000)
   }
 
   const doExport = async (kind: CaptureExportKind, conversationId?: string): Promise<void> => {
