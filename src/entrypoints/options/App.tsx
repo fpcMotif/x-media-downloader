@@ -156,19 +156,25 @@ function SettingsSidebar({
         </span>
       </div>
 
-      <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground">
+      <p
+        id="settings-nav-label"
+        className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground"
+      >
         Settings
       </p>
-      <nav className="mb-4 flex flex-col gap-0.5">
+      <nav aria-labelledby="settings-nav-label" className="mb-4 flex flex-col gap-0.5">
         {settingsSections.map((s) => (
           <NavItem key={s.id} section={s} active={active} onSelect={onSelect} />
         ))}
       </nav>
 
-      <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground">
+      <p
+        id="library-nav-label"
+        className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground"
+      >
         Library
       </p>
-      <nav className="flex flex-col gap-0.5">
+      <nav aria-labelledby="library-nav-label" className="flex flex-col gap-0.5">
         {librarySections.map((s) => (
           <NavItem key={s.id} section={s} active={active} onSelect={onSelect} />
         ))}

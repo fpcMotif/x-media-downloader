@@ -75,3 +75,21 @@ describe('the "Saved" feedback timer is owned (cancel-before-rearm, unmount clea
     expect(appSource).toContain('return () => clearTimeout(savedTimer.current)')
   })
 })
+
+describe('sidebar navigation landmarks are named by their visible labels', () => {
+  it('Settings nav references its visible label exactly once each', () => {
+    expect(appSource.match(/id="settings-nav-label"/g)).toHaveLength(1)
+    expect(appSource.match(/aria-labelledby="settings-nav-label"/g)).toHaveLength(1)
+  })
+
+  it('Library nav references its visible label exactly once each', () => {
+    expect(appSource.match(/id="library-nav-label"/g)).toHaveLength(1)
+    expect(appSource.match(/aria-labelledby="library-nav-label"/g)).toHaveLength(1)
+  })
+
+  it('uses no aria-label or hidden duplicate for the nav landmarks', () => {
+    const sidebar = appSource.slice(appSource.indexOf('function SettingsSidebar'))
+    expect(sidebar).not.toMatch(/aria-label="/u)
+    expect(sidebar).not.toContain('sr-only')
+  })
+})
