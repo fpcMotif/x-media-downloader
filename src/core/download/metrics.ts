@@ -217,13 +217,3 @@ export function samplesFromSearch(
   }
   return out
 }
-
-/**
- * Map a `downloads.onChanged` state transition to a terminal outcome, or null
- * while still in progress (§d: `complete` | `interrupted` are terminal).
- */
-export function outcomeFromState(state: string | undefined): ItemOutcome | null {
-  if (state === 'complete') return 'complete'
-  if (state === 'interrupted') return 'failed'
-  return null
-}
