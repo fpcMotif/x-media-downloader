@@ -37,6 +37,8 @@ import {
   isPersistentStatus,
 } from '@/components/action-copy'
 import { tabContext, tabScope, isXContext, contextLabel, type TabContext } from './context'
+import { planClearSeed } from '@/core/clear/seed'
+import type { Scope } from '@/core/clear/ledger'
 import { recordOpen, markDone, shouldShowIntro, type FirstRunState } from './first-run'
 import { CaptureQuickActions } from './capture-quick-actions'
 
@@ -645,13 +647,25 @@ export function App() {
     setDownloadMsg(m)
   }
 
-  // Whether a Stage action will ALSO release: "Release after download" is on AND
-  // the strategy is byte-verifiable (aria2 hand-offs are excluded). Drives the
-  // primary button's label and the standing status line. Computed before the
-  // loading early-return so the action hooks below (which must run
-  // unconditionally) can close over it.
-  const willClear =
-    settings !== null && settings.clearOnSave && settings.downloadStrategy !== 'aria2'
+  // Whether a Stage action will ALSO release. Asks the real gate — planClearSeed
+  // with an empty batch runs exactly its skip checks and nothing else — instead
+  // of re-deriving from settings, so the popup cannot drift from core again (it
+  // had: the no-scopes gate was missing, and with every release-scope toggle
+  // off the button still claimed "+ release"). The hook path (primary button,
+  // red dot, drain copy) respects the per-scope toggles; a sweep brings its own
+  // list scope and releases even with all hook toggles off (seed.test.ts pins
+  // that asymmetry). Computed before the loading early-return so the action
+  // hooks below (which must run unconditionally) can close over it.
+  const willRelease = (sweep?: { scope: Scope }): boolean =>
+    settings !== null &&
+    planClearSeed({
+      requests: [],
+      mediaById: new Map(),
+      ...(sweep !== undefined ? { sweep } : {}),
+      settings,
+    }).decision === 'seed'
+  const willClear = willRelease()
+  const willClearSweep = scope !== undefined ? willRelease({ scope }) : willClear
   const aria2Caveat = settings?.clearOnSave === true && settings.downloadStrategy === 'aria2'
 
   const drain = usePageAction<{ count?: number }>({
@@ -662,7 +676,7 @@ export function App() {
 
   const sweep = usePageAction<{ queued?: number; skipped?: number; reason?: string }>({
     request: { _tag: 'SweepPageRequest' },
-    format: (res) => sweepResult(res, willClear),
+    format: (res) => sweepResult(res, willClearSweep),
     setMsg: trackDownloadMsg,
   })
 
