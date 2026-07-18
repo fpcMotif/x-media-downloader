@@ -91,8 +91,8 @@ describe('makeScrollDrain', () => {
     h.scroll.y = 2000
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('100', ['like'], false)
-    drain.queue('200', ['like'], false)
+    void drain.run('100', ['like'], false)
+    void drain.run('200', ['like'], false)
     await vi.runAllTimersAsync()
 
     expect(clearedIds(h).sort()).toEqual(['100', '200'])
@@ -102,13 +102,52 @@ describe('makeScrollDrain', () => {
     expect(stagesOf(h)).toContain('drain-end')
   })
 
+  it('returns the authorized Drain result to the worker', async () => {
+    const h = harness({ layout: { '100': 0 }, maxY: 0 })
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('100', ['like'], false)
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([{ scope: 'like', ok: true }])
+  })
+
+  it('returns failure when the mounted DOM clear throws', async () => {
+    const h = harness({
+      layout: { '100': 0 },
+      maxY: 0,
+      clear: async () => {
+        throw new Error('detached')
+      },
+    })
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('100', ['like'], false)
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([{ scope: 'like', ok: false }])
+  })
+
+  it('returns failed scopes when the authorized Tweet never mounts', async () => {
+    const h = harness({ layout: {}, maxY: 0 })
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('404', ['like', 'bookmark'], false)
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([
+      { scope: 'like', ok: false },
+      { scope: 'bookmark', ok: false },
+    ])
+  })
+
   it('coalesces a burst of queued clears into a single scroll pass (debounce)', async () => {
     const h = harness({ layout: { '1': 0, '2': 0, '3': 0 }, maxY: 0 })
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('1', ['like'], false)
-    drain.queue('2', ['like'], false)
-    drain.queue('3', ['like'], false)
+    void drain.run('1', ['like'], false)
+    void drain.run('2', ['like'], false)
+    void drain.run('3', ['like'], false)
     await vi.runAllTimersAsync()
 
     expect(startCount(h)).toBe(1) // one pass, not three
@@ -119,7 +158,7 @@ describe('makeScrollDrain', () => {
     const h = harness({ layout: { '1': 0 }, maxY: 2000, path: '/home' })
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('1', ['like'], false)
+    void drain.run('1', ['like'], false)
     await vi.runAllTimersAsync()
 
     expect(h.clearMounted).not.toHaveBeenCalled()
@@ -134,7 +173,7 @@ describe('makeScrollDrain', () => {
     const h = harness({ layout: { '1': 10_000 }, maxY: 1000 })
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('1', ['like'], false)
+    void drain.run('1', ['like'], false)
     await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 5000) // run just the first pass
 
     expect(startCount(h)).toBe(1)
@@ -147,7 +186,7 @@ describe('makeScrollDrain', () => {
     const h = harness({ layout: {}, maxY: 0 }) // nothing ever mounts
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('1', ['like'], false)
+    void drain.run('1', ['like'], false)
     await vi.runAllTimersAsync()
 
     // initial pass + 4 empty-pass retries, then stop
@@ -159,11 +198,11 @@ describe('makeScrollDrain', () => {
     const h = harness({ layout: {}, maxY: 0 })
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('1', ['like'], false)
+    void drain.run('1', ['like'], false)
     await vi.runAllTimersAsync()
     expect(startCount(h)).toBe(5) // budget spent
 
-    drain.queue('2', ['like'], false) // fresh work resets the budget
+    void drain.run('2', ['like'], false) // fresh work resets the budget
     await vi.runAllTimersAsync()
     expect(startCount(h)).toBe(10) // a full second budget runs, not a single stranded pass
   })
@@ -172,9 +211,9 @@ describe('makeScrollDrain', () => {
     const h = harness({ layout: {}, maxY: 0 })
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('1', ['like'], false)
+    void drain.run('1', ['like'], false)
     await vi.advanceTimersByTimeAsync(DEBOUNCE_MS) // first pass is now in flight
-    drain.queue('2', ['like'], false) // its scheduleDrain must not open a parallel pass
+    void drain.run('2', ['like'], false) // its scheduleDrain must not open a parallel pass
     await vi.runAllTimersAsync()
 
     // walk the start/end markers: a second 'drain-start' must never precede the prior 'drain-end'
@@ -200,8 +239,8 @@ describe('makeScrollDrain', () => {
     })
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('1', ['like'], false)
-    drain.queue('1', ['bookmark'], false) // same tweet, second scope, before the pass runs
+    void drain.run('1', ['like'], false)
+    void drain.run('1', ['bookmark'], false) // same tweet, second scope, before the pass runs
     await vi.runAllTimersAsync()
 
     expect(seen.map((s) => [...s.scopes].sort())).toEqual([['bookmark', 'like']])
@@ -219,7 +258,7 @@ describe('makeScrollDrain', () => {
     })
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('1', ['like', 'bookmark', 'notInterested'], false)
+    void drain.run('1', ['like', 'bookmark', 'notInterested'], false)
     await vi.runAllTimersAsync()
 
     const cleared = h.report.mock.calls.find((c) => c[0] === 'cleared')
@@ -232,8 +271,8 @@ describe('makeScrollDrain', () => {
     const h = harness({ layout, maxY: 0 })
     const drain = makeScrollDrain(h.deps)
 
-    drain.queue('A', ['like'], false)
-    drain.queue('B', ['like'], false)
+    void drain.run('A', ['like'], false)
+    void drain.run('B', ['like'], false)
     await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 3000) // pass 1 clears A; B still pending
     layout.B = 0 // X lazily mounts B after the first pass
     await vi.runAllTimersAsync() // a promptly-rescheduled pass 2 clears B

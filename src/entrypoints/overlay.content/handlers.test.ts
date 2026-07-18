@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Option } from 'effect'
 import {
   handleClearTweet,
+  handleClearDrain,
   handleClearVisible,
   handleClearWholeList,
   handleSavedStatusUpdate,
@@ -49,7 +50,7 @@ function tweetArticle(opts: {
 const makeDeps = (over: {
   clearScope: HandlerDeps['clearScope']
   pathname: string
-  queueDrain?: HandlerDeps['queueDrain']
+  runDrain?: HandlerDeps['runDrain']
   platform?: 'x' | 'instagram' | 'threads'
 }): HandlerDeps =>
   ({
@@ -58,14 +59,18 @@ const makeDeps = (over: {
     location: { pathname: over.pathname } as Location,
     clearScope: over.clearScope,
     clearLog: () => {},
-    queueDrain: over.queueDrain ?? (() => {}),
+    runDrain: over.runDrain ?? (async () => []),
   }) as unknown as HandlerDeps
 
 /** Drive the handler to completion (it returns true sync, then resolves async). */
 const run = (
   deps: HandlerDeps,
   message: { tweetId: string; scopes: string[]; allLists?: boolean },
-): Promise<{ results: { scope: string; ok: boolean; noop?: boolean }[] }> =>
+): Promise<{
+  mounted: boolean
+  drainEligible: boolean
+  results: { scope: string; ok: boolean; noop?: boolean }[]
+}> =>
   new Promise((resolve) => {
     handleClearTweet(message, deps, (r) => resolve(r as never))
   })
@@ -122,18 +127,54 @@ describe('handleClearTweet — scope wiring', () => {
     expect(res.results.find((r) => r.scope === 'bookmark')?.noop).toBe(true)
   })
 
-  it('not mounted → queues the clear for the scroll-drain, never clicks, empty results', async () => {
+  it('mounted DOM failure still returns terminal failure results', async () => {
+    document.body.append(tweetArticle({ tweetId: '103', liked: true }))
+    const res = await run(
+      makeDeps({
+        clearScope: async () => {
+          throw new Error('detached')
+        },
+        pathname: '/jack/likes',
+      }),
+      { tweetId: '103', scopes: ['like'], allLists: false },
+    )
+    expect(res.results).toEqual([{ scope: 'like', ok: false }])
+  })
+
+  it('not mounted reports eligibility without starting Drain', async () => {
     const clearScope = vi.fn<HandlerDeps['clearScope']>(async () => true)
-    const queueDrain = vi.fn<HandlerDeps['queueDrain']>()
-    const res = await run(makeDeps({ clearScope, queueDrain, pathname: '/jack/likes' }), {
+    const runDrain = vi.fn<HandlerDeps['runDrain']>()
+    const res = await run(makeDeps({ clearScope, runDrain, pathname: '/jack/likes' }), {
       tweetId: '999',
       scopes: ALL,
       allLists: true,
     })
     expect(clearScope).not.toHaveBeenCalled()
-    expect(res.results).toEqual([])
-    // The post virtualized out → hand it to the drain instead of dropping it.
-    expect(queueDrain).toHaveBeenCalledWith('999', ALL, true)
+    expect(res).toEqual({
+      _tag: 'ClearTweetResponse',
+      mounted: false,
+      drainEligible: true,
+      results: [],
+    })
+    expect(runDrain).not.toHaveBeenCalled()
+  })
+
+  it('wrong list is not eligible to Drain when allLists is off', async () => {
+    const res = await run(makeDeps({ clearScope: async () => true, pathname: '/jack/likes' }), {
+      tweetId: '999',
+      scopes: ['bookmark'],
+      allLists: false,
+    })
+    expect(res.drainEligible).toBe(false)
+  })
+
+  it('notInterested alone is never eligible for list Drain', async () => {
+    const res = await run(makeDeps({ clearScope: async () => true, pathname: '/jack/likes' }), {
+      tweetId: '999',
+      scopes: ['notInterested'],
+      allLists: true,
+    })
+    expect(res.drainEligible).toBe(false)
   })
 
   it('REGRESSION: non-x adapter short-circuits to empty results, never touches the DOM', async () => {
@@ -143,8 +184,55 @@ describe('handleClearTweet — scope wiring', () => {
       makeDeps({ clearScope, pathname: '/jack/likes', platform: 'instagram' }),
       { tweetId: '104', scopes: ALL, allLists: true },
     )
-    expect(res).toEqual({ _tag: 'ClearTweetResponse', results: [] })
+    expect(res).toEqual({
+      _tag: 'ClearTweetResponse',
+      mounted: false,
+      drainEligible: false,
+      results: [],
+    })
     expect(clearScope).not.toHaveBeenCalled()
+  })
+
+  it('worker-authorized Drain returns its terminal results', async () => {
+    const runDrain = vi.fn<HandlerDeps['runDrain']>(async () => [{ scope: 'like', ok: true }])
+    const response = await new Promise<unknown>((resolve) => {
+      handleClearDrain(
+        { tweetId: '999', scopes: ['like'], allLists: false },
+        makeDeps({
+          clearScope: async () => true,
+          runDrain,
+          pathname: '/jack/likes',
+        }),
+        resolve,
+      )
+    })
+
+    expect(runDrain).toHaveBeenCalledWith('999', ['like'], false)
+    expect(response).toEqual({
+      _tag: 'ClearDrainResponse',
+      results: [{ scope: 'like', ok: true }],
+    })
+  })
+
+  it('worker-authorized Drain converts a thrown DOM path into failure results', async () => {
+    const response = await new Promise<unknown>((resolve) => {
+      handleClearDrain(
+        { tweetId: '999', scopes: ['like'], allLists: false },
+        makeDeps({
+          clearScope: async () => true,
+          runDrain: async () => {
+            throw new Error('DOM detached')
+          },
+          pathname: '/jack/likes',
+        }),
+        resolve,
+      )
+    })
+
+    expect(response).toEqual({
+      _tag: 'ClearDrainResponse',
+      results: [{ scope: 'like', ok: false }],
+    })
   })
 })
 
@@ -381,7 +469,12 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     } as unknown as HandlerDeps
     const sendResponse = vi.fn<(r: unknown) => void>()
     dispatchOverlayMessage(raw, deps, sendResponse)
-    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearTweetResponse', results: [] })
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'ClearTweetResponse',
+      mounted: false,
+      drainEligible: false,
+      results: [],
+    })
   })
 
   it('ClearVisibleRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {

@@ -87,7 +87,7 @@ use these words, they mean exactly this.
   `list-clear.ts`) and, as of `src/core/download/retry-queue.ts`, by the **Retry
   Scheduler**'s own minimal port (a deliberately different shape from the Drain's
   `{ sleep, after }` Clock — retry-specific, not shared), and by **Settle**'s
-  confirm-window timer (`SettleClock` in `clear-coordinator.ts`, injected via
+  confirm-window timer (`SettleClock` in `clear-session.ts`, injected via
   `deps.clock`; its tests drive a hand-rolled fake clock in the `retry-plan.ts`
   idiom). The one scheduled-work holdout still on a raw timer is the
   stuck-download watchdog's `setInterval` in `entrypoints/background.ts` — kept

@@ -81,8 +81,12 @@ export interface ScrollDrainDeps {
 }
 
 export interface ScrollDrain {
-  /** Queue (or re-queue) a not-mounted clear and (re)arm the debounced scroll pass. */
-  readonly queue: (tweetId: string, scopes: ClearScope[], allLists: boolean) => void
+  /** Run one worker-authorized Drain and return its terminal per-scope result. */
+  readonly run: (
+    tweetId: string,
+    scopes: ClearScope[],
+    allLists: boolean,
+  ) => Promise<ReadonlyArray<ClearOutcome>>
 }
 
 export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
@@ -90,6 +94,31 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
   let draining = false
   let cancelDrain: (() => void) | null = null
   let emptyDrainPasses = 0
+  const waiters = new Map<
+    string,
+    Array<{
+      scopes: ReadonlyArray<ClearScope>
+      resolve: (results: ReadonlyArray<ClearOutcome>) => void
+    }>
+  >()
+
+  const resolveTweet = (tweetId: string, results: ReadonlyArray<ClearOutcome>): void => {
+    const waiting = waiters.get(tweetId) ?? []
+    waiters.delete(tweetId)
+    const byScope = new Map(results.map((result) => [result.scope, result]))
+    for (const waiter of waiting)
+      waiter.resolve(waiter.scopes.map((scope) => byScope.get(scope) ?? { scope, ok: false }))
+  }
+
+  const failPending = (): void => {
+    for (const [tweetId, pending] of pendingClears) {
+      pendingClears.delete(tweetId)
+      resolveTweet(
+        tweetId,
+        pending.scopes.map((scope) => ({ scope, ok: false })),
+      )
+    }
+  }
 
   async function drainPendingClears(): Promise<void> {
     if (draining || pendingClears.size === 0) return
@@ -97,7 +126,10 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
     // For You feed (NI has no membership to revisit) and must never hijack scrolling
     // elsewhere. A page switch mid-batch just leaves the rest pending (re-seeded on a
     // future download).
-    if (Option.isNone(pageScope(deps.path()))) return
+    if (Option.isNone(pageScope(deps.path()))) {
+      failPending()
+      return
+    }
     draining = true
     const startY = deps.scroll.position()
     let clearedThisPass = 0
@@ -116,7 +148,13 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
           /* v8 ignore next -- readyToClear only yields ids still in the queue */
           if (p === undefined) continue
           pendingClears.delete(id)
-          const results = await deps.clearMounted(id, p.scopes, p.allLists)
+          let results: ReadonlyArray<ClearOutcome>
+          try {
+            results = await deps.clearMounted(id, p.scopes, p.allLists)
+          } catch {
+            results = p.scopes.map((scope) => ({ scope, ok: false }))
+          }
+          resolveTweet(id, results)
           clearedThisPass += 1
           deps.report(
             'cleared',
@@ -151,12 +189,16 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
       // tail of a batch being abandoned just because one pass surfaced nothing, without
       // ever spinning forever on posts that genuinely aren't on this list.
       if (pendingClears.size > 0) {
-        if (clearedThisPass > 0) {
+        if (Option.isNone(pageScope(deps.path()))) {
+          failPending()
+        } else if (clearedThisPass > 0) {
           emptyDrainPasses = 0
           scheduleDrain()
         } else if (emptyDrainPasses < DRAIN_MAX_EMPTY_PASSES) {
           emptyDrainPasses += 1
           scheduleDrain(DRAIN_RETRY_BACKOFF_MS)
+        } else {
+          failPending()
         }
       }
     }
@@ -172,13 +214,22 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
     })
   }
 
-  const queue = (tweetId: string, scopes: ClearScope[], allLists: boolean): void => {
-    addPending(pendingClears, tweetId, scopes, allLists)
-    // Fresh work arrived — restore the full retry budget so earlier empty passes don't
-    // count against surfacing these posts.
-    emptyDrainPasses = 0
-    scheduleDrain()
+  const run = (
+    tweetId: string,
+    scopes: ClearScope[],
+    allLists: boolean,
+  ): Promise<ReadonlyArray<ClearOutcome>> => {
+    if (Option.isNone(pageScope(deps.path())))
+      return Promise.resolve(scopes.map((scope) => ({ scope, ok: false })))
+    return new Promise((resolve) => {
+      waiters.set(tweetId, [...(waiters.get(tweetId) ?? []), { scopes, resolve }])
+      addPending(pendingClears, tweetId, scopes, allLists)
+      // Fresh work arrived — restore the full retry budget so earlier empty passes don't
+      // count against surfacing these posts.
+      emptyDrainPasses = 0
+      scheduleDrain()
+    })
   }
 
-  return { queue }
+  return { run }
 }
