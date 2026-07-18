@@ -33,13 +33,18 @@ const mk = (tweetId: string): TweetRecord => ({
   capturedAt: 1000,
 })
 
-function fakeLedger(initial: unknown = null): LedgerStorage & { value: unknown } {
+function fakeLedger(
+  initial: unknown = null,
+  opts: { delay?: boolean } = {},
+): LedgerStorage & { value: unknown } {
   const box = {
     value: initial,
     async get() {
+      if (opts.delay) await tick()
       return box.value
     },
     async set(value: unknown) {
+      if (opts.delay) await tick()
       box.value = value
     },
   }
@@ -152,5 +157,41 @@ describe('makeCaptureOutbox — drain', () => {
 
     // The mirror failed, but the enqueued events remain ready — nothing was lost.
     expect(readyJobs(decodeLedger(ledger.value), 1000)).toHaveLength(2)
+  })
+
+  it('serializes interleaved mirror batches so neither capture is lost', async () => {
+    const ledger = fakeLedger(null, { delay: true })
+    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const outbox = makeCaptureOutbox({
+      getSettings: async () => cfg(),
+      ledger,
+      connect: () => ({ mutation }),
+      now: () => 1000,
+    })
+
+    outbox.mirrorCaptures([mk('1')])
+    outbox.mirrorCaptures([mk('2')])
+
+    await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(2))
+    const sent = mutation.mock.calls.flatMap(
+      ([, args]) => (args as { captures: ReadonlyArray<{ tweetId: string }> }).captures,
+    )
+    expect(sent.map((capture) => capture.tweetId)).toEqual(['1', '2'])
+  })
+
+  it('caps each Convex wire batch at 64 captures', async () => {
+    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const outbox = makeCaptureOutbox({
+      getSettings: async () => cfg(),
+      ledger: fakeLedger(),
+      connect: () => ({ mutation }),
+      now: () => 1000,
+    })
+
+    outbox.mirrorCaptures(Array.from({ length: 65 }, (_, i) => mk(String(i))))
+
+    await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(2))
+    expect((mutation.mock.calls[0]![1] as { captures: unknown[] }).captures).toHaveLength(64)
+    expect((mutation.mock.calls[1]![1] as { captures: unknown[] }).captures).toHaveLength(1)
   })
 })

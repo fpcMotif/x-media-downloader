@@ -25,14 +25,12 @@ import { Effect } from 'effect'
 import { makeFetchServiceLive } from '../core/fetch-service'
 import { makeConvexHttpPort } from '../core/sync/convex'
 import { makeSerialQueue } from '../core/serial-queue'
+import { runSerializedRmw, type DurableStore } from '../core/durable-store'
 import { isSyncConfigured } from './sync-config'
 import type { ConvexPort } from './convex-port'
 
 /** Storage seam for the durable mirror ledger (`local:captureOutbox` by default). */
-export interface LedgerStorage {
-  get(): Promise<unknown>
-  set(value: unknown): Promise<void>
-}
+export type LedgerStorage = DurableStore
 
 export interface CaptureOutbox {
   /** Mirror an accepted harvest batch to the Convex control plane. Gated strictly
@@ -59,6 +57,8 @@ export function makeCaptureOutbox(
   // interleave, and a lost update could drop a drained event. Re-sent events are
   // harmless — `captureId` makes the recordCaptures upsert idempotent server-side.
   const queue = makeSerialQueue()
+  const storeQueue = makeSerialQueue()
+  const readLedger = () => storeQueue.run(async () => decodeLedger(await ledger.get()))
 
   /** Drain ready capture events FIFO: send to `captures:recordCaptures` over the
    *  shared port, then drop the drained events. Control-plane errors are swallowed
@@ -68,7 +68,7 @@ export function makeCaptureOutbox(
     // oxlint-disable no-await-in-loop -- FIFO: each batch depends on the previous outcome
     for (;;) {
       const at = now()
-      const decoded = decodeLedger(await ledger.get())
+      const decoded = await readLedger()
       const batch = readyJobs(decoded, at)
       if (batch.length === 0) return
       try {
@@ -80,9 +80,11 @@ export function makeCaptureOutbox(
         /* control-plane mirror is best-effort; the local IndexedDB harvest is the source of truth */
         return
       }
-      let next = decodeLedger(await ledger.get())
-      for (const e of batch) next = claim(next, e.eventId, at)
-      await ledger.set(capLedger(next))
+      await runSerializedRmw(storeQueue, ledger, decodeLedger, (current) => {
+        let next = current
+        for (const e of batch) next = claim(next, e.eventId, at)
+        return capLedger(next)
+      })
     }
     // oxlint-enable no-await-in-loop
   }
@@ -101,10 +103,12 @@ export function makeCaptureOutbox(
         )
           return
         const at = now()
-        let decoded = decodeLedger(await ledger.get())
-        for (const record of records)
-          decoded = enqueue(decoded, captureEventFromRecord(record, settings.cloudDeviceId, at))
-        await ledger.set(decoded)
+        await runSerializedRmw(storeQueue, ledger, decodeLedger, (current) => {
+          let next = current
+          for (const record of records)
+            next = enqueue(next, captureEventFromRecord(record, settings.cloudDeviceId, at))
+          return next
+        })
         await drain(settings)
       })
     },
