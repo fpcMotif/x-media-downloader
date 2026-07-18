@@ -41,6 +41,13 @@ export default defineConfig({
   srcDir: 'src',
   manifest: {
     name: 'X Media Downloader',
+    // Build-stamped display version: changes the manifest bytes on EVERY build so
+    // a browser with this unpacked extension loaded re-reads (and re-hashes) the
+    // bundle instead of serving a stale, half-updated install (Chrome's content
+    // verifier otherwise blocks the service worker + content scripts after an
+    // in-place rebuild — observed as DidStartWorkerFail until manual reload).
+    // `version` stays untouched; this is cosmetic only.
+    version_name: `0.1.0 build ${new Date().toISOString()}`,
     description:
       'Download X (Twitter) tweet/thread media at original quality. Minimalist, local-only, no scraping.',
     // `identity` powers chrome.identity.launchWebAuthFlow for Cloud Upload OAuth
