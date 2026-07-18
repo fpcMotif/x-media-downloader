@@ -1,4 +1,4 @@
-# ADR-0020 — The worker authorizes Scroll Drain
+# ADR-0021 — The worker authorizes Scroll Drain
 
 - **Status:** Accepted (2026-07-16)
 
