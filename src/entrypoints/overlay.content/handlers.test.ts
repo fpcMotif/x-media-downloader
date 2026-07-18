@@ -335,6 +335,26 @@ describe('sweepSavedStatus — Saved ✓ chip', () => {
 
     expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
   })
+
+  it('paints nothing when scope is lost while the request is in flight', async () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+    let inScope = true
+    let resolveRequest: ((ids: string[]) => void) | undefined
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(
+      () =>
+        new Promise<string[]>((resolve) => {
+          resolveRequest = resolve
+        }),
+    )
+
+    const sweep = sweepSavedStatus({ document, inScope: () => inScope, requestSavedStatus })
+    inScope = false // route changed / setting toggled mid-flight
+    resolveRequest?.(['1'])
+    await sweep
+
+    expect(requestSavedStatus).toHaveBeenCalledWith(['1'])
+    expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
 })
 
 describe('handleSavedStatusUpdate — late cross-device chips', () => {

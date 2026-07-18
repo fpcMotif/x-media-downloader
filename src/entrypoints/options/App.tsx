@@ -1,5 +1,5 @@
 import type { ComponentType } from 'preact'
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { getSettings, setSettings } from '@/core/settings'
 import type { Settings } from '@/core/schema'
 import { cn } from '@/lib/utils'
@@ -84,10 +84,21 @@ export function App() {
     history.replaceState(null, '', `#${id}`)
   }
 
+  // One owned "Saved" feedback timer: a newer save cancels the older timer
+  // before rearming, and unmount cancels whatever is pending.
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    return () => clearTimeout(savedTimer.current)
+  }, [])
+
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
     setSaved(true)
-    setTimeout(() => setSaved(false), 1400)
+    clearTimeout(savedTimer.current)
+    savedTimer.current = setTimeout(() => {
+      setSaved(false)
+      savedTimer.current = undefined
+    }, 1400)
   }
   const reload = async (): Promise<void> => {
     setSettingsState(await getSettings())
@@ -145,19 +156,25 @@ function SettingsSidebar({
         </span>
       </div>
 
-      <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground">
+      <p
+        id="settings-nav-label"
+        className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground"
+      >
         Settings
       </p>
-      <nav className="mb-4 flex flex-col gap-0.5">
+      <nav aria-labelledby="settings-nav-label" className="mb-4 flex flex-col gap-0.5">
         {settingsSections.map((s) => (
           <NavItem key={s.id} section={s} active={active} onSelect={onSelect} />
         ))}
       </nav>
 
-      <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground">
+      <p
+        id="library-nav-label"
+        className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground"
+      >
         Library
       </p>
-      <nav className="flex flex-col gap-0.5">
+      <nav aria-labelledby="library-nav-label" className="flex flex-col gap-0.5">
         {librarySections.map((s) => (
           <NavItem key={s.id} section={s} active={active} onSelect={onSelect} />
         ))}

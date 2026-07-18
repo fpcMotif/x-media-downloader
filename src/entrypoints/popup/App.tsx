@@ -737,25 +737,37 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    let handle: ReturnType<typeof setTimeout>
+    // `active` gates BOTH the state update and any rearm: the popup can close
+    // before sendMessage settles, and an async completion must never schedule
+    // work (or set state) after unmount.
+    let active = true
+    let handle: ReturnType<typeof setTimeout> | undefined
+
+    const schedule = (delayMs: number): void => {
+      if (!active) return
+      handle = setTimeout(poll, delayMs)
+    }
+
     const poll = (): void => {
       void browser.runtime
         .sendMessage({ _tag: 'MetricsRequest' })
         .then((m) => {
+          if (!active) return false
           const snapshot = m as MetricsSnapshot | null
           setMetrics(snapshot)
           // Slow the cadence when no batch is active — the monitor (and thus the
           // snapshot) is only shown while total > 0.
-          const next = snapshot && snapshot.total > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS
-          handle = setTimeout(poll, next)
-          return next
+          schedule(snapshot && snapshot.total > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS)
+          return true
         })
-        .catch(() => {
-          handle = setTimeout(poll, POLL_IDLE_MS)
-        })
+        .catch(() => schedule(POLL_IDLE_MS))
     }
+
     poll()
-    return () => clearTimeout(handle)
+    return () => {
+      active = false
+      clearTimeout(handle) // no-op while the first timer was never armed
+    }
   }, [])
 
   // Cluster status lines auto-clear after 6s (§2.6) — except the actionable
@@ -774,6 +786,13 @@ export function App() {
     return () => clearTimeout(timer)
   }, [releaseMsg])
 
+  // One owned "Saved" feedback timer: a newer save cancels the older timer
+  // before rearming, and unmount cancels whatever is pending.
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    return () => clearTimeout(savedTimer.current)
+  }, [])
+
   if (!settings) {
     return <div className="xmd-popup xmd-popup--loading">Loading...</div>
   }
@@ -785,7 +804,11 @@ export function App() {
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
     setSaved(true)
-    setTimeout(() => setSaved(false), 1200)
+    clearTimeout(savedTimer.current)
+    savedTimer.current = setTimeout(() => {
+      setSaved(false)
+      savedTimer.current = undefined
+    }, 1200)
   }
 
   const dismissFirstRun = (): void => void markDone().then(setIntroState)

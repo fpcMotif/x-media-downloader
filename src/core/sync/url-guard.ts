@@ -1,6 +1,7 @@
 import { Data } from 'effect'
 import { bindFetch } from '../fetch'
 import { cdnHostsForAllAdapters } from '../adapters/registry'
+import type { MediaItem } from '../schema'
 
 /**
  * SSRF guard for the cloud-destinations byte path (ADR-0013 §5.3). The extension
@@ -95,6 +96,35 @@ export function assertAllowedMediaUrls(...urls: ReadonlyArray<string | undefined
   for (const url of urls) {
     if (url !== undefined) assertAllowedMediaUrl(url)
   }
+}
+
+/** One item dropped by {@link partitionAllowedMediaItems}, with the guard's reason. */
+export interface RejectedMediaItemUrl {
+  readonly itemId: string
+  readonly reason: string
+}
+
+/** Fail-closed trust boundary for page-derived Media Items: split `items` into
+ *  those whose URLs pass the CDN allow-list and those rejected (with reasons).
+ *  A mixed batch keeps its valid items; non-guard errors still propagate. */
+export function partitionAllowedMediaItems(items: ReadonlyArray<MediaItem>): {
+  readonly allowed: MediaItem[]
+  readonly rejected: RejectedMediaItemUrl[]
+} {
+  const allowed: MediaItem[] = []
+  const rejected: RejectedMediaItemUrl[] = []
+
+  for (const item of items) {
+    try {
+      assertAllowedMediaUrls(item.url, item.previewUrl)
+      allowed.push(item)
+    } catch (cause) {
+      if (!(cause instanceof UnsafeUrlError)) throw cause
+      rejected.push({ itemId: item.id, reason: cause.reason })
+    }
+  }
+
+  return { allowed, rejected }
 }
 
 /**

@@ -21,12 +21,16 @@ import {
   postGrabActive,
   markAllGrabbed,
   type GrabModifier,
+  type ModifierFlags,
   type QuickGrabState,
   type QuickGrabUiPhase,
 } from '../../core/quickgrab'
+import { makeLatestFrameTask } from '../../core/latest-frame'
 import {
   badgeNudgeDelayMs,
   badgeSavedRevertMs,
+  badgeAriaLabel,
+  badgeStatusMessage,
   beginSave,
   enterMedia,
   hiddenBadge,
@@ -37,6 +41,8 @@ import {
 } from '../../core/badge'
 import {
   beginSendAll,
+  launcherAriaLabel,
+  launcherStatusMessage,
   launcherFailedRevertMs,
   launcherSavedRevertMs,
   resolveSendAll,
@@ -74,6 +80,8 @@ import {
   type HandlerDeps,
 } from './handlers'
 import { makeScrollDrain } from '../../core/clear/scroll-drain'
+import { makeSavedStatusLifecycle } from './saved-status-lifecycle'
+import { partitionAllowedMediaItems } from '../../core/sync/url-guard'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type {
   CaptureTweets,
@@ -281,6 +289,10 @@ async function dismissFeedbackStub(cell: Element | null): Promise<void> {
 // Debounce for the cross-device "Saved" status sweep: a burst of scroll/render
 // mutations collapses into one overlay→background round-trip + chip pass.
 const SAVED_SWEEP_DEBOUNCE_MS = 500
+
+/** Trailing debounce for the X video-recovery scan after scrolling idles —
+ *  keeps the full player scan off every scroll frame. */
+const VIDEO_RECOVERY_SCROLL_IDLE_MS = 250
 
 /** Type-only narrowing (no runtime decode) — pins an `unknown` reply to the
  *  schema type that already describes it, in place of an `as` assertion. */
@@ -620,13 +632,6 @@ const traceBadge = traceDownloadUi('badge')
 /** A source-bound `(stage, opts) => void` trace emitter (grab or badge). */
 type TraceFn = ReturnType<typeof traceDownloadUi>
 
-/** Accessible name for the badge by the one Media Item it downloads. */
-const BADGE_ARIA: Record<MediaItem['type'], string> = {
-  photo: 'Download photo',
-  video: 'Download video',
-  gif: 'Download GIF',
-}
-
 /** Pill copy per launcher phase; the idle copy doubles as the hover-revealed action label. */
 const LAUNCHER_LABEL: Record<LauncherPhase, string> = {
   idle: 'Download all',
@@ -808,6 +813,10 @@ export default defineContentScript({
     let pointerSeen = false
     let hoverArmedAt = 0
     let renderedScanQueued = false
+    let renderedScanNeedsRecovery = false
+    // Trailing scroll-idle video recovery timer (X only) — see
+    // scheduleScrollVideoRecovery.
+    let scrollRecoveryTimer: ReturnType<typeof setTimeout> | null = null
     let scrollHitTestQueued = false
 
     // Download badge (per-media fast path). `badgeEnabled` fails closed like
@@ -891,16 +900,37 @@ export default defineContentScript({
       if (store.addDetected(adapter.detectRenderedMedia(document, location.pathname)).length > 0) {
         rerender()
       }
-      recoverMissingVideos()
     }
 
-    const queueRenderedMediaScan = (): void => {
+    // Recovery (the X-specific full player scan + syndication fetch) is requested
+    // EXPLICITLY: startup/settle/manual paths pass `true`; per-frame scroll scans
+    // stay detection-only and let scheduleScrollVideoRecovery fire one trailing
+    // full scan after the scroll idles.
+    const queueRenderedMediaScan = (recoverVideos = false): void => {
+      renderedScanNeedsRecovery ||= recoverVideos
       if (renderedScanQueued) return
       renderedScanQueued = true
       ctx.requestAnimationFrame(() => {
         renderedScanQueued = false
+        const recover = renderedScanNeedsRecovery
+        renderedScanNeedsRecovery = false
         scanRenderedMedia()
+        if (recover) recoverMissingVideos()
       })
+    }
+
+    // One trailing recovery after scrolling stops: each scroll frame re-arms the
+    // debounce, so the costly player scan runs once per burst, not per frame.
+    const scheduleScrollVideoRecovery = (): void => {
+      if (adapter.platform !== 'x') return
+      if (scrollRecoveryTimer !== null) {
+        clearTimeout(scrollRecoveryTimer)
+        scrollRecoveryTimer = null
+      }
+      scrollRecoveryTimer = setTimeout(() => {
+        scrollRecoveryTimer = null
+        queueRenderedMediaScan(true)
+      }, VIDEO_RECOVERY_SCROLL_IDLE_MS)
     }
 
     // X mounts a video player asynchronously after a navigation / cache render, so
@@ -915,10 +945,16 @@ export default defineContentScript({
     }
     const settleRenderedScan = (): void => {
       clearSettleTimers()
-      queueRenderedMediaScan()
+      // A settle (startup / SPA navigation) supersedes any pending trailing
+      // scroll recovery — the full scans below cover it.
+      if (scrollRecoveryTimer !== null) {
+        clearTimeout(scrollRecoveryTimer)
+        scrollRecoveryTimer = null
+      }
+      queueRenderedMediaScan(true)
       settleTimers = [
-        setTimeout(queueRenderedMediaScan, 700),
-        setTimeout(queueRenderedMediaScan, 2000),
+        setTimeout(() => queueRenderedMediaScan(true), 700),
+        setTimeout(() => queueRenderedMediaScan(true), 2000),
       ]
     }
 
@@ -989,29 +1025,37 @@ export default defineContentScript({
     // request is network-bounded (overlay → background → maybe Convex), so it is
     // debounced; the chip is injected idempotently and only on a positive reply.
     // Scope-gated to the home + List timelines, and gated on the `showSavedStatus`
-    // setting (applySettings keeps `savedStatusOn` live).
+    // setting (applySettings keeps `savedStatusOn` live). The lifecycle controller
+    // owns the observer/timer/sweep — X-only (SavedIndex/Convex queries +
+    // TWEET_ARTICLE_SEL/tweetIdOfArticle are X-DOM-specific), so `isActive`
+    // includes the platform gate and the observer is never constructed off-X.
     let savedStatusOn = false
     // Tweet-text harvest gate + breadth flag (§7); applySettings keeps them live.
     let captureEnabled = false
     let captureAllScrolled = false
-    let savedSweepTimer: ReturnType<typeof setTimeout> | null = null
-    const scheduleSavedSweep = (): void => {
-      if (savedSweepTimer !== null) clearTimeout(savedSweepTimer)
-      savedSweepTimer = setTimeout(() => {
-        savedSweepTimer = null
-        void sweepSavedStatus({
+    let savedStatusAlive = true
+    const savedStatusIsActive = (): boolean =>
+      savedStatusAlive &&
+      adapter.platform === 'x' &&
+      savedStatusVisible(location.pathname, savedStatusOn)
+    const savedStatusLifecycle = makeSavedStatusLifecycle({
+      isActive: savedStatusIsActive,
+      root: document.body,
+      delayMs: SAVED_SWEEP_DEBOUNCE_MS,
+      makeObserver: (notify) => new MutationObserver(notify),
+      clock: {
+        after: (ms, run) => {
+          const t = setTimeout(run, ms)
+          return () => clearTimeout(t)
+        },
+      },
+      sweep: () =>
+        sweepSavedStatus({
           document,
-          inScope: () => savedStatusVisible(location.pathname, savedStatusOn),
+          inScope: savedStatusIsActive,
           requestSavedStatus,
-        })
-      }, SAVED_SWEEP_DEBOUNCE_MS)
-    }
-    // X-only: SavedIndex/Convex queries + TWEET_ARTICLE_SEL/tweetIdOfArticle are
-    // X-DOM-specific — never construct this observer on Instagram/Threads tabs.
-    if (adapter.platform === 'x') {
-      const savedSweepObserver = new MutationObserver(scheduleSavedSweep)
-      savedSweepObserver.observe(document.body, { childList: true, subtree: true })
-    }
+        }),
+    })
 
     const clearDwell = (): void => {
       if (dwell !== null) {
@@ -1144,50 +1188,6 @@ export default defineContentScript({
           ...store.keysForTweet(item.postId),
           ...(codePostId ? store.keysForTweet(codePostId) : []),
         ])
-        // TEMP DIAG (grab-all) — DEV-gated (see below), REMOVE after confirming
-        // on live IG/Threads.
-        // Breaks the payload down by media TYPE and by postId so a missing-video
-        // report can be pinned to the right boundary: `sendingTypes` lacking the
-        // videos ⇒ they never got RESOLVED into the payload (a postId/resolution
-        // bug); `sendingTypes` INCLUDING them but nothing downloading ⇒ they were
-        // resolved and the dedup/size gate dropped them downstream. `videosInStore`
-        // + `postIdCounts` expose a postId split (videos indexed under a different
-        // postId than `codePostId`, so `valuesForTweet(codePostId)` misses them).
-        // The whole block — including the per-call type/postId scans and the
-        // JSON.stringify — is skipped in prod builds.
-        if (import.meta.env.DEV) {
-          const typeCounts = (arr: readonly MediaItem[]): Record<string, number> =>
-            arr.reduce<Record<string, number>>((a, i) => {
-              a[i.type] = (a[i.type] ?? 0) + 1
-              return a
-            }, {})
-          console.info(
-            '[XMD grab-all diag]',
-            JSON.stringify({
-              platform: adapter.platform,
-              hoveredType: item.type,
-              hoveredPostId: item.postId,
-              hoveredId: item.id,
-              hoveredInStore: store.get(item.id) !== undefined,
-              domCode: code,
-              codePostId: codePostId ?? null,
-              codeMatchesHovered: (codePostId ?? null) === item.postId,
-              teePostCount: teePost.length,
-              teeTypes: typeCounts(teePost),
-              sending: items.length,
-              sendingTypes: typeCounts(items),
-              videosInStore: store
-                .values()
-                .filter((i) => i.type === 'video')
-                .map((i) => ({ postId: i.postId, index: i.index, id: i.id })),
-              postIdCounts: store.values().reduce<Record<string, number>>((a, i) => {
-                a[i.postId] = (a[i.postId] ?? 0) + 1
-                return a
-              }, {}),
-              storeCount: store.count,
-            }),
-          )
-        }
       }
       // After the dwell completes, move out of the charge state immediately.
       // The background reply then confirms whether the browser/aria2 handoff started.
@@ -1254,8 +1254,8 @@ export default defineContentScript({
       }
     }
 
-    const syncGrabFromPointer = (e: MouseEvent): boolean => {
-      const next = syncModifierFromFlags(grab, e, qgModifier)
+    const syncGrabFromPointer = (flags: ModifierFlags): boolean => {
+      const next = syncModifierFromFlags(grab, flags, qgModifier)
       if (next === grab) return grab.active
       if (!next.active) {
         releaseAll()
@@ -1449,7 +1449,7 @@ export default defineContentScript({
       // X-only (SavedIndex/Convex queries + TWEET_ARTICLE_SEL are X-DOM-specific):
       // don't even arm the debounce timer on Instagram/Threads.
       savedStatusOn = s.showSavedStatus
-      if (adapter.platform === 'x') scheduleSavedSweep()
+      savedStatusLifecycle.sync()
       // Tweet-text harvest (§7): default OFF. `captureAllScrolled` widens breadth
       // from media/thread tweets to every scrolled text-only tweet.
       captureEnabled = s.captureEnabled
@@ -1485,20 +1485,26 @@ export default defineContentScript({
       const lightbox = media.closest('[aria-modal="true"], [role="dialog"]') !== null
       const inset = lightbox ? 12 : 10
       const type = badge.key ? store.resolve(badge.key)?.type : undefined
+      const mediaType = type ?? 'photo'
       return (
-        <button
-          type="button"
-          class={`xmd-badge xmd-badge--${badge.phase}${lightbox ? ' xmd-badge--lightbox' : ''}`}
-          style={{
-            top: `${r.top + inset}px`,
-            left: `${r.left + inset}px`,
-          }}
-          aria-label={BADGE_ARIA[type ?? 'photo']}
-          aria-busy={badge.phase === 'queued'}
-          onClick={onBadgeClick}
-        >
-          <PhaseGlyphs block="xmd-badge" />
-        </button>
+        <>
+          <button
+            type="button"
+            class={`xmd-badge xmd-badge--${badge.phase}${lightbox ? ' xmd-badge--lightbox' : ''}`}
+            style={{
+              top: `${r.top + inset}px`,
+              left: `${r.left + inset}px`,
+            }}
+            aria-label={badgeAriaLabel(badge.phase, mediaType)}
+            aria-busy={badge.phase === 'queued'}
+            onClick={onBadgeClick}
+          >
+            <PhaseGlyphs block="xmd-badge" />
+          </button>
+          <output class="xmd-sr-only" aria-live="polite" aria-atomic="true">
+            {badgeStatusMessage(badge.phase, mediaType)}
+          </output>
+        </>
       )
     }
 
@@ -1545,7 +1551,7 @@ export default defineContentScript({
               <button
                 type="button"
                 class="xmd-launcher__dl"
-                aria-label={`Download all detected media (${store.count})`}
+                aria-label={launcherAriaLabel(launcher, store.count)}
                 aria-busy={launcher === 'queued'}
                 onClick={onLauncherClick}
               >
@@ -1561,6 +1567,9 @@ export default defineContentScript({
                   {LAUNCHER_LABEL[launcher]}
                 </span>
               </button>
+              <output class="xmd-sr-only" aria-live="polite" aria-atomic="true">
+                {launcherStatusMessage(launcher, store.count)}
+              </output>
               <span class="xmd-launcher__rule" aria-hidden="true" />
               <button
                 type="button"
@@ -1666,7 +1675,9 @@ export default defineContentScript({
       }
     }
 
-    document.addEventListener('xmd:media-response', (event) => {
+    // Named so invalidation can remove it — a stale tab must not retain
+    // duplicate response callbacks (body unchanged apart from 001's URL filter).
+    const handleMediaResponse = (event: Event): void => {
       const detail = (event as CustomEvent<{ path: string; body: string }>).detail
       let json: unknown
       try {
@@ -1675,7 +1686,13 @@ export default defineContentScript({
         return /* non-JSON tee body */
       }
       try {
-        if (store.addDetected(adapter.detectFromResponse(detail.path, json)).length > 0) rerender()
+        // Fail-closed trust boundary: page scripts can forge 'xmd:media-response'
+        // events, so only CDN-allow-listed items ever reach the store.
+        const checked = partitionAllowedMediaItems(adapter.detectFromResponse(detail.path, json))
+        if (checked.rejected.length > 0) {
+          console.warn(`[XMD] dropped ${checked.rejected.length} media item(s) with unsafe URLs`)
+        }
+        if (store.addDetected(checked.allowed).length > 0) rerender()
         // Instagram/Threads only (X omits extractPostCodes): links the DOM's
         // URL-shortcode to the tee's own postId (which may differ — e.g.
         // Instagram's numeric pk vs its /p/{code}/ shortcode), so a hovered
@@ -1689,7 +1706,8 @@ export default defineContentScript({
       // Knowledge Capture is X-only-forever (design spec Non-goals): harvestTweets'
       // tree walker assumes X's tweet-node JSON shape, so never call it off-platform.
       if (adapter.platform === 'x') harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
-    })
+    }
+    document.addEventListener('xmd:media-response', handleMediaResponse)
 
     // Cold-navigation blind spot: on a direct navigation to a reel/post URL,
     // the MAIN-world XHR/fetch tee above sees nothing for the first item —
@@ -1724,22 +1742,28 @@ export default defineContentScript({
     // TEMP hover diag — throttle key, DEV-gated (see below), REMOVE after
     // debugging grab failures.
     let hoverProbeLast: Element | null = null
-    ctx.addEventListener(document, 'mousemove', (event) => {
-      const e = event as MouseEvent
-      lastX = e.clientX
-      lastY = e.clientY
-      pointerSeen = true
+    // A mousemove sample carries ONLY value data — never the event object or a
+    // resolved DOM node — so nothing stale survives across frames.
+    interface MouseMoveSample extends ModifierFlags {
+      readonly target: Element | null
+      readonly clientX: number
+      readonly clientY: number
+    }
+    // The costly part of mousemove (hit-test → state → maybe render), run at
+    // most once per frame via the latest-sample scheduler below. Branch order
+    // is exactly the old raw listener's.
+    const runMouseHitTest = (sample: MouseMoveSample): void => {
       if (!qgEnabled && !badgeEnabled) return
       // Pointer events are the ground truth. They both self-heal a swallowed
       // keyup and cover the common "hold modifier, then hover media" path where
       // the page never saw the initial keydown.
-      const grabbing = qgEnabled && syncGrabFromPointer(e)
-      refreshPostGrabArmed(postGrabActive(grab.active, e, qgModifier, postGrabEligible))
-      const target = e.target as Element | null
+      const grabbing = qgEnabled && syncGrabFromPointer(sample)
+      refreshPostGrabArmed(postGrabActive(grab.active, sample, qgModifier, postGrabEligible))
+      const target = sample.target
       // Hovering this extension's own UI (the badge) must not read as leaving
       // the media underneath it — the entrance would hide before the click.
       if (target?.tagName === 'XMD-OVERLAY') return
-      const media = resolveHoverMedia(target, e.clientX, e.clientY)
+      const media = resolveHoverMedia(target, sample.clientX, sample.clientY)
       const key = previewKeyFromMedia(adapter, media)
       // TEMP hover diag — logs (once per element) WHY a hovered media does/doesn't
       // resolve, but only while the grab modifier is held. DEV-gated: the whole
@@ -1753,11 +1777,11 @@ export default defineContentScript({
               ? media.poster || media.currentSrc || media.src
               : media.currentSrc || media.src
             : ''
-          let host = ''
+          let hostName = ''
           let family: string | null = null
           try {
             const u = new URL(src)
-            host = u.hostname
+            hostName = u.hostname
             family = u.pathname.split('/').find((p) => /^t\d+(\.\d+-\d+)?$/.test(p)) ?? null
           } catch {
             /* blob: or empty src */
@@ -1767,7 +1791,7 @@ export default defineContentScript({
             JSON.stringify({
               mediaTag: media?.tagName ?? null,
               key,
-              host,
+              host: hostName,
               family,
               srcKind: src.startsWith('blob:') ? 'blob:' : src.slice(0, 44),
               targetTag: target.tagName,
@@ -1783,7 +1807,34 @@ export default defineContentScript({
       }
       if (grabbing) focusHover(media, key)
       focusBadge(media, key)
-    })
+    }
+    // Coalesce a burst of mousemove events into ONE hit-test per frame, keeping
+    // only the newest pointer sample (same cadence as queueScrollHitTest).
+    const mouseHitTest = makeLatestFrameTask<MouseMoveSample>(
+      (run) => ctx.requestAnimationFrame(run),
+      runMouseHitTest,
+    )
+    ctx.addEventListener(
+      document,
+      'mousemove',
+      (event) => {
+        const e = event as MouseEvent
+        lastX = e.clientX
+        lastY = e.clientY
+        pointerSeen = true
+        if (!qgEnabled && !badgeEnabled) return
+        mouseHitTest.push({
+          target: e.target as Element | null,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+        })
+      },
+      { passive: true },
+    )
 
     // The per-scroll hit-test: re-run resolution so the dwell and ring track what
     // is actually under the pointer, and refresh the rect when the same media
@@ -1838,6 +1889,7 @@ export default defineContentScript({
       'scroll',
       () => {
         queueRenderedMediaScan()
+        scheduleScrollVideoRecovery()
         queueScrollHitTest()
       },
       { capture: true, passive: true },
@@ -1867,9 +1919,17 @@ export default defineContentScript({
     })
 
     ctx.addEventListener(window, 'keyup', (event) => {
-      if (isModifierKey((event as KeyboardEvent).key, qgModifier)) releaseAll()
+      // Drop any queued-but-unrun pointer sample alongside the grab: a stale
+      // altKey sample must not re-arm (or fire) after the modifier is gone.
+      if (isModifierKey((event as KeyboardEvent).key, qgModifier)) {
+        mouseHitTest.clear()
+        releaseAll()
+      }
     })
-    ctx.addEventListener(window, 'blur', () => releaseAll())
+    ctx.addEventListener(window, 'blur', () => {
+      mouseHitTest.clear()
+      releaseAll()
+    })
     // The Cmd augment (grab whole post): update all-mode even without a mousemove
     // and re-label a live ring. `allAugmentModifier(qgModifier)` is read fresh each
     // event because the base modifier can change via settings at runtime.
@@ -1886,15 +1946,19 @@ export default defineContentScript({
       refreshPostGrabArmed(false)
     })
     ctx.addEventListener(document, 'mouseleave', () => {
+      mouseHitTest.clear()
       focusHover(null, null)
       focusBadge(null, null)
     })
 
     ctx.addEventListener(window, 'wxt:locationchange', () => {
+      // A pre-navigation sample must not re-arm UI against detached DOM.
+      mouseHitTest.clear()
       releaseAll()
       resetBadge()
       focusHover(null, null)
       settleRenderedScan()
+      savedStatusLifecycle.sync()
       rerender()
     })
 
@@ -1952,6 +2016,7 @@ export default defineContentScript({
       // The overlay is about to be torn down (WXT removes the shadow host on
       // invalidation). Say why, once, so a stale tab isn't a silent dead end.
       notifyContextLost()
+      mouseHitTest.clear()
       clearDwell()
       setCursorActive(false)
       grab = idleQuickGrab
@@ -1960,8 +2025,13 @@ export default defineContentScript({
       clearLauncherRevert()
       clearRescanSpin()
       clearSettleTimers()
+      if (scrollRecoveryTimer !== null) {
+        clearTimeout(scrollRecoveryTimer)
+        scrollRecoveryTimer = null
+      }
       launcher = 'idle'
       renderedScanQueued = false
+      renderedScanNeedsRecovery = false
       scrollHitTestQueued = false
       revealObserver?.disconnect()
       revealObserver = null
@@ -1969,8 +2039,12 @@ export default defineContentScript({
       stubObserver = null
       stubStyle?.remove()
       stubStyle = null
+      // Saved-status lifecycle dies first: no sweep may paint or rearm after this.
+      savedStatusAlive = false
+      savedStatusLifecycle.dispose()
       // `browser.runtime` is already undefined once the context is invalidated.
       browser.runtime?.onMessage?.removeListener(handleRuntimeMessage)
+      document.removeEventListener('xmd:media-response', handleMediaResponse)
     })
   },
 })

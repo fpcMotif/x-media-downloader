@@ -16,7 +16,12 @@ describe('CaptureQuickActions stays mounted while an erase flash is pending (Bat
     expect(source).not.toMatch(/if \(tweets === 0\) return null/u)
   })
 
-  it('flashStatus is still the sole owner of clearing statusMsg (no early unmount races it)', () => {
-    expect(source).toContain('setTimeout(() => setStatusMsg(null), 5000)')
+  it('flashStatus cancels the prior timer before rearming (latest flash wins)', () => {
+    expect(source).toContain('clearTimeout(statusTimer.current)')
+    expect(source).toContain('statusTimer.current = setTimeout(() => {\n      setStatusMsg(null)')
+  })
+
+  it('unmount cancels the pending flash timer', () => {
+    expect(source).toContain('return () => clearTimeout(statusTimer.current)')
   })
 })

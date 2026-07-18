@@ -147,6 +147,9 @@ export async function sweepSavedStatus(deps: {
   }
   if (byTweet.size === 0) return
   const saved = await deps.requestSavedStatus([...byTweet.keys()])
+  // The route/setting may have changed while the request was in flight — never
+  // paint chips after scope was lost.
+  if (!deps.inScope()) return
   for (const tweetId of saved) {
     const article = byTweet.get(tweetId)
     if (article !== undefined) markArticleSaved(article, deps.document)

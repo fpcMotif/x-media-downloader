@@ -239,17 +239,22 @@ function playerPosterUrl(player: Element): string | null {
 export function videoTweetsNeedingRecovery(
   root: ParentNode,
   detectedKeys: ReadonlySet<string>,
+  attemptedTweetIds: ReadonlySet<string> = new Set(),
 ): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   for (const player of root.querySelectorAll(VIDEO_PLAYER_SEL)) {
+    // Resolve the tweet id FIRST: an already-attempted (or unidentifiable)
+    // tweet skips the poster/key work entirely — scrolling must not redo it.
+    const article = player.closest(TWEET_ARTICLE_SEL)
+    const tweetId = article ? contextFromArticle(article)?.tweetId : undefined
+    if (!tweetId || seen.has(tweetId) || attemptedTweetIds.has(tweetId)) continue
     const poster = playerPosterUrl(player)
     if (!poster) continue
     const key = mediaKeyFromUrl(poster)
     if (!key || detectedKeys.has(key)) continue
-    const article = player.closest(TWEET_ARTICLE_SEL)
-    const tweetId = article ? contextFromArticle(article)?.tweetId : undefined
-    if (!tweetId || seen.has(tweetId)) continue
+    // Mark seen only on acceptance: a second player for the same tweet may
+    // still qualify when the first had no usable poster.
     seen.add(tweetId)
     out.push(tweetId)
   }

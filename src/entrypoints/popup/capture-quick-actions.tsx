@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { cn } from '@/lib/utils'
 import { EraserIcon } from '@/components/icons'
 import { runCaptureExport, type CaptureSummary } from '@/components/capture-export'
@@ -35,6 +35,13 @@ interface CaptureQuickActionsProps {
 export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsProps) {
   const [open, setOpen] = useState(false)
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
+  // One owned status-flash timer: a newer flash cancels the older timer before
+  // rearming, and unmount cancels whatever is pending. Hooks stay above the
+  // conditional return below.
+  const statusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    return () => clearTimeout(statusTimer.current)
+  }, [])
 
   const tweets = summary?.tweets ?? 0
   // A successful erase zeroes the parent's captureSummary synchronously in
@@ -45,7 +52,11 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
 
   const flashStatus = (msg: string): void => {
     setStatusMsg(msg)
-    setTimeout(() => setStatusMsg(null), 5000)
+    clearTimeout(statusTimer.current)
+    statusTimer.current = setTimeout(() => {
+      setStatusMsg(null)
+      statusTimer.current = undefined
+    }, 5000)
   }
 
   const exportAll = async (): Promise<void> => {

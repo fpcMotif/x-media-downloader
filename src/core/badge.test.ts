@@ -3,6 +3,8 @@ import {
   hiddenBadge,
   badgeNudgeDelayMs,
   badgeSavedRevertMs,
+  badgeAriaLabel,
+  badgeStatusMessage,
   canShowBadge,
   enterMedia,
   leaveMedia,
@@ -169,5 +171,45 @@ describe('leaving the media', () => {
 
   it('leaves an already-hidden badge as the same reference', () => {
     expect(leaveMedia(hiddenBadge)).toBe(hiddenBadge)
+  })
+})
+
+describe('badge aria name and status copy', () => {
+  it('names idle phases as the download action per type', () => {
+    for (const phase of ['hidden', 'shown', 'nudged'] as const) {
+      expect(badgeAriaLabel(phase, 'photo')).toBe('Download photo')
+      expect(badgeAriaLabel(phase, 'video')).toBe('Download video')
+      expect(badgeAriaLabel(phase, 'gif')).toBe('Download GIF')
+      expect(badgeStatusMessage(phase, 'photo')).toBe('')
+      expect(badgeStatusMessage(phase, 'video')).toBe('')
+      expect(badgeStatusMessage(phase, 'gif')).toBe('')
+    }
+  })
+
+  it('announces the in-flight save', () => {
+    expect(badgeAriaLabel('queued', 'photo')).toBe('Saving photo')
+    expect(badgeStatusMessage('queued', 'photo')).toBe('Saving photo.')
+    expect(badgeAriaLabel('queued', 'video')).toBe('Saving video')
+    expect(badgeStatusMessage('queued', 'video')).toBe('Saving video.')
+    expect(badgeAriaLabel('queued', 'gif')).toBe('Saving GIF')
+    expect(badgeStatusMessage('queued', 'gif')).toBe('Saving GIF.')
+  })
+
+  it('announces success with an uppercase GIF', () => {
+    expect(badgeAriaLabel('saved', 'photo')).toBe('Photo saved')
+    expect(badgeStatusMessage('saved', 'photo')).toBe('Photo saved.')
+    expect(badgeAriaLabel('saved', 'video')).toBe('Video saved')
+    expect(badgeStatusMessage('saved', 'video')).toBe('Video saved.')
+    expect(badgeAriaLabel('saved', 'gif')).toBe('GIF saved')
+    expect(badgeStatusMessage('saved', 'gif')).toBe('GIF saved.')
+  })
+
+  it('offers a truthful retry on failure', () => {
+    expect(badgeAriaLabel('failed', 'photo')).toBe('Retry photo download')
+    expect(badgeStatusMessage('failed', 'photo')).toBe('Photo save failed. Retry available.')
+    expect(badgeAriaLabel('failed', 'video')).toBe('Retry video download')
+    expect(badgeStatusMessage('failed', 'video')).toBe('Video save failed. Retry available.')
+    expect(badgeAriaLabel('failed', 'gif')).toBe('Retry GIF download')
+    expect(badgeStatusMessage('failed', 'gif')).toBe('GIF save failed. Retry available.')
   })
 })
