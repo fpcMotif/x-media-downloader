@@ -14,6 +14,7 @@ import {
   setSettings,
   watchSettings,
 } from '../core/settings'
+import { planConvexEnvSeed, planCloudEnvSeed } from '../core/settings/env-seed'
 import { queuedEvent, type SyncEvent } from '../core/sync/events'
 import { makeConvexHttpPort, queryDownloadedAmong } from '../core/sync/convex'
 import { makeSavedIndex, type QueryConvex } from '../core/sync/saved-index'
@@ -1323,27 +1324,25 @@ export default defineBackground(() => {
     // real per-user auth path is the options page (each user pastes their own
     // secret), which this only short-circuits for a single developer's dev build.
     if (import.meta.env.DEV) {
-      const envUrl = import.meta.env.WXT_CONVEX_URL as string | undefined
-      const envSecret = import.meta.env.WXT_CONVEX_SECRET as string | undefined
-      if (envUrl && envSecret && s.convexUrl === '' && s.convexSyncSecret === '') {
-        s = await setSettings({
-          convexUrl: envUrl,
-          convexSyncSecret: envSecret,
-          cloudSyncEnabled: true,
-          ...(s.cloudDeviceId === '' ? { cloudDeviceId: crypto.randomUUID() } : {}),
-        })
-      }
+      const p = planConvexEnvSeed(
+        s,
+        {
+          url: import.meta.env.WXT_CONVEX_URL as string | undefined,
+          secret: import.meta.env.WXT_CONVEX_SECRET as string | undefined,
+        },
+        () => crypto.randomUUID(),
+      )
+      if (p) s = await setSettings(p)
     }
     if (isSyncConfigured(s)) outboxQueue.push(() => drainOutbox(s))
     // Dev convenience (ADR-0013): a gitignored `.env` may pre-seed the Cloud
     // Upload OAuth client IDs (public, not secrets). Gated on an empty field so a
     // user edit is never overridden; a normal build has neither var.
-    const envGdriveClientId = import.meta.env.WXT_GDRIVE_CLIENT_ID as string | undefined
-    const envDropboxAppKey = import.meta.env.WXT_DROPBOX_APP_KEY as string | undefined
-    if (envGdriveClientId && s.gdriveClientId === '')
-      s = await setSettings({ gdriveClientId: envGdriveClientId })
-    if (envDropboxAppKey && s.dropboxClientId === '')
-      s = await setSettings({ dropboxClientId: envDropboxAppKey })
+    const cloudPatch = planCloudEnvSeed(s, {
+      gdriveClientId: import.meta.env.WXT_GDRIVE_CLIENT_ID as string | undefined,
+      dropboxAppKey: import.meta.env.WXT_DROPBOX_APP_KEY as string | undefined,
+    })
+    if (cloudPatch) s = await setSettings(cloudPatch)
     // Resume any cloud byte-uploads left pending from a previous SW life, and
     // compact a historically-grown ledger once on boot (ADR-0013).
     if (s.cloudUploadEnabled) cloudUpload.resumeOnBoot()
