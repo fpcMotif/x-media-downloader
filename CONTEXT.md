@@ -74,7 +74,7 @@ use these words, they mean exactly this.
   and the CDN-url refresh before re-firing — is pure (`core/download`
   interrupt-retry), folding the **Transfer Tracker** and **Metrics** transitions
   into its result exactly as **Terminal Outcome** does. The Retry Scheduler is its
-  effectful shell (`src/background/retry-plan.ts`'s `makeRetryPlanApplier`): it
+  effectful shell (`src/core/download/retry-queue.ts`'s `makeRetryQueue`): it
   holds the in-flight retry queue (durable across SW recycle, ADR-0005) and the
   timer wheel behind its own injected **Clock Port** and **Download Port**,
   applying the pure result's intents. A retry that exhausts its attempts hands off
@@ -84,7 +84,7 @@ use these words, they mean exactly this.
 - **Clock Port** — the injected timer seam (`schedule(fn, ms): CancelHandle`), so
   scheduled work runs against a fake clock in tests instead of `vi.useFakeTimers()`.
   Realized by the **Drain**'s Clock in `core/clear` (`scroll-drain.ts` /
-  `list-clear.ts`) and, as of `src/background/retry-plan.ts`, by the **Retry
+  `list-clear.ts`) and, as of `src/core/download/retry-queue.ts`, by the **Retry
   Scheduler**'s own minimal port (a deliberately different shape from the Drain's
   `{ sleep, after }` Clock — retry-specific, not shared), and by **Settle**'s
   confirm-window timer (`SettleClock` in `clear-coordinator.ts`, injected via
