@@ -26,10 +26,6 @@ export function shouldShowIntro(state: FirstRunState): boolean {
   return !state.done && state.opens <= MAX_TEACHING_OPENS
 }
 
-export async function getIntroState(): Promise<FirstRunState> {
-  return introItem.getValue()
-}
-
 /** Records one popup open — call once per popup mount, before deciding
  *  whether to show the strip. */
 export async function recordOpen(): Promise<FirstRunState> {

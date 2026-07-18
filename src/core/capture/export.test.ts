@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  toExportTweet,
-  toJsonl,
-  toMarkdown,
-  toRows,
-  toTreeJson,
-  type ExportTweet,
-  type Row,
-} from './export'
+import { toExportTweet, toJsonl, toMarkdown, toTreeJson, type ExportTweet } from './export'
 import { buildTree } from './tree'
 import type { TweetRecord } from './record'
 
@@ -234,34 +226,5 @@ describe('toMarkdown', () => {
     expect(md).toContain('🔗 https://bare.example')
     expect(md).not.toContain('— https://bare.example')
     expect(md).toContain('> quote https://x.com/i/status/GONE: (not captured)')
-  })
-})
-
-describe('toRows', () => {
-  it('projects flat, spreadsheet-friendly rows', () => {
-    const rows: Row[] = toRows(all)
-    expect(rows).toHaveLength(all.length)
-    const r = rows.find((x) => x.id === 'R')!
-    expect(r).toMatchObject({
-      url: 'https://x.com/alice/status/R',
-      conversationId: 'C',
-      kind: 'tweet',
-      handle: 'alice',
-      name: 'Alice',
-      links: 'https://example.com/post',
-      media: 'https://pbs/m1.jpg https://pbs/m2.jpg',
-    })
-    const a = rows.find((x) => x.id === 'A')!
-    expect(a.name).toBe('')
-    expect(a.media).toBe('')
-  })
-
-  it('uses empty createdAt when absent', () => {
-    const rows = toRows([rec({ tweetId: 'N', conversationId: 'C', createdAt: undefined })])
-    expect(rows[0]!.createdAt).toBe('')
-  })
-
-  it('handles empty input', () => {
-    expect(toRows([])).toEqual([])
   })
 })

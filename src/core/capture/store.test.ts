@@ -2,15 +2,64 @@ import { describe, it, expect } from 'vitest'
 import type { Source, TweetRecord } from './record'
 import { sourceRank } from './record'
 import {
-  decodeRecords,
   emptyCaptureSummary,
   finishCaptureSummary,
   foldCaptureSummary,
   mergeRecord,
-  recentConversations,
   selectConversation,
-  summarize,
 } from './store'
+
+// Materialized reference implementations, kept here as the differential oracle
+// for the streaming fold (fold/finish) below. Production only calls the
+// streaming path (background.ts), so shipped src/core no longer carries these;
+// they live in the test that uses them to pin the fold's output.
+type RecentConversation = {
+  conversationId: string
+  rootHandle: string
+  rootText: string
+  count: number
+  lastAt: number
+}
+
+function summarize(records: ReadonlyArray<TweetRecord>): {
+  tweets: number
+  conversations: number
+} {
+  const tweets = new Set<string>()
+  const conversations = new Set<string>()
+  for (const r of records) {
+    tweets.add(r.tweetId)
+    conversations.add(r.conversationId)
+  }
+  return { tweets: tweets.size, conversations: conversations.size }
+}
+
+function foldConversation(byConversation: Map<string, RecentConversation>, r: TweetRecord): void {
+  const existing = byConversation.get(r.conversationId)
+  const isRoot = r.tweetId === r.conversationId
+  if (existing === undefined) {
+    byConversation.set(r.conversationId, {
+      conversationId: r.conversationId,
+      rootHandle: r.author.handle,
+      rootText: r.text,
+      count: 1,
+      lastAt: r.capturedAt,
+    })
+    return
+  }
+  existing.count += 1
+  existing.lastAt = Math.max(existing.lastAt, r.capturedAt)
+  if (isRoot) {
+    existing.rootHandle = r.author.handle
+    existing.rootText = r.text
+  }
+}
+
+function recentConversations(records: ReadonlyArray<TweetRecord>, n: number): RecentConversation[] {
+  const byConversation = new Map<string, RecentConversation>()
+  for (const r of records) foldConversation(byConversation, r)
+  return [...byConversation.values()].toSorted((a, b) => b.lastAt - a.lastAt).slice(0, n)
+}
 
 const make = (over: {
   tweetId: string
@@ -63,19 +112,6 @@ describe('mergeRecord (§6.4 richer-source-wins, non-monotonic-safe)', () => {
   it('keeps incoming when there is no existing record', () => {
     const incoming = make({ tweetId: '1', source: 'timeline', capturedAt: 100 })
     expect(mergeRecord(undefined, incoming)).toBe(incoming)
-  })
-})
-
-describe('decodeRecords', () => {
-  it('decodes a well-formed array of records', () => {
-    const records = [make({ tweetId: '1', source: 'timeline', capturedAt: 1 })]
-    expect(decodeRecords(records)).toEqual(records)
-  })
-
-  it('returns [] on corrupt input', () => {
-    expect(decodeRecords({ not: 'an array' })).toEqual([])
-    expect(decodeRecords([{ tweetId: 1 }])).toEqual([])
-    expect(decodeRecords(null)).toEqual([])
   })
 })
 

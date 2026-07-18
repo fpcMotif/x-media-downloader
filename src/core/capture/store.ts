@@ -1,4 +1,3 @@
-import { Schema } from 'effect'
 import { TweetRecord } from './record'
 
 /** A conversation thread summarized for the panel's recent list (spec §8). */
@@ -8,17 +7,6 @@ export type RecentConversation = {
   rootText: string
   count: number
   lastAt: number
-}
-
-const RecordsSchema = Schema.Array(TweetRecord)
-
-/** Decode raw persisted input into validated records; corrupt input → `[]`. */
-export function decodeRecords(raw: unknown): TweetRecord[] {
-  try {
-    return [...Schema.decodeUnknownSync(RecordsSchema)(raw)]
-  } catch {
-    return []
-  }
 }
 
 /**
@@ -44,22 +32,8 @@ export function selectConversation(
   return records.filter((r) => r.conversationId === conversationId)
 }
 
-/** Distinct tweet and conversation counts over the collection (spec §8). */
-export function summarize(records: ReadonlyArray<TweetRecord>): {
-  tweets: number
-  conversations: number
-} {
-  const tweets = new Set<string>()
-  const conversations = new Set<string>()
-  for (const r of records) {
-    tweets.add(r.tweetId)
-    conversations.add(r.conversationId)
-  }
-  return { tweets: tweets.size, conversations: conversations.size }
-}
-
 /** Fold ONE record into the by-conversation aggregate — the loop body of
- *  {@link recentConversations}, extracted so a cursor-driven caller can stream
+ *  {@link foldCaptureSummary}, extracted so a cursor-driven caller can stream
  *  the store one record at a time instead of materializing it whole. */
 function foldConversation(byConversation: Map<string, RecentConversation>, r: TweetRecord): void {
   const existing = byConversation.get(r.conversationId)
@@ -85,16 +59,6 @@ function foldConversation(byConversation: Map<string, RecentConversation>, r: Tw
 /** Newest-first threads, capped at `n`. */
 function newestFirst(byConversation: Map<string, RecentConversation>, n: number) {
   return [...byConversation.values()].toSorted((a, b) => b.lastAt - a.lastAt).slice(0, n)
-}
-
-/** The `n` newest conversation threads, each surfaced for the recent list (spec §8). */
-export function recentConversations(
-  records: ReadonlyArray<TweetRecord>,
-  n: number,
-): RecentConversation[] {
-  const byConversation = new Map<string, RecentConversation>()
-  for (const r of records) foldConversation(byConversation, r)
-  return newestFirst(byConversation, n)
 }
 
 /**

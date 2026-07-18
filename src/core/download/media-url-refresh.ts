@@ -13,11 +13,6 @@ export function findFreshMediaItem(
   return matches.length === 1 ? matches[0] : undefined
 }
 
-/** Pick the URL to use on retry; falls back to the stored url when refresh misses. */
-export function mergeRetryUrl(storedUrl: string, fresh: MediaItem | undefined): string {
-  return fresh?.url ?? storedUrl
-}
-
 /** Tab messaging port for unit tests. */
 export interface TabMessagingPort {
   readonly queryTabs: () => Promise<ReadonlyArray<{ readonly id: number }>>

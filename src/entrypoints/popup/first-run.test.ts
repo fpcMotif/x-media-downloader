@@ -1,13 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { fakeBrowser } from 'wxt/testing'
-import {
-  MAX_TEACHING_OPENS,
-  getIntroState,
-  markDone,
-  recordOpen,
-  shouldShowIntro,
-} from './first-run'
+import { MAX_TEACHING_OPENS, markDone, recordOpen, shouldShowIntro } from './first-run'
 
 describe('shouldShowIntro (pure)', () => {
   it('shows on a fresh, never-dismissed state', () => {
@@ -32,21 +26,15 @@ describe('storage-backed state', () => {
     fakeBrowser.reset()
   })
 
-  it('starts at the fallback (opens: 0, done: false)', async () => {
-    expect(await getIntroState()).toEqual({ opens: 0, done: false })
-  })
-
   it('recordOpen increments opens and persists it', async () => {
     expect(await recordOpen()).toEqual({ opens: 1, done: false })
     expect(await recordOpen()).toEqual({ opens: 2, done: false })
-    expect(await getIntroState()).toEqual({ opens: 2, done: false })
   })
 
   it('markDone sets done without disturbing the open count', async () => {
     await recordOpen()
     await recordOpen()
     expect(await markDone()).toEqual({ opens: 2, done: true })
-    expect(await getIntroState()).toEqual({ opens: 2, done: true })
   })
 
   it('markDone then recordOpen keeps done sticky (opens still counts)', async () => {

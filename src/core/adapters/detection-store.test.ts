@@ -5,9 +5,7 @@ import {
   keysForItem,
   postGrabItems,
   postVideoKey,
-  postVideoKeyById,
   postVideoKeyIndexed,
-  postVideoKeyByIdIndexed,
   postVideoKeyByDomSlot,
 } from './detection-store'
 import { mediaKeyFromUrl } from './x/dom'
@@ -206,54 +204,20 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
   })
 })
 
-describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
-  it('registers post:id:{postId} for a single-video post', () => {
-    const s = makeDetectionStore({ mediaKeyFromUrl })
-    const v = video('v1', 'MP4', 'POST', 'postA')
-    s.addDetected([v])
-    expect(s.keyIndex().get(postVideoKeyById('postA'))).toEqual(v)
-    expect(s.resolve(postVideoKeyById('postA'))).toEqual(v)
-  })
-
+describe('post-level video key (post:code:{code})', () => {
   it('also registers the indexed key at index 0 for a single-video post (uniform lookup)', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
     const v = video('v1', 'MP4', 'POST', 'postA', 0)
     s.addDetected([v])
     s.registerPostCode('postA', 'CODEA')
-    expect(s.keyIndex().get(postVideoKeyByIdIndexed('postA', 0))).toEqual(v)
     expect(s.keyIndex().get(postVideoKeyIndexed('CODEA', 0))).toEqual(v)
-  })
-
-  it('does NOT register for a 2-video carousel post', () => {
-    const s = makeDetectionStore({ mediaKeyFromUrl })
-    s.addDetected([
-      video('v1', 'MP4A', 'POSTA', 'postB', 0),
-      video('v2', 'MP4B', 'POSTB', 'postB', 1),
-    ])
-    expect(s.keyIndex().has(postVideoKeyById('postB'))).toBe(false)
-  })
-
-  it('de-registers if a 2nd video for the same post arrives later', () => {
-    const s = makeDetectionStore({ mediaKeyFromUrl })
-    s.addDetected([video('v1', 'MP4A', 'POSTA', 'postC', 0)])
-    expect(s.keyIndex().has(postVideoKeyById('postC'))).toBe(true)
-    s.addDetected([video('v2', 'MP4B', 'POSTB', 'postC', 1)])
-    expect(s.keyIndex().has(postVideoKeyById('postC'))).toBe(false)
   })
 
   it('ignores photos (never registers a post-key for a photo-only post)', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postD', 'CODED')
     s.addDetected([photo('p1', 'KA', 'postD')])
-    expect(s.keyIndex().has(postVideoKeyById('postD'))).toBe(false)
-  })
-
-  it('clear() wipes videosByPost bookkeeping too', () => {
-    const s = makeDetectionStore({ mediaKeyFromUrl })
-    s.addDetected([video('v1', 'MP4', 'POST', 'postE')])
-    expect(s.keyIndex().has(postVideoKeyById('postE'))).toBe(true)
-    s.clear()
-    s.addDetected([video('v1', 'MP4', 'POST', 'postE')])
-    expect(s.keyIndex().has(postVideoKeyById('postE'))).toBe(true)
+    expect(s.keyIndex().has(postVideoKey('CODED'))).toBe(false)
   })
 
   it('clear() also wipes the indexed and dom-slot key bookkeeping', () => {
@@ -269,10 +233,11 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
 
   it('a duplicate addDetected call for the same video item does not inflate the per-post count', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postF', 'CODEF')
     const v = video('v1', 'MP4', 'POST', 'postF')
     s.addDetected([v])
     s.addDetected([v])
-    expect(s.keyIndex().has(postVideoKeyById('postF'))).toBe(true)
+    expect(s.keyIndex().has(postVideoKey('CODEF'))).toBe(true)
   })
 
   it('registerPostCode called AFTER addDetected still resolves post:{code}', () => {
@@ -297,32 +262,14 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
     expect(s.keyIndex().has(postVideoKey('CODEI'))).toBe(false)
   })
 
-  it('a 2-video post keeps BOTH post:id:{postId} and post:code:{code} absent', () => {
+  it('a 2-video post keeps post:code:{code} absent', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
     s.registerPostCode('postJ', 'CODEJ')
     s.addDetected([
       video('v1', 'MP4A', 'POSTA', 'postJ', 0),
       video('v2', 'MP4B', 'POSTB', 'postJ', 1),
     ])
-    expect(s.keyIndex().has(postVideoKeyById('postJ'))).toBe(false)
     expect(s.keyIndex().has(postVideoKey('CODEJ'))).toBe(false)
-  })
-
-  it('a postId and an unrelated post code that are the SAME raw string never collide', () => {
-    // Regression test for the pre-namespacing risk: post:{x} was one flat
-    // string space shared by both raw postIds and DOM-derived codes, so a
-    // postId and a totally unrelated post's code that happened to share the
-    // same literal string ('SHARED' here) would silently overwrite one
-    // another's byKey entry. post:id:/post:code: namespacing below prevents
-    // this even when the strings collide.
-    const s = makeDetectionStore({ mediaKeyFromUrl })
-    const vId = video('vId', 'MP4ID', 'POSTID', 'SHARED')
-    s.addDetected([vId])
-    s.registerPostCode('unrelatedPost', 'SHARED')
-    const vCode = video('vCode', 'MP4CODE', 'POSTCODE', 'unrelatedPost')
-    s.addDetected([vCode])
-    expect(s.keyIndex().get(postVideoKeyById('SHARED'))).toEqual(vId)
-    expect(s.keyIndex().get(postVideoKey('SHARED'))).toEqual(vCode)
   })
 
   it('two videos in one post resolve via distinct indexed keys, never swapped', () => {
@@ -332,9 +279,8 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
     const v1 = video('v2', 'MP4B', 'POSTB', 'postM', 1)
     s.addDetected([v0, v1])
 
-    // the no-index keys withhold entirely (can't disambiguate by postId alone)
+    // the no-index key withholds entirely (can't disambiguate by postId alone)
     expect(s.keyIndex().has(postVideoKey('CODEM'))).toBe(false)
-    expect(s.keyIndex().has(postVideoKeyById('postM'))).toBe(false)
 
     // the indexed keys resolve each to its OWN distinct item
     expect(s.keyIndex().get(postVideoKeyIndexed('CODEM', 0))).toEqual(v0)
@@ -364,12 +310,10 @@ describe('post-level video key (post:id:{postId} / post:code:{code})', () => {
     const v0 = video('v1', 'MP4A', 'POSTA', 'postO', 0)
     s.addDetected([v0])
     expect(s.keyIndex().has(postVideoKey('CODEO'))).toBe(true)
-    expect(s.keyIndex().has(postVideoKeyById('postO'))).toBe(true)
 
     const v1 = video('v2', 'MP4B', 'POSTB', 'postO', 1)
     s.addDetected([v1])
     expect(s.keyIndex().has(postVideoKey('CODEO'))).toBe(false)
-    expect(s.keyIndex().has(postVideoKeyById('postO'))).toBe(false)
     expect(s.keyIndex().get(postVideoKeyIndexed('CODEO', 0))).toEqual(v0)
     expect(s.keyIndex().get(postVideoKeyIndexed('CODEO', 1))).toEqual(v1)
   })

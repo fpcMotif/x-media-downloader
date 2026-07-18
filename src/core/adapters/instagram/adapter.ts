@@ -236,8 +236,7 @@ export function isTrackedInstagramResponseUrl(url: string): boolean {
  * KNOWN TRANSIENT-WINDOW EFFECT: a carousel post hovered before the tee
  * resolves it forms N separate single-item groups (each DOM-only item's own
  * key as its `postId`) instead of one N-item group, for any future consumer
- * that groups items by `postId` (none exists on this hot path today — see
- * `x/dom.ts`'s `groupByTweet`, currently unconsumed outside its own test).
+ * that groups items by `postId` (none exists on this hot path today).
  * Self-heals the moment the tee resolves the same post: both the DOM
  * fallback and the tee derive `id` from the identical basename-extraction
  * algorithm, so `DetectionStore`'s existing same-id-overwrites-by-id

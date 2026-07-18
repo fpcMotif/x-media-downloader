@@ -1,6 +1,3 @@
-import type { MediaItem } from '../../schema'
-import type { Registry } from '../../selection'
-
 /** The final path segment of a URL pathname (everything after the last `/`). */
 const lastSegment = (pathname: string): string => pathname.slice(pathname.lastIndexOf('/') + 1)
 
@@ -126,26 +123,4 @@ export function videoPosterUrl(video: HTMLVideoElement): string | null {
   )
   const src = img ? img.currentSrc || img.src : ''
   return isGrabbableMediaPreviewUrl(src) ? src : null
-}
-
-/**
- * Group flat detected items into a per-tweet Registry (for the selection model),
- * de-duplicated by id, preserving first-seen order of both tweets and items.
- */
-export function groupByTweet(items: ReadonlyArray<MediaItem>): Registry {
-  const order: string[] = []
-  const groups = new Map<string, MediaItem[]>()
-  const seen = new Set<string>()
-  for (const item of items) {
-    if (seen.has(item.id)) continue
-    seen.add(item.id)
-    let group = groups.get(item.postId)
-    if (group === undefined) {
-      group = []
-      groups.set(item.postId, group)
-      order.push(item.postId)
-    }
-    group.push(item)
-  }
-  return order.map((tweetId) => ({ tweetId, items: groups.get(tweetId)! }))
 }
