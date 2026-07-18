@@ -1,7 +1,7 @@
 # 008 — Support 320px popup reflow
 
 - **Workflow**: improve-react
-- **Status**: DONE
+- **Status**: REVERTED — `min(380px, 100vw)` on the document shell collapses the real action-popup bubble to a sliver (`vw` in a bubble is the bubble's own initially-tiny viewport, not the window width). Landed, broke the bubble, reverted; the fixed 380px shell stays. A correct 320px reflow needs intrinsic-width content sizing, not viewport units, and a real bubble check.
 - **Commit**: cf787c6
 - **Severity**: MEDIUM
 - **Category**: Accessibility

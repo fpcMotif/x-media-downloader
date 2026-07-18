@@ -1,8 +1,9 @@
 # improve-react plans
 
 All plans come from the vetted `improve-react` audit at commit `cf787c6`.
-001–006 and 008–010 are executed (landed on main via the PR-#55 absorb); 007
-remains the one outstanding plan.
+001–006, 009, and 010 are executed (landed on main via the PR-#55 absorb); 008
+was landed and reverted (it broke the action-popup bubble — see the plan);
+007 remains the one outstanding plan.
 
 | Plan | Severity | Status | Depends on | Summary |
 | --- | --- | --- | --- | --- |
@@ -13,7 +14,7 @@ remains the one outstanding plan.
 | [005](005-announce-overlay-save-status.md) | MEDIUM | DONE | — | Expose badge and launcher progress to screen readers. |
 | [006](006-debounce-video-recovery-scans.md) | MEDIUM | DONE | — | Move video recovery off every scroll frame. |
 | [007](007-split-overlay-content-controller.md) | MEDIUM | NOT STARTED | 001, 002, 003, 005, 006 | Split the overlay view, interactions, capture, and message seams. |
-| [008](008-support-320px-popup-reflow.md) | MEDIUM | DONE | — | Let the popup reflow to 320 CSS px. |
+| [008](008-support-320px-popup-reflow.md) | MEDIUM | REVERTED (broke the action bubble) | — | Let the popup reflow to 320 CSS px. |
 | [009](009-replace-stale-feedback-timers.md) | LOW | DONE | 004 first | Cancel old feedback timers before rearming. |
 | [010](010-name-sidebar-navigation.md) | LOW | DONE | 009 first | Name the Settings and Library navigation landmarks. |
 
