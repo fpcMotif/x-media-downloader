@@ -21,9 +21,7 @@ import {
   readyJobs,
   type SyncCaptureEvent,
 } from '../core/sync/captures'
-import { Effect } from 'effect'
-import { makeFetchServiceLive } from '../core/fetch-service'
-import { makeConvexHttpPort } from '../core/sync/convex'
+import { makeConvexPromisePort } from '../core/sync/convex'
 import { makeSerialQueue } from '../core/serial-queue'
 import { runSerializedRmw, type DurableStore } from '../core/durable-store'
 import { isSyncConfigured } from './sync-config'
@@ -45,12 +43,13 @@ export function makeCaptureOutbox(
     getSettings?: () => Promise<Settings>
     ledger?: LedgerStorage
     connect?: (settings: Settings) => ConvexPort
+    fetchImpl?: typeof fetch
     now?: () => number
   } = {},
 ): CaptureOutbox {
   const readSettings = deps.getSettings ?? getSettings
   const ledger = deps.ledger ?? defaultLedger()
-  const connect = deps.connect ?? defaultConnect
+  const connect = deps.connect ?? defaultConnect(deps.fetchImpl ?? fetch)
   const now = deps.now ?? (() => Date.now())
 
   // Read-modify-writes are serialized through one chain: SW message handlers
@@ -132,18 +131,10 @@ function defaultLedger(): LedgerStorage {
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
-/** Default transport: the shared Convex HTTP port over a bound fetch (an unbound
- *  fetch is rejected as an illegal invocation in the MV3 SW; see fetch.ts). */
-function defaultConnect(settings: Settings): ConvexPort {
-  // The shared Convex port is now Effect-returning (reads FetchService from R,
-  // ADR-0017). Keep this outbox's Promise seam by crossing the Effect boundary
-  // here at the airlock; the bound fetch is provided once per connect.
-  const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl })
-  const layer = makeFetchServiceLive(fetch)
-  return {
-    mutation: (name, args) =>
-      Effect.runPromise(
-        port.mutation(name, args as Record<string, unknown>).pipe(Effect.provide(layer)),
-      ),
-  }
-}
+/** Default transport: the shared Promise airlock (core/sync/convex.ts) over the bound
+ *  fetch (an unbound fetch is rejected as an illegal invocation in the MV3 SW; see
+ *  fetch.ts). */
+const defaultConnect =
+  (fetchImpl: typeof fetch) =>
+  (settings: Settings): ConvexPort =>
+    makeConvexPromisePort({ deploymentUrl: settings.convexUrl }, fetchImpl)
