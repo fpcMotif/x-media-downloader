@@ -31,13 +31,11 @@ describe('popup layout CSS — content-driven height (spec §2.9)', () => {
     expect(popupRule).not.toMatch(/(?<!max-)(?<!min-)height: 600px;/u)
   })
 
-  it('caps the document shell at the viewport: responsive width, no fixed minimum', () => {
+  it('does not pin a fixed height on the document shell', () => {
     const documentRule = ruleBody('html,\nbody,\n#app')
 
-    expect(documentRule).toContain('width: min(380px, 100vw);')
-    expect(documentRule).toContain('min-width: 0;')
-    expect(documentRule).not.toContain('min-width: 380px;')
-    expect(documentRule).not.toContain('width: 380px;')
+    expect(documentRule).toContain('width: 380px;')
+    expect(documentRule).toContain('min-width: 380px;')
     expect(documentRule).toContain('margin: 0;')
     expect(documentRule).not.toContain('height:')
     expect(documentRule).not.toContain('max-height:')
@@ -55,16 +53,6 @@ describe('popup layout CSS — content-driven height (spec §2.9)', () => {
     expect(popupHtml).not.toContain('height: 600px')
     expect(popupHtml).toContain('class="xmd-boot-fallback"')
     expect(popupHtml).toContain('Loading...')
-  })
-
-  it('mirrors the responsive root width in the inline boot CSS', () => {
-    expect(popupHtml).toContain('width: min(380px, 100vw);')
-    expect(popupHtml).toContain('min-width: 0;')
-    expect(popupHtml).not.toContain('min-width: 380px;')
-    // The boot fallback fills the (possibly sub-380px) shell, never a fixed 380px.
-    expect(popupHtml).toContain('.xmd-boot-fallback {')
-    expect(popupHtml).toContain('width: 100%;')
-    expect(popupHtml).not.toContain('width: 380px;')
   })
 })
 
