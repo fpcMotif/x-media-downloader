@@ -1,4 +1,4 @@
-// Ticket #60: Release diagnostics export, mirrors capture-export.ts's split almost
+// Release diagnostics export: mirrors capture-export.ts's split almost
 // exactly and for the same reason — the MV3 service worker can't mint blob: URLs, so
 // it only BUILDS the artifact text (ExportDiagnosticsRequest → { ok, filename, text });
 // the download happens here in an extension PAGE, which has a DOM,

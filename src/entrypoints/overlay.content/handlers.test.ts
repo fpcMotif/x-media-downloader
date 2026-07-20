@@ -285,7 +285,7 @@ describe('handleClearWholeList — platform gate', () => {
   })
 })
 
-// Ticket #61: manual Releases are only ever visible via the production trace sink
+// Manual Releases are only ever visible via the production trace sink
 // (`reportClear` → background `DownloadTraceEvent`), never `clearLog` (DEV-only, page
 // console). These pin that the handler wires its stage events through the injected
 // sink — behavior observed through `reportClear`, no implementation poking.
@@ -316,6 +316,25 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     expect(reportClear).toHaveBeenCalledWith('clear-visible-start', 'bookmark')
     expect(reportClear).toHaveBeenCalledWith('clear-visible-end', 'cleared 1 bookmark')
     expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 1 })
+  })
+
+  it('ClearVisibleRequest off a list page emits a terminal clear-visible-skip, never a dangling start', async () => {
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      adapter: { platform: 'x' },
+      document,
+      location: { pathname: '/home' } as Location,
+      clearLog: () => {},
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    handleClearVisible({}, deps, sendResponse)
+    await vi.runAllTimersAsync()
+
+    expect(reportClear).toHaveBeenCalledWith('clear-visible-skip', 'not a Likes/Bookmarks list')
+    const stages = reportClear.mock.calls.map((c) => c[0])
+    expect(stages).not.toContain('clear-visible-start')
+    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 0 })
   })
 
   it('ClearWholeListRequest on a bookmarks-page fake emits clear-list stage events through reportClear', async () => {

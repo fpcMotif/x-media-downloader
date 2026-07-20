@@ -86,6 +86,15 @@ describe('makeListClear', () => {
     expect(h.scroll.y).toBe(2000) // restored to where the user was
     expect(stagesOf(h.report)).toContain('clear-list-start')
     expect(stagesOf(h.report)).toContain('clear-list-end')
+    // Per-pass progress: every reported pass cleared something (empty passes stay
+    // silent), and the pass counts account for every cleared post.
+    const passes = h.report.mock.calls.filter(([stage]) => stage === 'clear-list-pass')
+    expect(passes.length).toBeGreaterThan(0)
+    const perPass = passes.map(([, detail]) =>
+      Number(/^cleared (\d+) this pass$/.exec(detail)?.[1]),
+    )
+    expect(perPass.every((n) => n >= 1)).toBe(true)
+    expect(perPass.reduce((a, b) => a + b, 0)).toBe(3)
   })
 
   it('returns not-list-page and never scrolls when off a Likes/Bookmarks list', async () => {

@@ -61,6 +61,11 @@ export function makeListClear(deps: ListClearDeps): ListClear {
         if (Option.isNone(pageScope(deps.path()))) break
         const clearedThisStep = await deps.clearVisibleForPage()
         cleared += clearedThisStep
+        // Per-pass progress, but only for passes that cleared something — a long
+        // scroll over an already-empty list would otherwise flood the bounded
+        // trace ring with hundreds of no-op lines.
+        if (clearedThisStep > 0)
+          deps.report('clear-list-pass', `cleared ${clearedThisStep} this pass`)
         await deps.clock.sleep(SETTLE_MS)
         const before = deps.scroll.position()
         deps.scroll.by(Math.round(deps.scroll.viewport() * VIEWPORT_FRACTION))

@@ -218,7 +218,7 @@ function recordTrace(event: DownloadTraceEntry): void {
     .filter(Boolean)
     .join(' ')
   console.info(`[XMD] ${event.source} ${label}`)
-  // Release diagnostics (Ticket #60): mirror the subset of trace events belonging
+  // Release diagnostics: mirror the subset of trace events belonging
   // to a Release run into the durable capped log, fire-and-forget — `recordTrace`
   // runs on EVERY download/clear trace event (most aren't Release-related at all),
   // so its synchronous callers must never be delayed by a storage round-trip.
@@ -349,7 +349,7 @@ const clearSession = makeClearSession({
 })
 const { recordComplete: recordClearComplete, recordFailure: recordClearFailure } = clearSession
 
-// Ticket #60: durable, capped log of Release (Likes/Bookmarks clear) trace events
+// Durable, capped log of Release (Likes/Bookmarks clear) trace events
 // for post-hoc diagnostics. `local:` (not `session:`, unlike `metricsItem` above)
 // because a bad Release run is exactly the kind of thing a user notices AFTER
 // closing the browser — it must survive a full browser restart, not just an SW
@@ -1274,7 +1274,7 @@ const messageHandlers: MessageHandlers = {
     await captureDb.clear()
     return { cleared }
   },
-  // Ticket #60: build the Release diagnostics export from the durable capped log
+  // Build the Release diagnostics export from the durable capped log
   // (mirrors ExportCaptureRequest's SW-builds/options-page-downloads split above).
   ExportDiagnosticsRequest: handle<'ExportDiagnosticsRequest'>(async () => {
     const entries = decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue())

@@ -277,10 +277,10 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       'clear-visible request · page scope =',
       Option.getOrElse(scope, () => '(not a Likes/Bookmarks page)'),
     )
-  deps.reportClear(
-    'clear-visible-start',
-    Option.getOrElse(scope, () => 'not a list page'),
-  )
+  // A skip is a TERMINAL stage (mirrors list-clear's `clear-list-skip`) — emitting
+  // `-start` for a run that never begins would leave a dangling start in the trace.
+  if (Option.isSome(scope)) deps.reportClear('clear-visible-start', scope.value)
+  else deps.reportClear('clear-visible-skip', 'not a Likes/Bookmarks list')
   void (async () => {
     if (Option.isNone(scope)) {
       sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
