@@ -12,6 +12,7 @@ export type ItemOutcome = 'complete' | 'failed'
 
 /** Rolling window (ms) over which throughput is averaged. */
 const WINDOW_MS = 5000
+const MS_PER_SECOND = 1000
 
 interface ItemProgress {
   readonly bytesReceived: number
@@ -159,7 +160,7 @@ function throughputBps(timeline: readonly TimelinePoint[], now: number): number 
   }
   const spanMs = latest.t - ref.t
   if (spanMs <= 0) return 0
-  return Math.max(0, (latest.agg - ref.agg) / (spanMs / 1000))
+  return Math.max(0, (latest.agg - ref.agg) / (spanMs / MS_PER_SECOND))
 }
 
 /** Project the accumulator to a `MetricsSnapshot` at wall-clock `now`. */
