@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 3 — The laws, as tests you can run</title>
+<style>
+  :root { --ink:#1a1a17; --muted:#5f5e58; --rule:#d9d6cc; --accent:#7a3b2e; --code:#2b2b28; --codebg:#f3f1ea;
+          --ok:#1d6e42; --okbg:#e6f3ea; --no:#9a2b22; --nobg:#f8e9e7; }
+  body { font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; color:var(--ink);
+         max-width:52rem; margin:3rem auto; padding:0 1.25rem; line-height:1.62; background:#fdfcf9; }
+  h1 { font-size:2rem; font-weight:600; line-height:1.15; margin:0 0 .15rem; }
+  .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; font-weight:600; }
+  .sub { color:var(--muted); font-style:italic; margin:.3rem 0 1.6rem; }
+  h2 { font-size:1.25rem; font-weight:600; margin:2.2rem 0 .5rem; }
+  h3 { font-size:1rem; font-weight:600; margin:1.4rem 0 .3rem; color:var(--accent); }
+  p { margin:.6rem 0; }
+  code,.mono { font-family:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace; font-size:.85em;
+        background:var(--codebg); color:var(--code); padding:.05em .3em; border-radius:3px; }
+  pre { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.8rem 1rem; overflow-x:auto;
+        font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.8rem; line-height:1.5; }
+  pre code { background:none; padding:0; }
+  .big-idea { border-left:3px solid var(--accent); background:#faf6f0; padding:.6rem 1.1rem; margin:1.2rem 0; }
+  .step { border:1px solid var(--rule); border-radius:8px; padding:.3rem 1.1rem .8rem; margin:1rem 0; background:#fff; }
+  .step h3 { margin-top:.8rem; }
+  .run { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.4rem .7rem; font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.8rem; }
+  .ok { color:var(--ok); } .no { color:var(--no); }
+  sup.ref a { color:var(--accent); text-decoration:none; font-size:.75em; }
+  a { color:var(--accent); }
+  ol.refs { font-size:.85rem; color:var(--muted); line-height:1.4; } ol.refs a { word-break:break-word; }
+  .callout { background:#eef3ee; border:1px solid #cfe0d2; border-radius:8px; padding:.8rem 1.1rem; margin:1.4rem 0; }
+  footer { margin-top:2.6rem; border-top:1px solid var(--rule); padding-top:1rem; color:var(--muted); font-size:.9rem; }
+  @media print { body{margin:0;max-width:none;font-size:11pt;background:#fff;} a{color:var(--ink);} pre{white-space:pre-wrap;} }
+</style>
+</head>
+<body>
+
+<p class="kicker">Lesson 3 · Make it stick</p>
+<h1>The laws, as tests you can run</h1>
+<p class="sub">Lessons <a href="0001-the-monad-behind-your-refactor.html">1</a>–<a href="0002-either-and-your-tagged-errors.html">2</a> told you the functor &amp; monad laws hold. This lesson makes you <em>feel</em> them: a runnable test, already in your repo, that checks each law over hundreds of random inputs — and a sabotage exercise that proves it has teeth.</p>
+
+<div class="big-idea">
+<strong>The one idea.</strong> A law you only <em>read</em> is a belief. A law written as a <em>property test</em> is knowledge the machine re-verifies on every run.
+Property-based testing<sup class="ref"><a href="#r1">1</a></sup> flips unit testing around: instead of one example (<code>expect(f(2)).toBe(3)</code>), you state what must hold <em>for all</em> inputs and let <a href="https://github.com/dubzzz/fast-check">fast-check</a> hunt for a counterexample — then <em>shrink</em> it to the smallest failing case.<sup class="ref"><a href="#r2">2</a></sup>
+</div>
+
+<h2>It&rsquo;s already wired up</h2>
+<p>I added a runnable file to your repo (delete it any time — it&rsquo;s a teaching artifact):</p>
+<p class="run">src/core/teach/option-laws.test.ts</p>
+<p>Open it next to this lesson. It contains <strong>8 properties</strong>: the two functor laws, the three monad laws, and three checks that <em>your own</em> functions (<code>convexOriginPattern</code>, <code>aria2OriginPattern</code>, <code>pickVideoVariant</code>) behave as lawful Kleisli arrows.</p>
+
+<h2>The laws, in code</h2>
+<p>Each law is one <code>fc.property</code>. The pattern is always: <em>generate inputs → assert the two sides are equal.</em> <code>eqOption</code> is just &ldquo;both None, or both Some of the same value.&rdquo;</p>
+<pre><code>// functor identity:  map(m, x =&gt; x) === m
+fc.assert(fc.property(anyOption, (m) =&gt; eqOption(Option.map(m, (x) =&gt; x), m)))
+
+// monad left identity:  flatMap(some(a), f) === f(a)
+fc.assert(fc.property(fc.string(), (a) =&gt; eqOption(Option.flatMap(Option.some(a), f), f(a))))
+
+// monad associativity:  flatMap(flatMap(m,f),g) === flatMap(m, x =&gt; flatMap(f(x),g))
+fc.assert(fc.property(genSomeString, (m) =&gt;
+  eqOption(Option.flatMap(Option.flatMap(m, f), g),
+           Option.flatMap(m, (x) =&gt; Option.flatMap(f(x), g)))))</code></pre>
+<p>And your real arrow, proven to plug into the law correctly:</p>
+<pre><code>// convexOriginPattern obeys left identity
+fc.assert(fc.property(fc.webUrl(), (u) =&gt;
+  eqOption(Option.flatMap(Option.some(u), convexOriginPattern), convexOriginPattern(u))))</code></pre>
+
+<h2>Do the loop (this is the lesson)</h2>
+
+<div class="step">
+<h3>1 · Run it — see green</h3>
+<p class="run">bunx vitest run src/core/teach/option-laws.test.ts</p>
+<p>Expect <span class="ok">Tests 8 passed (8)</span>. Each line just ran ~100 random inputs and held.</p>
+</div>
+
+<div class="step">
+<h3>2 · Sabotage a function — watch the property catch it</h3>
+<p>In <code>src/core/resolver/index.ts</code>, temporarily make <code>pickVideoVariant</code> pick the <em>first</em> mp4 instead of the max-bitrate one:</p>
+<pre><code>// return Option.some(mp4.reduce((best, v) =&gt; ((v.bitrate ?? 0) &gt; (best.bitrate ?? 0) ? v : best)))
+return Option.some(mp4[0])   // &lt;-- deliberately wrong</code></pre>
+<p>Re-run. fast-check fails fast and <em>shrinks</em> to a minimal counterexample — typically two mp4 variants where the second has the higher bitrate:</p>
+<p class="run no">Property failed after 2 tests … counterexample: [[{mp4,bitrate:0},{mp4,bitrate:1}]]</p>
+<p>That tiny case is the proof your &ldquo;highest-bitrate&rdquo; invariant is real and the test guards it. <strong>Now revert the change</strong> and watch it go green again.</p>
+</div>
+
+<div class="step">
+<h3>3 · Generate your own property (the part that sticks)</h3>
+<p>Writing a property forces you to articulate an invariant — that&rsquo;s the retrieval+generation effort that builds long-term memory.<sup class="ref"><a href="#r3">3</a></sup> Add one for <code>aria2OriginPattern</code>:</p>
+<p><em>&ldquo;For any URL, the result — when present — contains no port number.&rdquo;</em></p>
+<pre><code>it('aria2OriginPattern drops the port', () =&gt; {
+  fc.assert(fc.property(fc.webUrl(), (u) =&gt; {
+    const p = aria2OriginPattern(u)
+    return Option.isNone(p) || !/:\d+/.test(p.value.replace(/^https?:/, ''))
+  }))
+})</code></pre>
+<p>Run it. Then bring it to me — I&rsquo;ll tell you if the property is actually saying what you think (a classic trap: a property that&rsquo;s true but vacuous).</p>
+</div>
+
+<div class="callout">
+<strong>Why this builds storage strength, not just fluency.</strong> Re-reading the laws feels like learning but fades. Running them, breaking them, and <em>generating</em> new ones is &ldquo;desirable difficulty&rdquo; — effortful retrieval that durably encodes the idea.<sup class="ref"><a href="#r3">3</a></sup> Next session I&rsquo;ll <em>space</em> this: I&rsquo;ll ask you to state the associativity law from memory before we build on it.
+</div>
+
+<div class="callout">
+<strong>Primary source:</strong> Claessen &amp; Hughes, <a href="https://alastairreid.github.io/RelatedWork/papers/claessen:icfp:2000/">&ldquo;QuickCheck: A Lightweight Tool for Random Testing&rdquo;</a> (ICFP 2000) — the paper that started property-based testing. Skim §1–2.<br>
+<strong>Tool:</strong> <a href="https://github.com/dubzzz/fast-check">fast-check</a> (already installed, v4.8). <strong>Reference:</strong> <a href="../reference/glossary-monads.html">Glossary — &ldquo;Property-based testing&rdquo; section</a>.<br>
+<strong>Community:</strong> <a href="https://github.com/dubzzz/fast-check/discussions">fast-check discussions</a> for generator/shrinking help; <a href="https://reddit.com/r/functionalprogramming">r/functionalprogramming</a> for &ldquo;is this a good property?&rdquo;
+</div>
+
+<p><strong>Ask me follow-ups</strong> — e.g. &ldquo;check my aria2 property,&rdquo; &ldquo;how do I generate <em>valid</em> tweet IDs for <code>tweetIdOfArticle</code>?&rdquo;, or &ldquo;write the same law-suite for the <code>Either</code> monad.&rdquo; When you&rsquo;ve done the loop, tell me how it went — if you nail step&nbsp;3, I&rsquo;ll log it as a learning record and raise the difficulty next time.</p>
+
+<footer>
+<strong>References</strong>
+<ol class="refs">
+<li id="r1">K. Claessen &amp; J. Hughes, &ldquo;QuickCheck: A Lightweight Tool for Random Testing of Haskell Programs,&rdquo; ICFP 2000 (DOI 10.1145/351240.351266). <a href="https://alastairreid.github.io/RelatedWork/papers/claessen:icfp:2000/">summary</a></li>
+<li id="r2">fast-check — property-based testing for TS, with integrated shrinking. <a href="https://github.com/dubzzz/fast-check">github.com/dubzzz/fast-check</a></li>
+<li id="r3">Desirable difficulty / retrieval &amp; generation effects — R. Bjork. (See your <a href="../reference/glossary-monads.html">glossary</a> + ask for a deeper reading.)</li>
+</ol>
+</footer>
+</body>
+</html>

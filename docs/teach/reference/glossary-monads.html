@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary — Monads & Category Theory (for your Effect refactor)</title>
+<style>
+  :root { --ink:#1a1a17; --muted:#5f5e58; --rule:#d9d6cc; --accent:#7a3b2e; --code:#2b2b28; --codebg:#f3f1ea; }
+  html { -webkit-text-size-adjust:100%; }
+  body { font-family: "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; color:var(--ink);
+         max-width: 50rem; margin: 3rem auto; padding: 0 1.25rem; line-height: 1.5; background:#fdfcf9; }
+  h1 { font-size: 1.7rem; font-weight: 600; margin: 0 0 .2rem; }
+  .sub { color:var(--muted); font-style: italic; margin: 0 0 1.6rem; }
+  h2 { font-size: 1.05rem; letter-spacing:.02em; text-transform:uppercase; color:var(--accent);
+       border-bottom:1px solid var(--rule); padding-bottom:.25rem; margin: 2rem 0 .75rem; }
+  dl { margin: 0; }
+  dt { font-weight: 600; margin-top: .9rem; }
+  dd { margin: .15rem 0 0; }
+  dd.map { color: var(--muted); font-size: .92rem; }
+  code, .mono { font-family: "SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace; font-size: .86em;
+        background: var(--codebg); color: var(--code); padding: .05em .3em; border-radius: 3px; }
+  .laws { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.75rem 1rem; margin:.5rem 0; }
+  .laws code { background:transparent; padding:0; }
+  a { color: var(--accent); }
+  footer { margin-top:2.5rem; border-top:1px solid var(--rule); padding-top:.75rem; color:var(--muted); font-size:.85rem; }
+  @media print { body { margin:0; max-width:none; font-size:11pt; background:#fff; } h2 { page-break-after:avoid; } dt{page-break-after:avoid;} a{color:var(--ink);text-decoration:none;} }
+</style>
+</head>
+<body>
+<h1>Glossary — Monads &amp; Category Theory</h1>
+<p class="sub">Compressed reference for the x-media-downloader Effect refactor. Each term maps to the concept and to the code you actually wrote.</p>
+
+<h2>The category</h2>
+<dl>
+  <dt>Category</dt>
+  <dd>Objects + morphisms (arrows) + a composition <code>∘</code> + an identity per object, obeying associativity and identity laws.</dd>
+  <dt>Object / Morphism</dt>
+  <dd>In programming: objects = <em>types</em>; morphisms = <em>functions</em> <code>A → B</code>.</dd>
+  <dt>Composition <code>∘</code></dt>
+  <dd><code>(g ∘ f)(a) = g(f(a))</code>. The whole game is: <em>which arrows compose, and how?</em></dd>
+  <dt>Identity</dt>
+  <dd><code>id: A → A</code>, <code>a ↦ a</code>. The do-nothing arrow that composition must respect.</dd>
+  <dt>The laws</dt>
+  <dd class="laws"><code>h ∘ (g ∘ f) = (h ∘ g) ∘ f</code> &nbsp;(associativity)<br><code>f ∘ id = f = id ∘ f</code> &nbsp;(identity)</dd>
+</dl>
+
+<h2>Functor</h2>
+<dl>
+  <dt>Functor</dt>
+  <dd>A structure-preserving map between categories: sends objects→objects and arrows→arrows, preserving <code>∘</code> and <code>id</code>.</dd>
+  <dt>Endofunctor</dt>
+  <dd>A functor from a category to itself. <code>Option</code> is an endofunctor on "types &amp; functions".</dd>
+  <dd class="map">Effect/TS: on types <code>T ↦ Option&lt;T&gt;</code>; on functions <code>Option.map(f)</code>.</dd>
+  <dt>Functor laws</dt>
+  <dd class="laws"><code>map(id) = id</code><br><code>map(g ∘ f) = map(g) ∘ map(f)</code></dd>
+</dl>
+
+<h2>Monad</h2>
+<dl>
+  <dt>Monad</dt>
+  <dd>An endofunctor <code>T</code> plus two natural transformations: <strong>unit</strong> <code>η</code> and <strong>multiplication</strong> <code>μ</code> — obeying the monad laws. Equivalently: <em>a way to compose functions whose results are "embellished" by <code>T</code>.</dd>
+  <dt>unit / η</dt>
+  <dd>Wrap a plain value: <code>η : A → T A</code>.</dd>
+  <dd class="map">Effect/TS: <code>Option.some</code> (a.k.a. <code>of</code>); for errors, <code>Either.right</code>.</dd>
+  <dt>multiplication / μ (join)</dt>
+  <dd>Flatten one layer: <code>μ : T(T A) → T A</code>.</dd>
+  <dd class="map">Effect/TS: <code>Option.flatten</code>.</dd>
+  <dt>bind / flatMap (&gt;&gt;=)</dt>
+  <dd>The everyday form: <code>T A → (A → T B) → T B</code>. Equivalent to <code>η + μ</code>.</dd>
+  <dd class="map">Effect/TS: <code>Option.flatMap</code>.</dd>
+  <dt>Monad laws</dt>
+  <dd class="laws"><code>flatMap(some(a), f) = f(a)</code> &nbsp;(left identity)<br><code>flatMap(m, some) = m</code> &nbsp;(right identity)<br><code>flatMap(flatMap(m,f),g) = flatMap(m, x =&gt; flatMap(f(x),g))</code> &nbsp;(associativity)</dd>
+</dl>
+
+<h2>Kleisli</h2>
+<dl>
+  <dt>Kleisli category <code>Kl(T)</code></dt>
+  <dd>Same objects (types); a morphism <code>A → B</code> is a function <code>A → T B</code>. Built from any monad <code>T</code>.</dd>
+  <dd class="map">nLab: <code>Kl(T)(X,Y) := C(X, T Y)</code>; composition <code>μ ∘ T(g) ∘ f</code>.</dd>
+  <dt>Kleisli arrow</dt>
+  <dd>One such function. <em>Your</em> <code>convexOriginPattern: string → Option&lt;string&gt;</code> is a Kleisli arrow in <code>Kl(Option)</code>.</dd>
+  <dt>Fish operator <code>&gt;=&gt;</code></dt>
+  <dd>Kleisli composition: <code>(f &gt;=&gt; g)(a) = flatMap(f(a), g)</code>. Identity is <code>η</code> (<code>some</code>).</dd>
+  <dt>Key fact</dt>
+  <dd>The <strong>monad laws are exactly the category laws</strong> (assoc + identity) for <code>Kl(T)</code>. That is the whole point: a monad is what makes embellished arrows compose.</dd>
+</dl>
+
+<h2>The data</h2>
+<dl>
+  <dt>Sum type / coproduct <code>T + 1</code></dt>
+  <dd><code>Option&lt;T&gt; = Some T | None</code> is the type <code>T</code> plus one extra "nothing" value.</dd>
+  <dt>Option / Maybe</dt>
+  <dd>The monad for <em>partiality</em> (absence). <code>Kl(Option)</code> = the category of <strong>partial functions</strong>.</dd>
+  <dt>Either / Result</dt>
+  <dd>The monad for <em>failure with a reason</em>: <code>Either&lt;E, A&gt;</code>. <code>Maybe&lt;T&gt; ≅ Either&lt;unit, T&gt;</code>.</dd>
+  <dd class="map">Effect/TS: <code>Either</code>, and your <code>Data.TaggedError</code> in Effect's typed error channel.</dd>
+  <dt>Railway-oriented programming</dt>
+  <dd>Wlaschin's metaphor for <code>Either</code>: a happy "success track" and a "failure track"; <code>None</code>/<code>Left</code> bypasses the rest. <a href="https://fsharpforfunandprofit.com/rop/">fsharpforfunandprofit.com/rop</a>.</dd>
+</dl>
+
+<h2>Errors (Either &amp; Effect)</h2>
+<dl>
+  <dt>Right-biased</dt>
+  <dd><code>Either</code>&rsquo;s <code>map</code>/<code>flatMap</code> act on the <code>Right</code> (success); a <code>Left</code> (error) passes through untouched — the &ldquo;failure track&rdquo; short-circuits.</dd>
+  <dt>Bifunctor / <code>mapLeft</code> / <code>bimap</code></dt>
+  <dd><code>Either</code> is a functor on <em>both</em> type params: <code>map</code> the success, <code>mapLeft</code> the error, <code>bimap</code> both. Each side obeys the functor laws.</dd>
+  <dt>Error channel · <code>Effect&lt;A, E, R&gt;</code></dt>
+  <dd>Effect&rsquo;s type: <strong>A</strong> success, <strong>E</strong> error (the <code>Either</code> Left, typed), <strong>R</strong> requirements. Multiple errors accumulate as a union in <code>E</code> automatically.</dd>
+  <dd class="map">Your <code>DownloadStrategy.save: SaveRequest → Effect&lt;DownloadHandle, DownloadError&gt;</code> is a Kleisli arrow over the Effect monad.</dd>
+  <dt>Failure vs defect · <code>fail</code> vs <code>die</code></dt>
+  <dd><strong>Failure</strong> (<code>Effect.fail</code>): expected, domain, recoverable, <em>typed in E</em> (like a checked exception). <strong>Defect</strong> (<code>Effect.die</code>): unexpected bug/invariant violation, untyped (<code>E = never</code>), terminates — like an unchecked exception. This line is where &ldquo;don&rsquo;t reinvent exceptions&rdquo; lives.</dd>
+  <dt><code>Data.TaggedError</code></dt>
+  <dd>Builds an error class with a <code>_tag</code> discriminant + typed fields; <em>yieldable</em> (usable directly in Effect generators).</dd>
+  <dd class="map">Your <code>OAuthError</code>, <code>Aria2RpcError</code>, <code>OffscreenSaveError</code>, the Convex errors.</dd>
+  <dt><code>catchTag</code> / <code>catchTags</code></dt>
+  <dd>Handle a specific tagged error by its <code>_tag</code>; the compiler <em>narrows</em> the remaining error union. Exhaustive handling = clearing <code>E</code> to <code>never</code>.</dd>
+  <dt><code>Cause</code></dt>
+  <dd>Effect&rsquo;s lossless record of <em>why</em> an effect failed (typed failures, defects, interruptions, traces) — no information is thrown away, unlike a bare <code>throw</code>.</dd>
+</dl>
+
+<h2>Property-based testing</h2>
+<dl>
+  <dt>Property-based test</dt>
+  <dd>Assert a <em>property</em> that must hold for <em>all</em> inputs, then let the framework generate hundreds of random cases to try to falsify it — instead of one hand-picked example. Origin: QuickCheck (Claessen &amp; Hughes, 2000).</dd>
+  <dt>Arbitrary / generator</dt>
+  <dd>A recipe for random inputs. fast-check: <code>fc.string()</code>, <code>fc.nat()</code>, <code>fc.webUrl()</code>, <code>fc.array(a)</code>, <code>fc.record({…})</code>, <code>a.map(f)</code>, <code>fc.oneof(a,b)</code>.</dd>
+  <dt>Shrinking</dt>
+  <dd>On failure, the framework searches for the <em>smallest</em> input that still fails — handing you a minimal counterexample, not a 500-element noise case.</dd>
+  <dt>Law as a test</dt>
+  <dd>A functor/monad law written as a property: <code>fc.assert(fc.property(gen, (m) =&gt; eqOption(map(m, id), m)))</code>. A law you can run is knowledge; one you only believe is a hope.</dd>
+</dl>
+
+<h2>The Effect monad (R &amp; Cause)</h2>
+<dl>
+  <dt><code>Effect&lt;A, E, R&gt;</code></dt>
+  <dd>One lazy value fusing three monads: <strong>A</strong> success (Task/async), <strong>E</strong> failure (Either), <strong>R</strong> requirements (Reader). Roughly <code>R → Promise&lt;Either&lt;E, A&gt;&gt;</code>, inert until run.</dd>
+  <dt>R / Requirements (Reader channel)</dt>
+  <dd>The services an effect needs to run. <code>R = never</code> ⇒ self-contained. Read <code>R1 | R2</code> as &ldquo;needs R1 <em>and</em> R2.&rdquo;</dd>
+  <dd class="map">Your <code>Effect.Effect&lt;A, E, SettingsService&gt;</code> — needs a <code>SettingsService</code>.</dd>
+  <dt>Context</dt>
+  <dd>A type-safe map <code>Tag → Service</code>; the DI container the <code>R</code> channel reads from.</dd>
+  <dt>Tag / Service</dt>
+  <dd>A unique identifier + its implementation. (Effect 4: <code>Context.Service</code>.)</dd>
+  <dd class="map">Your <code>class SettingsService extends Context.Service&lt;…&gt;</code>.</dd>
+  <dt>Layer</dt>
+  <dd>A composable, effectful <em>recipe</em> for building services (handles their own deps + resources).</dd>
+  <dd class="map">Your <code>SettingsServiceLive = Layer.succeed(SettingsService, …)</code>.</dd>
+  <dt><code>provide</code></dt>
+  <dd>Discharge a requirement — supplies a service, shrinking <code>R</code> toward <code>never</code>, after which the effect can run.</dd>
+  <dd class="map">Your <code>Effect.provide(eff, SettingsServiceLive)</code> then <code>Effect.runPromise</code>.</dd>
+  <dt>Exit</dt>
+  <dd>The result of running an effect: <code>Success(A) | Failure(Cause&lt;E&gt;)</code>.</dd>
+  <dd class="map">Your tests&rsquo; <code>Effect.runPromiseExit</code> + <code>Exit.isFailure</code>.</dd>
+  <dt>Cause (semiring)</dt>
+  <dd>The lossless record of <em>why</em> an effect failed. Leaves: <code>Fail</code> (your tagged failures), <code>Die</code> (defects), <code>Interrupt</code>; combined by <code>Sequential</code> &amp; <code>Parallel</code> — so concurrent failures and finalizer errors are <em>all</em> kept (a semiring over <code>E</code>).</dd>
+  <dt><code>Layer&lt;ROut, E, RIn&gt;</code></dt>
+  <dd>A recipe that <em>produces</em> services <code>ROut</code>, <em>requires</em> <code>RIn</code>, may fail with <code>E</code>. Construction is itself effectful (it can acquire resources).</dd>
+  <dt><code>Layer.provide</code> / <code>Layer.merge</code></dt>
+  <dd><code>provide</code> feeds one layer&rsquo;s outputs into another&rsquo;s requirements (composition <code>∘</code> of recipes). <code>merge</code> / <code>mergeAll</code> place layers side-by-side (a product of outputs).</dd>
+  <dt>Layer memoization</dt>
+  <dd>Layers are shared by <em>reference</em>: the same layer instance in the graph is built <em>once</em> — so a stateful service has one shared <code>Ref</code>. Store parameterized layers in a <code>const</code> and reuse it.</dd>
+  <dt><code>Ref&lt;A&gt;</code></dt>
+  <dd>A mutable reference holding an <em>immutable</em> value; atomic <code>get</code>/<code>set</code>/<code>update</code> — the effectful &ldquo;State&rdquo; cell. Create with <code>Ref.make</code> inside <code>Layer.effect</code>, keep it private, expose methods.</dd>
+  <dd class="map">Your <code>folderCache: Map</code> → a <code>FolderCache</code> service backed by a <code>Ref</code>.</dd>
+  <dt>Manual DI ≅ Reader-by-hand</dt>
+  <dd>Passing a dependency as a parameter (your <code>cfg.fetchImpl</code>, <code>DriveDeps</code>) <em>is</em> the Reader monad threaded by hand — the result type doesn&rsquo;t record the need. The <code>R</code> channel + a <code>Layer</code> let the compiler track and swap it. <code>provide</code> = applying the environment.</dd>
+</dl>
+
+<footer>
+Reference for <a href="../lessons/0001-the-monad-behind-your-refactor.html">Lesson 1 — The monad behind your refactor</a>, <a href="../lessons/0002-either-and-your-tagged-errors.html">Lesson 2 — Either &amp; your tagged errors</a>, <a href="../lessons/0003-laws-as-property-tests.html">Lesson 3 — The laws, as tests you can run</a>, , <a href="../lessons/0004-the-effect-monad-r-and-cause.html">Lesson 4 — The Effect monad: R &amp; Cause</a>, <a href="../lessons/0005-fetchimpl-to-a-layer-service.html">Lesson 5 — From fetchImpl to a Layer service</a>, and <a href="../lessons/0006-drivedeps-to-composed-layers.html">Lesson 6 — DriveDeps → composed Layers</a>.
+Sources: Milewski, <em>Category Theory for Programmers</em>; nLab; Wlaschin, <em>Railway Oriented Programming</em>.
+Ask your teacher (the agent) to expand any entry.
+</footer>
+</body>
+</html>

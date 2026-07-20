@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 6 — DriveDeps → composed Layers</title>
+<style>
+  :root { --ink:#1a1a17; --muted:#5f5e58; --rule:#d9d6cc; --accent:#7a3b2e; --code:#2b2b28; --codebg:#f3f1ea;
+          --ok:#1d6e42; --okbg:#e6f3ea; --no:#9a2b22; --nobg:#f8e9e7; }
+  body { font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; color:var(--ink);
+         max-width:52rem; margin:3rem auto; padding:0 1.25rem; line-height:1.62; background:#fdfcf9; }
+  h1 { font-size:2rem; font-weight:600; line-height:1.15; margin:0 0 .15rem; }
+  .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; font-weight:600; }
+  .sub { color:var(--muted); font-style:italic; margin:.3rem 0 1.6rem; }
+  h2 { font-size:1.25rem; font-weight:600; margin:2.2rem 0 .5rem; }
+  h3 { font-size:1rem; font-weight:600; margin:1.4rem 0 .3rem; color:var(--accent); }
+  p { margin:.6rem 0; }
+  code,.mono { font-family:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace; font-size:.85em;
+        background:var(--codebg); color:var(--code); padding:.05em .3em; border-radius:3px; }
+  pre { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.8rem 1rem; overflow-x:auto;
+        font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.79rem; line-height:1.5; }
+  pre code { background:none; padding:0; }
+  .big-idea { border-left:3px solid var(--accent); background:#faf6f0; padding:.6rem 1.1rem; margin:1.2rem 0; }
+  .law { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.55rem .9rem; margin:.5rem 0; font-size:.92rem; }
+  .step { border:1px solid var(--rule); border-radius:8px; padding:.3rem 1.1rem .8rem; margin:1rem 0; background:#fff; }
+  .step h3 { margin-top:.8rem; }
+  .run { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.4rem .7rem; font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.8rem; }
+  table.cmp { border-collapse:collapse; width:100%; margin:.8rem 0; font-size:.92rem; }
+  table.cmp th, table.cmp td { border:1px solid var(--rule); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  table.cmp th { background:var(--codebg); }
+  sup.ref a { color:var(--accent); text-decoration:none; font-size:.75em; }
+  a { color:var(--accent); }
+  ol.refs { font-size:.85rem; color:var(--muted); line-height:1.4; } ol.refs a { word-break:break-word; }
+  .quiz { border:1px solid var(--rule); border-radius:8px; padding:1rem 1.2rem; margin:1rem 0; background:#fff; }
+  .q { font-weight:600; margin:.9rem 0 .4rem; }
+  .opt { display:block; width:100%; text-align:left; font:inherit; font-size:.93rem; background:#fcfbf7;
+         border:1px solid var(--rule); border-radius:5px; padding:.45rem .7rem; margin:.3rem 0; cursor:pointer; }
+  .opt:hover { border-color:var(--accent); }
+  .opt.ok { background:var(--okbg); border-color:var(--ok); color:var(--ok); }
+  .opt.no { background:var(--nobg); border-color:var(--no); color:var(--no); }
+  .fb { font-size:.88rem; color:var(--muted); margin:.25rem 0 0; min-height:1.1em; }
+  .callout { background:#eef3ee; border:1px solid #cfe0d2; border-radius:8px; padding:.8rem 1.1rem; margin:1.4rem 0; }
+  .spaced { background:#fbf3ee; border:1px solid #e6cdbf; border-radius:8px; padding:.7rem 1.1rem; margin:1.2rem 0; }
+  footer { margin-top:2.6rem; border-top:1px solid var(--rule); padding-top:1rem; color:var(--muted); font-size:.9rem; }
+  @media print { body{margin:0;max-width:none;font-size:11pt;background:#fff;} .quiz,.opt{display:none;} a{color:var(--ink);} pre{white-space:pre-wrap;} }
+</style>
+</head>
+<body>
+
+<p class="kicker">Lesson 6 · Apply it (advanced)</p>
+<h1>DriveDeps → composed Layers</h1>
+<p class="sub">Mission: master the <em>thinking</em>. Lesson 5 migrated one dependency; this decomposes a real <em>bag</em> of them — and shows the dependency graph for what it categorically is: arrow composition.</p>
+
+<div class="spaced">
+<strong>Spaced recall (no peeking).</strong> From Lessons 4–5: (i) in <code>Layer&lt;ROut, E, RIn&gt;</code>, which slot is the <em>requirements</em>? (ii) what must an effect&rsquo;s <code>R</code> be before it can run? (iii) what does <code>provide</code> do to <code>R</code>? Then check the <a href="../reference/glossary-monads.html">glossary</a>.
+</div>
+
+<div class="big-idea">
+<strong>The one idea.</strong> <code>DriveDeps</code> is a god-bag mixing three different concerns: <em>capabilities</em> (<code>fetchImpl</code>, <code>fetchSource</code>), <em>config</em> (<code>accessToken</code>, <code>rootFolderId</code>), and <em>mutable state</em> (<code>folderCache: Map</code>). The migration is: give each concern its own service, model the cache as a <code>Ref</code> (effectful State), and let <code>Layer</code>s build &amp; wire them — including a layer that <em>depends on other layers</em>. Provide the whole graph once, at the edge.
+</div>
+
+<h2>1 · Before — one bag, three concerns</h2>
+<pre><code>export interface DriveDeps {
+  readonly accessToken: string                       // config
+  readonly rootFolderId: string                      // config
+  readonly fetchImpl: typeof fetch                   // capability
+  readonly fetchSource: (url: string) =&gt; Promise&lt;Response&gt;  // capability (SSRF-guarded)
+  readonly folderCache: Map&lt;string, string&gt;          // mutable state
+}</code></pre>
+<p>Everything is threaded by hand and invisible in result types. Mixing config + capabilities + state in one parameter is the smell; each wants a different home.</p>
+
+<h2>2 · Decompose — one service per concern</h2>
+<table class="cmp">
+<tr><th>DriveDeps field</th><th>Its home</th><th>Built with</th></tr>
+<tr><td><code>fetchImpl</code></td><td><code>FetchService</code></td><td><code>Layer.succeed</code> (or <code>.effect</code>)</td></tr>
+<tr><td><code>fetchSource</code> (SSRF)</td><td><code>SourceFetch</code> — a service that <em>depends on</em> <code>FetchService</code></td><td><code>Layer.effect</code></td></tr>
+<tr><td><code>accessToken</code>, <code>rootFolderId</code></td><td><code>DriveConfig</code> (values)</td><td><code>Layer.succeed</code></td></tr>
+<tr><td><code>folderCache: Map</code></td><td><code>FolderCache</code> (state)</td><td><code>Layer.effect</code> + <code>Ref</code></td></tr>
+</table>
+
+<h2>3 · Effectful state: the cache becomes a <code>Ref</code></h2>
+<p>A <code>Ref&lt;A&gt;</code> is a mutable reference to an <em>immutable</em> value with atomic <code>get</code>/<code>update</code> — the effectful cousin of the State monad.<sup class="ref"><a href="#r2">2</a></sup> Create it inside <code>Layer.effect</code>, keep it private, expose methods:</p>
+<pre><code>const FolderCacheLive = Layer.effect(FolderCache, Effect.gen(function* () {
+  const ref = yield* Ref.make&lt;Record&lt;string, string&gt;&gt;({})           // created ONCE
+  return {
+    get: (h) =&gt; Ref.get(ref).pipe(Effect.map((rec) =&gt; Option.fromUndefinedOr(rec[h]))),
+    set: (h, id) =&gt; Ref.update(ref, (rec) =&gt; ({ ...rec, [h]: id })),
+  }
+}))</code></pre>
+<p>Because layers are <strong>memoized by reference</strong>, this <code>Ref</code> is allocated once and shared by everyone who needs <code>FolderCache</code> — a single source of truth, no global mutable variable.<sup class="ref"><a href="#r3">3</a></sup> (Note: <code>fromUndefinedOr</code>, not <code>fromNullable</code> — the latter doesn&rsquo;t exist in your beta.92.)</p>
+
+<h2>4 · Layers depending on Layers</h2>
+<p><code>Layer&lt;ROut, E, RIn&gt;</code>: produces <code>ROut</code>, requires <code>RIn</code>.<sup class="ref"><a href="#r1">1</a></sup> The uploader needs all three, so its type carries them — and you discharge them by <em>providing</em> the composed dependency layer:</p>
+<pre><code>const DriveUploaderLive: Layer&lt;DriveUploader, never, FetchService | DriveConfig | FolderCache&gt; =
+  Layer.effect(DriveUploader, Effect.gen(function* () {
+    const http  = yield* FetchService           // requirements resolved at CONSTRUCTION,
+    const cfg   = yield* DriveConfig            // so the service's own methods have R = never
+    const cache = yield* FolderCache
+    /* … ensureFolder uses cache then http; upload uses ensureFolder then http … */
+  }))
+
+const appLayer = DriveUploaderLive.pipe(
+  Layer.provide(Layer.mergeAll(FetchServiceLive, DriveConfigLive, FolderCacheLive)),
+)   //  provide = feed outputs into requirements;  merge = put them side-by-side</code></pre>
+
+<h2>5 · The payoff (run it)</h2>
+<div class="step">
+<h3>The cache dedupes folder creation — provably, with the network stubbed</h3>
+<p class="run">bunx vitest run src/core/teach/drive-layers.demo.test.ts  →  1 passed</p>
+<p>The demo uploads twice for <code>alice</code> and once for <code>bob</code> through a stub <code>FetchService</code> that counts calls. Result: <strong>3 uploads, but only 2 folder-creations</strong> — the second <code>alice</code> upload hits the <code>Ref</code> cache. Swap <code>FetchServiceLive</code> for a stub and the whole graph runs offline. That is the entire value: testable, swappable, shared-by-construction.</p>
+</div>
+
+<h2>6 · The categorical thread — the graph <em>is</em> composition</h2>
+<div class="law">A <code>Layer&lt;ROut, E, RIn&gt;</code> is a morphism <code>RIn → ROut</code> in a category of resource-recipes. <code>Layer.provide</code> is composition <code>∘</code>; <code>Layer.merge</code> is a product; memoization is sharing of a sub-object.</div>
+<p>So the dependency graph you wired is literally arrow composition — the same structure from Lesson 1, lifted to <em>services</em>. The environment <code>R = A | B | C</code> is a product (&ldquo;needs all of them&rdquo;), and <code>provide</code> reduces it toward <code>never</code> exactly as Kleisli composition reduces a chain. Nothing new under the sun — just the monad/category toolkit pointed at dependencies.</p>
+
+<h2>7 · The judgment — is this migration worth it? (defend it)</h2>
+<p>Often, for <em>one</em> adapter: <strong>partly</strong>. Splitting <code>DriveDeps</code> into four services + four layers is ceremony if nothing else consumes them. The win appears when capabilities are <em>shared</em>:</p>
+<ul>
+<li><strong>Extract &amp; share:</strong> <code>FetchService</code> (and a clock/logger) — used by drive, dropbox, aria2, convex. Define once, provide once, stub everywhere. Strong yes.</li>
+<li><strong>Keep as state-service:</strong> <code>FolderCache</code> — genuinely stateful and worth a <code>Ref</code> service if shared or tested.</li>
+<li><strong>Maybe leave:</strong> <code>accessToken</code>/<code>rootFolderId</code> are per-upload runtime values; a plain argument or a small <code>DriveConfig</code> is fine — don&rsquo;t Layer-ify a string just because you can.</li>
+</ul>
+<p>Mastery is making this call per concern, not per habit — the same restraint as declining the <code>Option</code> resolve-chain in Phase&nbsp;4.</p>
+
+<div class="quiz" id="quiz">
+<strong>Retrieval check</strong>
+<div class="q">1. In <code>Layer&lt;ROut, E, RIn&gt;</code>, the services the layer needs to be built are…</div>
+<button class="opt" data-ok="0">ROut, produced</button>
+<button class="opt" data-ok="1">RIn, required</button>
+<button class="opt" data-ok="0">E, the error</button>
+<button class="opt" data-ok="0">A, the value</button>
+<p class="fb"></p>
+<div class="q">2. The <code>folderCache: Map</code> is best modelled in Effect as a…</div>
+<button class="opt" data-ok="1">Ref in a Layer</button>
+<button class="opt" data-ok="0">Tag in a Cause</button>
+<button class="opt" data-ok="0">fork in a Fiber</button>
+<button class="opt" data-ok="0">Some in a None</button>
+<p class="fb"></p>
+<div class="q">3. <code>Layer.provide</code> corresponds, categorically, to…</div>
+<button class="opt" data-ok="0">a coproduct sum</button>
+<button class="opt" data-ok="1">arrow composition</button>
+<button class="opt" data-ok="0">an identity law</button>
+<button class="opt" data-ok="0">a natural number</button>
+<p class="fb"></p>
+</div>
+
+<div class="callout">
+<strong>Exercise (the hard one — bring it to me).</strong> Add the <code>SourceFetch</code> service (the SSRF-guarded <code>fetchSource</code>) as a layer that <em>depends on</em> <code>FetchService</code>: <code>Layer.effect(SourceFetch, Effect.gen(function*(){ const http = yield* FetchService; return { fetch: (url) =&gt; /* guard, then */ http.fetch(url) } }))</code>. Wire it under <code>DriveUploaderLive</code> and prove (via a stub) that a disallowed URL is rejected before any real fetch. This is a Layer-on-Layer dependency — the crux of the whole model.
+</div>
+
+<div class="callout">
+<strong>Primary sources:</strong> Effect docs — <a href="https://effect.website/docs/requirements-management/layers/">Managing Layers</a>, <a href="https://effect.website/docs/state-management/ref/">Ref</a>, <a href="https://effect.website/docs/requirements-management/layer-memoization/">Layer Memoization</a>. <strong>Precedent:</strong> your <code>src/core/settings/index.ts</code>.<br>
+<strong>Community / wisdom:</strong> <a href="https://discord.gg/effect-ts">Effect Discord</a> — pose the real question: &ldquo;extract a shared <code>FetchService</code> across drive/dropbox/aria2/convex, or keep per-adapter <code>cfg</code>?&rdquo;<br>
+<strong>Reference:</strong> <a href="../reference/glossary-monads.html">Glossary — Layer / provide / merge / memoization / Ref</a>.
+</div>
+
+<p><strong>Ask me follow-ups</strong> — &ldquo;check my <code>SourceFetch</code> layer,&rdquo; &ldquo;how does <code>Layer.fresh</code> change the shared <code>Ref</code>?&rdquo;, or &ldquo;sketch the shared-<code>FetchService</code>-across-all-adapters refactor.&rdquo; You&rsquo;ve now seen the whole toolkit — Option, Either, the laws, Effect&rsquo;s three channels, and the Layer graph — each tied back to category theory and to your own code. Do the <code>SourceFetch</code> exercise and tell me how it went; next I&rsquo;ll <strong>interleave a quiz across all six lessons</strong> (the real storage-strength test) and we&rsquo;ll log where you actually stand.</p>
+
+<footer>
+<strong>References</strong>
+<ol class="refs">
+<li id="r1">Effect docs — &ldquo;Managing Layers&rdquo;: <code>Layer&lt;ROut, E, RIn&gt;</code>, <code>Layer.effect</code>/<code>provide</code>/<code>merge</code>. <a href="https://effect.website/docs/requirements-management/layers/">effect.website</a></li>
+<li id="r2">Effect docs — &ldquo;Ref&rdquo;: atomic mutable reference to an immutable value (store immutable values only). <a href="https://effect.website/docs/state-management/ref/">effect.website/docs/state-management/ref</a></li>
+<li id="r3">Effect docs — &ldquo;Layer Memoization&rdquo;: layers shared by reference; build once, reuse the const. <a href="https://effect.website/docs/requirements-management/layer-memoization/">effect.website</a></li>
+</ol>
+</footer>
+
+<script>
+  document.querySelectorAll('#quiz .opt').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var p = btn; while (p && !(p.classList && p.classList.contains('fb'))) { p = p.nextElementSibling; }
+      var ok = btn.getAttribute('data-ok') === '1';
+      btn.classList.remove('ok','no'); btn.classList.add(ok ? 'ok' : 'no');
+      if (p) p.textContent = ok ? '✓ Right.' : '✗ Not quite — check the glossary and retry.';
+    });
+  });
+</script>
+</body>
+</html>

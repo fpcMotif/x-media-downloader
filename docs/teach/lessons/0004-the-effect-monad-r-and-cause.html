@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 4 — The Effect monad: R &amp; Cause</title>
+<style>
+  :root { --ink:#1a1a17; --muted:#5f5e58; --rule:#d9d6cc; --accent:#7a3b2e; --code:#2b2b28; --codebg:#f3f1ea;
+          --ok:#1d6e42; --okbg:#e6f3ea; --no:#9a2b22; --nobg:#f8e9e7; }
+  body { font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; color:var(--ink);
+         max-width:52rem; margin:3rem auto; padding:0 1.25rem; line-height:1.62; background:#fdfcf9; }
+  h1 { font-size:2rem; font-weight:600; line-height:1.15; margin:0 0 .15rem; }
+  .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; font-weight:600; }
+  .sub { color:var(--muted); font-style:italic; margin:.3rem 0 1.6rem; }
+  h2 { font-size:1.25rem; font-weight:600; margin:2.2rem 0 .5rem; }
+  h3 { font-size:1rem; font-weight:600; margin:1.4rem 0 .3rem; color:var(--accent); }
+  p { margin:.6rem 0; }
+  code,.mono { font-family:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace; font-size:.85em;
+        background:var(--codebg); color:var(--code); padding:.05em .3em; border-radius:3px; }
+  pre { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.8rem 1rem; overflow-x:auto;
+        font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.8rem; line-height:1.5; }
+  pre code { background:none; padding:0; }
+  .big-idea { border-left:3px solid var(--accent); background:#faf6f0; padding:.6rem 1.1rem; margin:1.2rem 0; }
+  .law { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.55rem .9rem; margin:.5rem 0; font-size:.92rem; }
+  table.cmp { border-collapse:collapse; width:100%; margin:.8rem 0; font-size:.92rem; }
+  table.cmp th, table.cmp td { border:1px solid var(--rule); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  table.cmp th { background:var(--codebg); }
+  sup.ref a { color:var(--accent); text-decoration:none; font-size:.75em; }
+  a { color:var(--accent); }
+  ol.refs { font-size:.85rem; color:var(--muted); line-height:1.4; } ol.refs a { word-break:break-word; }
+  .quiz { border:1px solid var(--rule); border-radius:8px; padding:1rem 1.2rem; margin:1rem 0; background:#fff; }
+  .q { font-weight:600; margin:.9rem 0 .4rem; }
+  .opt { display:block; width:100%; text-align:left; font:inherit; font-size:.93rem; background:#fcfbf7;
+         border:1px solid var(--rule); border-radius:5px; padding:.45rem .7rem; margin:.3rem 0; cursor:pointer; }
+  .opt:hover { border-color:var(--accent); }
+  .opt.ok { background:var(--okbg); border-color:var(--ok); color:var(--ok); }
+  .opt.no { background:var(--nobg); border-color:var(--no); color:var(--no); }
+  .fb { font-size:.88rem; color:var(--muted); margin:.25rem 0 0; min-height:1.1em; }
+  .callout { background:#eef3ee; border:1px solid #cfe0d2; border-radius:8px; padding:.8rem 1.1rem; margin:1.4rem 0; }
+  .spaced { background:#fbf3ee; border:1px solid #e6cdbf; border-radius:8px; padding:.7rem 1.1rem; margin:1.2rem 0; }
+  footer { margin-top:2.6rem; border-top:1px solid var(--rule); padding-top:1rem; color:var(--muted); font-size:.9rem; }
+  @media print { body{margin:0;max-width:none;font-size:11pt;background:#fff;} .quiz,.opt{display:none;} a{color:var(--ink);} pre{white-space:pre-wrap;} }
+</style>
+</head>
+<body>
+
+<p class="kicker">Lesson 4 · Capstone</p>
+<h1>The Effect monad: <code>R</code> &amp; <code>Cause</code></h1>
+<p class="sub">You met the pieces: <a href="0001-the-monad-behind-your-refactor.html">Option</a> (absence), <a href="0002-either-and-your-tagged-errors.html">Either</a> (typed failure), and the <a href="0003-laws-as-property-tests.html">laws</a> that make them compose. <code>Effect</code> fuses them — and adds a third channel you&rsquo;re already using.</p>
+
+<div class="spaced">
+<strong>Spaced recall first (no peeking).</strong> State the monad <em>associativity</em> law for <code>flatMap</code>, and say in one line why it matters. Then check against <a href="../reference/glossary-monads.html#">the glossary</a>. (Retrieving it now, cold, is what moves it to long-term memory.)
+</div>
+
+<div class="big-idea">
+<strong>The one idea.</strong> <code>Effect&lt;A, E, R&gt;</code> is approximately <code>R → Promise&lt;Either&lt;E, A&gt;&gt;</code>, kept <em>lazy</em>.<sup class="ref"><a href="#r3">3</a></sup>
+It bundles three classic monads into one value: <strong>Reader</strong> (the <code>R</code> requirements), <strong>Either</strong> (the <code>E</code> failures — Lesson 2), and <strong>Task/Async</strong> (the <code>A</code> deferred success). Everything from Lessons 1–3 still holds: it&rsquo;s just a very rich monad, and <code>flatMap</code> is still Kleisli composition — now threading all three channels at once.
+</div>
+
+<h2>1 · The <code>R</code> channel is the Reader monad — and you use it</h2>
+<p>The third slot is <em>requirements</em>: the services an effect needs before it can run.<sup class="ref"><a href="#r1">1</a></sup> Your <code>settings</code> module is a textbook example:</p>
+<pre><code>// src/core/settings/index.ts
+export class SettingsService extends Context.Service&lt;SettingsService&gt;()(/* … */) { /* get: Effect&lt;Settings&gt; */ }
+export const SettingsServiceLive = Layer.succeed(SettingsService, { /* impl */ })
+
+// a program that READS settings has R = SettingsService:
+const getViaService: Effect.Effect&lt;Settings, never, SettingsService&gt; = /* … */
+// you can WRITE it before any implementation exists. To run, you PROVIDE one:
+Effect.runPromise(Effect.provide(getViaService, SettingsServiceLive))   // R: SettingsService → never</code></pre>
+<ul>
+<li><strong>Context</strong> = a type-safe map <code>Tag → Service</code> — the DI container the <code>R</code> reads from.<sup class="ref"><a href="#r1">1</a></sup></li>
+<li><strong>Layer</strong> = a composable recipe to build a service (your <code>SettingsServiceLive</code>).</li>
+<li><strong><code>provide</code></strong> discharges a requirement, shrinking <code>R</code> toward <code>never</code>; an effect can only run once <code>R = never</code>.</li>
+<li>Subtlety: read <code>R1 | R2</code> as &ldquo;needs <strong>both</strong> R1 and R2&rdquo;, not &ldquo;either.&rdquo;<sup class="ref"><a href="#r1">1</a></sup></li>
+</ul>
+<p>Categorically this is the <strong>Reader</strong> (a.k.a. environment) monad: a computation that is secretly a function from an environment <code>R</code>. Note you also do DI the <em>manual</em> way elsewhere — <code>DriveDeps</code>, the <code>cfg</code> objects passed to <code>makeConvexHttpPort</code>/<code>makeAria2RpcPort</code>. Same idea, untyped-in-the-result: the <code>R</code> channel is the version the compiler tracks and composes for you. Your <code>DownloadStrategy.save</code> has <code>R = never</code> (self-contained) — that&rsquo;s why it just runs.</p>
+
+<h2>2 · <code>Cause</code> &amp; <code>Exit</code> — where &ldquo;lossless&rdquo; becomes literal</h2>
+<p>Running an effect yields an <strong><code>Exit</code></strong> = <code>Success(A) | Failure(Cause&lt;E&gt;)</code> — you already destructure this with <code>Effect.runPromiseExit</code> + <code>Exit.isFailure</code> in your aria2/strategy tests.</p>
+<p><code>Cause&lt;E&gt;</code> is the full story of failure, not just a message.<sup class="ref"><a href="#r2">2</a></sup> Its leaves are exactly Lesson 2&rsquo;s distinction, plus interruption:</p>
+<table class="cmp">
+<tr><th>Leaf</th><th>Meaning</th><th>In your world</th></tr>
+<tr><td><code>Fail&lt;E&gt;</code></td><td>expected, typed failure</td><td>your <code>DownloadError</code>, <code>OAuthError</code>, …</td></tr>
+<tr><td><code>Die</code></td><td>defect (unexpected bug)</td><td>the invariant throws you left in <code>runUpload</code></td></tr>
+<tr><td><code>Interrupt</code></td><td>fiber was cancelled</td><td>a cancelled download/sweep</td></tr>
+</table>
+<p>And the clever part: these leaves combine through <strong><code>Sequential</code></strong> and <strong><code>Parallel</code></strong> operators — a <em>semiring</em> over <code>E</code>.<sup class="ref"><a href="#r2">2</a></sup> That is what makes the model <em>lossless</em>: if two parallel uploads fail, <code>Cause</code> keeps <em>both</em>; if a finalizer dies while the body already failed, it keeps both, in order. A bare <code>throw</code> can carry exactly one error and forgets the rest.</p>
+
+<h2>3 · Why fuse three monads instead of stacking them?</h2>
+<p>In Haskell you could stack <code>ReaderT R (ExceptT E IO)</code>. But transformer <em>order matters</em> — <code>StateT s (ExceptT e m)</code> and <code>ExceptT e (StateT s m)</code> mean different things — and the nesting is awkward.<sup class="ref"><a href="#r3">3</a></sup> <code>Effect</code> bakes the combined stack into one type, so you get Reader + Either + Async with no ordering pitfalls, all three concerns visible in the signature, and one <code>flatMap</code> that:</p>
+<div class="law">threads <code>R</code> inward · short-circuits on <code>E</code> (the railway) · sequences the async <code>A</code> — while still obeying the monad laws you tested in Lesson 3.</div>
+<p>So the whole arc closes: <code>Option</code> and <code>Either</code> are the small monads; <code>Effect</code> is the big one your app runs on; the laws and Kleisli composition are the same throughout. You now have the full vocabulary to read — and defend — every signature in your refactor.</p>
+
+<div class="quiz" id="quiz">
+<strong>Retrieval check</strong>
+<div class="q">1. In <code>Effect&lt;A, E, R&gt;</code>, the <code>R</code> channel corresponds to which classic monad?</div>
+<button class="opt" data-ok="0">the Writer monad</button>
+<button class="opt" data-ok="1">the Reader monad</button>
+<button class="opt" data-ok="0">the State monad</button>
+<button class="opt" data-ok="0">the Const monad</button>
+<p class="fb"></p>
+<div class="q">2. <code>Effect.provide(eff, SettingsServiceLive)</code> changes the <code>R</code> channel from <code>SettingsService</code> to…</div>
+<button class="opt" data-ok="1">never</button>
+<button class="opt" data-ok="0">unknown</button>
+<button class="opt" data-ok="0">Layer</button>
+<button class="opt" data-ok="0">Exit</button>
+<p class="fb"></p>
+<div class="q">3. <code>Cause</code> keeps <em>both</em> errors when two parallel effects fail because it is a…</div>
+<button class="opt" data-ok="0">discriminated set</button>
+<button class="opt" data-ok="1">semiring of leaves</button>
+<button class="opt" data-ok="0">covariant functor</button>
+<button class="opt" data-ok="0">single message</button>
+<p class="fb"></p>
+</div>
+
+<div class="callout">
+<strong>Primary sources:</strong> Effect docs — <a href="https://effect.website/docs/requirements-management/services/">Managing Services</a> (the <code>R</code> channel) and <a href="https://effect.website/docs/data-types/cause/">Cause</a>. For the &ldquo;three monads fused&rdquo; framing, antoine-coulon&rsquo;s <a href="https://github.com/antoine-coulon/effect-introduction">effect-introduction</a>.<br>
+<strong>Community:</strong> <a href="https://discord.gg/effect-ts">Effect Discord</a> — ask whether to migrate your <code>DriveDeps</code>/<code>cfg</code> manual DI to the <code>R</code> channel + Layers (a real, opinion-worthy call for your codebase).<br>
+<strong>Reference:</strong> <a href="../reference/glossary-monads.html">Glossary — &ldquo;The Effect monad (R &amp; Cause)&rdquo;</a>.
+</div>
+
+<p><strong>You&rsquo;ve completed the arc:</strong> Option → Either → laws → Effect. You can now read every Effect signature in the repo and say what each channel buys you. Good follow-ups to <em>apply</em> it: <em>(a)</em> a worked migration of one <code>cfg</code>-style dependency (e.g. <code>fetchImpl</code>) to a Layer-provided service, <em>(b)</em> rewrite <code>classifyUploadError</code> with <code>catchTag</code>, or <em>(c)</em> a spaced quiz next session across all four lessons. Ask me anything unclear — and if you did the Lesson&nbsp;3 loop or the spaced-recall above, tell me how it went so I can log it and calibrate.</p>
+
+<footer>
+<strong>References</strong>
+<ol class="refs">
+<li id="r1">Effect docs — &ldquo;Managing Services,&rdquo; <code>Context</code> / <code>Layer</code> / <code>provide</code>; <code>R</code> = requirements. <a href="https://effect.website/docs/requirements-management/services/">effect.website</a></li>
+<li id="r2">Effect docs — &ldquo;Cause&rdquo; (Fail/Die/Interrupt; Sequential &amp; Parallel; semiring, lossless). <a href="https://effect.website/docs/data-types/cause/">effect.website/docs/data-types/cause</a></li>
+<li id="r3">Effect ≈ <code>R → Promise&lt;Either&lt;E,A&gt;&gt;</code>; fusing Reader+Either+Async vs stacking transformers. antoine-coulon, <a href="https://github.com/antoine-coulon/effect-introduction">effect-introduction</a>.</li>
+</ol>
+</footer>
+
+<script>
+  document.querySelectorAll('#quiz .opt').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var p = btn; while (p && !(p.classList && p.classList.contains('fb'))) { p = p.nextElementSibling; }
+      var ok = btn.getAttribute('data-ok') === '1';
+      btn.classList.remove('ok','no'); btn.classList.add(ok ? 'ok' : 'no');
+      if (p) p.textContent = ok ? '✓ Right.' : '✗ Not quite — check the glossary and retry.';
+    });
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 2 — Either &amp; your tagged errors</title>
+<style>
+  :root { --ink:#1a1a17; --muted:#5f5e58; --rule:#d9d6cc; --accent:#7a3b2e; --code:#2b2b28; --codebg:#f3f1ea;
+          --ok:#1d6e42; --okbg:#e6f3ea; --no:#9a2b22; --nobg:#f8e9e7; }
+  body { font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; color:var(--ink);
+         max-width:52rem; margin:3rem auto; padding:0 1.25rem; line-height:1.62; background:#fdfcf9; }
+  h1 { font-size:2rem; font-weight:600; line-height:1.15; margin:0 0 .15rem; }
+  .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; font-weight:600; }
+  .sub { color:var(--muted); font-style:italic; margin:.3rem 0 1.6rem; }
+  h2 { font-size:1.25rem; font-weight:600; margin:2.2rem 0 .5rem; }
+  h3 { font-size:1rem; font-weight:600; margin:1.4rem 0 .3rem; color:var(--accent); }
+  p { margin:.6rem 0; }
+  code,.mono { font-family:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace; font-size:.85em;
+        background:var(--codebg); color:var(--code); padding:.05em .3em; border-radius:3px; }
+  pre { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.8rem 1rem; overflow-x:auto;
+        font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.82rem; line-height:1.5; }
+  pre code { background:none; padding:0; }
+  .big-idea { border-left:3px solid var(--accent); background:#faf6f0; padding:.6rem 1.1rem; margin:1.2rem 0; }
+  .law { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.55rem .9rem; margin:.5rem 0; font-size:.92rem; }
+  table.cmp { border-collapse:collapse; width:100%; margin:.8rem 0; font-size:.93rem; }
+  table.cmp th, table.cmp td { border:1px solid var(--rule); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  table.cmp th { background:var(--codebg); }
+  sup.ref a { color:var(--accent); text-decoration:none; font-size:.75em; }
+  a { color:var(--accent); }
+  ol.refs { font-size:.85rem; color:var(--muted); line-height:1.4; }
+  ol.refs a { word-break:break-word; }
+  .quiz { border:1px solid var(--rule); border-radius:8px; padding:1rem 1.2rem; margin:1rem 0; background:#fff; }
+  .q { font-weight:600; margin:.9rem 0 .4rem; }
+  .opt { display:block; width:100%; text-align:left; font:inherit; font-size:.93rem; background:#fcfbf7;
+         border:1px solid var(--rule); border-radius:5px; padding:.45rem .7rem; margin:.3rem 0; cursor:pointer; }
+  .opt:hover { border-color:var(--accent); }
+  .opt.ok { background:var(--okbg); border-color:var(--ok); color:var(--ok); }
+  .opt.no { background:var(--nobg); border-color:var(--no); color:var(--no); }
+  .fb { font-size:.88rem; color:var(--muted); margin:.25rem 0 0; min-height:1.1em; }
+  .callout { background:#eef3ee; border:1px solid #cfe0d2; border-radius:8px; padding:.8rem 1.1rem; margin:1.4rem 0; }
+  footer { margin-top:2.6rem; border-top:1px solid var(--rule); padding-top:1rem; color:var(--muted); font-size:.9rem; }
+  @media print { body{margin:0;max-width:none;font-size:11pt;background:#fff;} .quiz,.opt{display:none;} a{color:var(--ink);} pre{white-space:pre-wrap;} }
+</style>
+</head>
+<body>
+
+<p class="kicker">Lesson 2 · Monadic design in your codebase</p>
+<h1>Either &amp; your tagged errors</h1>
+<p class="sub">From <a href="0001-the-monad-behind-your-refactor.html">Lesson 1</a>: <code>Option</code> answers <em>&ldquo;is anything there?&rdquo;</em>. This lesson is the other half of your refactor — Phases 0–3 — which answer <em>&ldquo;it failed, and here is exactly why.&rdquo;</em></p>
+
+<div class="big-idea">
+<strong>The one idea.</strong> <code>Either&lt;E, A&gt;</code> is <code>Option</code> with the absence <em>labelled</em>: the same monad, now carrying a typed reason on the failure track.
+Your <code>Data.TaggedError</code> classes <em>are</em> that <code>E</code>. Effect&rsquo;s <code>Effect&lt;A, E, R&gt;</code> is the same machine with an error channel — so &ldquo;typed errors&rdquo; is just <em>doing to failure what <code>Option</code> did to absence</em>: putting it in the type so it composes and the compiler can&rsquo;t let you ignore it.
+</div>
+
+<h2>1 · <code>Either</code> = <code>Option</code> that remembers why</h2>
+<p>Recall <code>Option&lt;T&gt; = Some T | None</code>. Now attach data to the empty case:</p>
+<div class="law"><code>Either&lt;E, A&gt; = Left&lt;E&gt; | Right&lt;A&gt;</code> &nbsp;and&nbsp; <code>Option&lt;T&gt; ≅ Either&lt;unit, T&gt;</code> &nbsp;(<code>None</code> = a <code>Left</code> carrying no information)</p>
+<p>It is <strong>right-biased</strong>: <code>map</code>/<code>flatMap</code> act on the <code>Right</code> (success); a <code>Left</code> short-circuits the rest untouched.<sup class="ref"><a href="#r2">2</a></sup>
+That is precisely the railway from Lesson 1 — but now the failure track carries a payload. Everything you learned about <code>Kl(Option)</code> transfers verbatim to <code>Kl(Either E)</code>: arrows are <code>A → Either&lt;E, B&gt;</code>, composition is <code>flatMap</code>, the identity is <code>Either.right</code>, and the monad laws still hold.</p>
+
+<h2>2 · Your tagged errors are the <code>E</code></h2>
+<p><code>Data.TaggedError</code> builds the error type — a class with a <code>_tag</code> discriminant and typed fields:<sup class="ref"><a href="#r1">1</a></sup></p>
+<pre><code>export class OAuthError extends Data.TaggedError('OAuthError')&lt;{
+  readonly message: string
+  readonly context?: 'state-mismatch' | 'no-code' | /* … */
+}&gt; {}</code></pre>
+<p>When several can occur, the error type is their <strong>discriminated union</strong> — a sum type of failures:</p>
+<div class="law"><code>OAuthError | Aria2RpcError | OffscreenSaveError | ConvexHttpError | …</code></div>
+<p>That union is the whole reason <code>catchTag</code> works: it matches on <code>_tag</code> and the compiler <em>narrows</em> the remaining union; handle them all and <code>E</code> becomes <code>never</code> (provably exhaustive).<sup class="ref"><a href="#r1">1</a></sup>
+The <code>_tag</code> isn&rsquo;t decoration — it&rsquo;s the discriminant that lets the type system tell your failures apart.</p>
+
+<h3>A note on your current code</h3>
+<p>Today your <code>classifyUploadError</code> matches errors by <em>regex on the message string</em>. That worked, but it&rsquo;s the pre-typed-error pattern: stringly-typed dispatch. Now that the failures are a tagged union, the idiomatic next step is to switch that to <code>catchTag</code>/match on <code>_tag</code> — turning a fragile string match into an exhaustive, compiler-checked one. (Your Phase&nbsp;2 work deliberately kept the message <em>stable</em> precisely so that classifier wouldn&rsquo;t break — a good bridge, and a natural thing to retire later.)</p>
+
+<h2>3 · <code>Either</code> is a <em>bi</em>functor</h2>
+<p>Right-biased <code>map</code> transforms the success. To transform the <em>error</em> — say, wrap a low-level failure as a domain one — use <code>mapLeft</code> (or <code>bimap</code> for both at once).<sup class="ref"><a href="#r2">2</a></sup>
+You did this by hand in Phase&nbsp;4: <code>Effect.tryPromise({ try, catch })</code> where the <code>catch</code> maps the thrown cause into <code>new DownloadError({ reason: errorReason(cause) })</code> — that&rsquo;s a <code>mapLeft</code> over the error channel. Each side obeys the functor laws independently.</p>
+
+<h2>2&#8201;·&#8201;Effect generalises all of this</h2>
+<p><code>Effect&lt;A, E, R&gt;</code> is the same monad with three slots: <strong>A</strong> success, <strong>E</strong> the error channel (the <code>Either</code> Left — <em>your tagged errors</em>), <strong>R</strong> the requirements.<sup class="ref"><a href="#r1">1</a></sup>
+Errors accumulate as a union in <code>E</code> automatically as you compose. Your <code>DownloadStrategy</code> is exactly a Kleisli arrow over this monad:</p>
+<pre><code>save: (req: SaveRequest) =&gt; Effect&lt;DownloadHandle, DownloadError&gt;</code></pre>
+<p>Same fish, bigger pond: <code>flatMap</code> still composes the steps, a failure still short-circuits, and now the set of possible failures is written in the type for the caller to see.</p>
+
+<h2>3&#8201;·&#8201;Why tagged errors beat <code>throw</code></h2>
+<table class="cmp">
+<tr><th>Property</th><th><code>throw</code> / <code>try&#47;catch</code></th><th>tagged error in <code>E</code></th></tr>
+<tr><td>Failures visible in the type</td><td>No — <code>catch (e)</code> gives <code>e: unknown</code><sup class="ref"><a href="#r1">1</a></sup></td><td>Yes — the union of <code>_tag</code>s is in the signature</td></tr>
+<tr><td>Handling is exhaustive</td><td>You guess what was thrown</td><td><code>catchTag</code> narrows; unhandled ⇒ type error</td></tr>
+<tr><td>Information preserved</td><td>Often lossy (message only)</td><td>Lossless — Effect&rsquo;s <code>Cause</code> keeps the full story<sup class="ref"><a href="#r3">3</a></sup></td></tr>
+<tr><td>Composition</td><td>Invisible second exit from every call</td><td>One short-circuiting channel; laws ⇒ safe refactor</td></tr>
+</table>
+
+<h3>The line that matters: failure vs defect</h3>
+<p>Effect splits errors in two,<sup class="ref"><a href="#r4">4</a></sup> and this is the rigorous form of Lesson 1&rsquo;s &ldquo;don&rsquo;t reinvent exceptions&rdquo;:</p>
+<table class="cmp">
+<tr><th></th><th><code>Effect.fail</code> — failure</th><th><code>Effect.die</code> — defect</th></tr>
+<tr><td>What</td><td>expected, domain, recoverable</td><td>bug / invariant violation, unrecoverable</td></tr>
+<tr><td>In <code>E</code>?</td><td>yes (typed)</td><td>no (<code>E = never</code>, terminates)</td></tr>
+<tr><td>Analogy</td><td>checked exception</td><td>unchecked exception</td></tr>
+</table>
+<p>This <em>is</em> the boundary you navigated in the refactor. You converted the <strong>escaping domain</strong> throws — OAuth consent, aria2 RPC errors — into tagged failures, because a caller can sensibly react to them. You <strong>left</strong> the invariant/boundary throws inside <code>runUpload</code>&rsquo;s <code>try/catch</code> alone. The theory says exactly that: model recoverable domain outcomes as typed failures; let genuine defects stay defects. Putting <em>everything</em> in <code>E</code> would be reinventing exceptions with extra ceremony — the over-application Wlaschin warns against.<sup class="ref"><a href="#r5">5</a></sup></p>
+
+<div class="quiz" id="quiz">
+<strong>Retrieval check</strong> <span style="color:var(--muted);font-size:.85rem">— recall, don&rsquo;t peek.</span>
+<div class="q">1. <code>Option&lt;T&gt;</code> is the special case of Either written…</div>
+<button class="opt" data-ok="1">Either&lt;unit, T&gt;</button>
+<button class="opt" data-ok="0">Either&lt;T, unit&gt;</button>
+<button class="opt" data-ok="0">Either&lt;never, T&gt;</button>
+<button class="opt" data-ok="0">Either&lt;T, never&gt;</button>
+<p class="fb"></p>
+<div class="q">2. The distinction Effect draws for &ldquo;don&rsquo;t reinvent exceptions&rdquo; is…</div>
+<button class="opt" data-ok="0">map vs flatMap</button>
+<button class="opt" data-ok="1">fail vs die</button>
+<button class="opt" data-ok="0">some vs none</button>
+<button class="opt" data-ok="0">left vs right</button>
+<p class="fb"></p>
+<div class="q">3. <code>catchTag</code> can narrow the error type because tagged errors form a…</div>
+<button class="opt" data-ok="0">Cartesian product</button>
+<button class="opt" data-ok="1">discriminated union</button>
+<button class="opt" data-ok="0">monad transformer</button>
+<button class="opt" data-ok="0">covariant functor</button>
+<p class="fb"></p>
+</div>
+
+<div class="callout">
+<strong>Primary source (read next):</strong> Effect docs — <a href="https://effect.website/docs/error-management/expected-errors/">Expected Errors</a> and <a href="https://effect.website/docs/error-management/two-error-types/">Two Types of Errors</a>. The exact model your repo uses.<br>
+<strong>Defend it with people:</strong> <a href="https://discord.gg/effect-ts">Effect Discord</a> — ask whether to migrate <code>classifyUploadError</code> to <code>catchTag</code>; great real-world calibration.<br>
+<strong>Reference:</strong> <a href="../reference/glossary-monads.html#">Glossary — see the new &ldquo;Errors (Either &amp; Effect)&rdquo; section</a>.
+</div>
+
+<p><strong>Ask me follow-ups</strong> — e.g. &ldquo;show me <code>classifyUploadError</code> rewritten with <code>catchTag</code>,&rdquo; or &ldquo;where does <code>R</code> (requirements) fit categorically?&rdquo; Next lesson options: <em>(a)</em> turn the functor/monad laws into property-based tests on your own <code>Option</code> functions (make it stick), or <em>(b)</em> the <code>Effect</code> monad in full — <code>R</code>, <code>Cause</code>, and the reader-monad flavour.</p>
+
+<footer>
+<strong>References</strong>
+<ol class="refs">
+<li id="r1">Effect docs — &ldquo;Expected Errors,&rdquo; &ldquo;Error Channel Operations,&rdquo; <code>Data.TaggedError</code> / <code>catchTag</code>. <a href="https://effect.website/docs/error-management/expected-errors/">effect.website</a></li>
+<li id="r2">Either right-biased + Bifunctor (<code>map</code>/<code>mapLeft</code>/<code>bimap</code>); functor laws. fp-ts Either; Type Classes, &ldquo;Functor and Bifunctor.&rdquo; <a href="https://gcanti.github.io/fp-ts/modules/Either.ts.html">gcanti.github.io/fp-ts</a></li>
+<li id="r3">Effect <code>Cause</code> — lossless failure modelling. <a href="https://effect.website/docs/data-types/cause/">effect.website/docs/data-types/cause</a></li>
+<li id="r4">Effect docs — &ldquo;Two Types of Errors&rdquo; (failure vs defect, <code>fail</code> vs <code>die</code>). <a href="https://effect.website/docs/error-management/two-error-types/">effect.website</a></li>
+<li id="r5">Scott Wlaschin — Railway Oriented Programming &amp; the against-overuse follow-up. <a href="https://fsharpforfunandprofit.com/rop/">fsharpforfunandprofit.com/rop</a></li>
+</ol>
+</footer>
+
+<script>
+  document.querySelectorAll('#quiz .opt').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var p = btn; while (p && !(p.classList && p.classList.contains('fb'))) { p = p.nextElementSibling; }
+      var ok = btn.getAttribute('data-ok') === '1';
+      btn.classList.remove('ok','no'); btn.classList.add(ok ? 'ok' : 'no');
+      if (p) p.textContent = ok ? '✓ Right.' : '✗ Not quite — check the glossary and retry.';
+    });
+  });
+</script>
+</body>
+</html>

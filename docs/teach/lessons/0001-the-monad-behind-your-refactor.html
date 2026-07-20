@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 1 — The monad behind your refactor</title>
+<style>
+  :root { --ink:#1a1a17; --muted:#5f5e58; --rule:#d9d6cc; --accent:#7a3b2e; --code:#2b2b28; --codebg:#f3f1ea;
+          --ok:#1d6e42; --okbg:#e6f3ea; --no:#9a2b22; --nobg:#f8e9e7; }
+  body { font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; color:var(--ink);
+         max-width:52rem; margin:3rem auto; padding:0 1.25rem; line-height:1.62; background:#fdfcf9; }
+  h1 { font-size:2rem; font-weight:600; line-height:1.15; margin:0 0 .15rem; }
+  .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; font-weight:600; }
+  .sub { color:var(--muted); font-style:italic; margin:.3rem 0 1.6rem; }
+  h2 { font-size:1.25rem; font-weight:600; margin:2.2rem 0 .5rem; }
+  h3 { font-size:1rem; font-weight:600; margin:1.4rem 0 .3rem; color:var(--accent); }
+  p { margin:.6rem 0; }
+  code,.mono { font-family:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace; font-size:.85em;
+        background:var(--codebg); color:var(--code); padding:.05em .3em; border-radius:3px; }
+  pre { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.8rem 1rem; overflow-x:auto;
+        font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.82rem; line-height:1.5; }
+  pre code { background:none; padding:0; }
+  .big-idea { border-left:3px solid var(--accent); background:#faf6f0; padding:.6rem 1.1rem; margin:1.2rem 0; }
+  .law { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.55rem .9rem; margin:.5rem 0; font-size:.92rem; }
+  table.cmp { border-collapse:collapse; width:100%; margin:.8rem 0; font-size:.93rem; }
+  table.cmp th, table.cmp td { border:1px solid var(--rule); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  table.cmp th { background:var(--codebg); }
+  sup.ref a { color:var(--accent); text-decoration:none; font-size:.75em; }
+  a { color:var(--accent); }
+  ol.refs { font-size:.85rem; color:var(--muted); line-height:1.4; }
+  ol.refs a { word-break:break-word; }
+  .quiz { border:1px solid var(--rule); border-radius:8px; padding:1rem 1.2rem; margin:1rem 0; background:#fff; }
+  .q { font-weight:600; margin:.9rem 0 .4rem; }
+  .opt { display:block; width:100%; text-align:left; font:inherit; font-size:.93rem; background:#fcfbf7;
+         border:1px solid var(--rule); border-radius:5px; padding:.45rem .7rem; margin:.3rem 0; cursor:pointer; }
+  .opt:hover { border-color:var(--accent); }
+  .opt.ok { background:var(--okbg); border-color:var(--ok); color:var(--ok); }
+  .opt.no { background:var(--nobg); border-color:var(--no); color:var(--no); }
+  .fb { font-size:.88rem; color:var(--muted); margin:.25rem 0 0; min-height:1.1em; }
+  .callout { background:#eef3ee; border:1px solid #cfe0d2; border-radius:8px; padding:.8rem 1.1rem; margin:1.4rem 0; }
+  footer { margin-top:2.6rem; border-top:1px solid var(--rule); padding-top:1rem; color:var(--muted); font-size:.9rem; }
+  @media print { body{margin:0;max-width:none;font-size:11pt;background:#fff;} .quiz,.opt{display:none;} a{color:var(--ink);} pre{white-space:pre-wrap;} }
+</style>
+</head>
+<body>
+
+<p class="kicker">Lesson 1 · Monadic design in your codebase</p>
+<h1>The monad behind your refactor</h1>
+<p class="sub">Mission: reason about &amp; defend the <code>Option</code> / tagged-error patterns you just shipped — from category theory, and against the <code>null</code>&nbsp;+&nbsp;<code>throw</code> alternative.</p>
+
+<div class="big-idea">
+<strong>The one idea.</strong> A <em>monad</em> is the structure that lets you <em>compose functions whose results are
+&ldquo;embellished&rdquo;</em> — wrapped in <code>Option</code>, in an error, in an effect.<sup class="ref"><a href="#r1">1</a></sup>
+Your Phase&nbsp;4 refactor took functions that were secretly partial (<code>… | null</code>) and moved them into a
+<em>category where they compose lawfully</em>. That single move is also the entire justification for it.
+</div>
+
+<h2>1 · Your code already lives in a category</h2>
+<p>A <strong>category</strong> is just: objects, arrows between them, a way to <em>compose</em> arrows, an identity arrow, and two
+laws (composition is associative; identity does nothing).<sup class="ref"><a href="#r2">2</a></sup> In programming the objects are
+<em>types</em> and the arrows are <em>functions</em> <code>A → B</code>. Ordinary functions compose perfectly: <code>g ∘ f</code>.</p>
+
+<p>The trouble starts with <em>partial</em> functions. Before the refactor:</p>
+<pre><code>tweetIdOfArticle: Element → (string | null)
+findArticle:      (ParentNode, string) → (Element | null)</code></pre>
+<p>These don&rsquo;t compose. You can&rsquo;t feed a <code>string | null</code> into something expecting a <code>string</code> — you have to stop and
+hand-write a <code>=== null</code> check at every seam. The <code>null</code> is data with <em>no structure attached</em>, so the burden of
+threading it is on you, every time (and the day you forget is the runtime crash).<sup class="ref"><a href="#r3">3</a></sup></p>
+
+<h2>2 · <code>Option</code> is a functor, then a monad</h2>
+<p><strong>Functor.</strong> <code>Option</code> maps every type <code>T</code> to <code>Option&lt;T&gt;</code> (= <code>Some T | None</code>, the sum type <code>T + 1</code>) and every
+function via <code>Option.map</code>. It obeys the <em>functor laws</em> (<code>map(id)=id</code>, <code>map(g∘f)=map(g)∘map(f)</code>) — which is what
+makes <code>map</code> safe to reason about.</p>
+
+<p><strong>Monad.</strong> A functor becomes a monad with two operations<sup class="ref"><a href="#r1">1</a></sup> — and you are already calling both:</p>
+<table class="cmp">
+<tr><th>Category theory</th><th>What it does</th><th>In your Effect code</th></tr>
+<tr><td>unit · <code>η : A → T A</code></td><td>wrap a plain value</td><td><code>Option.some(x)</code></td></tr>
+<tr><td>multiplication · <code>μ : T(T A) → T A</code></td><td>flatten one layer</td><td><code>Option.flatten</code></td></tr>
+<tr><td>bind (= η + μ)</td><td>compose a step that may be absent</td><td><code>Option.flatMap</code></td></tr>
+</table>
+<p>The structure must satisfy the <strong>monad laws</strong> — left identity, right identity, associativity:</p>
+<div class="law"><code>flatMap(some(a), f) = f(a)</code> &nbsp;·&nbsp; <code>flatMap(m, some) = m</code> &nbsp;·&nbsp; <code>flatMap(flatMap(m,f),g) = flatMap(m, x =&gt; flatMap(f(x),g))</code></div>
+
+<h2>3 · The Kleisli category — where your refactored functions live</h2>
+<p>Take any monad <code>T</code> and build a new category <code>Kl(T)</code>: same objects (types), but an arrow <code>A → B</code> is now a function
+<code>A → T B</code>.<sup class="ref"><a href="#r4">4</a></sup> These are <strong>Kleisli arrows</strong>. Every function you converted in Phase&nbsp;4 is one:</p>
+<pre><code>convexOriginPattern: string → Option&lt;string&gt;
+aria2OriginPattern:  string → Option&lt;string&gt;
+pickVideoVariant:    Variant[] → Option&lt;Variant&gt;
+tweetIdOfArticle:    Element → Option&lt;string&gt;
+findArticle:         (ParentNode, string) → Option&lt;Element&gt;</code></pre>
+<p>In <code>Kl(Option)</code> the <em>composition</em> of two Kleisli arrows is the &ldquo;fish&rdquo; <code>f &gt;=&gt; g</code>, implemented exactly as
+<code>a =&gt; flatMap(f(a), g)</code> (nLab: <code>μ ∘ T(g) ∘ f</code>), and the <em>identity</em> arrow is <code>Option.some</code>.<sup class="ref"><a href="#r4">4</a></sup>
+You saw this inside <code>findArticle</code>, which composes over <code>tweetIdOfArticle</code> with <code>Option.isSome(id) &amp;&amp; id.value === tweetId</code>.</p>
+
+<div class="callout">
+<strong>The punchline.</strong> The monad laws <em>are</em> the category laws (associativity + identity) for <code>Kl(T)</code>.
+Milewski: &ldquo;a monad is just a funny way of composing embellished functions so that they form a category.&rdquo;<sup class="ref"><a href="#r1">1</a></sup>
+So &ldquo;move partial functions into <code>Option</code>&rdquo; literally means &ldquo;give them a lawful composition they didn&rsquo;t have as <code>… | null</code>.&rdquo;
+And your tagged errors are the same story in <code>Kl(Either)</code>: an arrow <code>A → Either&lt;E, B&gt;</code>, where <code>Maybe&lt;T&gt; ≅ Either&lt;unit, T&gt;</code>.
+</div>
+
+<h2>2&#8201;·&#8201;The case against <code>null</code> + <code>throw</code></h2>
+<p>Because the structure is lawful, every practical win below follows from it — this is your justification, point by point:</p>
+<table class="cmp">
+<tr><th>Property</th><th><code>T | null</code> + <code>throw</code></th><th><code>Option</code> / <code>Either</code> (monad)</th></tr>
+<tr><td>Absence/failure visible in the type</td><td>No — <code>throw</code> is an invisible second exit; <code>null</code> is easy to ignore<sup class="ref"><a href="#r3">3</a></sup></td><td>Yes — the compiler <em>forces</em> you to handle <code>None</code>/<code>Left</code></td></tr>
+<tr><td>Composition of failing steps</td><td>Manual <code>=== null</code> at every seam</td><td>Automatic short-circuit via <code>flatMap</code> (railway)<sup class="ref"><a href="#r5">5</a></sup></td></tr>
+<tr><td>Honest signatures</td><td><code>string → string</code> that secretly returns <code>null</code> lies</td><td><code>string → Option&lt;string&gt;</code> declares the partiality</td></tr>
+<tr><td>Safe refactoring</td><td>Reordering null-checks is error-prone</td><td>Monad laws ⇒ inline / reassociate <code>flatMap</code>s freely</td></tr>
+<tr><td>Set of failures is knowable</td><td>Any exception, anywhere</td><td>Enumerated in the type (<code>Data.TaggedError</code> union)</td></tr>
+</table>
+<p>This is the same lesson the industry keeps relearning: Tony Hoare calls inventing <code>null</code> his &ldquo;billion-dollar mistake,&rdquo; and
+notes he already knew in 1965 that <em>disjoint unions</em> (sum types — exactly <code>Option</code>) were the right answer.<sup class="ref"><a href="#r3">3</a></sup></p>
+
+<h3>The caveat — which is exactly what you did</h3>
+<p>Wlaschin, who popularised the railway model, also wrote a follow-up: <em>only</em> use it for domain problems; don&rsquo;t reinvent
+exceptions; don&rsquo;t thread <code>Either</code> through everything.<sup class="ref"><a href="#r5">5</a></sup> Your Phase&nbsp;4 <em>curation</em> — declining the
+<code>adapters/x</code> resolve chain because converting it produced <code>.value!</code> and <code>getOrElse(() =&gt; null)</code> round-trips at the
+Preact boundary — is that wisdom applied. The theory says <em>when</em> Kleisli composition pays: when arrows actually chain. Where they
+don&rsquo;t, the wrapping is cost without composition. You read that correctly.</p>
+
+<div class="quiz" id="quiz">
+<strong>Retrieval check</strong> <span style="color:var(--muted);font-size:.85rem">— recall, don&rsquo;t peek. Click an answer.</span>
+<div class="q">1. <code>aria2OriginPattern: string → Option&lt;string&gt;</code> is, categorically, a…</div>
+<button class="opt" data-ok="0">a functor object</button>
+<button class="opt" data-ok="1">a Kleisli arrow</button>
+<button class="opt" data-ok="0">a monad unit</button>
+<button class="opt" data-ok="0">an identity law</button>
+<p class="fb" id="fb1"></p>
+<div class="q">2. In <code>Kl(Option)</code>, the identity arrow is…</div>
+<button class="opt" data-ok="1">Option.some</button>
+<button class="opt" data-ok="0">Option.none</button>
+<button class="opt" data-ok="0">Option.flat</button>
+<button class="opt" data-ok="0">Option.fold</button>
+<p class="fb" id="fb2"></p>
+<div class="q">3. <code>T | null</code> is worse than <code>Option&lt;T&gt;</code> chiefly because it lacks…</div>
+<button class="opt" data-ok="0">a present value</button>
+<button class="opt" data-ok="0">a runtime check</button>
+<button class="opt" data-ok="1">lawful composition</button>
+<button class="opt" data-ok="0">two type params</button>
+<p class="fb" id="fb3"></p>
+</div>
+
+<div class="callout">
+<strong>Primary source (read this next):</strong> Bartosz Milewski, <a href="https://bartoszmilewski.com/2014/12/23/kleisli-categories/">&ldquo;Kleisli Categories&rdquo;</a>.
+It derives the <code>Option</code>/Maybe monad <em>from the problem of composing partial functions</em> — the exact move you made. ~15 min.<br>
+<strong>Test your reasoning with people:</strong> the <a href="https://discord.gg/effect-ts">Effect Discord</a> or
+<a href="https://reddit.com/r/functionalprogramming">r/functionalprogramming</a> — good places to defend &ldquo;why we did this&rdquo; against real skeptics.<br>
+<strong>Quick reference:</strong> <a href="../reference/glossary-monads.html">Glossary — Monads &amp; Category Theory</a>.
+</div>
+
+<p><strong>I&rsquo;m your teacher — ask me follow-ups.</strong> Anything unclear (what <code>μ</code> really is, why the laws matter for <em>your</em> tests,
+how Effect&rsquo;s 3-channel <code>Effect&lt;A,E,R&gt;</code> extends this), just ask. Next lesson can go to: <em>Either &amp; your tagged-error channel</em>,
+or <em>the functor/monad laws as property-based tests on your own functions</em>.</p>
+
+<footer>
+<strong>References</strong>
+<ol class="refs">
+<li id="r1">Bartosz Milewski, &ldquo;Monads: Programmer&rsquo;s Definition&rdquo; &amp; <em>Category Theory for Programmers</em>. <a href="https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/">bartoszmilewski.com</a></li>
+<li id="r2">Category laws — Milewski, <em>CTfP</em>, ch. 1–3. <a href="https://bartoszmilewski.com/2014/10/28/category-theory-for-programmers-the-preface/">bartoszmilewski.com</a></li>
+<li id="r3">Tony Hoare, &ldquo;Null References: The Billion-Dollar Mistake,&rdquo; QCon 2009. <a href="https://www.infoq.com/presentations/Null-References-The-Billion-Dollar-Mistake-Tony-Hoare/">infoq.com</a></li>
+<li id="r4">&ldquo;Kleisli category,&rdquo; nLab — <code>Kl(T)(X,Y):=C(X,T Y)</code>, composition <code>μ∘T(g)∘f</code>. <a href="https://ncatlab.org/nlab/show/Kleisli+category">ncatlab.org</a></li>
+<li id="r5">Scott Wlaschin, &ldquo;Railway Oriented Programming&rdquo; (+ the against-overuse follow-up). <a href="https://fsharpforfunandprofit.com/rop/">fsharpforfunandprofit.com/rop</a></li>
+</ol>
+</footer>
+
+<script>
+  document.querySelectorAll('#quiz .opt').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var group = btn.parentElement.querySelectorAll('.opt');
+      group.forEach(function(b){ b.disabled = false; });
+      var fb = btn.parentElement.querySelector('.q ~ .fb') ;
+      // find the feedback paragraph that follows this button group
+      var p = btn; while (p && !(p.classList && p.classList.contains('fb'))) { p = p.nextElementSibling; }
+      var ok = btn.getAttribute('data-ok') === '1';
+      btn.classList.remove('ok','no'); btn.classList.add(ok ? 'ok' : 'no');
+      if (p) p.textContent = ok ? '✓ Right — that is the definition.' : '✗ Not quite — recall the glossary, then retry.';
+    });
+  });
+</script>
+</body>
+</html>

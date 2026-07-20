@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 5 — From fetchImpl to a Layer service</title>
+<style>
+  :root { --ink:#1a1a17; --muted:#5f5e58; --rule:#d9d6cc; --accent:#7a3b2e; --code:#2b2b28; --codebg:#f3f1ea;
+          --ok:#1d6e42; --okbg:#e6f3ea; --no:#9a2b22; --nobg:#f8e9e7; }
+  body { font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; color:var(--ink);
+         max-width:52rem; margin:3rem auto; padding:0 1.25rem; line-height:1.62; background:#fdfcf9; }
+  h1 { font-size:2rem; font-weight:600; line-height:1.15; margin:0 0 .15rem; }
+  .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; font-weight:600; }
+  .sub { color:var(--muted); font-style:italic; margin:.3rem 0 1.6rem; }
+  h2 { font-size:1.25rem; font-weight:600; margin:2.2rem 0 .5rem; }
+  h3 { font-size:1rem; font-weight:600; margin:1.4rem 0 .3rem; color:var(--accent); }
+  p { margin:.6rem 0; }
+  code,.mono { font-family:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace; font-size:.85em;
+        background:var(--codebg); color:var(--code); padding:.05em .3em; border-radius:3px; }
+  pre { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.8rem 1rem; overflow-x:auto;
+        font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.8rem; line-height:1.5; }
+  pre code { background:none; padding:0; }
+  .big-idea { border-left:3px solid var(--accent); background:#faf6f0; padding:.6rem 1.1rem; margin:1.2rem 0; }
+  .law { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.55rem .9rem; margin:.5rem 0; font-size:.92rem; }
+  .step { border:1px solid var(--rule); border-radius:8px; padding:.3rem 1.1rem .8rem; margin:1rem 0; background:#fff; }
+  .step h3 { margin-top:.8rem; }
+  .run { background:var(--codebg); border:1px solid var(--rule); border-radius:6px; padding:.4rem .7rem; font-family:"SF Mono",ui-monospace,Consolas,monospace; font-size:.8rem; }
+  table.cmp { border-collapse:collapse; width:100%; margin:.8rem 0; font-size:.92rem; }
+  table.cmp th, table.cmp td { border:1px solid var(--rule); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  table.cmp th { background:var(--codebg); }
+  sup.ref a { color:var(--accent); text-decoration:none; font-size:.75em; }
+  a { color:var(--accent); }
+  ol.refs { font-size:.85rem; color:var(--muted); line-height:1.4; } ol.refs a { word-break:break-word; }
+  .quiz { border:1px solid var(--rule); border-radius:8px; padding:1rem 1.2rem; margin:1rem 0; background:#fff; }
+  .q { font-weight:600; margin:.9rem 0 .4rem; }
+  .opt { display:block; width:100%; text-align:left; font:inherit; font-size:.93rem; background:#fcfbf7;
+         border:1px solid var(--rule); border-radius:5px; padding:.45rem .7rem; margin:.3rem 0; cursor:pointer; }
+  .opt:hover { border-color:var(--accent); }
+  .opt.ok { background:var(--okbg); border-color:var(--ok); color:var(--ok); }
+  .opt.no { background:var(--nobg); border-color:var(--no); color:var(--no); }
+  .fb { font-size:.88rem; color:var(--muted); margin:.25rem 0 0; min-height:1.1em; }
+  .callout { background:#eef3ee; border:1px solid #cfe0d2; border-radius:8px; padding:.8rem 1.1rem; margin:1.4rem 0; }
+  .spaced { background:#fbf3ee; border:1px solid #e6cdbf; border-radius:8px; padding:.7rem 1.1rem; margin:1.2rem 0; }
+  footer { margin-top:2.6rem; border-top:1px solid var(--rule); padding-top:1rem; color:var(--muted); font-size:.9rem; }
+  @media print { body{margin:0;max-width:none;font-size:11pt;background:#fff;} .quiz,.opt{display:none;} a{color:var(--ink);} pre{white-space:pre-wrap;} }
+</style>
+</head>
+<body>
+
+<p class="kicker">Lesson 5 · Apply it</p>
+<h1>From hand-threaded <code>fetchImpl</code> to a Layer service</h1>
+<p class="sub">Mission: master the <em>thinking</em>, not the migration. This takes Lesson 4&rsquo;s <code>R</code>/Reader channel from idea to a runnable change on your own <code>fetchImpl</code> dependency — and, just as importantly, when <em>not</em> to do it.</p>
+
+<div class="spaced">
+<strong>Spaced recall (no peeking).</strong> Two from earlier lessons: (i) what classic monad is the <code>R</code> channel, and what must <code>R</code> equal before an effect can run? (ii) what does <code>flatMap</code> short-circuit on? Check the <a href="../reference/glossary-monads.html">glossary</a> after.
+</div>
+
+<div class="big-idea">
+<strong>The one idea.</strong> Passing a dependency as a parameter — your <code>cfg.fetchImpl</code> — <em>is the Reader monad threaded by hand.</em>
+The <code>R</code> channel is the same idea with the compiler doing the threading: the need is recorded in the type, and you swap the implementation (real ⟷ stub) by swapping a <code>Layer</code>. &ldquo;Dependency injection&rdquo; is just the Reader monad rediscovered.<sup class="ref"><a href="#r1">1</a></sup>
+</div>
+
+<h2>1 · Before — Reader by hand (your real code)</h2>
+<p>Today the <code>fetch</code> dependency is threaded through plain <code>cfg</code>/<code>deps</code> objects:</p>
+<pre><code>// makeAria2RpcPort(cfg: { rpcUrl; secret; fetchImpl: typeof fetch })
+const doFetch = bindFetch(cfg.fetchImpl)
+// DriveDeps { fetchImpl: typeof fetch; fetchSource; … }</code></pre>
+<p>This works, but the dependency is invisible in the <em>result</em> type, and every caller must drill <code>fetchImpl</code> down by hand. You are personally playing the part of the Reader monad&rsquo;s <code>ask</code>. (You&rsquo;ve already done the typed version once — <code>SettingsService</code> — so you know the shape.)</p>
+
+<h2>2 · The migration — three moves</h2>
+<p>Mirror your <code>settings</code> module. (Full runnable version: <code>src/core/teach/fetch-service.demo.test.ts</code>.)</p>
+<pre><code>// (1) NAME the dependency as a service
+class FetchService extends Context.Service&lt;FetchService,
+  { readonly fetch: (url: string) =&gt; Effect.Effect&lt;Response&gt; }
+&gt;()('teach/FetchService') {}
+
+// (2) BUILD a Layer (the recipe) — real impl
+const FetchServiceLive = Layer.succeed(FetchService, {
+  fetch: (url) =&gt; Effect.promise(() =&gt; fetch(url)),
+})
+
+// (3) WRITE programs against the service — the need shows up in R
+const statusOf = (url: string): Effect.Effect&lt;number, never, FetchService&gt; =&gt;
+  Effect.gen(function* () {
+    const http = yield* FetchService            // &lt;- the Reader's "ask"
+    const res = yield* http.fetch(url)
+    return res.status
+  })</code></pre>
+<p><code>statusOf</code> never names <code>fetch</code>. Its type says <code>R = FetchService</code>, so it <em>cannot run</em> until you <code>provide</code> one — the compiler enforces it.</p>
+
+<h2>3 · The payoff (run it)</h2>
+<div class="step">
+<h3>Swap the Layer to stub the network — zero real fetches in tests</h3>
+<pre><code>const stub = (status: number) =&gt; Layer.succeed(FetchService,
+  { fetch: () =&gt; Effect.succeed(new Response(null, { status })) })
+
+await Effect.runPromise(Effect.provide(statusOf(url), stub(204)))  // =&gt; 204</code></pre>
+<p class="run">bunx vitest run src/core/teach/fetch-service.demo.test.ts  →  3 passed</p>
+<p>Same program, swap <code>stub(500)</code> → <code>stub(200)</code> and the result changes. In production you <code>provide(…, FetchServiceLive)</code> at the edge. The dependency is now <em>tracked, swappable, and un-drillable</em> — and you never touched the network in a test. Try editing a stub status and re-running.</p>
+</div>
+
+<h2>4 · The categorical thread</h2>
+<p>The Reader monad is just &ldquo;a value that depends on an environment&rdquo;: <code>Reader&lt;R, A&gt; ≈ (R) =&gt; A</code>. Then:</p>
+<div class="law"><code>yield* FetchService</code> = Reader&rsquo;s <code>ask</code> (read the env) &nbsp;·&nbsp; <code>Effect.provide</code> = <em>apply</em> the environment (turn <code>R → A</code> into <code>A</code>) &nbsp;·&nbsp; <code>R1 | R2</code> = needs <em>both</em> (a product of environments)</div>
+<p>So this lesson isn&rsquo;t a new trick — it&rsquo;s the same monad machinery from Lessons 1–4 applied to <em>dependencies</em>. <code>flatMap</code> still composes; it now also threads <code>R</code> inward until <code>provide</code> discharges it.</p>
+
+<h2>5 · The judgment — when to migrate, when not (defend it)</h2>
+<table class="cmp">
+<tr><th>Keep it a plain parameter when…</th><th>Promote to <code>R</code> + Layer when…</th></tr>
+<tr><td>one leaf util, one caller (your aria2 port in isolation)</td><td>cross-cutting dep used in many places (<code>fetch</code>, clock, logger, config)</td></tr>
+<tr><td>no need to stub it in tests</td><td>you want to swap real ⟷ stub without prop-drilling</td></tr>
+<tr><td>the wiring is trivial and local</td><td>the dependency graph is deep (Layers compose it for you)</td></tr>
+</table>
+<p>This is the same restraint from Lessons 1–2 (don&rsquo;t over-apply). <code>fetchImpl</code> is a <em>strong</em> candidate — it&rsquo;s everywhere and you stub it constantly. <code>SettingsService</code> you already promoted (good call). A one-off <code>cfg</code> field used by a single port? Often fine as-is. Mastery is knowing <em>which</em>, and being able to say why.</p>
+
+<div class="quiz" id="quiz">
+<strong>Retrieval check</strong>
+<div class="q">1. Passing <code>fetchImpl</code> as a parameter is, categorically, the…</div>
+<button class="opt" data-ok="0">Writer monad inline</button>
+<button class="opt" data-ok="1">Reader monad by-hand</button>
+<button class="opt" data-ok="0">State monad folded</button>
+<button class="opt" data-ok="0">Const monad lifted</button>
+<p class="fb"></p>
+<div class="q">2. In the migrated program, <code>yield* FetchService</code> plays the role of Reader&rsquo;s…</div>
+<button class="opt" data-ok="1">ask</button>
+<button class="opt" data-ok="0">run</button>
+<button class="opt" data-ok="0">map</button>
+<button class="opt" data-ok="0">tag</button>
+<p class="fb"></p>
+<div class="q">3. You&rsquo;d most justifiably keep a dependency as a plain parameter when it is…</div>
+<button class="opt" data-ok="0">used app-wide</button>
+<button class="opt" data-ok="1">local and unstubbed</button>
+<button class="opt" data-ok="0">deeply nested</button>
+<button class="opt" data-ok="0">swapped often</button>
+<p class="fb"></p>
+</div>
+
+<div class="callout">
+<strong>Exercise (generation — bring it to me).</strong> Add a second service the same way: a <code>ClockService</code> with <code>now: () =&gt; Effect.Effect&lt;number&gt;</code>. Write a tiny program that uses it, then a test that provides a <em>frozen</em> clock (<code>now</code> returns a fixed number) and asserts. You&rsquo;ll have made time itself injectable — the classic case for the <code>R</code> channel.
+</div>
+
+<div class="callout">
+<strong>Primary source:</strong> Effect docs — <a href="https://effect.website/docs/requirements-management/services/">Managing Services</a> (Context / Tag / Layer / provide). <strong>Compare:</strong> your own <code>src/core/settings/index.ts</code>.<br>
+<strong>Community / wisdom:</strong> <a href="https://discord.gg/effect-ts">Effect Discord</a> — a great real-world question: &ldquo;should I migrate <code>DriveDeps</code>/<code>cfg</code> DI to Layers, or is it over-engineering for a single port?&rdquo;<br>
+<strong>Reference:</strong> <a href="../reference/glossary-monads.html">Glossary — &ldquo;Manual DI ≅ Reader-by-hand&rdquo; + the R/Context/Layer entries</a>.
+</div>
+
+<p><strong>Ask me follow-ups</strong> — &ldquo;check my <code>ClockService</code>,&rdquo; &ldquo;how do Layers depend on other Layers?&rdquo;, or &ldquo;show the <code>DriveDeps</code> → Layer migration in full.&rdquo; You&rsquo;ve now seen every channel of <code>Effect</code> made concrete on your own code. When you do the <code>ClockService</code> exercise (or the spaced recall above), tell me how it went and I&rsquo;ll log it + raise the difficulty (next: an interleaved quiz across all five lessons).</p>
+
+<footer>
+<strong>References</strong>
+<ol class="refs">
+<li id="r1">Effect docs — &ldquo;Managing Services&rdquo;: <code>Context</code>, <code>Tag</code>/<code>Service</code>, <code>Layer</code>, <code>provide</code>; the <code>R</code> channel as dependency injection / Reader. <a href="https://effect.website/docs/requirements-management/services/">effect.website</a></li>
+<li id="r2">Your <code>src/core/settings/index.ts</code> — the in-repo precedent (<code>SettingsService</code> + <code>SettingsServiceLive</code>) this migration mirrors.</li>
+</ol>
+</footer>
+
+<script>
+  document.querySelectorAll('#quiz .opt').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var p = btn; while (p && !(p.classList && p.classList.contains('fb'))) { p = p.nextElementSibling; }
+      var ok = btn.getAttribute('data-ok') === '1';
+      btn.classList.remove('ok','no'); btn.classList.add(ok ? 'ok' : 'no');
+      if (p) p.textContent = ok ? '✓ Right.' : '✗ Not quite — check the glossary and retry.';
+    });
+  });
+</script>
+</body>
+</html>
