@@ -1,10 +1,9 @@
-// @ts-nocheck — vendored shadcn/ui (radix-nova), authored for React. This repo
-// runs Preact via preact/compat with exactOptionalPropertyTypes; the {...props}
-// spreads onto Radix primitives do not satisfy it. Checked at call sites instead.
-// Re-add this header after `shadcn add --overwrite`.
+// @ts-nocheck — vendored shadcn/ui, authored for React. This repo runs Preact
+// via preact/compat with exactOptionalPropertyTypes; the {...props} spreads onto
+// Base UI primitives do not satisfy it. Checked at call sites instead.
 import * as React from 'react'
 import { cva, type VariantProps } from 'class-variance-authority'
-import { Slot } from 'radix-ui'
+import { useRender } from '@base-ui/react/use-render'
 
 import { cn } from '@/lib/utils'
 
@@ -32,19 +31,20 @@ const badgeVariants = cva(
 function Badge({
   className,
   variant = 'default',
-  asChild = false,
+  render,
   ...props
-}: React.ComponentProps<'span'> & VariantProps<typeof badgeVariants> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot.Root : 'span'
-
-  return (
-    <Comp
-      data-slot="badge"
-      data-variant={variant}
-      className={cn(badgeVariants({ variant }), className)}
-      {...props}
-    />
-  )
+}: React.ComponentProps<'span'> &
+  VariantProps<typeof badgeVariants> & { render?: React.ReactElement }) {
+  return useRender({
+    defaultTagName: 'span',
+    render,
+    props: {
+      'data-slot': 'badge',
+      'data-variant': variant,
+      className: cn(badgeVariants({ variant }), className),
+      ...props,
+    },
+  })
 }
 
 export { Badge, badgeVariants }

@@ -1,7 +1,6 @@
-// @ts-nocheck — vendored shadcn/ui (radix-nova), authored for React. This repo
-// runs Preact via preact/compat with exactOptionalPropertyTypes; the {...props}
-// spreads onto Radix primitives do not satisfy it. Checked at call sites instead.
-// Re-add this header after `shadcn add --overwrite`.
+// @ts-nocheck — vendored shadcn/ui, authored for React. This repo runs Preact
+// via preact/compat with exactOptionalPropertyTypes; the {...props} spreads do
+// not satisfy it. Checked at call sites instead.
 import * as React from 'react'
 
 import { cn } from '@/lib/utils'

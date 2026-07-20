@@ -28,7 +28,6 @@
     "effect": "^4.0.0-beta.92",
     "lucide-react": "^0.469.0",
     "preact": "^10.29.2",
-    "radix-ui": "^1.5.0",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

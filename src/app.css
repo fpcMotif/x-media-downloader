@@ -221,7 +221,7 @@ body,
   }
 
   /* --primary-foreground stays white for switch.tsx's checked-thumb fill
-     (dark:data-[state=checked]:bg-primary-foreground), so it can't flip to ink
+     (dark:data-checked:bg-primary-foreground), so it can't flip to ink
      globally. Scope the AA fix to the filled controls that actually pair
      --primary-foreground as bg-primary TEXT: button default variant, badge
      default variant, and the popup's Download CTA (App.tsx:367) all carry

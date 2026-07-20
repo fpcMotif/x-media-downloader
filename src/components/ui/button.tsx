@@ -1,10 +1,9 @@
-// @ts-nocheck — vendored shadcn/ui (radix-nova), authored for React. This repo
-// runs Preact via preact/compat with exactOptionalPropertyTypes; the {...props}
-// spreads onto Radix primitives do not satisfy it. Checked at call sites instead.
-// Re-add this header after `shadcn add --overwrite`.
+// @ts-nocheck — vendored shadcn/ui, authored for React. This repo runs Preact
+// via preact/compat with exactOptionalPropertyTypes; the {...props} spreads onto
+// Base UI primitives do not satisfy it. Checked at call sites instead.
 import * as React from 'react'
 import { cva, type VariantProps } from 'class-variance-authority'
-import { Slot } from 'radix-ui'
+import { useRender } from '@base-ui/react/use-render'
 
 import { cn } from '@/lib/utils'
 
@@ -49,23 +48,23 @@ function Button({
   className,
   variant = 'default',
   size = 'default',
-  asChild = false,
+  render,
   ...props
 }: React.ComponentProps<'button'> &
   VariantProps<typeof buttonVariants> & {
-    asChild?: boolean
+    render?: React.ReactElement
   }) {
-  const Comp = asChild ? Slot.Root : 'button'
-
-  return (
-    <Comp
-      data-slot="button"
-      data-variant={variant}
-      data-size={size}
-      className={cn(buttonVariants({ variant, size, className }))}
-      {...props}
-    />
-  )
+  return useRender({
+    defaultTagName: 'button',
+    render,
+    props: {
+      'data-slot': 'button',
+      'data-variant': variant,
+      'data-size': size,
+      className: cn(buttonVariants({ variant, size, className })),
+      ...props,
+    },
+  })
 }
 
 export { Button, buttonVariants }
