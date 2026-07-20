@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Option } from 'effect'
 import {
   handleClearTweet,
@@ -282,6 +282,59 @@ describe('handleClearWholeList — platform gate', () => {
     expect(querySpy).not.toHaveBeenCalled()
     expect(kept).toBe(true)
     querySpy.mockRestore()
+  })
+})
+
+// Ticket #61: manual Releases are only ever visible via the production trace sink
+// (`reportClear` → background `DownloadTraceEvent`), never `clearLog` (DEV-only, page
+// console). These pin that the handler wires its stage events through the injected
+// sink — behavior observed through `reportClear`, no implementation poking.
+describe('handleClearVisible / handleClearWholeList — production trace (reportClear)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('ClearVisibleRequest emits clear-visible-start and clear-visible-end with the cleared count', async () => {
+    document.body.append(tweetArticle({ tweetId: '301', bookmarked: true }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      adapter: { platform: 'x' },
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      clearLog: () => {},
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = handleClearVisible({}, deps, sendResponse)
+    expect(kept).toBe(true)
+    await vi.runAllTimersAsync()
+
+    expect(reportClear).toHaveBeenCalledWith('clear-visible-start', 'bookmark')
+    expect(reportClear).toHaveBeenCalledWith('clear-visible-end', 'cleared 1 bookmark')
+    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 1 })
+  })
+
+  it('ClearWholeListRequest on a bookmarks-page fake emits clear-list stage events through reportClear', async () => {
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      adapter: { platform: 'x' },
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = handleClearWholeList({}, deps, sendResponse)
+    expect(kept).toBe(true)
+    await vi.runAllTimersAsync()
+
+    const stages = reportClear.mock.calls.map((c) => c[0])
+    expect(stages).toContain('clear-list-start')
+    expect(stages).toContain('clear-list-end')
+    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearWholeListResponse', cleared: 0 })
   })
 })
 

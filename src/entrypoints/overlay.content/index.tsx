@@ -1621,6 +1621,7 @@ export default defineContentScript({
       recoverMissingVideos,
       notifyContextLost,
       clearLog,
+      reportClear,
       clearScope,
       runDrain,
       savedStatusActive: () => savedStatusVisible(location.pathname, savedStatusOn),

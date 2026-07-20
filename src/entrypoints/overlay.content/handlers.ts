@@ -75,6 +75,10 @@ export interface HandlerDeps {
   readonly recoverMissingVideos: () => void
   readonly notifyContextLost: () => void
   readonly clearLog: (...args: unknown[]) => void
+  /** PRODUCTION-visible trace sink: a `DownloadTraceEvent {source:'clear', stage, t,
+   *  itemId?, detail}` runtime message to the background (SW console + session ring),
+   *  unlike `clearLog`, which is DEV-only and goes to the page console. */
+  readonly reportClear: (stage: string, detail: string, tweetId?: string) => void
   readonly clearScope: (tweetId: string, scope: ClearScope) => Promise<boolean>
   /** Run one worker-authorized Scroll Drain and return its terminal result. */
   readonly runDrain: (
@@ -273,6 +277,10 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       'clear-visible request · page scope =',
       Option.getOrElse(scope, () => '(not a Likes/Bookmarks page)'),
     )
+  deps.reportClear(
+    'clear-visible-start',
+    Option.getOrElse(scope, () => 'not a list page'),
+  )
   void (async () => {
     if (Option.isNone(scope)) {
       sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
@@ -280,6 +288,7 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
     }
     const cleared = await clearMountedForScope(deps.document, scope.value, 350)
     if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
+    deps.reportClear('clear-visible-end', `cleared ${cleared} ${scope.value}`)
     sendResponse({ _tag: 'ClearVisibleResponse', cleared })
   })()
   return true
@@ -317,9 +326,7 @@ export const handleClearWholeList: MessageHandler = (_message, deps, sendRespons
     },
     path: () => deps.location.pathname,
     clearVisibleForPage: () => clearMountedForScope(deps.document, scope.value, 350),
-    report: (stage, detail) => {
-      if (import.meta.env.DEV) deps.clearLog(stage, detail)
-    },
+    report: (stage, detail) => deps.reportClear(stage, detail),
   })
   void (async () => {
     const result = await listClear.run()
