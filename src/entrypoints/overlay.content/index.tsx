@@ -7,7 +7,6 @@ import type { Source, TweetRecord } from '../../core/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
 import { VIDEO_PREVIEW_SECTIONS } from '../../core/adapters/x/dom'
 import {
-  isVideoElement,
   mediaStillUnderPointer,
   previewKeyFromMedia,
   resolveHoverMedia,
@@ -1400,9 +1399,6 @@ export default defineContentScript({
 
     // Quick Grab hover tracking: hold the configured modifier and hover a real
     // X media image/poster for the dwell window. No competing per-hover buttons.
-    // TEMP hover diag — throttle key, DEV-gated (see below), REMOVE after
-    // debugging grab failures.
-    let hoverProbeLast: Element | null = null
     // A mousemove sample carries ONLY value data — never the event object or a
     // resolved DOM node — so nothing stale survives across frames.
     interface MouseMoveSample extends ModifierFlags {
@@ -1427,46 +1423,6 @@ export default defineContentScript({
       const stack = document.elementsFromPoint(sample.clientX, sample.clientY)
       const media = resolveHoverMedia(target, stack, sample.clientX, sample.clientY)
       const key = previewKeyFromMedia(adapter, media, location.pathname)
-      // TEMP hover diag — logs (once per element) WHY a hovered media does/doesn't
-      // resolve, but only while the grab modifier is held. DEV-gated: the whole
-      // block (including the URL parse and JSON.stringify) is skipped in prod
-      // builds. REMOVE after debugging.
-      if (import.meta.env.DEV) {
-        if (grabbing && target && target !== hoverProbeLast) {
-          hoverProbeLast = target
-          const src = media
-            ? isVideoElement(media)
-              ? media.poster || media.currentSrc || media.src
-              : media.currentSrc || media.src
-            : ''
-          let hostName = ''
-          let family: string | null = null
-          try {
-            const u = new URL(src)
-            hostName = u.hostname
-            family = u.pathname.split('/').find((p) => /^t\d+(\.\d+-\d+)?$/.test(p)) ?? null
-          } catch {
-            /* blob: or empty src */
-          }
-          console.info(
-            '[XMD hover diag]',
-            JSON.stringify({
-              mediaTag: media?.tagName ?? null,
-              key,
-              host: hostName,
-              family,
-              srcKind: src.startsWith('blob:') ? 'blob:' : src.slice(0, 44),
-              targetTag: target.tagName,
-              targetClass:
-                typeof target.className === 'string' ? target.className.slice(0, 70) : '',
-              hasArticle: target.closest('article') !== null,
-              domCode: media
-                ? (adapter.postCodeFromElement?.(media, location.pathname) ?? null)
-                : null,
-            }),
-          )
-        }
-      }
       if (grabbing) focusHover(media, key)
       focusBadge(media, key)
     }
@@ -1707,6 +1663,12 @@ export default defineContentScript({
       // Saved-status lifecycle dies first: no sweep may paint or rearm after this.
       savedStatusAlive = false
       savedStatusLifecycle.dispose()
+      // Don't flush — the runtime is already dead; just drop the pending batch.
+      if (captureFlushTimer !== null) {
+        clearTimeout(captureFlushTimer)
+        captureFlushTimer = null
+      }
+      captureBuffer = []
       // `browser.runtime` is already undefined once the context is invalidated.
       browser.runtime?.onMessage?.removeListener(handleRuntimeMessage)
       document.removeEventListener('xmd:media-response', handleMediaResponse)
