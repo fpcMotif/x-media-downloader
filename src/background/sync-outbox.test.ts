@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
-import { makeSyncOutbox, type PermissionsPort, type SyncOutboxDeps } from './sync-outbox'
+import {
+  makeSyncOutbox,
+  type AlarmPort,
+  type PermissionsPort,
+  type SyncOutboxDeps,
+} from './sync-outbox'
 import type { ConvexPort } from './convex-port'
 import { Settings as SettingsSchema, type Settings } from '../core/schema'
 import { append, decodeOutbox, emptyOutbox, type OutboxState } from '../core/sync/outbox'
@@ -56,6 +61,10 @@ const okPort = (): ConvexPort => ({ mutation: vi.fn<ConvexPort['mutation']>(asyn
 const grant = (v: boolean): PermissionsPort => ({
   contains: vi.fn<PermissionsPort['contains']>(async () => v),
 })
+const fakeAlarms = (): AlarmPort => ({
+  create: vi.fn<AlarmPort['create']>(async () => {}),
+  clear: vi.fn<AlarmPort['clear']>(async () => {}),
+})
 const dummyFetch = (async () => new Response()) as unknown as typeof fetch
 
 /** Construct the shell with safe fake seams by default; a test overrides what it asserts on. */
@@ -67,6 +76,7 @@ const makeSO = (over: Partial<SyncOutboxDeps> = {}) =>
     status: fakeStore<SyncStatus | null>(null),
     connect: okPort,
     permissions: grant(true),
+    alarms: fakeAlarms(),
     now: () => NOW,
     ...over,
   })
@@ -93,10 +103,11 @@ describe('drainOutbox', () => {
   it('stops at the first failure, arms backoff, and records a not-ok status', async () => {
     const outbox = fakeStore<unknown>(seededOutbox('e1'))
     const status = fakeStore<SyncStatus | null>(null)
+    const alarms = fakeAlarms()
     const mutation = vi.fn<ConvexPort['mutation']>(async () => {
       throw new Error('HTTP 503')
     })
-    const so = makeSO({ outbox, status, connect: () => ({ mutation }) })
+    const so = makeSO({ outbox, status, alarms, connect: () => ({ mutation }) })
     await so.drainOutbox(configured())
     expect(mutation).toHaveBeenCalledTimes(1)
     const state = decodeOutbox(outbox.value)
@@ -104,6 +115,8 @@ describe('drainOutbox', () => {
     expect(state.consecutiveFailures).toBe(1)
     expect(state.nextAttemptAt).toBe(NOW + 5000) // 5s · 2^0
     expect(status.value?.ok).toBe(false)
+    expect(alarms.create).toHaveBeenCalledWith(so.syncAlarm, NOW + 5000)
+    expect(alarms.clear).not.toHaveBeenCalled()
   })
 
   it('drains a backlog larger than one batch across multiple passes', async () => {
@@ -127,10 +140,19 @@ describe('drainOutbox', () => {
       nextAttemptAt: NOW + 5000,
     }
     const outbox = fakeStore<unknown>(backedOff)
+    const alarms = fakeAlarms()
     const mutation = vi.fn<ConvexPort['mutation']>(async () => ({}))
-    const so = makeSO({ outbox, connect: () => ({ mutation }) })
+    const so = makeSO({ outbox, alarms, connect: () => ({ mutation }) })
     await so.drainOutbox(configured())
     expect(mutation).not.toHaveBeenCalled()
+    expect(alarms.create).toHaveBeenCalledWith(so.syncAlarm, NOW + 5000)
+  })
+
+  it('clears the wake alarm after the outbox drains', async () => {
+    const alarms = fakeAlarms()
+    const so = makeSO({ outbox: fakeStore<unknown>(seededOutbox('e1')), alarms })
+    await so.drainOutbox(configured())
+    expect(alarms.clear).toHaveBeenCalledWith(so.syncAlarm)
   })
 })
 
@@ -248,10 +270,13 @@ describe('clearOutbox / getSyncStatus', () => {
   it('clearOutbox clears both the durable outbox and the ephemeral status', async () => {
     const outbox = fakeStore<unknown>(seededOutbox('e1'))
     const status = fakeStore<SyncStatus | null>({ ok: true, detail: 'x', pending: 0 })
-    makeSO({ outbox, status }).clearOutbox()
+    const alarms = fakeAlarms()
+    const so = makeSO({ outbox, status, alarms })
+    so.clearOutbox()
     await tick()
     expect(outbox.value).toBeNull()
     expect(status.value).toBeNull()
+    expect(alarms.clear).toHaveBeenCalledWith(so.syncAlarm)
   })
 
   it('getSyncStatus reads the status store', async () => {

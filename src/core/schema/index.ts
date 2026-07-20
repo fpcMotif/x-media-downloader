@@ -362,20 +362,36 @@ export const ClearTweetRequest = Schema.TaggedStruct('ClearTweetRequest', {
 })
 export type ClearTweetRequest = typeof ClearTweetRequest.Type
 
+const ClearResult = Schema.Struct({
+  scope: ClearScope,
+  ok: Schema.Boolean,
+  noop: Schema.optional(Schema.Boolean),
+})
+
 /** Per-scope outcome, returned via `sendResponse` (not the decoded union).
  *  `noop: true` marks an off-list scope the content script did NOT click (it
  *  reports ok:true only so the in-memory ledger can settle) — the durable sweep
  *  flag must exclude these, treating only a real verified flip as cleared. */
 export const ClearTweetResponse = Schema.TaggedStruct('ClearTweetResponse', {
-  results: Schema.Array(
-    Schema.Struct({
-      scope: ClearScope,
-      ok: Schema.Boolean,
-      noop: Schema.optional(Schema.Boolean),
-    }),
-  ),
+  mounted: Schema.Boolean,
+  drainEligible: Schema.Boolean,
+  results: Schema.Array(ClearResult),
 })
 export type ClearTweetResponse = typeof ClearTweetResponse.Type
+
+/** SW → content: immediate Clear failed in every tab. The worker authorizes this
+ * one list tab to run Scroll Drain and return the terminal per-scope result. */
+export const ClearDrainRequest = Schema.TaggedStruct('ClearDrainRequest', {
+  tweetId: Schema.String,
+  scopes: Schema.Array(ClearScope),
+  allLists: Schema.optional(Schema.Boolean),
+})
+export type ClearDrainRequest = typeof ClearDrainRequest.Type
+
+export const ClearDrainResponse = Schema.TaggedStruct('ClearDrainResponse', {
+  results: Schema.Array(ClearResult),
+})
+export type ClearDrainResponse = typeof ClearDrainResponse.Type
 
 /** content → background: the durable one-by-one sweep. The content script hands
  *  the detected member posts for the current list page; the background skips
@@ -473,8 +489,7 @@ export type ClearCaptureRequest = typeof ClearCaptureRequest.Type
 
 // ── Tab-targeted messages (popup → content script, `browser.tabs.sendMessage`) ──
 // A DIFFERENT transport from the `Message` union below (`runtime.sendMessage`,
-// content/popup → background): these six tags (this section's four plus
-// `RefreshMediaUrlRequest` and `ClearTweetRequest` above) never enter `Message` —
+// content/popup → background): these seven tags never enter `Message` —
 // the overlay content script decode-gates its inbound dispatch on a union built
 // from the same `TAB_MESSAGE_MEMBERS` array as `TabMessage`, plus the few
 // broadcast tags it also answers (`entrypoints/overlay.content/handlers.ts`).
@@ -500,12 +515,13 @@ export type ClearVisibleRequest = typeof ClearVisibleRequest.Type
 export const ClearWholeListRequest = Schema.TaggedStruct('ClearWholeListRequest', {})
 export type ClearWholeListRequest = typeof ClearWholeListRequest.Type
 
-/** The six tab-targeted schemas as ONE shared array: `TabMessage` below and the
+/** The seven tab-targeted schemas as ONE shared array: `TabMessage` below and the
  *  overlay's inbound gate (`entrypoints/overlay.content/handlers.ts`) are BOTH
  *  composed from it, so the two unions cannot drift apart. */
 export const TAB_MESSAGE_MEMBERS = [
   RefreshMediaUrlRequest,
   ClearTweetRequest,
+  ClearDrainRequest,
   ClearVisibleRequest,
   ClearWholeListRequest,
   DrainPageRequest,

@@ -107,9 +107,7 @@ export interface RejectedMediaItemUrl {
 /** Fail-closed trust boundary for page-derived Media Items: split `items` into
  *  those whose URLs pass the CDN allow-list and those rejected (with reasons).
  *  A mixed batch keeps its valid items; non-guard errors still propagate. */
-export function partitionAllowedMediaItems(
-  items: ReadonlyArray<MediaItem>,
-): {
+export function partitionAllowedMediaItems(items: ReadonlyArray<MediaItem>): {
   readonly allowed: MediaItem[]
   readonly rejected: RejectedMediaItemUrl[]
 } {

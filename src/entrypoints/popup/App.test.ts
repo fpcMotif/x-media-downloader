@@ -120,9 +120,7 @@ describe('unsupported-context headline balances instead of prettifying (spec §2
 
 describe('metrics polling cannot rearm or set state after unmount (react-doctor/effect-needs-cleanup)', () => {
   it('keeps the timer handle optional — cleanup is safe before the first timer', () => {
-    expect(popupSource).toContain(
-      'let handle: ReturnType<typeof setTimeout> | undefined',
-    )
+    expect(popupSource).toContain('let handle: ReturnType<typeof setTimeout> | undefined')
   })
 
   it('gates setMetrics behind the active flag', () => {

@@ -361,9 +361,7 @@ describe('partitionAllowedMediaItems', () => {
       partitionItem({ url: 'https://attacker.example/payload.exe' }),
     ])
     expect(allowed).toEqual([])
-    expect(rejected).toEqual([
-      { itemId: 'm1', reason: 'host not on allow-list: attacker.example' },
-    ])
+    expect(rejected).toEqual([{ itemId: 'm1', reason: 'host not on allow-list: attacker.example' }])
   })
 
   it('rejects a hostile previewUrl even when the media url is allowed', () => {

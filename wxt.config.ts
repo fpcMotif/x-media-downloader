@@ -41,14 +41,21 @@ export default defineConfig({
   srcDir: 'src',
   manifest: {
     name: 'X Media Downloader',
+    // Build-stamped display version: changes the manifest bytes on EVERY build so
+    // a browser with this unpacked extension loaded re-reads (and re-hashes) the
+    // bundle instead of serving a stale, half-updated install (Chrome's content
+    // verifier otherwise blocks the service worker + content scripts after an
+    // in-place rebuild — observed as DidStartWorkerFail until manual reload).
+    // `version` stays untouched; this is cosmetic only.
+    version_name: `0.1.0 build ${new Date().toISOString()}`,
     description:
       'Download X (Twitter) tweet/thread media at original quality. Minimalist, local-only, no scraping.',
     // `identity` powers chrome.identity.launchWebAuthFlow for Cloud Upload OAuth
     // (ADR-0013). Required (not optional): `identity` is not reliably grantable
     // via chrome.permissions.request. launchWebAuthFlow needs no host permission
     // for the auth window or the chromiumapp.org redirect.
-    // `alarms` powers the Cloud Upload backoff wake-up (ADR-0013) so failed
-    // uploads retry autonomously after the service worker suspends.
+    // `alarms` powers Cloud Upload and Sync Outbox backoff wakes so failed
+    // deliveries retry after the service worker suspends.
     // `unlimitedStorage` keeps the Tweet Harvest IndexedDB store (`xmd-capture`)
     // from being evicted under browser storage pressure — the breadth flag can
     // harvest tens of thousands of text records.

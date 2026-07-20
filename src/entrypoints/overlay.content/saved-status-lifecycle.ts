@@ -33,9 +33,7 @@ export interface SavedStatusLifecycleDeps {
   readonly sweep: () => Promise<void>
 }
 
-export function makeSavedStatusLifecycle(
-  deps: SavedStatusLifecycleDeps,
-): SavedStatusLifecycle {
+export function makeSavedStatusLifecycle(deps: SavedStatusLifecycleDeps): SavedStatusLifecycle {
   let observer: SavedStatusObserver | null = null
   let cancelTimer: (() => void) | null = null
   let running = false

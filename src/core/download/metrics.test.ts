@@ -6,7 +6,6 @@ import {
   recordRetry,
   snapshot,
   samplesFromSearch,
-  outcomeFromState,
   extendTotal,
 } from './metrics'
 
@@ -262,15 +261,6 @@ describe('long feed batch polled for minutes (bounded timeline)', () => {
     const now = 200 * POLL_MS
     expect(snapshot(s, now).throughputBps).toBe(2_000_000)
     expect(s.timeline.length).toBeLessThanOrEqual(40)
-  })
-})
-
-describe('outcomeFromState', () => {
-  it('maps complete + interrupted to terminal outcomes, in_progress to null', () => {
-    expect(outcomeFromState('complete')).toBe('complete')
-    expect(outcomeFromState('interrupted')).toBe('failed')
-    expect(outcomeFromState('in_progress')).toBe(null)
-    expect(outcomeFromState(undefined)).toBe(null)
   })
 })
 

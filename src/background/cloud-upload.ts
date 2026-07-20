@@ -45,6 +45,7 @@ import {
 import { PROVIDERS, revokeViaRecipe } from '../core/cloud/provider'
 import { classifyUploadError, type CloudUploadStatus } from '../core/cloud/status'
 import { makeSerialQueue, type SerialQueue } from '../core/serial-queue'
+import { runSerializedRmw, type DurableStore } from '../core/durable-store'
 import { isSyncConfigured } from './sync-config'
 
 /** A media item + its on-disk filename — the unit recordCloudUploads enqueues. */
@@ -68,10 +69,7 @@ export interface BackfillRecord {
 /** Durable UploadJob-ledger storage seam — the wxt `local:cloudUploadJobs` item in
  *  the SW, an in-memory box in tests. The stored payload is opaque (`decodeLedger`
  *  validates it on read), so this carries `unknown`. */
-export interface LedgerStore {
-  get(): Promise<unknown>
-  set(value: unknown): Promise<void>
-}
+export type LedgerStore = DurableStore
 
 /** Everything that executes on the ONE per-SW-life cloud runtime (ADR-0017): the
  *  provider byte uploaders, Drive's root-folder resolve, the OAuth token grants, and
@@ -311,6 +309,11 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   // serialized chain like the metadata outbox. Bytes go extension → provider
   // (Drive/Dropbox) directly; nothing here transits Convex.
   const uploadQueue = makeSerialQueue(deps.queueError('upload'))
+  const storeQueue = makeSerialQueue(deps.queueError('uploadStore'))
+  const readLedger = (): Promise<JobLedger> =>
+    storeQueue.run(async () => decodeLedger(await store.get()))
+  const updateLedger = (update: (ledger: JobLedger) => JobLedger | Promise<JobLedger>) =>
+    runSerializedRmw(storeQueue, store, decodeLedger, update)
   // Last non-skip failure, for the popup's status line (diagnostic; resets on recycle).
   let lastUploadError: string | null = null
 
@@ -364,14 +367,16 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     if (providers.length === 0) return
     const now = nowFn()
     uploadQueue.push(async () => {
-      let ledger = decodeLedger(await store.get())
-      for (const { item, filename } of items) {
-        const target = cloudTargetFor(item, filename)
-        for (const p of providers) {
-          ledger = enqueue(ledger, { mediaId: item.id, provider: p, url: item.url, target }, now)
+      await updateLedger((current) => {
+        let next = current
+        for (const { item, filename } of items) {
+          const target = cloudTargetFor(item, filename)
+          for (const p of providers) {
+            next = enqueue(next, { mediaId: item.id, provider: p, url: item.url, target }, now)
+          }
         }
-      }
-      await store.set(ledger)
+        return next
+      })
       await drainUploadJobs()
     })
   }
@@ -413,7 +418,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   /** Arm a durable wake-up at the soonest backoff deadline so failed jobs retry
    *  autonomously even after the SW suspends (setTimeout would not survive). */
   const scheduleUploadWake = async (): Promise<void> => {
-    const ledger = decodeLedger(await store.get())
+    const ledger = await readLedger()
     const now = nowFn()
     const due = ledger
       .filter((j) => !isTerminal(j) && j.attempts < MAX_ATTEMPTS)
@@ -434,7 +439,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     // oxlint-disable no-await-in-loop -- FIFO: each job is processed sequentially
     for (let guard = 0; guard < maxDrainPerPass; guard += 1) {
       const now = nowFn()
-      const ledger = decodeLedger(await store.get())
+      const ledger = await readLedger()
       const job = readyJobs(ledger, now)[0]
       if (job === undefined) {
         ranOut = true
@@ -444,22 +449,27 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       // Provider disconnected mid-flight: fail the job so it backs off → dies,
       // rather than spinning forever as perpetually-ready.
       if (!isProviderConnected(settings, job.provider)) {
-        const c = claim(ledger, job.jobId, now)
-        const failed = c.claimed
-          ? recordFailure(c.ledger, job.jobId, c.token!, now, `${job.provider} disconnected`).ledger
-          : c.ledger
-        await store.set(capLedger(failed))
+        await updateLedger((current) => {
+          const c = claim(current, job.jobId, now)
+          const failed = c.claimed
+            ? recordFailure(c.ledger, job.jobId, c.token!, now, `${job.provider} disconnected`)
+                .ledger
+            : c.ledger
+          return capLedger(failed)
+        })
         lastUploadError = `${PROVIDERS[job.provider].label} is not connected.`
         continue
       }
 
-      const c = claim(ledger, job.jobId, now)
-      if (!c.claimed) {
-        await store.set(capLedger(c.ledger)) // 'exhausted' → dead persisted
-        continue
-      }
-      await store.set(c.ledger) // persist 'uploading' + lease BEFORE the slow upload
-      const token = c.token!
+      let claimed = false
+      let token: number | undefined
+      await updateLedger((current) => {
+        const c = claim(current, job.jobId, now)
+        claimed = c.claimed
+        token = c.token
+        return capLedger(c.ledger)
+      })
+      if (!claimed || token === undefined) continue
 
       let outcome: UploadOutcome
       try {
@@ -470,22 +480,23 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
         outcome = { kind: 'failure', reason: err instanceof Error ? err.message : String(err) }
       }
 
-      const after = decodeLedger(await store.get())
       const tnow = nowFn()
-      let next: JobLedger
-      if (outcome.kind === 'success') {
-        next = recordSuccess(after, job.jobId, token, tnow, {
-          bytes: outcome.bytes,
-          ...(outcome.remoteId !== undefined ? { remoteId: outcome.remoteId } : {}),
-        }).ledger
-      } else if (outcome.kind === 'sourceGone') {
-        next = recordSourceGone(after, job.jobId, token, outcome.reason).ledger
-      } else {
-        next = recordFailure(after, job.jobId, token, tnow, outcome.reason).ledger
-        lastUploadError = classifyUploadError(outcome.reason, outcome.status)
-      }
+      const next = await updateLedger((current) => {
+        let settled: JobLedger
+        if (outcome.kind === 'success') {
+          settled = recordSuccess(current, job.jobId, token!, tnow, {
+            bytes: outcome.bytes,
+            ...(outcome.remoteId !== undefined ? { remoteId: outcome.remoteId } : {}),
+          }).ledger
+        } else if (outcome.kind === 'sourceGone') {
+          settled = recordSourceGone(current, job.jobId, token!, outcome.reason).ledger
+        } else {
+          settled = recordFailure(current, job.jobId, token!, tnow, outcome.reason).ledger
+          lastUploadError = classifyUploadError(outcome.reason, outcome.status)
+        }
+        return capLedger(settled)
+      })
       const settled = next.find((j) => j.jobId === job.jobId)
-      await store.set(capLedger(next))
       if (settled !== undefined) await mirrorUploadJob(settings, settled)
     }
     // oxlint-enable no-await-in-loop
@@ -577,19 +588,21 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   }
 
   const cloudUploadStatus = async (): Promise<CloudUploadStatus> => {
-    const ledger = decodeLedger(await store.get())
+    const ledger = await readLedger()
     return { summary: summarize(ledger), lastError: lastUploadError }
   }
 
   const retryDeadUploads = async (): Promise<{ ok: boolean }> => {
     uploadQueue.push(async () => {
-      let ledger = decodeLedger(await store.get())
       const now = nowFn()
-      for (const j of ledger) {
-        if (j.status === 'dead' || j.status === 'failed')
-          ledger = retryUploadJob(ledger, j.jobId, now).ledger
-      }
-      await store.set(ledger)
+      await updateLedger((current) => {
+        let next = current
+        for (const j of next) {
+          if (j.status === 'dead' || j.status === 'failed')
+            next = retryUploadJob(next, j.jobId, now).ledger
+        }
+        return next
+      })
       await drainUploadJobs()
     })
     return { ok: true }
@@ -598,10 +611,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   /** Reflect permanently-failed (dead) uploads on the toolbar badge so the user
    *  notices without opening the popup — restrained, no notifications permission. */
   const refreshUploadBadge = async (): Promise<void> => {
-    const dead = decodeLedger(await store.get()).reduce(
-      (n, j) => (j.status === 'dead' ? n + 1 : n),
-      0,
-    )
+    const dead = (await readLedger()).reduce((n, j) => (j.status === 'dead' ? n + 1 : n), 0)
     try {
       await badge.set(dead > 0 ? String(dead) : '')
       if (dead > 0) await badge.setColor('#dc2626')
@@ -637,21 +647,25 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     // queue's onError observer), so the reply still lands.
     const queued = await uploadQueue
       .run(async () => {
-        let ledger = decodeLedger(await store.get())
-        const before = ledger.length
         const now = nowFn()
-        for (const r of records) {
-          const target = cloudTargetFor(r.media, r.filename)
-          for (const p of providers) {
-            ledger = enqueue(
-              ledger,
-              { mediaId: r.requestId, provider: p, url: r.media.url, target },
-              now,
-            )
+        let added = 0
+        await updateLedger((current) => {
+          let next = current
+          const before = current.length
+          for (const r of records) {
+            const target = cloudTargetFor(r.media, r.filename)
+            for (const p of providers) {
+              next = enqueue(
+                next,
+                { mediaId: r.requestId, provider: p, url: r.media.url, target },
+                now,
+              )
+            }
           }
-        }
-        await store.set(ledger)
-        return ledger.length - before
+          added = next.length - before
+          return next
+        })
+        return added
       })
       .catch(() => 0)
     uploadQueue.push(() => drainUploadJobs()) // drain in the background; don't block the reply
@@ -667,7 +681,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
   const resumeOnBoot = (): void => {
     uploadQueue.push(async () => {
-      await store.set(capLedger(decodeLedger(await store.get())))
+      await updateLedger((ledger) => capLedger(ledger))
       await drainUploadJobs()
     })
   }

@@ -46,22 +46,9 @@ export function postGrabItems(item: MediaItem, postItems: readonly MediaItem[]):
  *  can derive the identical string from a DOM-walked shortcode without
  *  importing store internals — this is the ONLY key shape a DOM caller can
  *  ever query with, since a DOM walk only ever yields a shortcode, never the
- *  tee's raw `postId`. Namespaced separately from the store's internal
- *  postId-keyed entry (see `postVideoKeyById` below) so an accidental string
- *  collision between an unrelated post's raw `postId`/`pk` and another post's
- *  shortcode can never cause one to silently overwrite the other. */
+ *  tee's raw `postId`. */
 export function postVideoKey(code: string): string {
   return `post:code:${code}`
-}
-
-/** The store's internal post-level hover key, keyed by the tee's own
- *  `postId` (`post:id:{postId}`) — never queried by a DOM caller (nothing
- *  DOM-side ever has the raw postId), kept namespaced apart from
- *  `postVideoKey`'s code-keyed space purely as defense-in-depth. Exported
- *  (test-only consumer today) so tests can assert on the postId-keyed
- *  entry directly rather than reaching into `byKey` some other way. */
-export function postVideoKeyById(postId: string): string {
-  return `post:id:${postId}`
 }
 
 /** NEW: the post-level hover key for slide `index` of a multi-video (or
@@ -74,13 +61,6 @@ export function postVideoKeyById(postId: string): string {
  *  querying the bare no-index key keeps working too. */
 export function postVideoKeyIndexed(code: string, index: number): string {
   return `post:code:${code}:${index}`
-}
-
-/** Sibling of {@link postVideoKeyIndexed}, keyed by the tee's own `postId`
- *  instead of a DOM-walked shortcode — same posture as `postVideoKeyById`
- *  vs `postVideoKey`. */
-export function postVideoKeyByIdIndexed(postId: string, index: number): string {
-  return `post:id:${postId}:${index}`
 }
 
 /** NEW: Threads-only. A hover key that names "the Nth video encountered SO
@@ -192,11 +172,8 @@ export function makeDetectionStore(deps: {
     const videos = videosByPost.get(postId)
     const count = videos?.size ?? 0
     const single = count === 1 ? [...videos!.values()][0]! : null
-    const idKey = postVideoKeyById(postId)
     const codesForPost = [...codeToPostId].filter(([, p]) => p === postId).map(([c]) => c)
 
-    if (single) byKey.set(idKey, single)
-    else byKey.delete(idKey)
     for (const code of codesForPost) {
       const codeKey = postVideoKey(code)
       if (single) byKey.set(codeKey, single)
@@ -209,8 +186,6 @@ export function makeDetectionStore(deps: {
     // uniformly regardless of video count).
     const prevIndices = registeredIndicesByPost.get(postId) ?? new Set<number>()
     for (const index of prevIndices) {
-      byKey.delete(postVideoKeyByIdIndexed(postId, index))
-      byKey.delete(postVideoKeyByDomSlot(postId, index))
       for (const code of codesForPost) {
         byKey.delete(postVideoKeyIndexed(code, index))
         byKey.delete(postVideoKeyByDomSlot(code, index))
@@ -218,8 +193,6 @@ export function makeDetectionStore(deps: {
     }
     const nextIndices = new Set<number>()
     for (const [index, item] of videos ?? []) {
-      byKey.set(postVideoKeyByIdIndexed(postId, index), item)
-      byKey.set(postVideoKeyByDomSlot(postId, index), item)
       for (const code of codesForPost) {
         byKey.set(postVideoKeyIndexed(code, index), item)
         byKey.set(postVideoKeyByDomSlot(code, index), item)

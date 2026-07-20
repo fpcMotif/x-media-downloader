@@ -74,7 +74,7 @@ use these words, they mean exactly this.
   and the CDN-url refresh before re-firing — is pure (`core/download`
   interrupt-retry), folding the **Transfer Tracker** and **Metrics** transitions
   into its result exactly as **Terminal Outcome** does. The Retry Scheduler is its
-  effectful shell (`src/background/retry-plan.ts`'s `makeRetryPlanApplier`): it
+  effectful shell (`src/core/download/retry-queue.ts`'s `makeRetryQueue`): it
   holds the in-flight retry queue (durable across SW recycle, ADR-0005) and the
   timer wheel behind its own injected **Clock Port** and **Download Port**,
   applying the pure result's intents. A retry that exhausts its attempts hands off
@@ -84,12 +84,15 @@ use these words, they mean exactly this.
 - **Clock Port** — the injected timer seam (`schedule(fn, ms): CancelHandle`), so
   scheduled work runs against a fake clock in tests instead of `vi.useFakeTimers()`.
   Realized by the **Drain**'s Clock in `core/clear` (`scroll-drain.ts` /
-  `list-clear.ts`) and, as of `src/background/retry-plan.ts`, by the **Retry
+  `list-clear.ts`) and, as of `src/core/download/retry-queue.ts`, by the **Retry
   Scheduler**'s own minimal port (a deliberately different shape from the Drain's
-  `{ sleep, after }` Clock — retry-specific, not shared). **Settle**'s
-  confirm-window timer (`clear-coordinator.ts`) is still raw `setTimeout` (its
-  tests still use `vi.useFakeTimers()`) — migrating Settle onto an injected clock
-  is a queued follow-on, not yet built. The temporal sibling of the **Settle
+  `{ sleep, after }` Clock — retry-specific, not shared), and by **Settle**'s
+  confirm-window timer (`SettleClock` in `clear-session.ts`, injected via
+  `deps.clock`; its tests drive a hand-rolled fake clock in the `retry-plan.ts`
+  idiom). The one scheduled-work holdout still on a raw timer is the
+  stuck-download watchdog's `setInterval` in `entrypoints/background.ts` — kept
+  inline by decision (round-7 review: no duplication, defense-in-depth exists;
+  extraction judged uniformity polish). The temporal sibling of the **Settle
   Port**: this one *schedules* work, that one *observes* a download's bytes.
 - **Settle** — the confirmation that a browser **Download Handle**'s recorded
   `complete` truly landed on disk. After a short window the byte is re-probed
@@ -113,11 +116,7 @@ use these words, they mean exactly this.
   a `data:` URL (no extra permissions).
 - **Detected Media Set** — the collection of Media Items found on the current
   page, de-duplicated by Media Key, together with how each was obtained (Passive
-  capture vs. Recovery). The basis for the **Bulk** count and what a **Selection**
-  is drawn from.
-- **Selection** — the user's current pick of Media Items, built by grabbing a
-  single item, a whole Tweet, or a whole Thread. Resolving a Selection re-indexes
-  each Tweet's chosen items contiguously from 0 (so naming stays gap-free).
+  capture vs. Recovery). The basis for the **Bulk** count.
 - **Metrics / Snapshot** — download-efficiency monitoring. **Metrics** is a pure
   reducer over timestamped byte samples + state transitions; a **Snapshot** is its
   projection (throughput, ETA, completed/failed/retry counts, concurrency

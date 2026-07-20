@@ -23,6 +23,7 @@ export type ClearSeedVerdict =
       readonly scopes: Scope[]
       readonly origin: 'sweep' | 'hook'
       readonly unclearableCount: number
+      readonly originTabId?: number
     }
 
 /**
@@ -41,8 +42,9 @@ export function planClearSeed(input: {
     readonly ids: ReadonlyArray<string>
   }>
   readonly settings: Settings
+  readonly originTabId?: number
 }): ClearSeedVerdict {
-  const { requests, mediaById, sweep, clearExpect, settings } = input
+  const { requests, mediaById, sweep, clearExpect, settings, originTabId } = input
 
   // A sweep is strictly list-scoped: it reads clearAllListsOnSave but never
   // mutates it, and (with it on) widens by the hook's non-notInterested scopes
@@ -84,5 +86,12 @@ export function planClearSeed(input: {
     if (cur !== undefined) byTweet.set(e.tweetId, [...new Set([...cur, ...e.ids])])
   }
 
-  return { decision: 'seed', byTweet, scopes, origin, unclearableCount: unclearable.size }
+  return {
+    decision: 'seed',
+    byTweet,
+    scopes,
+    origin,
+    unclearableCount: unclearable.size,
+    ...(originTabId === undefined ? {} : { originTabId }),
+  }
 }

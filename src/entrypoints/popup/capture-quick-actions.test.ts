@@ -18,9 +18,7 @@ describe('CaptureQuickActions stays mounted while an erase flash is pending (Bat
 
   it('flashStatus cancels the prior timer before rearming (latest flash wins)', () => {
     expect(source).toContain('clearTimeout(statusTimer.current)')
-    expect(source).toContain(
-      'statusTimer.current = setTimeout(() => {\n      setStatusMsg(null)',
-    )
+    expect(source).toContain('statusTimer.current = setTimeout(() => {\n      setStatusMsg(null)')
   })
 
   it('unmount cancels the pending flash timer', () => {

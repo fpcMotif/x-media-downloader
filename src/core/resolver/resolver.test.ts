@@ -284,7 +284,9 @@ describe('resolveTweetMedia × url-guard composition', () => {
           type: 'video',
           media_url_https: 'https://pbs.twimg.com/media/V.jpg',
           video_info: {
-            variants: [{ content_type: 'video/mp4', bitrate: 1000, url: 'https://video.twimg.com/v/V.mp4' }],
+            variants: [
+              { content_type: 'video/mp4', bitrate: 1000, url: 'https://video.twimg.com/v/V.mp4' },
+            ],
           },
         },
       ],

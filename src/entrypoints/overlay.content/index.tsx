@@ -361,7 +361,7 @@ const scrollDrain = makeScrollDrain({
   clearMounted: (id, scopes, allLists) => clearMountedTweet(drainDeps(), id, scopes, allLists),
   report: reportClear,
 })
-const queueDrain = scrollDrain.queue
+const runDrain = scrollDrain.run
 
 // Page-level grab-cursor CSS for eligible twimg media previews, built once at
 // module load. The video poster sections come from `VIDEO_PREVIEW_SECTIONS` in
@@ -1188,50 +1188,6 @@ export default defineContentScript({
           ...store.keysForTweet(item.postId),
           ...(codePostId ? store.keysForTweet(codePostId) : []),
         ])
-        // TEMP DIAG (grab-all) — DEV-gated (see below), REMOVE after confirming
-        // on live IG/Threads.
-        // Breaks the payload down by media TYPE and by postId so a missing-video
-        // report can be pinned to the right boundary: `sendingTypes` lacking the
-        // videos ⇒ they never got RESOLVED into the payload (a postId/resolution
-        // bug); `sendingTypes` INCLUDING them but nothing downloading ⇒ they were
-        // resolved and the dedup/size gate dropped them downstream. `videosInStore`
-        // + `postIdCounts` expose a postId split (videos indexed under a different
-        // postId than `codePostId`, so `valuesForTweet(codePostId)` misses them).
-        // The whole block — including the per-call type/postId scans and the
-        // JSON.stringify — is skipped in prod builds.
-        if (import.meta.env.DEV) {
-          const typeCounts = (arr: readonly MediaItem[]): Record<string, number> =>
-            arr.reduce<Record<string, number>>((a, i) => {
-              a[i.type] = (a[i.type] ?? 0) + 1
-              return a
-            }, {})
-          console.info(
-            '[XMD grab-all diag]',
-            JSON.stringify({
-              platform: adapter.platform,
-              hoveredType: item.type,
-              hoveredPostId: item.postId,
-              hoveredId: item.id,
-              hoveredInStore: store.get(item.id) !== undefined,
-              domCode: code,
-              codePostId: codePostId ?? null,
-              codeMatchesHovered: (codePostId ?? null) === item.postId,
-              teePostCount: teePost.length,
-              teeTypes: typeCounts(teePost),
-              sending: items.length,
-              sendingTypes: typeCounts(items),
-              videosInStore: store
-                .values()
-                .filter((i) => i.type === 'video')
-                .map((i) => ({ postId: i.postId, index: i.index, id: i.id })),
-              postIdCounts: store.values().reduce<Record<string, number>>((a, i) => {
-                a[i.postId] = (a[i.postId] ?? 0) + 1
-                return a
-              }, {}),
-              storeCount: store.count,
-            }),
-          )
-        }
       }
       // After the dwell completes, move out of the charge state immediately.
       // The background reply then confirms whether the browser/aria2 handoff started.
@@ -1963,9 +1919,17 @@ export default defineContentScript({
     })
 
     ctx.addEventListener(window, 'keyup', (event) => {
-      if (isModifierKey((event as KeyboardEvent).key, qgModifier)) releaseAll()
+      // Drop any queued-but-unrun pointer sample alongside the grab: a stale
+      // altKey sample must not re-arm (or fire) after the modifier is gone.
+      if (isModifierKey((event as KeyboardEvent).key, qgModifier)) {
+        mouseHitTest.clear()
+        releaseAll()
+      }
     })
-    ctx.addEventListener(window, 'blur', () => releaseAll())
+    ctx.addEventListener(window, 'blur', () => {
+      mouseHitTest.clear()
+      releaseAll()
+    })
     // The Cmd augment (grab whole post): update all-mode even without a mousemove
     // and re-label a live ring. `allAugmentModifier(qgModifier)` is read fresh each
     // event because the base modifier can change via settings at runtime.
@@ -2037,7 +2001,7 @@ export default defineContentScript({
       notifyContextLost,
       clearLog,
       clearScope,
-      queueDrain,
+      runDrain,
       savedStatusActive: () => savedStatusVisible(location.pathname, savedStatusOn),
     }
 

@@ -14,8 +14,7 @@ export function beginSendAll(phase: LauncherPhase): LauncherPhase {
   return phase === 'idle' || phase === 'failed' ? 'queued' : phase
 }
 
-const mediaItemCount = (count: number): string =>
-  `${count} media ${count === 1 ? 'item' : 'items'}`
+const mediaItemCount = (count: number): string => `${count} media ${count === 1 ? 'item' : 'items'}`
 
 /** Accessible pill name per phase — state and action stay truthful. */
 export function launcherAriaLabel(phase: LauncherPhase, count: number): string {

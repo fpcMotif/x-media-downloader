@@ -1,6 +1,6 @@
 import { allAdapterHostMatch } from '../core/adapters/registry'
 import type { Message } from '../core/schema'
-import type { ClearTweetResponse } from '../core/schema'
+import type { ClearDrainResponse, ClearTweetResponse } from '../core/schema'
 import type { TabMessagingPort } from '../core/download/media-url-refresh'
 import type { Scope } from '../core/clear/ledger'
 
@@ -35,10 +35,7 @@ export interface TabBroadcaster {
     scopes: Scope[],
     preferTabId?: number,
     allLists?: boolean,
-  ) => Promise<{
-    mounted: boolean
-    results: ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>
-  }>
+  ) => Promise<ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>>
 }
 
 /** The `browser.tabs` seam every X-tab fan-out routes through. Defaults to the live
@@ -98,19 +95,14 @@ export const makeTabBroadcaster = (tabs: TabsPort = defaultTabsPort()): TabBroad
     void broadcastToXTabs({ _tag: 'TransferOutcome', requestId, outcome, at }).catch(() => {})
   }
 
-  /** Ask open X tabs to clear the tweet. `mounted` is true only when a tab actually
-   *  has the article and answered per-scope (verified flips); a tab without it now
-   *  returns an EMPTY results array, which we skip — so "not mounted anywhere" comes
-   *  back `mounted:false` (defer), distinct from a mounted-but-flip-failed result. */
+  /** Try immediate Clear in every tab. Only after all report unmounted may the
+   *  worker authorize one eligible list tab to Scroll Drain. */
   const sendClearToTabs = async (
     tweetId: string,
     scopes: Scope[],
     preferTabId?: number,
     allLists?: boolean,
-  ): Promise<{
-    mounted: boolean
-    results: ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>
-  }> => {
+  ): Promise<ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>> => {
     const ids = await queryXTabs()
     // Try the originating tab FIRST (where the user downloaded): if the post is still
     // mounted there it answers and short-circuits, so a background Bookmarks/Likes tab
@@ -120,7 +112,8 @@ export const makeTabBroadcaster = (tabs: TabsPort = defaultTabsPort()): TabBroad
       preferTabId !== undefined && ids.includes(preferTabId)
         ? [preferTabId, ...ids.filter((id) => id !== preferTabId)]
         : ids
-    // oxlint-disable no-await-in-loop -- stop at the first tab that has the mounted article
+    let drainTabId: number | undefined
+    // oxlint-disable no-await-in-loop -- ordered ownership protocol
     for (const id of ordered) {
       try {
         const res = (await tabs.sendTabMessage(id, {
@@ -129,13 +122,27 @@ export const makeTabBroadcaster = (tabs: TabsPort = defaultTabsPort()): TabBroad
           scopes,
           allLists,
         })) as ClearTweetResponse | undefined
-        if (res?.results && res.results.length > 0) return { mounted: true, results: res.results }
+        if (res?.mounted && res.results.some((result) => !result.noop)) return res.results
+        if (res?.drainEligible && drainTabId === undefined) drainTabId = id
       } catch {
         /* tab without the content script; try the next */
       }
     }
+    if (drainTabId !== undefined) {
+      try {
+        const res = (await tabs.sendTabMessage(drainTabId, {
+          _tag: 'ClearDrainRequest',
+          tweetId,
+          scopes,
+          allLists,
+        })) as ClearDrainResponse | undefined
+        if (res?.results && res.results.length > 0) return res.results
+      } catch {
+        /* authorized drain tab died; resolve the claim as failed */
+      }
+    }
     // oxlint-enable no-await-in-loop
-    return { mounted: false, results: [] }
+    return scopes.map((scope) => ({ scope, ok: false }))
   }
 
   return {

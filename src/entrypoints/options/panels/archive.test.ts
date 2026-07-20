@@ -7,9 +7,7 @@ const source = readFileSync('src/entrypoints/options/panels/archive.tsx', 'utf8'
 describe('ArchivePanel status flash owns its timer', () => {
   it('flashStatus cancels the prior timer before rearming (latest flash wins)', () => {
     expect(source).toContain('clearTimeout(statusTimer.current)')
-    expect(source).toContain(
-      'statusTimer.current = setTimeout(() => {\n      setStatusMsg(null)',
-    )
+    expect(source).toContain('statusTimer.current = setTimeout(() => {\n      setStatusMsg(null)')
   })
 
   it('unmount cancels the pending flash timer', () => {

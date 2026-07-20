@@ -75,9 +75,12 @@ export interface HandlerDeps {
   readonly notifyContextLost: () => void
   readonly clearLog: (...args: unknown[]) => void
   readonly clearScope: (tweetId: string, scope: ClearScope) => Promise<boolean>
-  /** Queue a not-mounted clear for the auto-scroll drain (the post has virtualized
-   *  out of the DOM; the overlay scrolls the list to surface it, then clears it). */
-  readonly queueDrain: (tweetId: string, scopes: ClearScope[], allLists: boolean) => void
+  /** Run one worker-authorized Scroll Drain and return its terminal result. */
+  readonly runDrain: (
+    tweetId: string,
+    scopes: ClearScope[],
+    allLists: boolean,
+  ) => Promise<ReadonlyArray<ClearResult>>
   /** Whether the "Saved" status is live on THIS page right now (setting on AND an
    *  in-scope timeline) — gates the late cross-device chip push. */
   readonly savedStatusActive: () => boolean
@@ -460,31 +463,72 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
   // open (return true) and reply with empty results, same shape as the "queued
   // for scroll-drain" no-op below.
   if (deps.adapter.platform !== 'x') {
-    sendResponse({ _tag: 'ClearTweetResponse', results: [] })
+    sendResponse({
+      _tag: 'ClearTweetResponse',
+      mounted: false,
+      drainEligible: false,
+      results: [],
+    })
     return true
   }
   const req = message as { tweetId: string; scopes: ClearScope[]; allLists?: boolean }
   const allLists = req.allLists === true
+  const onList = pageScope(deps.location.pathname)
+  const membershipScopes = req.scopes.filter((scope) => scope !== 'notInterested')
+  const drainEligible =
+    Option.isSome(onList) &&
+    membershipScopes.length > 0 &&
+    (allLists || membershipScopes.includes(onList.value))
   if (import.meta.env.DEV)
     deps.clearLog('request', req.tweetId, req.scopes, allLists ? '· all-lists' : '')
   void (async () => {
     const article = findArticle(deps.document, req.tweetId)
     if (Option.isNone(article)) {
-      // Not mounted: X virtualizes the timeline (~30 articles in the DOM at once), so
-      // a post downloaded seconds ago has usually scrolled out by the time its clear
-      // fires. Queue it for the auto-scroll drain (scroll the list to surface the
-      // post, then clear it) instead of dropping it. Still report empty results so the
-      // background's in-memory ledger settles — the drain owns the retry now.
       if (import.meta.env.DEV) {
         const n = deps.document.querySelectorAll('article[data-testid="tweet"]').length
-        deps.clearLog('not mounted → queued for scroll-drain.', n, 'articles on page')
+        deps.clearLog('not mounted.', n, 'articles on page')
       }
-      deps.queueDrain(req.tweetId, req.scopes, allLists)
-      sendResponse({ _tag: 'ClearTweetResponse', results: [] })
+      sendResponse({
+        _tag: 'ClearTweetResponse',
+        mounted: false,
+        drainEligible,
+        results: [],
+      })
       return
     }
-    const results = await clearMountedTweet(deps, req.tweetId, req.scopes, allLists)
-    sendResponse({ _tag: 'ClearTweetResponse', results })
+    let results: ReadonlyArray<ClearResult>
+    try {
+      results = await clearMountedTweet(deps, req.tweetId, req.scopes, allLists)
+    } catch {
+      results = req.scopes.map((scope) => ({ scope, ok: false }))
+    }
+    sendResponse({
+      _tag: 'ClearTweetResponse',
+      mounted: true,
+      drainEligible,
+      results,
+    })
+  })()
+  return true
+}
+
+export const handleClearDrain: MessageHandler = (message, deps, sendResponse) => {
+  const req = message as { tweetId: string; scopes: ClearScope[]; allLists?: boolean }
+  if (deps.adapter.platform !== 'x') {
+    sendResponse({
+      _tag: 'ClearDrainResponse',
+      results: req.scopes.map((scope) => ({ scope, ok: false })),
+    })
+    return true
+  }
+  void (async () => {
+    let results: ReadonlyArray<ClearResult>
+    try {
+      results = await deps.runDrain(req.tweetId, req.scopes, req.allLists === true)
+    } catch {
+      results = req.scopes.map((scope) => ({ scope, ok: false }))
+    }
+    sendResponse({ _tag: 'ClearDrainResponse', results })
   })()
   return true
 }
@@ -537,10 +581,11 @@ export const messageHandlers: Record<string, MessageHandler> = {
   DrainPageRequest: handleDrainPage,
   SweepPageRequest: handleSweepPage,
   ClearTweetRequest: handleClearTweet,
+  ClearDrainRequest: handleClearDrain,
   ClearDetectedMediaRequest: handleClearDetectedMedia,
 }
 
-/** The overlay's TRUE inbound set, decode-gated before any dispatch: the six
+/** The overlay's TRUE inbound set, decode-gated before any dispatch: the
  *  tab-targeted (`browser.tabs.sendMessage`) tags — spread from the SAME
  *  `TAB_MESSAGE_MEMBERS` array `TabMessage` itself is built from, so the two
  *  unions can never drift — plus the three broadcast `Message`-union tags

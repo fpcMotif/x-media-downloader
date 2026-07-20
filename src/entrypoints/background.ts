@@ -14,10 +14,15 @@ import {
   setSettings,
   watchSettings,
 } from '../core/settings'
-import { queuedEvent, type SyncEvent } from '../core/sync/events'
+import { planConvexEnvSeed, planCloudEnvSeed } from '../core/settings/env-seed'
+import type { SyncEvent } from '../core/sync/events'
 import { makeConvexHttpPort, queryDownloadedAmong } from '../core/sync/convex'
 import { makeSavedIndex, type QueryConvex } from '../core/sync/saved-index'
-import { partitionAllowedMediaItems, assertAllowedMediaUrl, UnsafeUrlError } from '../core/sync/url-guard'
+import {
+  partitionAllowedMediaItems,
+  assertAllowedMediaUrl,
+  UnsafeUrlError,
+} from '../core/sync/url-guard'
 import { refreshMediaUrlFromTabs } from '../core/download/media-url-refresh'
 import {
   makeDirectStrategy,
@@ -41,8 +46,6 @@ import { type BudgetRecord } from '../core/download/daily-budget'
 import { type SkipReason } from '../core/download/admission'
 import { bindFetch } from '../core/fetch'
 import {
-  emptyMetrics,
-  extendTotal,
   recordOutcome,
   recordRetry,
   recordSample,
@@ -50,6 +53,7 @@ import {
   snapshot,
   type MetricsState,
 } from '../core/download/metrics'
+import { decideQueueStart } from '../core/download/queue-start'
 import type { PendingInterruptRetry } from '../core/download/interrupt-retry'
 import { syndicationUrl } from '../core/adapters/x/syndication'
 import {
@@ -77,7 +81,6 @@ import {
 import { decodeStore, emptyStore } from '../core/history/store'
 import { planHistory, type HistoryAction } from '../core/history/wiring'
 import { type Scope } from '../core/clear/ledger'
-import { planClearSeed } from '../core/clear/seed'
 import type { ClearScope, SweepEnqueueResponse } from '../core/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
@@ -86,8 +89,9 @@ import { makeCloudUpload } from '../background/cloud-upload'
 import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
-import { makeClearCoordinator } from '../background/clear-coordinator'
-import { makeRetryPlanApplier } from '../background/retry-plan'
+import { makeClearSession } from '../background/clear-session'
+import { applyQueueStartEffects } from '../background/queue-start-applier'
+import { makeRetryQueue } from '../core/download/retry-queue'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
 import {
@@ -150,17 +154,10 @@ const requestMetaById = new Map<string, RequestMeta>()
 const requestMetaItem = storage.defineItem<unknown>('session:requestMeta', {
   fallback: emptyRequestMetaStore,
 })
-const interruptAttemptById = new Map<string, number>()
-const pendingRetries = new Map<string, PendingInterruptRetry>()
-
 const retryQueueItem = storage.defineItem<ReadonlyArray<PendingInterruptRetry>>(
   'session:interruptRetries',
   { fallback: [] },
 )
-
-const syncPendingRetries = (): void => {
-  void retryQueueItem.setValue([...pendingRetries.values()])
-}
 
 // Durable in-flight browser-transfer ledger (Transfer Tracker). The in-memory
 // `requestIdByDownloadId` correlation dies with the SW (ADR-0002); this survives
@@ -185,22 +182,14 @@ const resolveRetryUrl = async (meta: RequestMeta): Promise<string> => {
   return fresh ?? meta.url
 }
 
-// `clearInterruptRetryState` needs `applier.cancel`, but `applier` isn't
-// constructed until after `failBrowserDownload`/`traceBackground`/`persistSnapshot`
-// are all declared (it takes them by direct reference, not a deferred closure, so
-// unlike `fire` it CANNOT be a forward reference — TDZ). `applier` itself is built
-// further down, right before `fireInterruptRetry`; `clearInterruptRetryState` is
-// only ever CALLED at runtime (never at module-eval time), so referencing
-// `applier` here before its textual declaration is safe for the same reason `fire`
-// is safe below.
+// `retryQueue` is built further down (its deps aren't declared yet — TDZ), but
+// `clearInterruptRetryState` is only ever CALLED at runtime, never at
+// module-eval time, so the forward reference is safe.
 const clearInterruptRetryState = (id: string): void => {
-  applier.cancel(id)
-  pendingRetries.delete(id)
-  interruptAttemptById.delete(id)
+  retryQueue.forget(id)
   // Persist gated on the delete: the admit loop calls this per request before
   // seeding meta, and an unconditional write there would be N+1 identical snapshots.
   if (requestMetaById.delete(id)) persistRequestMeta()
-  syncPendingRetries()
 }
 
 const withTraceEvents = (snap: MetricsSnapshot): MetricsSnapshot =>
@@ -320,36 +309,14 @@ const recordHistory = (settings: Settings, actions: ReadonlyArray<HistoryAction>
   })
 }
 
-// The tab a tweet's download came from, so its clear is sent THERE first (the
-// originating tab where the user is looking) — a background Bookmarks/Likes tab
-// can't win the broadcast and un-bookmark a post meant only for its feed's clear.
-// In-memory; keyed by tweetId; lost on SW recycle (the clear simply falls back to
-// the broadcast then). Set at seed time, read when the clear fires. Entries are
-// never individually retired (the clear path has no completion hook back here),
-// so the map is capped — oldest-inserted evicted first; an evicted tweet's clear
-// degrades to the broadcast, same as after a recycle.
-const CLEAR_ORIGIN_TAB_CAP = 512
-const clearOriginTab = new Map<string, number>()
-const rememberClearOrigin = (tweetId: string, tabId: number): void => {
-  clearOriginTab.delete(tweetId) // re-insert to refresh its eviction position
-  clearOriginTab.set(tweetId, tabId)
-  for (const oldest of clearOriginTab.keys()) {
-    if (clearOriginTab.size <= CLEAR_ORIGIN_TAB_CAP) break
-    clearOriginTab.delete(oldest)
-  }
-}
-
-// Clear-on-complete coordinator (worklist un-bookmark/un-like). Owns the in-memory
-// clear ledger + its serialized chain AND the durable sweep worklist; routes verified
-// flips through the tab broadcaster's sendClearToTabs seam. (Findings [00]/[07]/[36].)
-const clearCoordinator = makeClearCoordinator({
+// One worker-owned Clear lifecycle: planned seed, settle timers, origin tab,
+// ledger, durable sweep worklist, and tab/Drain dispatch.
+const clearSession = makeClearSession({
   queueError,
   getSettings,
   trace: traceBackground,
-  // Prefer the originating tab for this tweet's clear (falls back to broadcast).
-  // `allLists` (the "Clear from every list" setting) rides into the request.
-  sendClearToTabs: (tweetId, scopes, allLists) =>
-    sendClearToTabs(tweetId, scopes, clearOriginTab.get(tweetId), allLists),
+  dispatchClear: (tweetId, scopes, allLists, preferTabId) =>
+    sendClearToTabs(tweetId, scopes, preferTabId, allLists),
   // Settle Port: the real `chrome.downloads.search`. Returns the row (or undefined
   // when it's gone), swallowing a teardown-time throw to undefined — `decideSettle`
   // fails that closed, so the irreversible Clear never fires on an unconfirmed byte.
@@ -359,7 +326,7 @@ const clearCoordinator = makeClearCoordinator({
       .then((rows) => rows[0])
       .catch(() => undefined),
 })
-const { recordClearComplete, recordClearFailure } = clearCoordinator
+const { recordComplete: recordClearComplete, recordFailure: recordClearFailure } = clearSession
 
 // Cross-device "Saved" status (B+C): the local-first SavedIndex answers overlay
 // sweeps. Seeded from the durable history (this device's completed downloads), fed
@@ -548,16 +515,18 @@ const failBrowserDownload = (id: string, downloadId: number, now: number): Promi
 const completeBrowserDownload = (id: string, downloadId: number, now: number): Promise<void> =>
   settleBrowserDownload(id, downloadId, 'complete', now)
 
-// Retry Scheduler shell (CONTEXT.md's Clock Port entry): the applier owns
-// `attempt`-compute + `planInterruptRetry` decide + the timer/state/trace/persist
-// bookkeeping that used to be duplicated at three call sites below. `fire` is a
-// forward reference to `fireInterruptRetry` (declared next) — legal JS: the
-// closure only resolves it when actually CALLED, long after every module-level
-// `const` here has run at SW startup.
-const applier = makeRetryPlanApplier({
-  interruptAttemptById,
-  pendingRetries,
-  syncPendingRetries,
+// Retry Scheduler shell (CONTEXT.md's Clock Port entry): the queue owns the
+// whole interrupt-retry state machine — attempt counter, queue row, live timer,
+// and the durable `session:interruptRetries` mirror move together behind its
+// interface (core/download/retry-queue). `fire` is a forward reference to
+// `fireInterruptRetry` (declared next) — legal JS: the closure only resolves it
+// when actually CALLED, long after every module-level `const` here has run at
+// SW startup.
+const retryQueue = makeRetryQueue({
+  store: {
+    get: () => retryQueueItem.getValue(),
+    set: (rows) => void retryQueueItem.setValue([...rows]),
+  },
   recordRetry: (id) => {
     if (live) live = recordRetry(live, id)
   },
@@ -602,10 +571,10 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     // Remove from the retry queue BEFORE adding to the transfers ledger (mirrors
     // scheduleInterruptRetry's safe remove-then-add): a crash in this window then
     // leaves the id in NEITHER ledger — a lost retry, never a double-drive where
-    // both rehydrate and reconcile fire the same id on the next boot.
-    applier.cancel(id)
-    pendingRetries.delete(id)
-    syncPendingRetries()
+    // both rehydrate and reconcile fire the same id on the next boot. `drop`
+    // deliberately KEEPS the attempt counter (it only resets at settle, via
+    // `forget`) — see the queue's own contract.
+    retryQueue.drop(id)
     transfersState = trackTransfer(transfersState, {
       id,
       downloadId,
@@ -625,7 +594,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     // `failBrowserDownload(id, -1, ...)` sentinel usage elsewhere in this file.
     // This path never had a transfer-ledger entry, so unlike scheduleInterruptRetry
     // there is nothing to settle on the scheduled branch (decision 4 in the handoff).
-    await applier.apply({
+    await retryQueue.schedule({
       id,
       downloadId: -1,
       url,
@@ -649,18 +618,18 @@ const scheduleInterruptRetry = (
     void failBrowserDownload(id, downloadId, now)
     return
   }
-  // The applier now computes `attempt` + decides via planInterruptRetry
-  // internally, so the scheduled-vs-exhausted branch can't be pre-checked here
-  // without duplicating that decision (out of scope). Instead, the ledger-settle
+  // The queue computes `attempt` + decides via planInterruptRetry internally,
+  // so the scheduled-vs-exhausted branch can't be pre-checked here without
+  // duplicating that decision (out of scope). Instead, the ledger-settle
   // — which ONLY ever ran on the schedule branch — is passed in as `onScheduled`,
-  // a synchronous hook `apply()` invokes the instant it decides to schedule,
+  // a synchronous hook `schedule()` invokes the instant it decides to schedule,
   // before its own state mutation and internal `await persistSnapshot`. This
   // preserves the original fully-synchronous, atomic ordering (ledger-settle
   // still runs in the same tick as the decision, ahead of any await) rather than
   // deferring it into a post-await `.then()`. `scheduleInterruptRetry` itself
   // stays synchronous/non-blocking — its `onDownloadChanged` caller does not and
   // should not await it.
-  void applier.apply({
+  void retryQueue.schedule({
     id,
     downloadId,
     url: meta.url,
@@ -679,18 +648,17 @@ const scheduleInterruptRetry = (
 }
 
 const rehydrateInterruptRetries = async (): Promise<void> => {
-  const queued = await retryQueueItem.getValue()
-  const now = Date.now()
+  // The queue restores its own attempt/row/timer state and returns the rows so
+  // the broader-than-retry side state (request meta, in-flight dedup) can be
+  // seeded here, where it lives.
+  const queued = await retryQueue.rehydrate(Date.now())
   for (const item of queued) {
     requestMetaById.set(item.id, {
       url: item.url,
       filename: item.filename,
       ...(item.item ? { item: item.item } : {}),
     })
-    interruptAttemptById.set(item.id, item.attempt)
-    pendingRetries.set(item.id, item)
     inFlight.add(item.id)
-    applier.rehydrateTimer(item, now)
   }
   if (queued.length > 0) persistRequestMeta()
 }
@@ -719,8 +687,8 @@ const reconcileTransfersOnBoot = async (): Promise<void> => {
   const persisted = await transfersItem.getValue()
   transfersState = persisted
   // The dual-ledger tie-break is now a typed input: rehydrate ran first, so
-  // `pendingRetries` is authoritative for the ids it owns and reconcile defers them.
-  const retryOwnedIds = new Set(pendingRetries.keys())
+  // the retry queue is authoritative for the ids it owns and reconcile defers them.
+  const retryOwnedIds = retryQueue.ownedIds()
   if (persisted.transfers.length === 0) {
     // No transfers to reconcile, but the sibling meta record still needs its boot
     // GC — orphaned entries must die on ANY boot, not only one with in-flight
@@ -817,8 +785,7 @@ const reconcileStuckDownloads = async (): Promise<void> => {
   const stuck = [...requestIdByDownloadId.entries()].filter(
     ([, id]) =>
       // The durable interrupt-retry queue owns its ids — never double-drive them here.
-      !pendingRetries.has(id) &&
-      now - (requestStartedAt.get(id) ?? now) >= STUCK_RECONCILE_AFTER_MS,
+      !retryQueue.has(id) && now - (requestStartedAt.get(id) ?? now) >= STUCK_RECONCILE_AFTER_MS,
   )
   // oxlint-disable no-await-in-loop -- few items; outcome side-effects are serial
   for (const [downloadId, id] of stuck) {
@@ -926,109 +893,44 @@ const handleDownload = (
     }
     persistRequestMeta()
 
-    // Seed monitoring (B). If a prior batch is still in flight, EXTEND its
-    // accumulator (and keep the downloadId map) so the monitor reflects both;
-    // only start fresh once everything has settled (D1).
+    // One pure start decision owns monitoring, queued mirrors/uploads, and B's
+    // Clear seed verdict. The shell applies those effects before queue hand-off.
     const startedAt = Date.now()
     for (const r of requests) requestStartedAt.set(r.id, startedAt)
     traceBackground('queue-started', {
       elapsedMs: startedAt - requestReceivedAt,
       detail: `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
     })
-    if (live === null || snapshot(live, startedAt).active === 0) {
-      requestIdByDownloadId.clear()
-      live = emptyMetrics({
-        total: requests.length,
-        concurrencyCap: settings.downloadConcurrency,
-        startedAt,
-      })
-    } else {
-      live = extendTotal(live, requests.length, settings.downloadConcurrency)
-    }
-    yield* Effect.promise(() => persistSnapshot(startedAt))
-
-    // Mirror queued transitions (Cloud Sync). Sidecar data: requests have no
-    // MediaItem (their id is `<media-id>.json`) and are never mirrored.
-    recordSync(
-      settings,
-      requests.flatMap((r) => {
-        const item = mediaById.get(r.id)
-        return item ? [queuedEvent(item, settings.cloudDeviceId, startedAt)] : []
-      }),
-    )
-    // Same derivation, local store: a queued Download Record per Media Item
-    // (sidecar `.json` requests have no MediaItem and are skipped, like the mirror).
-    recordHistory(
-      settings,
-      requests.flatMap((r): HistoryAction[] => {
-        const item = mediaById.get(r.id)
-        return item ? [{ kind: 'queued', item, filename: r.filename, at: startedAt }] : []
-      }),
-    )
-
-    // Cloud upload (ADR-0013): enqueue the real bytes to each connected provider,
-    // in parallel with the local download. Same derivation — sidecar `.json`
-    // requests have no MediaItem and are skipped, like the mirror/history.
-    recordCloudUploads(
-      settings,
-      requests.flatMap((r) => {
-        const item = mediaById.get(r.id)
-        // UploadCandidate.item keeps its own `handle`-named field (cloud-upload.ts
-        // is untouched by the multi-platform rename) — map the generalized
-        // MediaItem.author onto it explicitly.
-        return item
-          ? [
-              {
-                item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
-                filename: r.filename,
-              },
-            ]
-          : []
-      }),
-    )
-
-    // Clear-on-complete ledger: one entry per tweet (expected = its media request
-    // ids). Membership is filtered in-page at clear time. Seeded only when enabled,
-    // before downloads fire (spec §4.1). The composition (scope selection, skip
-    // reasons, quote-card filtering, clearExpect widening) is pure — see
-    // core/clear/seed.ts for the sweep-vs-hook scope-widening asymmetry it pins.
-    const clearVerdict = planClearSeed({
+    const startFx = decideQueueStart({
+      metrics: live,
       requests,
       mediaById,
       settings,
+      startedAt,
       ...(sweep ? { sweep } : {}),
       ...(clearExpect ? { clearExpect } : {}),
+      ...(originTabId === undefined ? {} : { originTabId }),
     })
-    if (clearVerdict.decision === 'skip') {
-      // Every skip logs WHY (clear-skip) so a "nothing happened" is never silent.
-      switch (clearVerdict.reason) {
-        case 'aria2':
-          traceBackground('clear-skip', {
-            detail: 'aria2 hand-offs are not byte-verifiable; excluded',
-          })
-          break
-        case 'clear-off':
-          traceBackground('clear-skip', { detail: 'Clear after download is OFF — download only' })
-          break
-        case 'no-scopes':
-          traceBackground('clear-skip', { detail: 'both Un-bookmark and Un-like are OFF' })
-          break
-      }
-    } else {
-      if (clearVerdict.unclearableCount > 0)
-        traceBackground('clear-skip', {
-          detail: `${clearVerdict.unclearableCount} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
-        })
-      // Remember which tab this download came from, so the eventual clear is sent
-      // there first (the feed the user is actually looking at).
-      if (originTabId !== undefined)
-        for (const tweetId of clearVerdict.byTweet.keys()) rememberClearOrigin(tweetId, originTabId)
-      clearCoordinator.seedClearLedger(
-        clearVerdict.byTweet,
-        clearVerdict.scopes,
-        clearVerdict.origin,
-      )
-    }
+    live = yield* Effect.promise(() =>
+      applyQueueStartEffects(startFx, startedAt, {
+        resetCorrelation: () => requestIdByDownloadId.clear(),
+        setMetrics: (metrics) => {
+          live = metrics
+        },
+        persistSnapshot,
+        recordSync: (events) => recordSync(settings, events),
+        recordHistory: (actions) => recordHistory(settings, actions),
+        recordUploads: (uploadItems) =>
+          recordCloudUploads(
+            settings,
+            uploadItems.map(({ item, filename }) => ({
+              item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
+              filename,
+            })),
+          ),
+        seedClear: clearSession.seedLedger,
+      }),
+    )
 
     const res = yield* queue.enqueue(requests)
 
@@ -1128,7 +1030,7 @@ const handleSweepEnqueue = async (
   scope: ClearScope,
   posts: ReadonlyArray<{ readonly tweetId: string; readonly items: ReadonlyArray<MediaItem> }>,
 ): Promise<SweepEnqueueResponse> => {
-  const { queuedPosts, skipped } = await clearCoordinator.enqueueSweepWorklist(scope, posts)
+  const { queuedPosts, skipped } = await clearSession.enqueueSweep(scope, posts)
   // Fire into the queue with the sweep's explicit list scope — handleDownload
   // seeds the clear ledger with origin 'sweep' (only this scope), independent of
   // the global clearOnSave/per-scope toggles, which the sweep never mutates.
@@ -1199,19 +1101,12 @@ const clearDownloadMonitor = async (): Promise<unknown> => {
   requestStartedAt.clear()
   requestMetaById.clear()
   persistRequestMeta()
-  interruptAttemptById.clear()
-  // Iterate the keys BEFORE clearing pendingRetries, so every pending id's timer
-  // gets cancelled (applier.cancel only wraps the timer-clear, not the map delete).
-  // Relies on the invariant that every pendingRetries entry has a live timer in the
-  // applier's private map (true today — apply() always sets both together); if that
-  // ever drifts, cancel()'s no-op-on-missing-handle behavior means this would
-  // silently under-cancel rather than throw.
-  for (const id of pendingRetries.keys()) applier.cancel(id)
-  pendingRetries.clear()
-  void retryQueueItem.setValue([])
+  // Timer/row/attempt/mirror teardown is atomic inside the queue — no
+  // cross-module iterate-then-clear invariant to keep in sync here anymore.
+  retryQueue.cancelAll()
   transfersState = emptyTracker
   persistTransfers()
-  clearCoordinator.resetLedger() // the manual reset bounds the in-memory clear ledger too
+  await clearSession.reset()
   traceEvents = []
   live = null
   await metricsItem.setValue(null)
@@ -1346,7 +1241,7 @@ export default defineBackground(() => {
       `[XMD] background booted · clearOnSave=${s.clearOnSave} unbookmark=${s.autoUnbookmarkOnSave} unlike=${s.autoUnlikeOnSave} strategy=${s.downloadStrategy}`,
     ),
   )
-  // Rehydrate the retry queue FIRST so `pendingRetries` is populated before the
+  // Rehydrate the retry queue FIRST so its owned ids are populated before the
   // reconcile decides ownership — an id the retry queue owns must not also be
   // driven to a terminal by reconcile (the dual-ledger tie-break).
   void (async () => {
@@ -1372,27 +1267,25 @@ export default defineBackground(() => {
     // real per-user auth path is the options page (each user pastes their own
     // secret), which this only short-circuits for a single developer's dev build.
     if (import.meta.env.DEV) {
-      const envUrl = import.meta.env.WXT_CONVEX_URL as string | undefined
-      const envSecret = import.meta.env.WXT_CONVEX_SECRET as string | undefined
-      if (envUrl && envSecret && s.convexUrl === '' && s.convexSyncSecret === '') {
-        s = await setSettings({
-          convexUrl: envUrl,
-          convexSyncSecret: envSecret,
-          cloudSyncEnabled: true,
-          ...(s.cloudDeviceId === '' ? { cloudDeviceId: crypto.randomUUID() } : {}),
-        })
-      }
+      const p = planConvexEnvSeed(
+        s,
+        {
+          url: import.meta.env.WXT_CONVEX_URL as string | undefined,
+          secret: import.meta.env.WXT_CONVEX_SECRET as string | undefined,
+        },
+        () => crypto.randomUUID(),
+      )
+      if (p) s = await setSettings(p)
     }
     if (isSyncConfigured(s)) outboxQueue.push(() => drainOutbox(s))
     // Dev convenience (ADR-0013): a gitignored `.env` may pre-seed the Cloud
     // Upload OAuth client IDs (public, not secrets). Gated on an empty field so a
     // user edit is never overridden; a normal build has neither var.
-    const envGdriveClientId = import.meta.env.WXT_GDRIVE_CLIENT_ID as string | undefined
-    const envDropboxAppKey = import.meta.env.WXT_DROPBOX_APP_KEY as string | undefined
-    if (envGdriveClientId && s.gdriveClientId === '')
-      s = await setSettings({ gdriveClientId: envGdriveClientId })
-    if (envDropboxAppKey && s.dropboxClientId === '')
-      s = await setSettings({ dropboxClientId: envDropboxAppKey })
+    const cloudPatch = planCloudEnvSeed(s, {
+      gdriveClientId: import.meta.env.WXT_GDRIVE_CLIENT_ID as string | undefined,
+      dropboxAppKey: import.meta.env.WXT_DROPBOX_APP_KEY as string | undefined,
+    })
+    if (cloudPatch) s = await setSettings(cloudPatch)
     // Resume any cloud byte-uploads left pending from a previous SW life, and
     // compact a historically-grown ledger once on boot (ADR-0013).
     if (s.cloudUploadEnabled) cloudUpload.resumeOnBoot()
@@ -1408,6 +1301,12 @@ export default defineBackground(() => {
   // failed jobs retry autonomously without waiting for the next download.
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === cloudUpload.uploadAlarm) uploadQueue.push(() => drainUploadJobs())
+    if (alarm.name === syncOutbox.syncAlarm) {
+      void (async () => {
+        const settings = await getSettings()
+        if (isSyncConfigured(settings)) outboxQueue.push(() => drainOutbox(settings))
+      })().catch(queueError('syncAlarm'))
+    }
   })
   browser.downloads.onChanged.addListener((delta) => void onDownloadChanged(delta))
 

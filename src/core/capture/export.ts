@@ -168,37 +168,3 @@ export function toMarkdown(tree: ConversationTree, all: ReadonlyArray<TweetRecor
   for (const root of tree.roots) renderNode(root, 0, byId, out)
   return out.join('\n')
 }
-
-/** Flat, spreadsheet-friendly projection (Sheets / Notion / CSV). One row per
- *  tweet with scalar columns; arrays are space-joined. */
-export interface Row {
-  readonly id: string
-  readonly url: string
-  readonly conversationId: string
-  readonly kind: string
-  readonly handle: string
-  readonly name: string
-  readonly createdAt: string
-  readonly text: string
-  readonly links: string
-  readonly media: string
-}
-
-export function toRows(records: ReadonlyArray<TweetRecord>): Row[] {
-  const byId = indexById(records)
-  return records.map((r) => {
-    const e = toExportTweet(r, byId)
-    return {
-      id: e.id,
-      url: e.url,
-      conversationId: e.conversationId,
-      kind: e.kind,
-      handle: e.author.handle,
-      name: e.author.name ?? '',
-      createdAt: e.createdAt ?? '',
-      text: e.text,
-      links: e.links.map((l) => l.url).join(' '),
-      media: e.media.map((m) => m.url).join(' '),
-    }
-  })
-}

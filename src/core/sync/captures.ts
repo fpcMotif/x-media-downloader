@@ -3,6 +3,8 @@ import type { TweetRecord } from '../capture/record'
 
 /** Beyond this many queued capture events the oldest are dropped (prolonged offline). */
 export const DEFAULT_CAP = 2000
+/** Keep one capture mirror mutation small and bounded. */
+export const DEFAULT_BATCH = 64
 
 const CaptureLinkSchema = Schema.Struct({
   expandedUrl: Schema.String,
@@ -82,8 +84,12 @@ export function enqueue(
 }
 
 /** Events drainable at `now` (queued at/before now). */
-export function readyJobs(ledger: CaptureLedger, now: number): ReadonlyArray<SyncCaptureEvent> {
-  return ledger.filter((e) => e.at <= now)
+export function readyJobs(
+  ledger: CaptureLedger,
+  now: number,
+  max: number = DEFAULT_BATCH,
+): ReadonlyArray<SyncCaptureEvent> {
+  return ledger.filter((e) => e.at <= now).slice(0, max)
 }
 
 /** Drop a drained event by `eventId`; same reference when it is absent or not yet due. */

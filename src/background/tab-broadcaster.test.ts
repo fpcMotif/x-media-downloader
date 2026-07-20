@@ -4,7 +4,7 @@ import { makeTabBroadcaster, type TabsPort } from './tab-broadcaster'
 import { allAdapterHostMatch } from '../core/adapters/registry'
 
 // The tab-broadcaster SHELL through an injected TabsPort. Pins the irreversible-clear
-// targeting guarantee that clear-coordinator.test.ts mocks away: the origin tab is
+// targeting guarantee that clear-session.test.ts mocks away: the origin tab is
 // tried FIRST and the loop stops at the first MOUNTED tab, so a background list tab can
 // never win and un-bookmark a post meant only for its own feed's clear.
 
@@ -18,45 +18,57 @@ function fakeTabs(ids: number[], responses: Record<number, unknown> = {}) {
     queryXTabs: vi.fn<TabsPort['queryXTabs']>(async () => ids),
     sendTabMessage: vi.fn<TabsPort['sendTabMessage']>(async (tabId, message) => {
       sent.push({ tabId, message })
-      const r = responses[tabId]
+      const configured = responses[tabId]
+      const r =
+        typeof configured === 'function'
+          ? (configured as (message: unknown) => unknown)(message)
+          : configured
       if (r instanceof Error) throw r
       return r
     }),
   }
 }
 
-/** A mounted tab's ClearTweetResponse (only `.results` is read by the shell). */
+/** A mounted tab's ClearTweetResponse. */
 const clearResp = (...scopes: ReadonlyArray<'bookmark' | 'like' | 'notInterested'>) => ({
+  mounted: true,
+  drainEligible: true,
   results: scopes.map((scope) => ({ scope, ok: true })),
+})
+
+const unmounted = (drainEligible: boolean) => ({
+  mounted: false,
+  drainEligible,
+  results: [],
 })
 
 describe('sendClearToTabs — clear targeting', () => {
   it('messages the origin tab first and short-circuits at the first mounted tab', async () => {
     const tabs = fakeTabs([1, 2, 3], { 2: clearResp('bookmark') })
     const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'], 2)
-    expect(res).toEqual({ mounted: true, results: [{ scope: 'bookmark', ok: true }] })
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
     expect(tabs.sendTabMessage).toHaveBeenCalledTimes(1) // stopped after the origin tab
     expect(tabs.sent[0]!.tabId).toBe(2) // origin tab tried FIRST, before 1 and 3
   })
 
   it('skips a tab without the article and stops at the first that has it', async () => {
-    const tabs = fakeTabs([1, 2, 3], { 1: { results: [] }, 2: clearResp('like') })
+    const tabs = fakeTabs([1, 2, 3], { 1: unmounted(false), 2: clearResp('like') })
     const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['like'])
-    expect(res.mounted).toBe(true)
+    expect(res).toEqual([{ scope: 'like', ok: true }])
     expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2]) // tab 3 never reached
   })
 
   it('skips a dead tab (thrown sendMessage) and tries the next', async () => {
     const tabs = fakeTabs([1, 2], { 1: new Error('no content script'), 2: clearResp('bookmark') })
     const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'])
-    expect(res.mounted).toBe(true)
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
     expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2])
   })
 
-  it('returns mounted:false (defer) when no tab has the article', async () => {
-    const tabs = fakeTabs([1, 2], { 1: { results: [] }, 2: { results: [] } })
+  it('fails the claim when no tab has the article or can Drain', async () => {
+    const tabs = fakeTabs([1, 2], { 1: unmounted(false), 2: unmounted(false) })
     const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'])
-    expect(res).toEqual({ mounted: false, results: [] })
+    expect(res).toEqual([{ scope: 'bookmark', ok: false }])
     expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2]) // every tab tried
   })
 
@@ -64,10 +76,72 @@ describe('sendClearToTabs — clear targeting', () => {
     // The documented clear-loss case: the origin tab is still OPEN but DOM
     // virtualization scrolled the post out of its view (empty results), so the clear
     // must reach a later tab that still has it — never give up at the origin tab.
-    const tabs = fakeTabs([1, 2], { 1: { results: [] }, 2: clearResp('bookmark') })
+    const tabs = fakeTabs([1, 2], { 1: unmounted(true), 2: clearResp('bookmark') })
     const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'], 1)
-    expect(res.mounted).toBe(true)
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(
+      tabs.sent.every((sent) => (sent.message as { _tag: string })._tag !== 'ClearDrainRequest'),
+    ).toBe(true)
     expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2]) // origin (1) first, then fall through to 2
+  })
+
+  it('falls through a wrong-list mounted noop to the matching list tab', async () => {
+    const tabs = fakeTabs([1, 2], {
+      1: {
+        mounted: true,
+        drainEligible: false,
+        results: [{ scope: 'bookmark', ok: true, noop: true }],
+      },
+      2: clearResp('bookmark'),
+    })
+
+    const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'])
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(tabs.sent.map((sent) => sent.tabId)).toEqual([1, 2])
+  })
+
+  it('tries every immediate tab before authorizing one eligible Drain owner', async () => {
+    const tabs = fakeTabs([1, 2], {
+      1: (message: unknown) =>
+        (message as { _tag: string })._tag === 'ClearDrainRequest'
+          ? { results: [{ scope: 'bookmark', ok: true }] }
+          : unmounted(true),
+      2: unmounted(false),
+    })
+
+    const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'])
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(tabs.sent).toEqual([
+      {
+        tabId: 1,
+        message: {
+          _tag: 'ClearTweetRequest',
+          tweetId: 't1',
+          scopes: ['bookmark'],
+          allLists: undefined,
+        },
+      },
+      {
+        tabId: 2,
+        message: {
+          _tag: 'ClearTweetRequest',
+          tweetId: 't1',
+          scopes: ['bookmark'],
+          allLists: undefined,
+        },
+      },
+      {
+        tabId: 1,
+        message: {
+          _tag: 'ClearDrainRequest',
+          tweetId: 't1',
+          scopes: ['bookmark'],
+          allLists: undefined,
+        },
+      },
+    ])
   })
 
   it('falls back to natural order when the origin tab is gone', async () => {

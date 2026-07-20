@@ -611,11 +611,7 @@ describe('videoTweetsNeedingRecovery', () => {
 
   it('skips attempted tweet ids before any poster work', () => {
     expect(
-      videoTweetsNeedingRecovery(
-        root(PLAYER(POSTER)),
-        new Set(),
-        new Set(['2068286123399676218']),
-      ),
+      videoTweetsNeedingRecovery(root(PLAYER(POSTER)), new Set(), new Set(['2068286123399676218'])),
     ).toEqual([])
   })
 

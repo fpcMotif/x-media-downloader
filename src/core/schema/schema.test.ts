@@ -13,6 +13,7 @@ import {
   TabMessage,
   RefreshMediaUrlRequest,
   ClearTweetRequest,
+  ClearDrainRequest,
   ClearVisibleRequest,
   ClearWholeListRequest,
   DrainPageRequest,
@@ -267,6 +268,18 @@ describe('TabMessage schema', () => {
     expect(req.tweetId).toBe('t99')
     expect(req.scopes).toEqual(['bookmark', 'like'])
     expect(req.allLists).toBe(true)
+  })
+
+  it('decodes the worker-authorized ClearDrainRequest', () => {
+    const req = Schema.decodeUnknownSync(TabMessage)({
+      _tag: 'ClearDrainRequest',
+      tweetId: 't99',
+      scopes: ['bookmark'],
+      allLists: false,
+    })
+
+    expect(req._tag).toBe('ClearDrainRequest')
+    expect(Schema.decodeUnknownSync(ClearDrainRequest)(req).tweetId).toBe('t99')
   })
 
   it('rejects a malformed / unknown-tag payload', () => {

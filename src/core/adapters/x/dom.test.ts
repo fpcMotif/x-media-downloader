@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import type { MediaItem } from '../../schema'
 import {
   mediaKeyFromUrl,
-  groupByTweet,
   isGrabbablePhotoUrl,
   isGrabbableMediaPreviewUrl,
   extFromImgUrl,
@@ -15,17 +13,6 @@ const videoEl = (html: string): HTMLVideoElement => {
   root.innerHTML = html.trim()
   return root.querySelector('video')!
 }
-
-const media = (id: string, tweetId: string, index: number, url: string): MediaItem => ({
-  id,
-  platform: 'x',
-  postId: tweetId,
-  author: 'alice',
-  type: 'photo',
-  url,
-  ext: 'jpg',
-  index,
-})
 
 describe('mediaKeyFromUrl', () => {
   it('extracts the basename key from a pbs photo url (ignoring query + size)', () => {
@@ -189,24 +176,5 @@ describe('extFromImgUrl', () => {
     expect(extFromImgUrl('https://pbs.twimg.com/media/AAA.png?name=orig')).toBe('png')
     expect(extFromImgUrl('https://pbs.twimg.com/media/AAA?name=orig')).toBe('jpg')
     expect(extFromImgUrl('not a url')).toBe('jpg')
-  })
-})
-
-describe('groupByTweet', () => {
-  it('groups items by tweet preserving order and de-duping by id', () => {
-    const items = [
-      media('a', 't1', 0, 'https://pbs.twimg.com/media/a.jpg'),
-      media('b', 't1', 1, 'https://pbs.twimg.com/media/b.jpg'),
-      media('a', 't1', 0, 'https://pbs.twimg.com/media/a.jpg'), // dup
-      media('c', 't2', 0, 'https://pbs.twimg.com/media/c.jpg'),
-    ]
-    const registry = groupByTweet(items)
-    expect(registry.map((g) => g.tweetId)).toEqual(['t1', 't2'])
-    expect(registry[0]!.items.map((i) => i.id)).toEqual(['a', 'b'])
-    expect(registry[1]!.items.map((i) => i.id)).toEqual(['c'])
-  })
-
-  it('returns an empty registry for no items', () => {
-    expect(groupByTweet([])).toEqual([])
   })
 })

@@ -99,9 +99,7 @@ describe('launcher aria name and status copy', () => {
 
   it('offers a truthful retry on failure', () => {
     expect(launcherAriaLabel('failed', 3)).toBe('Retry all detected media (3)')
-    expect(launcherStatusMessage('failed', 3)).toBe(
-      'Some media failed to save. Retry available.',
-    )
+    expect(launcherStatusMessage('failed', 3)).toBe('Some media failed to save. Retry available.')
   })
 
   it('singularizes one media item', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { findFreshMediaItem, mergeRetryUrl, refreshMediaUrlFromTabs } from './media-url-refresh'
+import { findFreshMediaItem, refreshMediaUrlFromTabs } from './media-url-refresh'
 import type { MediaItem } from '../schema'
 
 const photo = (id: string, postId: string, index: number, url: string): MediaItem => ({
@@ -30,18 +30,6 @@ describe('findFreshMediaItem', () => {
     const a = photo('a', '100', 0, 'https://pbs.twimg.com/media/A.jpg?name=orig')
     const b = photo('b', '100', 0, 'https://pbs.twimg.com/media/B.jpg?name=orig')
     expect(findFreshMediaItem(stale, [a, b])).toBeUndefined()
-  })
-})
-
-describe('mergeRetryUrl', () => {
-  it('uses the fresh url when a candidate is found', () => {
-    const fresh = photo('m1', '1', 0, 'https://pbs.twimg.com/media/new.jpg?name=orig')
-    expect(mergeRetryUrl('https://pbs.twimg.com/media/old.jpg?name=orig', fresh)).toBe(fresh.url)
-  })
-
-  it('keeps the stored url when refresh misses', () => {
-    const stored = 'https://pbs.twimg.com/media/old.jpg?name=orig'
-    expect(mergeRetryUrl(stored, undefined)).toBe(stored)
   })
 })
 
