@@ -163,6 +163,17 @@ describe('videoPosterUrl', () => {
     const video = root.querySelector('video')!
     expect(videoPosterUrl(video)).toBeNull()
   })
+
+  it('returns null for an isolated video element with no poster', () => {
+    const video = document.createElement('video')
+    expect(videoPosterUrl(video)).toBeNull()
+  })
+
+  it('returns null for an isolated video element with an invalid poster url', () => {
+    const video = document.createElement('video')
+    video.setAttribute('poster', 'not-a-valid-url')
+    expect(videoPosterUrl(video)).toBeNull()
+  })
 })
 
 describe('extFromImgUrl', () => {
