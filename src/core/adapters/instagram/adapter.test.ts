@@ -229,19 +229,12 @@ describe('instagramAdapter', () => {
     expect(instagramAdapter.canResolveHoverItem(avatarImg, 'unknown', new Map())).toBe(false)
     expect(instagramAdapter.resolveHoverItem(avatarImg, 'unknown', new Map(), '/')).toBeNull()
 
-    // Unknown key, grabbable <img> — DOM fallback resolves a placeholder photo item.
+    // Unknown key, grabbable <img> — DOM fallback routes through the shared
+    // resolver, tagged 'instagram'. Full placeholder shape is asserted in
+    // meta-shared/dom.test.ts; here we only prove the routing + platform tag.
     expect(instagramAdapter.canResolveHoverItem(img, key, new Map())).toBe(true)
     const resolved = instagramAdapter.resolveHoverItem(img, key, new Map(), '/p/CODE1/')
-    expect(resolved).toEqual({
-      id: key,
-      platform: 'instagram',
-      postId: key,
-      author: '',
-      type: 'photo',
-      url: img.src,
-      ext: 'jpg',
-      index: 0,
-    })
+    expect(resolved).toMatchObject({ id: key, platform: 'instagram', postId: key })
 
     // Tee already knows the key — tee item wins over the DOM fallback.
     const teed = {
@@ -270,15 +263,10 @@ describe('instagramAdapter', () => {
     Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
     const key = instagramAdapter.mediaKeyFromUrl(img.src)!
     expect(instagramAdapter.canResolveHoverItem(img, key, new Map())).toBe(true)
-    expect(instagramAdapter.resolveHoverItem(img, key, new Map(), '/')).toEqual({
+    expect(instagramAdapter.resolveHoverItem(img, key, new Map(), '/')).toMatchObject({
       id: key,
       platform: 'instagram',
       postId: key,
-      author: '',
-      type: 'photo',
-      url: img.src,
-      ext: 'jpg',
-      index: 0,
     })
   })
 

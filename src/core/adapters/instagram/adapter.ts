@@ -1,14 +1,12 @@
 import { detectMediaItems, postCodesInResponse } from '../meta-shared/detect'
 import {
-  mediaKeyFromMetaUrl,
   mediaKeyFromMetaCombinedUrl,
   isGrabbableMetaPhotoUrl,
-  extFromMetaImgUrl,
+  resolveMetaImageElement,
 } from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
 import { META_CDN_HOSTS } from '../meta-shared/cdn'
 import { postVideoKey, postVideoKeyIndexed } from '../detection-store'
-import type { MediaItem } from '../../schema'
 import type { PlatformAdapter } from '../types'
 
 /** Instagram's post-boundary selector — the confirmed stable ancestor
@@ -228,39 +226,6 @@ export function isTrackedInstagramResponseUrl(url: string): boolean {
 }
 
 /**
- * Resolve one hovered `<img>` into a placeholder photo MediaItem when the tee
- * hasn't already seen it. No post identity (pk/code/author) is DOM-derivable
- * here (unlike X's `/status/` anchors), so `postId` is set to the media key
- * itself — mirrors X's own `ctx?.tweetId ?? key` fallback shape.
- *
- * KNOWN TRANSIENT-WINDOW EFFECT: a carousel post hovered before the tee
- * resolves it forms N separate single-item groups (each DOM-only item's own
- * key as its `postId`) instead of one N-item group, for any future consumer
- * that groups items by `postId` (none exists on this hot path today).
- * Self-heals the moment the tee resolves the same post: both the DOM
- * fallback and the tee derive `id` from the identical basename-extraction
- * algorithm, so `DetectionStore`'s existing same-id-overwrites-by-id
- * semantics replace this placeholder with the tee's correctly-grouped item.
- * Until then, Quick Grab / single-item download works correctly — only
- * multi-item grouping is transiently wrong.
- */
-function resolveMetaImageElement(img: HTMLImageElement): MediaItem | null {
-  const src = img.currentSrc || img.src
-  const key = mediaKeyFromMetaUrl(src)
-  if (!key) return null
-  return {
-    id: key,
-    platform: 'instagram',
-    postId: key,
-    author: '',
-    type: 'photo',
-    url: src,
-    ext: extFromMetaImgUrl(src),
-    index: 0,
-  }
-}
-
-/**
  * Instagram's `PlatformAdapter`. Unlike X, Instagram has no repost/quote
  * concept (confirmed by research) — `detectFromResponse` never needs to
  * special-case an embedded original post the way Threads' `reposted_post`/
@@ -310,7 +275,9 @@ export const instagramAdapter: PlatformAdapter = {
   resolveHoverItem: (element, key, detected) => {
     const teed = detected.get(key)
     if (teed !== undefined) return teed
-    return element instanceof HTMLImageElement ? resolveMetaImageElement(element) : null
+    return element instanceof HTMLImageElement
+      ? resolveMetaImageElement(element, 'instagram')
+      : null
   },
   canResolveHoverItem: (element, key, detected) => {
     if (detected.has(key)) return true

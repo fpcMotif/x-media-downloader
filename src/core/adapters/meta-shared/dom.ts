@@ -5,6 +5,7 @@
  * logged-in Instagram + Threads), so one module covers both, same as
  * `detect.ts`/`media-node.ts`/`post-node.ts` already do for the network path.
  */
+import type { MediaItem } from '../../schema'
 
 /** True for any cdninstagram.com host — both Instagram's region-prefixed form
  *  (`scontent-lga3-2.cdninstagram.com`) and Threads' bare form
@@ -129,6 +130,43 @@ export function extFromMetaImgUrl(url: string): string {
     return dot >= 0 ? base.slice(dot + 1) : 'jpg'
   } catch {
     return 'jpg'
+  }
+}
+
+/**
+ * Resolve one hovered `<img>` into a placeholder photo MediaItem when the tee
+ * hasn't already seen it. No post identity (pk/code/author) is DOM-derivable
+ * here (unlike X's `/status/` anchors), so `postId` is set to the media key
+ * itself — mirrors X's own `ctx?.tweetId ?? key` fallback shape.
+ *
+ * KNOWN TRANSIENT-WINDOW EFFECT: a carousel post hovered before the tee
+ * resolves it forms N separate single-item groups (each DOM-only item's own
+ * key as its `postId`) instead of one N-item group, for any future consumer
+ * that groups items by `postId` (none exists on this hot path today — see
+ * `x/dom.ts`'s `groupByTweet`, currently unconsumed outside its own test).
+ * Self-heals the moment the tee resolves the same post: both the DOM
+ * fallback and the tee derive `id` from the identical basename-extraction
+ * algorithm, so `DetectionStore`'s existing same-id-overwrites-by-id
+ * semantics replace this placeholder with the tee's correctly-grouped item.
+ * Until then, Quick Grab / single-item download works correctly — only
+ * multi-item grouping is transiently wrong.
+ */
+export function resolveMetaImageElement(
+  img: HTMLImageElement,
+  platform: 'instagram' | 'threads',
+): MediaItem | null {
+  const src = img.currentSrc || img.src
+  const key = mediaKeyFromMetaUrl(src)
+  if (!key) return null
+  return {
+    id: key,
+    platform,
+    postId: key,
+    author: '',
+    type: 'photo',
+    url: src,
+    ext: extFromMetaImgUrl(src),
+    index: 0,
   }
 }
 
