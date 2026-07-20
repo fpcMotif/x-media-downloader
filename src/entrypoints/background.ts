@@ -79,6 +79,13 @@ import {
 import { decodeStore, emptyStore } from '../core/history/store'
 import { planHistory, type HistoryAction } from '../core/history/wiring'
 import { type Scope } from '../core/clear/ledger'
+import {
+  isReleaseDiagnosticsEvent,
+  appendReleaseDiagnostics,
+  decodeReleaseDiagnostics,
+  composeDiagnosticsExport,
+} from '../core/clear/diagnostics'
+import { runSerializedRmw } from '../core/durable-store'
 import type { ClearScope, SweepEnqueueResponse } from '../core/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
@@ -211,6 +218,21 @@ function recordTrace(event: DownloadTraceEntry): void {
     .filter(Boolean)
     .join(' ')
   console.info(`[XMD] ${event.source} ${label}`)
+  // Release diagnostics (Ticket #60): mirror the subset of trace events belonging
+  // to a Release run into the durable capped log, fire-and-forget — `recordTrace`
+  // runs on EVERY download/clear trace event (most aren't Release-related at all),
+  // so its synchronous callers must never be delayed by a storage round-trip.
+  if (isReleaseDiagnosticsEvent(event)) {
+    void runSerializedRmw(
+      releaseDiagnosticsQueue,
+      {
+        get: () => releaseDiagnosticsItem.getValue(),
+        set: (v) => releaseDiagnosticsItem.setValue(v),
+      },
+      decodeReleaseDiagnostics,
+      (log) => appendReleaseDiagnostics(log, event),
+    ).catch(queueError('release-diagnostics'))
+  }
 }
 
 const traceBackground = (
@@ -326,6 +348,17 @@ const clearSession = makeClearSession({
       .catch(() => undefined),
 })
 const { recordComplete: recordClearComplete, recordFailure: recordClearFailure } = clearSession
+
+// Ticket #60: durable, capped log of Release (Likes/Bookmarks clear) trace events
+// for post-hoc diagnostics. `local:` (not `session:`, unlike `metricsItem` above)
+// because a bad Release run is exactly the kind of thing a user notices AFTER
+// closing the browser — it must survive a full browser restart, not just an SW
+// recycle. Ring-capped by `appendReleaseDiagnostics` (core/clear/diagnostics.ts),
+// so it can't grow unbounded over the extension's lifetime.
+const releaseDiagnosticsItem = storage.defineItem<unknown>('local:releaseDiagnostics', {
+  fallback: [],
+})
+const releaseDiagnosticsQueue = makeSerialQueue(queueError('release-diagnostics'))
 
 // Cross-device "Saved" status (B+C): the local-first SavedIndex answers overlay
 // sweeps. Seeded from the durable history (this device's completed downloads), fed
@@ -1241,6 +1274,12 @@ const messageHandlers: MessageHandlers = {
     await captureDb.clear()
     return { cleared }
   },
+  // Ticket #60: build the Release diagnostics export from the durable capped log
+  // (mirrors ExportCaptureRequest's SW-builds/options-page-downloads split above).
+  ExportDiagnosticsRequest: handle<'ExportDiagnosticsRequest'>(async () => {
+    const entries = decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue())
+    return composeDiagnosticsExport(entries, Date.now())
+  }),
 }
 
 export default defineBackground(() => {

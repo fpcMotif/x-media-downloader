@@ -487,6 +487,10 @@ export type ExportCaptureRequest = typeof ExportCaptureRequest.Type
 export const ClearCaptureRequest = Schema.TaggedStruct('ClearCaptureRequest', {})
 export type ClearCaptureRequest = typeof ClearCaptureRequest.Type
 
+/** panel → background: build the Release diagnostics export. { ok, filename, text } back. */
+export const ExportDiagnosticsRequest = Schema.TaggedStruct('ExportDiagnosticsRequest', {})
+export type ExportDiagnosticsRequest = typeof ExportDiagnosticsRequest.Type
+
 // ── Tab-targeted messages (popup → content script, `browser.tabs.sendMessage`) ──
 // A DIFFERENT transport from the `Message` union below (`runtime.sendMessage`,
 // content/popup → background): these seven tags never enter `Message` —
@@ -561,5 +565,6 @@ export const Message = Schema.Union([
   CaptureSummaryRequest,
   ExportCaptureRequest,
   ClearCaptureRequest,
+  ExportDiagnosticsRequest,
 ])
 export type Message = typeof Message.Type
