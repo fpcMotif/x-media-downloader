@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { makeScrollDrain, type ClearOutcome, type ScrollDrainDeps } from './scroll-drain'
+import { makeScrollDrain, type ScrollDrainDeps } from './scroll-drain'
+import type { ClearScopeResult } from './result'
 import type { ClearScope } from '../schema'
 
 const VIEWPORT = 800
@@ -18,7 +19,10 @@ function harness(opts: {
   layout?: Record<string, number>
   maxY?: number
   path?: string
-  clear?: (id: string, scopes: ReadonlyArray<ClearScope>) => Promise<ReadonlyArray<ClearOutcome>>
+  clear?: (
+    id: string,
+    scopes: ReadonlyArray<ClearScope>,
+  ) => Promise<ReadonlyArray<ClearScopeResult>>
 }) {
   const layout = opts.layout ?? {}
   const maxY = opts.maxY ?? 4000

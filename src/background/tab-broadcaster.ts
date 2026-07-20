@@ -3,6 +3,7 @@ import type { Message } from '../core/schema'
 import type { ClearDrainResponse, ClearTweetResponse } from '../core/schema'
 import type { TabMessagingPort } from '../core/download/media-url-refresh'
 import type { Scope } from '../core/clear/ledger'
+import type { ClearScopeResult } from '../core/clear/result'
 
 /** The narrow tab-messaging surface every tab fan-out routes through. Owns no
  *  module state — `queryXTabs` is the single tabs.query the messaging paths share,
@@ -35,7 +36,7 @@ export interface TabBroadcaster {
     scopes: Scope[],
     preferTabId?: number,
     allLists?: boolean,
-  ) => Promise<ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>>
+  ) => Promise<ReadonlyArray<ClearScopeResult>>
 }
 
 /** The `browser.tabs` seam every X-tab fan-out routes through. Defaults to the live
@@ -102,7 +103,7 @@ export const makeTabBroadcaster = (tabs: TabsPort = defaultTabsPort()): TabBroad
     scopes: Scope[],
     preferTabId?: number,
     allLists?: boolean,
-  ): Promise<ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>> => {
+  ): Promise<ReadonlyArray<ClearScopeResult>> => {
     const ids = await queryXTabs()
     // Try the originating tab FIRST (where the user downloaded): if the post is still
     // mounted there it answers and short-circuits, so a background Bookmarks/Likes tab

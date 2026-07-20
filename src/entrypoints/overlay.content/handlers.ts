@@ -14,6 +14,7 @@ import type { PlatformAdapter } from '../../core/adapters/types'
 import { safeSend } from '../../core/messaging'
 import { findFreshMediaItem } from '../../core/download/media-url-refresh'
 import { makeListClear } from '../../core/clear/list-clear'
+import type { ClearScopeResult } from '../../core/clear/result'
 import {
   TWEET_ARTICLE_SEL,
   clearControl,
@@ -415,7 +416,7 @@ export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) =>
 // un-like it by clicking X's own control, then VERIFY the testid flipped
 // before reporting ok. id-match guard + membership check defend against
 // virtualization clicking the wrong post (spec §4.4).
-export type ClearResult = { scope: ClearScope; ok: boolean; noop?: boolean }
+export type ClearResult = ClearScopeResult
 
 /**
  * Clear one MOUNTED tweet. Which scope(s) actually click is `shouldClickScope`'s

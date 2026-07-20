@@ -18,6 +18,7 @@ import { Option } from 'effect'
 import type { ClearScope } from '../schema'
 import { pageScope } from './clearer'
 import { addPending, makeDrainQueue, readyToClear, type DrainQueue } from './drain'
+import { formatClearResults, type ClearScopeResult } from './result'
 
 const DRAIN_DEBOUNCE_MS = 1200
 const DRAIN_SCROLL_SETTLE_MS = 600
@@ -55,14 +56,6 @@ export interface Clock {
   readonly after: (ms: number, fn: () => void) => () => void
 }
 
-/** One scope's clear outcome — the structural shape the drain reports on (a subset of
- *  the overlay's ClearResult, kept here so `core` never imports the entrypoint). */
-export interface ClearOutcome {
-  readonly scope: ClearScope
-  readonly ok: boolean
-  readonly noop?: boolean
-}
-
 export interface ScrollDrainDeps {
   readonly scroll: ScrollPort
   readonly clock: Clock
@@ -75,7 +68,7 @@ export interface ScrollDrainDeps {
     tweetId: string,
     scopes: ReadonlyArray<ClearScope>,
     allLists: boolean,
-  ) => Promise<ReadonlyArray<ClearOutcome>>
+  ) => Promise<ReadonlyArray<ClearScopeResult>>
   /** Progress trace sink (drain-start / cleared / drain-end). */
   readonly report: (stage: string, detail: string, tweetId?: string) => void
 }
@@ -86,7 +79,7 @@ export interface ScrollDrain {
     tweetId: string,
     scopes: ClearScope[],
     allLists: boolean,
-  ) => Promise<ReadonlyArray<ClearOutcome>>
+  ) => Promise<ReadonlyArray<ClearScopeResult>>
 }
 
 export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
@@ -98,11 +91,11 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
     string,
     Array<{
       scopes: ReadonlyArray<ClearScope>
-      resolve: (results: ReadonlyArray<ClearOutcome>) => void
+      resolve: (results: ReadonlyArray<ClearScopeResult>) => void
     }>
   >()
 
-  const resolveTweet = (tweetId: string, results: ReadonlyArray<ClearOutcome>): void => {
+  const resolveTweet = (tweetId: string, results: ReadonlyArray<ClearScopeResult>): void => {
     const waiting = waiters.get(tweetId) ?? []
     waiters.delete(tweetId)
     const byScope = new Map(results.map((result) => [result.scope, result]))
@@ -148,7 +141,7 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
           /* v8 ignore next -- readyToClear only yields ids still in the queue */
           if (p === undefined) continue
           pendingClears.delete(id)
-          let results: ReadonlyArray<ClearOutcome>
+          let results: ReadonlyArray<ClearScopeResult>
           try {
             results = await deps.clearMounted(id, p.scopes, p.allLists)
           } catch {
@@ -156,11 +149,7 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
           }
           resolveTweet(id, results)
           clearedThisPass += 1
-          deps.report(
-            'cleared',
-            results.map((r) => `${r.scope}:${r.ok ? (r.noop ? 'noop' : 'ok') : 'fail'}`).join(' '),
-            id,
-          )
+          deps.report('cleared', formatClearResults(results), id)
         }
         if (pendingClears.size === 0) break
         const before = deps.scroll.position()
@@ -218,7 +207,7 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
     tweetId: string,
     scopes: ClearScope[],
     allLists: boolean,
-  ): Promise<ReadonlyArray<ClearOutcome>> => {
+  ): Promise<ReadonlyArray<ClearScopeResult>> => {
     if (Option.isNone(pageScope(deps.path())))
       return Promise.resolve(scopes.map((scope) => ({ scope, ok: false })))
     return new Promise((resolve) => {

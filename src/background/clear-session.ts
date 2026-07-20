@@ -21,6 +21,7 @@ import {
 } from '../core/clear/worklist'
 import { decideSettle, type DownloadProbe } from '../core/clear/settle'
 import type { ClearSeedVerdict } from '../core/clear/seed'
+import { flippedScopes, formatClearResults, type ClearScopeResult } from '../core/clear/result'
 import { makeSerialQueue } from '../core/serial-queue'
 
 // The irreversible Clear is gated on a SETTLE confirmed through the Settle Port
@@ -33,11 +34,6 @@ const SETTLE_CONFIRM_MS = 1500
 
 const SWEEP_WORKLIST_MAX = 5000
 const NOOP_CANCEL = (): void => {}
-type ClearResult = {
-  readonly scope: Scope
-  readonly ok: boolean
-  readonly noop?: boolean | undefined
-}
 type ClearAttempt = {
   readonly tweetId: string
   readonly claimed: Scope[]
@@ -132,7 +128,7 @@ export interface ClearSessionDeps {
     scopes: Scope[],
     allLists: boolean,
     preferTabId?: number,
-  ) => Promise<ReadonlyArray<{ scope: Scope; ok: boolean; noop?: boolean | undefined }>>
+  ) => Promise<ReadonlyArray<ClearScopeResult>>
   /** The Settle Port: probe a browser download's final state to confirm the byte
    *  landed before the irreversible Clear. Real `chrome.downloads.search` in the
    *  SW; a fixture row in tests. Resolves `undefined` when the row is gone or the
@@ -232,7 +228,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
 
   const resolveClearAttempt = (
     attempt: ClearAttempt,
-    rawResults: ReadonlyArray<ClearResult>,
+    rawResults: ReadonlyArray<ClearScopeResult>,
   ): void => {
     if (attempt.generation !== generation) return
     const resultByScope = new Map(rawResults.map((result) => [result.scope, result]))
@@ -249,18 +245,14 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     // verifiably failed never marks the post cleared just because the un-bookmark
     // no-op'd. (Sweep entries are seeded with only the page scope, so in practice
     // `flipped` already holds just that scope.)
-    const flipped = results.filter((r) => r.ok && !r.noop).map((r) => r.scope)
+    const flipped = flippedScopes(results)
     if (flipped.length > 0) setSweepState(attempt.tweetId, flipped, 'cleared')
     clearLedger.set(attempt.tweetId, after)
     trace('clear-resolve', {
       tweetId: attempt.tweetId,
-      // `ok` alone hid a no-op (a scope that didn't fire — off-page/not-a-member —
-      // reports ok:true so the ledger settles) behind the same token as a REAL flip,
-      // so a log reading `like:ok` could mean "un-liked" OR "skipped". Split them:
-      // ok = verified flip, noop = deliberately not fired, fail = clicked but no flip.
-      detail: results
-        .map((r) => `${r.scope}:${r.ok ? (r.noop ? 'noop' : 'ok') : 'fail'}`)
-        .join(' '),
+      // ok = verified flip, noop = deliberately not fired, fail = clicked but no flip
+      // (see core/clear/result for why `ok` alone hid a no-op).
+      detail: formatClearResults(results),
     })
     if (isPrunable(after, attempt.enabled)) clearLedger.delete(attempt.tweetId)
   }
@@ -269,7 +261,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     const settings = await getSettings()
     const attempt = await clearQueue.run(async () => prepareClearAttempt(tweetId, settings))
     if (attempt === undefined) return
-    let results: ReadonlyArray<ClearResult>
+    let results: ReadonlyArray<ClearScopeResult>
     try {
       results = await dispatchClear(
         attempt.tweetId,
