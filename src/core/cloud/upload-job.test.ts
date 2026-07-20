@@ -1,6 +1,7 @@
 import { Schema } from 'effect'
 import { describe, it, expect } from 'vitest'
 import {
+  applyUploadOutcome,
   backoffMs,
   capLedger,
   claim,
@@ -221,6 +222,87 @@ describe('outcomes', () => {
     expect(r.changed).toBe(true)
     expect(r.ledger[0]!.status).toBe('pending')
     expect(r.ledger[0]!.attempts).toBe(0)
+  })
+})
+
+describe('applyUploadOutcome', () => {
+  it('success sets bytes, remoteId, and verifiedAt; settled is the returned job', () => {
+    const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const r = applyUploadOutcome(l, id, t, 500, {
+      kind: 'success',
+      bytes: 2048,
+      remotePath: 'alice/m1.jpg',
+      remoteId: 'drive-id',
+    })
+    expect(r.settled!.status).toBe('succeeded')
+    expect(r.settled!.bytes).toBe(2048)
+    expect(r.settled!.remoteId).toBe('drive-id')
+    expect(r.settled!.verifiedAt).toBe(500)
+    expect(r.ledger[0]).toBe(r.settled)
+  })
+
+  it('success without a remoteId omits the field', () => {
+    const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const r = applyUploadOutcome(l, id, t, 500, { kind: 'success', bytes: 512, remotePath: 'p' })
+    expect(r.settled!.status).toBe('succeeded')
+    expect(r.settled!.bytes).toBe(512)
+    expect('remoteId' in r.settled!).toBe(false)
+  })
+
+  it('sourceGone → skipped', () => {
+    const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const r = applyUploadOutcome(l, id, t, 500, { kind: 'sourceGone', reason: 'HTTP 410' })
+    expect(r.settled!.status).toBe('skipped')
+    expect(r.settled!.error).toBe('HTTP 410')
+  })
+
+  it('failure → failed with backoff below the cap', () => {
+    const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const r = applyUploadOutcome(l, id, t, 0, { kind: 'failure', reason: 'boom', status: 500 })
+    expect(r.settled!.status).toBe('failed')
+    expect(r.settled!.attempts).toBe(1)
+    expect(r.settled!.nextAttemptAt).toBe(backoffMs(1))
+    expect(r.settled!.error).toBe('boom')
+  })
+
+  it('failure → dead at MAX_ATTEMPTS (attempts preloaded to the cap boundary)', () => {
+    let l = enqueue([], spec('m1'), 0)
+    const id = l[0]!.jobId
+    let now = 0
+    for (let i = 1; i < MAX_ATTEMPTS; i += 1) {
+      const c = claim(l, id, now)
+      l = recordFailure(c.ledger, id, c.token!, now, `try ${i}`).ledger
+      now = l[0]!.nextAttemptAt
+    }
+    expect(l[0]!.attempts).toBe(MAX_ATTEMPTS - 1)
+    expect(l[0]!.status).toBe('failed')
+    const c = claim(l, id, now)
+    const r = applyUploadOutcome(c.ledger, id, c.token!, now, { kind: 'failure', reason: 'final' })
+    expect(r.settled!.status).toBe('dead')
+    expect(r.settled!.attempts).toBe(MAX_ATTEMPTS)
+  })
+
+  it('stale token is a no-op: ledger reference unchanged, settled is the stored job', () => {
+    const l0 = enqueue([], spec('m1'), 0)
+    const id = l0[0]!.jobId
+    const first = claim(l0, id, 0, 1000)
+    const staleToken = first.token!
+    const second = claim(first.ledger, id, 2000, 1000) // lease expired → reclaimed, new token
+    const r = applyUploadOutcome(second.ledger, id, staleToken, 2500, {
+      kind: 'success',
+      bytes: 1,
+      remotePath: 'p',
+    })
+    expect(r.ledger).toBe(second.ledger)
+    expect(r.settled).toBe(second.ledger[0])
+    expect(r.settled!.status).toBe('uploading')
+  })
+
+  it('unknown jobId leaves settled undefined', () => {
+    const l = enqueue([], spec('m1'), 0)
+    const r = applyUploadOutcome(l, 'nope', 1, 0, { kind: 'failure', reason: 'x' })
+    expect(r.settled).toBeUndefined()
+    expect(r.ledger).toBe(l)
   })
 })
 
