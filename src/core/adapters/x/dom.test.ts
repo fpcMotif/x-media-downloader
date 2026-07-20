@@ -15,15 +15,8 @@ const videoEl = (html: string): HTMLVideoElement => {
 }
 
 describe('mediaKeyFromUrl', () => {
-  it('extracts the basename key from a pbs photo url (ignoring query + size)', () => {
-    expect(mediaKeyFromUrl('https://pbs.twimg.com/media/AAA?format=jpg&name=small')).toBe('AAA')
+  it('returns the twimg basename key (extraction delegated to media-key)', () => {
     expect(mediaKeyFromUrl('https://pbs.twimg.com/media/AAA.jpg?name=orig')).toBe('AAA')
-  })
-
-  it('matches a DOM src against a resolved MediaItem url by key', () => {
-    const domSrc = 'https://pbs.twimg.com/media/Z9?format=jpg&name=900x900'
-    const resolved = 'https://pbs.twimg.com/media/Z9.jpg?name=orig'
-    expect(mediaKeyFromUrl(domSrc)).toBe(mediaKeyFromUrl(resolved))
   })
 
   it('returns null for non-twimg or unparseable urls', () => {

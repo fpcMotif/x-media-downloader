@@ -7,6 +7,8 @@
  */
 import type { MediaItem } from '../../schema'
 
+import { mediaBasenameKey } from '../../media-key'
+
 /** True for any cdninstagram.com host — both Instagram's region-prefixed form
  *  (`scontent-lga3-2.cdninstagram.com`) and Threads' bare form
  *  (`scontent.cdninstagram.com`). LIVE-VERIFIED 2026-07-05 (Chrome Canary):
@@ -111,10 +113,7 @@ export function mediaKeyFromMetaUrl(url: string): string | null {
     return null
   }
   if (!isGrabbableMetaPhotoUrl(url)) return null
-  const base = u.pathname.slice(u.pathname.lastIndexOf('/') + 1)
-  const dot = base.lastIndexOf('.')
-  const key = dot >= 0 ? base.slice(0, dot) : base
-  return key.length > 0 ? key : null
+  return mediaBasenameKey(u.pathname)
 }
 
 /**

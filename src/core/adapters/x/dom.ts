@@ -1,3 +1,5 @@
+import { mediaBasenameKey } from '../../media-key'
+
 /** The final path segment of a URL pathname (everything after the last `/`). */
 const lastSegment = (pathname: string): string => pathname.slice(pathname.lastIndexOf('/') + 1)
 
@@ -21,10 +23,7 @@ export function mediaKeyFromUrl(url: string): string | null {
   // Exact host or a real `.twimg.com` subdomain — `endsWith('twimg.com')` alone
   // would also accept a spoofed `evil-twimg.com`.
   if (u.hostname !== 'pbs.twimg.com' && !u.hostname.endsWith('.twimg.com')) return null
-  const base = lastSegment(u.pathname)
-  const dot = base.lastIndexOf('.')
-  const key = dot >= 0 ? base.slice(0, dot) : base
-  return key.length > 0 ? key : null
+  return mediaBasenameKey(u.pathname)
 }
 
 /**
