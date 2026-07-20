@@ -171,6 +171,35 @@ describe('makeScrollDrain', () => {
     expect(stagesOf(h)).not.toContain('drain-start')
   })
 
+  it('fails pending work when the user navigates off the list during the debounce window', async () => {
+    // `run` accepts the queue on a list page, but the page changes before the debounced
+    // pass fires — the drain must fail the work without ever scrolling the new page.
+    const h = harness({ layout: { '1': 0 }, maxY: 0 })
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('1', ['like'], false)
+    h.setPath('/home')
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([{ scope: 'like', ok: false }])
+    expect(h.clearMounted).not.toHaveBeenCalled()
+    expect(h.scrollCalls.to).toHaveLength(0)
+    expect(stagesOf(h)).not.toContain('drain-start')
+  })
+
+  it('fails the remainder instead of retrying when a mid-pass navigation leaves the list', async () => {
+    const h = harness({ layout: {}, maxY: 0 }) // '1' never mounts, so the pass ends with work pending
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('1', ['like'], false)
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS) // the pass is now in flight
+    h.setPath('/home')
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([{ scope: 'like', ok: false }])
+    expect(startCount(h)).toBe(1) // no empty-pass retry on a page the drain must not scroll
+  })
+
   it('stops at the bottom after a run of stalls instead of running to the step cap', async () => {
     // '1' sits below the reachable bottom, so it never mounts; the pass must detect the
     // bottom (repeated no-progress) and end far short of MAX_STEPS (60).
@@ -248,6 +277,32 @@ describe('makeScrollDrain', () => {
     await vi.runAllTimersAsync()
 
     expect(seen.map((s) => [...s.scopes].sort())).toEqual([['bookmark', 'like']])
+  })
+
+  it('settles a mid-clear re-queue against the in-flight results, then clears it waiterless', async () => {
+    // A second run() for the same tweet lands while its clearMounted is awaited: the
+    // in-flight clear settles BOTH waiters (a scope it didn't touch settles as failed),
+    // and the re-queued pending entry still clears on a later step, with no waiter left.
+    const gate: Array<() => void> = []
+    const h = harness({
+      layout: { '1': 0 },
+      maxY: 0,
+      clear: async (_id, scopes) => {
+        if (gate.length === 0) await new Promise<void>((resolve) => gate.push(resolve))
+        return scopes.map((scope) => ({ scope, ok: true }))
+      },
+    })
+    const drain = makeScrollDrain(h.deps)
+
+    const first = drain.run('1', ['like'], false)
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 600) // pass started; clear('1') is in flight
+    const second = drain.run('1', ['bookmark'], false)
+    gate[0]?.()
+    await vi.runAllTimersAsync()
+
+    await expect(first).resolves.toEqual([{ scope: 'like', ok: true }])
+    await expect(second).resolves.toEqual([{ scope: 'bookmark', ok: false }])
+    expect(clearedIds(h)).toEqual(['1', '1']) // the re-queued entry still cleared, waiterless
   })
 
   it('reports each scope outcome in the cleared trace (ok / noop / fail)', async () => {
