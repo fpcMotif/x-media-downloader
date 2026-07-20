@@ -141,6 +141,23 @@ describe('makeAdmissionGate', () => {
 
     expect(res.admitted).toEqual([unknown])
     expect(res.skipped).toEqual([{ item: over, reason: 'too-big' }])
+    expect(res.sizeById.get('unk')).toBeNull()
+  })
+
+  it('returns the admitted HEAD size for terminal-at-hand-off budget accounting', async () => {
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 1234) }
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ dailyMaxMB: 1 }),
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
+      sizeProbe,
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+    const admitted = item({ id: 'sized', postId: 'T1' })
+
+    const res = await gate.admit([admitted])
+
+    expect(res.sizeById.get('sized')).toBe(1234)
   })
 
   it('locks the daily budget once the projection would exceed dailyMaxCount', async () => {

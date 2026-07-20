@@ -46,7 +46,6 @@ import { type BudgetRecord } from '../core/download/daily-budget'
 import { type SkipReason } from '../core/download/admission'
 import { bindFetch } from '../core/fetch'
 import {
-  recordOutcome,
   recordRetry,
   recordSample,
   samplesFromSearch,
@@ -69,7 +68,6 @@ import {
 import {
   decideEnqueueOutcome,
   decideTerminalOutcome,
-  type EnqueueOutcomeEffects,
   type TerminalOutcome,
 } from '../core/download/terminal-outcome'
 import {
@@ -91,6 +89,7 @@ import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearSession } from '../background/clear-session'
 import { applyQueueStartEffects } from '../background/queue-start-applier'
+import { applyEnqueueOutcomeEffects, applyOutcomeEffects } from '../background/outcome-effects'
 import { makeRetryQueue } from '../core/download/retry-queue'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
@@ -448,12 +447,9 @@ const settleBrowserDownload = async (
   outcome: 'complete' | 'failed',
   now: number,
 ): Promise<void> => {
-  const complete = outcome === 'complete'
   const tweetId = requestMetaById.get(id)?.item?.postId
   inFlight.delete(id)
   clearInterruptRetryState(id)
-  if (complete) recordClearComplete(tweetId, id, downloadId)
-  else recordClearFailure(tweetId, id)
   requestIdByDownloadId.delete(downloadId)
   stopStuckPollIfIdle() // last download settled → let the watchdog go quiet
   // The terminal-outcome fan-out is ONE pure decision (core/download/terminal-outcome):
@@ -469,44 +465,38 @@ const settleBrowserDownload = async (
     outcome,
     now,
     settings.cloudDeviceId,
+    { ...(tweetId === undefined ? {} : { tweetId }), downloadId },
   )
-  transfersState = fx.transfers
-  live = fx.metrics
-  await flushTransfers()
-  if (fx.backlink) reportTransferOutcome(fx.backlink.requestId, fx.backlink.outcome, fx.backlink.at)
-  // `.json` sidecars yield no sync event (empty → recordSync no-ops) and no backlink, but
-  // still get a history transition (a no-op for an unqueued id) — the core owns those
-  // asymmetries now, so this shell calls each sink unconditionally.
-  recordSync(settings, fx.syncEvents)
-  recordHistory(settings, fx.historyActions)
-  // Light up the "Saved" status for this post immediately (instant, offline) — the
-  // local-first half of the cross-device index; tweetId is unknown for an unqueued
-  // sidecar, in which case there is nothing to mark.
-  if (complete && tweetId !== undefined) {
-    savedStatusCoordinator.onCompleted(tweetId)
-    // Accrue the daily-budget tally (media completions only — sidecars carry no
-    // tweetId). Prefer the known total size, else last-sampled bytes, else 0.
-    const progress = live?.items.get(id)
-    const bytes = progress
-      ? progress.totalBytes > 0
-        ? progress.totalBytes
-        : progress.bytesReceived
-      : 0
-    budgetQueue.push(() => budgetStore.recordCompletion(bytes, 1))
-  }
-  // Per-item dedup index (admission gate only, see the `savedMediaIndex` comment
-  // above): `id` here is the request id, which always equals item.id/requestId
-  // regardless of whether a postId was resolvable for the badge above. Marking a
-  // sidecar's own id is harmless — sidecar ids are never reused as a photo/video's
-  // item.id, so this can never wrongly dedup real media.
-  if (complete) savedMediaIndex.markSaved(id)
-  traceBackground(complete ? 'browser-complete' : 'browser-failed', {
+  await applyOutcomeEffects(
+    fx,
+    {
+      recordClearComplete,
+      recordClearFailure,
+      setTransfers: (next) => {
+        transfersState = next
+      },
+      setMetrics: (next) => {
+        live = next
+      },
+      flushTransfers,
+      reportBacklink: (backlink) =>
+        reportTransferOutcome(backlink.requestId, backlink.outcome, backlink.at),
+      recordSync: (events) => recordSync(settings, events),
+      recordHistory: (actions) => recordHistory(settings, actions),
+      markPostSaved: savedStatusCoordinator.onCompleted,
+      bumpBudget: (bytes, count) =>
+        budgetQueue.push(() => budgetStore.recordCompletion(bytes, count)),
+      markMediaSaved: savedMediaIndex.markSaved,
+      persistSnapshot,
+    },
+    now,
+  )
+  traceBackground(outcome === 'complete' ? 'browser-complete' : 'browser-failed', {
     itemId: id,
     elapsedMs: now - (requestStartedAt.get(id) ?? now),
     detail: `downloadId ${downloadId}`,
   })
   requestStartedAt.delete(id)
-  if (fx.persistSnapshot) await persistSnapshot(now)
 }
 
 const failBrowserDownload = (id: string, downloadId: number, now: number): Promise<void> =>
@@ -950,9 +940,16 @@ const handleDownload = (
     // persisted record only ever shrinks via the browser settle path and grows
     // unbounded for non-browser strategies.
     let droppedMeta = false
-    const applyEnqueueFx = (fx: EnqueueOutcomeEffects): void => {
-      if (fx.syncEvent) syncEvents.push(fx.syncEvent)
-      historyActions.push(fx.historyAction)
+    const enqueuePorts = {
+      setMetrics: (next: MetricsState) => {
+        live = next
+      },
+      recordSyncEvent: (event: SyncEvent) => syncEvents.push(event),
+      recordHistoryAction: (action: HistoryAction) => historyActions.push(action),
+      markPostSaved: savedStatusCoordinator.onCompleted,
+      bumpBudget: (bytes: number, count: number) =>
+        budgetQueue.push(() => budgetStore.recordCompletion(bytes, count)),
+      markMediaSaved: savedMediaIndex.markSaved,
     }
     for (const o of res.outcomes) {
       const media = mediaById.get(o.id)
@@ -961,9 +958,16 @@ const handleDownload = (
         droppedMeta = requestMetaById.delete(o.id) || droppedMeta
         recordClearFailure(media?.postId, o.id)
         const outcome: TerminalOutcome = 'failed'
-        live = recordOutcome(live, o.id, outcome, now)
-        applyEnqueueFx(
-          decideEnqueueOutcome({ id: o.id, outcome, now, deviceId: settings.cloudDeviceId }),
+        applyEnqueueOutcomeEffects(
+          decideEnqueueOutcome({
+            metrics: live,
+            id: o.id,
+            outcome,
+            now,
+            deviceId: settings.cloudDeviceId,
+            ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
+          }),
+          enqueuePorts,
         )
         const reason = o.error ?? 'unknown'
         failures.push({ itemId: o.id, reason })
@@ -994,9 +998,17 @@ const handleDownload = (
         inFlight.delete(o.id)
         droppedMeta = requestMetaById.delete(o.id) || droppedMeta
         const outcome: TerminalOutcome = 'complete'
-        live = recordOutcome(live, o.id, outcome, now)
-        applyEnqueueFx(
-          decideEnqueueOutcome({ id: o.id, outcome, now, deviceId: settings.cloudDeviceId }),
+        applyEnqueueOutcomeEffects(
+          decideEnqueueOutcome({
+            metrics: live,
+            id: o.id,
+            outcome,
+            now,
+            deviceId: settings.cloudDeviceId,
+            ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
+            bytes: admission.sizeById.get(o.id) ?? 0,
+          }),
+          enqueuePorts,
         )
         traceBackground('external-complete', {
           itemId: o.id,
