@@ -1,5 +1,4 @@
 import type { MediaItem } from '../schema'
-import { videoTweetsNeedingRecovery } from './x/index'
 
 /**
  * Derives the stable media key a URL resolves to on the active platform, or
@@ -86,13 +85,13 @@ export function postVideoKeyByDomSlot(code: string, domSlot: number): string {
  * `needsRecovery` reads the DOM (happy-dom-testable, like the rest of the adapter).
  *
  * Shared across platforms (moved out of `core/adapters/x/` — this store itself
- * has no X-specific logic once `mediaKeyFromUrl` is injected). `needsRecovery`
- * still wraps X's own `videoTweetsNeedingRecovery` unconditionally: syndication
- * recovery is X-only-forever (no Instagram/Threads equivalent exists), and this
- * store is constructed once per content-script boot for whichever single
- * platform is active — calling `needsRecovery` on a non-X page is the overlay's
- * own responsibility to avoid (already gated via `adapter.platform === 'x'` at
- * the `recoverMissingVideos` call site), same as any other X-only feature.
+ * has no X-specific logic once `mediaKeyFromUrl` and `findMediaNeedingRecovery`
+ * are injected). Recovery is a capability, not a platform branch: an adapter
+ * that supplies `findMediaNeedingRecovery` (X's syndication pass) gets a
+ * DOM-walked recovery scan; one that omits it (Instagram/Threads — no no-auth
+ * public fallback exists) makes `needsRecovery` a constant `[]` with no DOM
+ * walk, so the overlay needs no platform-string guard at the
+ * `recoverMissingVideos` call site.
  */
 export interface DetectionStore {
   /** Add Passive-capture / DOM items; returns the newly-added (deduped by id),
@@ -149,6 +148,14 @@ export interface DetectionStore {
 
 export function makeDetectionStore(deps: {
   readonly mediaKeyFromUrl: MediaKeyDeriver
+  /** Optional recovery scan — `PlatformAdapter.findMediaNeedingRecovery`'s own
+   *  signature. Absent (IG/Threads: no public no-auth fallback exists) ⇒
+   *  `needsRecovery` is a constant `[]` with NO DOM walk. */
+  readonly findMediaNeedingRecovery?: (
+    root: ParentNode,
+    detectedKeys: ReadonlySet<string>,
+    attemptedTweetIds: ReadonlySet<string>,
+  ) => string[]
 }): DetectionStore {
   const byId = new Map<string, MediaItem>()
   const byKey = new Map<string, MediaItem>()
@@ -249,7 +256,8 @@ export function makeDetectionStore(deps: {
   return {
     addDetected,
     addRecovered,
-    needsRecovery: (root) => videoTweetsNeedingRecovery(root, new Set(byKey.keys()), attempted),
+    needsRecovery: (root) =>
+      deps.findMediaNeedingRecovery?.(root, new Set(byKey.keys()), attempted) ?? [],
     markAttempted: (tweetId) => {
       if (attempted.has(tweetId)) return false
       attempted.add(tweetId)

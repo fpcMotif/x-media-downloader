@@ -9,6 +9,7 @@ import {
   postVideoKeyByDomSlot,
 } from './detection-store'
 import { mediaKeyFromUrl } from './x/dom'
+import { videoTweetsNeedingRecovery } from './x/index'
 import { mediaKeyFromMetaUrl } from './meta-shared/dom'
 import { threadsAdapter } from './threads/adapter'
 import { instagramAdapter } from './instagram/adapter'
@@ -175,7 +176,7 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
     expect(s.postIdForCode('unknown')).toBeUndefined()
   })
 
-  it('needsRecovery wraps videoTweetsNeedingRecovery with the store keys', () => {
+  it('needsRecovery wraps the injected finder with the store keys', () => {
     const root = document.createElement('div')
     root.innerHTML = `
       <article data-testid="tweet">
@@ -184,7 +185,10 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
           <img src="https://pbs.twimg.com/ext_tw_video_thumb/9/pu/img/POST.jpg" />
         </div>
       </article>`
-    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const s = makeDetectionStore({
+      mediaKeyFromUrl,
+      findMediaNeedingRecovery: videoTweetsNeedingRecovery,
+    })
     expect(s.needsRecovery(root)).toEqual(['55']) // poster key 'POST' unknown
     s.addRecovered([video('v', 'MP4', 'POST')]) // now the poster key is known
     expect(s.needsRecovery(root)).toEqual([]) // skipped
@@ -205,12 +209,28 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
           <img src="https://pbs.twimg.com/ext_tw_video_thumb/9/pu/img/OTHER.jpg" />
         </div>
       </article>`
-    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const s = makeDetectionStore({
+      mediaKeyFromUrl,
+      findMediaNeedingRecovery: videoTweetsNeedingRecovery,
+    })
     s.markAttempted('55')
     // Tweet 55 is filtered out early; the untouched candidate 77 remains.
     expect(s.needsRecovery(root)).toEqual(['77'])
     s.unmarkAttempted('55') // transient send failure re-armed it
     expect(s.needsRecovery(root)).toEqual(['55', '77'])
+  })
+
+  it('needsRecovery is a constant [] with NO DOM walk when no finder is injected', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    // A root whose DOM would throw if touched — proves the absent-finder path
+    // never walks the DOM, it just returns the empty constant.
+    const exploding = new Proxy(document.createElement('div'), {
+      get(target, prop, receiver) {
+        if (prop === 'querySelectorAll') throw new Error('needsRecovery walked the DOM')
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    expect(s.needsRecovery(exploding)).toEqual([])
   })
 
   it('clear empties items, keys, recovered keys, and attempts', () => {

@@ -75,9 +75,15 @@ export interface PlatformAdapter {
    * tee missed (X's `syndication.ts` role). Instagram and Threads both lack
    * any no-auth public fallback (their oEmbed endpoints are Meta-app-
    * registration-gated), so neither implements this — confirmed by research,
-   * not merely left unbuilt.
+   * not merely left unbuilt. `attemptedTweetIds` filters out posts already
+   * claimed for a recovery fetch, so a scroll re-scan skips their poster/key
+   * work entirely.
    */
-  findMediaNeedingRecovery?(root: ParentNode, detectedKeys: ReadonlySet<string>): string[]
+  findMediaNeedingRecovery?(
+    root: ParentNode,
+    detectedKeys: ReadonlySet<string>,
+    attemptedTweetIds: ReadonlySet<string>,
+  ): string[]
 
   /**
    * Optional: per-post `postId` <-> URL-shortcode linkage extracted from a

@@ -777,14 +777,21 @@ export default defineContentScript({
     // none of the X-only clear/capture/reveal machinery below ever runs.
     const adapter = adapterForHostname(location.hostname)
     if (!adapter) return
-    // Whole-post grab (Cmd augment) is Instagram/Threads-only by product decision.
-    const postGrabEligible = adapter.platform === 'instagram' || adapter.platform === 'threads'
+    // Whole-post grab (Cmd augment): only platforms that can resolve a whole post from a
+    // DOM element (IG/Threads via postCodeFromElement; X deliberately omits it — product
+    // decision, not an accident of capability).
+    const postGrabEligible = adapter.postCodeFromElement !== undefined
     // Boot marker: if you don't see this in the X page console, the content
     // script isn't live on this tab (old build loaded, or the tab predates the
     // extension reload) — reload the extension AND refresh the tab.
     console.info('[XMD] overlay content script loaded @', location.href, adapter.platform)
 
-    const store = makeDetectionStore({ mediaKeyFromUrl: adapter.mediaKeyFromUrl })
+    const store = makeDetectionStore({
+      mediaKeyFromUrl: adapter.mediaKeyFromUrl,
+      ...(adapter.findMediaNeedingRecovery
+        ? { findMediaNeedingRecovery: adapter.findMediaNeedingRecovery }
+        : {}),
+    })
     let host: HTMLElement | null = null
 
     // Quick Grab state. `qgEnabled` fails CLOSED: a user who turned the feature
@@ -866,11 +873,13 @@ export default defineContentScript({
     // fetch the tweet's media from X's syndication endpoint (via the background,
     // which holds the host permission) and fold the recovered video into the
     // detected set. One attempt per tweet id; a transient send error re-arms it.
-    // X-only: `store.needsRecovery` walks X's VIDEO_PLAYER_SEL/TWEET_ARTICLE_SEL
-    // (syndication recovery has no Instagram/Threads equivalent — design spec
-    // Non-goals) — skip the DOM walk entirely on other platforms.
+    // Capability-driven: an adapter without a public recovery pass
+    // (`findMediaNeedingRecovery` — only X supplies one, its syndication endpoint;
+    // IG/Threads have no no-auth equivalent, design spec Non-goals) makes
+    // `store.needsRecovery` a constant `[]` and never walks the DOM, so skip the
+    // whole scan on those platforms.
     const recoverMissingVideos = (): void => {
-      if (adapter.platform !== 'x') return
+      if (!adapter.findMediaNeedingRecovery) return
       for (const tweetId of store.needsRecovery(document)) {
         if (!store.markAttempted(tweetId)) continue
         void (async () => {
@@ -921,8 +930,9 @@ export default defineContentScript({
 
     // One trailing recovery after scrolling stops: each scroll frame re-arms the
     // debounce, so the costly player scan runs once per burst, not per frame.
+    // Capability-gated like recoverMissingVideos: no recovery pass, no timer.
     const scheduleScrollVideoRecovery = (): void => {
-      if (adapter.platform !== 'x') return
+      if (!adapter.findMediaNeedingRecovery) return
       if (scrollRecoveryTimer !== null) {
         clearTimeout(scrollRecoveryTimer)
         scrollRecoveryTimer = null

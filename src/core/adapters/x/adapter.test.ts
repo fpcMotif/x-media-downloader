@@ -73,7 +73,7 @@ describe('xAdapter', () => {
     expect(xAdapter.detectRenderedMedia(root, '/')).toEqual([])
     expect(xAdapter.canResolveHoverItem(root, 'key', new Map())).toBe(false)
     expect(xAdapter.resolveHoverItem(root, 'key', new Map(), '/')).toBeNull()
-    expect(xAdapter.findMediaNeedingRecovery?.(root, new Set())).toEqual([])
+    expect(xAdapter.findMediaNeedingRecovery?.(root, new Set(), new Set())).toEqual([])
   })
 
   it("mediaKeyFromUrl combines isGrabbableMediaPreviewUrl + mediaKeyFromUrl exactly like the overlay's inline gate", () => {
