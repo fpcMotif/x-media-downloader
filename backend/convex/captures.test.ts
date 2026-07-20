@@ -85,6 +85,75 @@ describe('captures:recordCaptures', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ sourceRank: 2, text: 'rich detail' })
   })
+
+  // Pins the CURRENT sequential-loop semantics for two same-`captureId` items
+  // landing in one `recordCaptures` call, ahead of PR #31/#34 which propose
+  // parallelizing this loop. Today each iteration awaits its own read+write
+  // before the next iteration starts, so a later duplicate in the same batch
+  // sees the row the earlier duplicate just wrote (read-your-writes within
+  // the mutation) — the §6.4 rank-then-`at` rule is applied BETWEEN
+  // in-batch duplicates too, and the outcome is order-dependent. A naive
+  // parallelization (e.g. `Promise.all` over the loop body) would race these
+  // reads and could silently change both the winning row and the `upserted`
+  // count asserted below.
+  describe('same-batch duplicate captureId (sequential-loop semantics)', () => {
+    it('processes in array order: first insert, second upgrades it (2 upserts)', async () => {
+      const t = convexTest(schema, modules)
+      const res = await t.mutation(api.captures.recordCaptures, {
+        captures: [
+          capture({ sourceRank: 1, text: 'thin', at: 1_000 }),
+          capture({ sourceRank: 2, text: 'rich detail', at: 2_000 }),
+        ],
+        secret: SECRET,
+      })
+      // Both iterations upsert: the 1st inserts (row absent), the 2nd's read
+      // sees that fresh row and wins the rank compare, so it patches too.
+      expect(res).toEqual({ received: 2, upserted: 2 })
+
+      const rows = await t.run((ctx) => ctx.db.query('tweet_captures').collect())
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ sourceRank: 2, text: 'rich detail' })
+    })
+
+    it('reversed array order: first insert, second (thinner) loses (1 upsert)', async () => {
+      const t = convexTest(schema, modules)
+      const res = await t.mutation(api.captures.recordCaptures, {
+        captures: [
+          capture({ sourceRank: 2, text: 'rich detail', at: 2_000 }),
+          capture({ sourceRank: 1, text: 'thin', at: 1_000 }),
+        ],
+        secret: SECRET,
+      })
+      // Same two items as the previous test, opposite array order: the
+      // upserted count (1, not 2) and the surviving row differ solely
+      // because of position in the batch — there is no dedup by captureId
+      // ahead of the loop.
+      expect(res).toEqual({ received: 2, upserted: 1 })
+
+      const rows = await t.run((ctx) => ctx.db.query('tweet_captures').collect())
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ sourceRank: 2, text: 'rich detail' })
+    })
+
+    it('equal rank and `at` (a tie): the later array item always wins (2 upserts)', async () => {
+      const t = convexTest(schema, modules)
+      const res = await t.mutation(api.captures.recordCaptures, {
+        captures: [
+          capture({ sourceRank: 1, text: 'first', at: 1_000 }),
+          capture({ sourceRank: 1, text: 'second', at: 1_000 }),
+        ],
+        secret: SECRET,
+      })
+      // The tie-break is `c.at >= row.at`, so a same-rank/same-`at` duplicate
+      // always patches — "upserted" counts loop iterations that wrote, not
+      // distinct rows touched.
+      expect(res).toEqual({ received: 2, upserted: 2 })
+
+      const rows = await t.run((ctx) => ctx.db.query('tweet_captures').collect())
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ sourceRank: 1, text: 'second' })
+    })
+  })
 })
 
 describe('captures:list', () => {
