@@ -66,6 +66,28 @@ describe('decideTerminalOutcome', () => {
     expect(fx.persistSnapshot).toBe(true)
   })
 
+  it('budgets bytesReceived when the transfer size was unknown (totalBytes 0)', () => {
+    const state = stateWith('m1b')
+    const fx = decideTerminalOutcome(
+      {
+        ...state,
+        metrics: recordSample(state.metrics!, {
+          id: 'm1b',
+          bytesReceived: 400,
+          totalBytes: 0,
+          t: NOW - 1,
+        }),
+      },
+      'm1b',
+      'complete',
+      NOW,
+      DEVICE,
+      { tweetId: 't1', downloadId: 7 },
+    )
+
+    expect(fx.budgetBump).toEqual({ bytes: 400, count: 1 })
+  })
+
   it('maps a failed outcome to the failed kind across every sink', () => {
     const fx = decideTerminalOutcome(stateWith('m2'), 'm2', 'failed', NOW, DEVICE, {
       tweetId: 't1',
