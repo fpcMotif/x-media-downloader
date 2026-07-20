@@ -54,9 +54,14 @@ describe('isGrabbablePhotoUrl', () => {
     )
   })
 
-  it('rejects non-twimg hosts and unparseable urls', () => {
+  it('rejects non-twimg hosts', () => {
     expect(isGrabbablePhotoUrl('https://example.com/media/AAA.jpg')).toBe(false)
+  })
+
+  it('triggers the catch block and returns false for invalid URL strings', () => {
     expect(isGrabbablePhotoUrl('not a url')).toBe(false)
+    expect(isGrabbablePhotoUrl('')).toBe(false)
+    expect(isGrabbablePhotoUrl('://invalid')).toBe(false)
   })
 
   it('rejects spoofed suffix hosts and the video CDN', () => {
