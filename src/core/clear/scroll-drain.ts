@@ -87,19 +87,34 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
   let draining = false
   let cancelDrain: (() => void) | null = null
   let emptyDrainPasses = 0
-  const waiters = new Map<
-    string,
-    Array<{
-      scopes: ReadonlyArray<ClearScope>
-      resolve: (results: ReadonlyArray<ClearScopeResult>) => void
-    }>
-  >()
+  interface Waiter {
+    readonly scopes: ReadonlyArray<ClearScope>
+    readonly resolve: (results: ReadonlyArray<ClearScopeResult>) => void
+  }
+  const waiters = new Map<string, Waiter[]>()
 
-  const resolveTweet = (tweetId: string, results: ReadonlyArray<ClearScopeResult>): void => {
-    const waiting = waiters.get(tweetId) ?? []
-    waiters.delete(tweetId)
+  /** Settle the waiters this clear attempt actually answered. A waiter whose scopes the
+   *  attempt didn't all cover (a run() that landed mid-clear with a fresh scope) stays
+   *  registered — its re-queued pending entry settles it on a later clear or failPending —
+   *  so an attempt that never touched a scope can't report it as failed. `attempted` is
+   *  the scopes handed to the clearer, not the results' scopes: a clearer may under-report
+   *  scopes it skipped, and those must still settle here (as backfilled failures). */
+  const resolveTweet = (
+    tweetId: string,
+    attempted: ReadonlyArray<ClearScope>,
+    results: ReadonlyArray<ClearScopeResult>,
+  ): void => {
+    const covered = new Set(attempted)
+    const settled: Waiter[] = []
+    const remaining: Waiter[] = []
+    for (const waiter of waiters.get(tweetId) ?? []) {
+      if (waiter.scopes.every((scope) => covered.has(scope))) settled.push(waiter)
+      else remaining.push(waiter)
+    }
+    if (remaining.length > 0) waiters.set(tweetId, remaining)
+    else waiters.delete(tweetId)
     const byScope = new Map(results.map((result) => [result.scope, result]))
-    for (const waiter of waiting)
+    for (const waiter of settled)
       waiter.resolve(waiter.scopes.map((scope) => byScope.get(scope) ?? { scope, ok: false }))
   }
 
@@ -108,6 +123,7 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
       pendingClears.delete(tweetId)
       resolveTweet(
         tweetId,
+        pending.scopes,
         pending.scopes.map((scope) => ({ scope, ok: false })),
       )
     }
@@ -147,7 +163,7 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
           } catch {
             results = p.scopes.map((scope) => ({ scope, ok: false }))
           }
-          resolveTweet(id, results)
+          resolveTweet(id, p.scopes, results)
           clearedThisPass += 1
           deps.report('cleared', formatClearResults(results), id)
         }

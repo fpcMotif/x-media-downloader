@@ -250,6 +250,115 @@ describe('makeScrollDrain', () => {
     expect(seen.map((s) => [...s.scopes].sort())).toEqual([['bookmark', 'like']])
   })
 
+  it('fails pending clears without scrolling when the drain fires off a list page', async () => {
+    // Seeded on Likes, but the user navigates away before the debounce elapses —
+    // the drain must fail the batch outright, never hijack scrolling on /home.
+    const h = harness({ layout: { '100': 0 }, maxY: 0 })
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('100', ['like'], false)
+    h.setPath('/home')
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([{ scope: 'like', ok: false }])
+    expect(startCount(h)).toBe(0) // no pass ever started
+    expect(h.scrollCalls.to).toEqual([]) // and no scroll was touched
+  })
+
+  it('fails the remaining pending clears when the user leaves the list mid-pass', async () => {
+    // '1' mounts and clears; '404' never mounts. Navigating away during the pass
+    // means the leftovers must fail now — not re-schedule against the wrong page.
+    const h = harness({
+      layout: { '1': 0 },
+      maxY: 0,
+      clear: async (_id, scopes) => {
+        h.setPath('/home')
+        return scopes.map((scope) => ({ scope, ok: true }))
+      },
+    })
+    const drain = makeScrollDrain(h.deps)
+
+    const cleared = drain.run('1', ['like'], false)
+    const gone = drain.run('404', ['like'], false)
+    await vi.runAllTimersAsync()
+
+    await expect(cleared).resolves.toEqual([{ scope: 'like', ok: true }])
+    await expect(gone).resolves.toEqual([{ scope: 'like', ok: false }])
+    expect(startCount(h)).toBe(1) // the pass did not re-schedule itself
+  })
+
+  it('backfills scopes the DOM clear left out of its results as failures', async () => {
+    // A clearer may report only the scopes it actually attempted; the waiter still
+    // gets an answer for every scope it asked about.
+    const h = harness({
+      layout: { '1': 0 },
+      maxY: 0,
+      clear: async () => [{ scope: 'like' as const, ok: true }],
+    })
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('1', ['like', 'bookmark'], false)
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([
+      { scope: 'like', ok: true },
+      { scope: 'bookmark', ok: false },
+    ])
+  })
+
+  it('holds a mid-clear re-queue for its own clear instead of failing it in-flight', async () => {
+    // A second run() for the same tweet lands while its clearMounted is awaited. The
+    // in-flight attempt never covered the new scope, so that waiter must NOT settle
+    // against its results (a false failure) — the re-queued entry clears on a later
+    // step and answers the second waiter truthfully.
+    const gate: Array<() => void> = []
+    const h = harness({
+      layout: { '1': 0 },
+      maxY: 0,
+      clear: async (_id, scopes) => {
+        if (gate.length === 0) await new Promise<void>((resolve) => gate.push(resolve))
+        return scopes.map((scope) => ({ scope, ok: true }))
+      },
+    })
+    const drain = makeScrollDrain(h.deps)
+
+    const first = drain.run('1', ['like'], false)
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 600) // pass started; clear('1') is in flight
+    const second = drain.run('1', ['bookmark'], false)
+    gate[0]?.()
+    await vi.runAllTimersAsync()
+
+    await expect(first).resolves.toEqual([{ scope: 'like', ok: true }])
+    await expect(second).resolves.toEqual([{ scope: 'bookmark', ok: true }])
+    expect(clearedIds(h)).toEqual(['1', '1']) // the re-queued entry ran its own clear
+  })
+
+  it('settles a same-scope mid-clear re-queue in flight, then clears it waiterless', async () => {
+    // Here the in-flight attempt DOES cover the re-queued waiter's scope, so both
+    // waiters settle against it; the re-queued pending entry still clears on a later
+    // step with no waiter left, and its results are dropped.
+    const gate: Array<() => void> = []
+    const h = harness({
+      layout: { '1': 0 },
+      maxY: 0,
+      clear: async (_id, scopes) => {
+        if (gate.length === 0) await new Promise<void>((resolve) => gate.push(resolve))
+        return scopes.map((scope) => ({ scope, ok: true }))
+      },
+    })
+    const drain = makeScrollDrain(h.deps)
+
+    const first = drain.run('1', ['like'], false)
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 600) // pass started; clear('1') is in flight
+    const second = drain.run('1', ['like'], false)
+    gate[0]?.()
+    await vi.runAllTimersAsync()
+
+    await expect(first).resolves.toEqual([{ scope: 'like', ok: true }])
+    await expect(second).resolves.toEqual([{ scope: 'like', ok: true }])
+    expect(clearedIds(h)).toEqual(['1', '1']) // the waiterless re-queued entry still cleared
+  })
+
   it('reports each scope outcome in the cleared trace (ok / noop / fail)', async () => {
     const h = harness({
       layout: { '1': 0 },
