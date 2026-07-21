@@ -171,6 +171,33 @@ describe('makeScrollDrain', () => {
     expect(stagesOf(h)).not.toContain('drain-start')
   })
 
+  it('fails the queued work when the user navigates away before the debounced pass fires', async () => {
+    const h = harness({ layout: { '1': 0 }, maxY: 2000 })
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('1', ['like'], false) // queued while on the Likes list
+    h.setPath('/home') // navigated away during the debounce window
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([{ scope: 'like', ok: false }])
+    expect(h.clearMounted).not.toHaveBeenCalled()
+    expect(h.scrollCalls.to).toHaveLength(0) // never hijacked scrolling on the new page
+    expect(stagesOf(h)).not.toContain('drain-start')
+  })
+
+  it('fails the remaining work instead of retrying when the user navigates away mid-pass', async () => {
+    const h = harness({ layout: {}, maxY: 0 }) // '1' never mounts, so it survives the pass
+    const drain = makeScrollDrain(h.deps)
+
+    const result = drain.run('1', ['like'], false)
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS) // the pass is now in flight
+    h.setPath('/home') // navigation lands while the pass is scrolling
+    await vi.runAllTimersAsync()
+
+    await expect(result).resolves.toEqual([{ scope: 'like', ok: false }])
+    expect(startCount(h)).toBe(1) // no empty-pass retries on the wrong page
+  })
+
   it('stops at the bottom after a run of stalls instead of running to the step cap', async () => {
     // '1' sits below the reachable bottom, so it never mounts; the pass must detect the
     // bottom (repeated no-progress) and end far short of MAX_STEPS (60).
@@ -248,6 +275,37 @@ describe('makeScrollDrain', () => {
     await vi.runAllTimersAsync()
 
     expect(seen.map((s) => [...s.scopes].sort())).toEqual([['bookmark', 'like']])
+  })
+
+  it('settles a same-tweet re-queue that lands while its clear is in flight', async () => {
+    // The second run's waiter is resolved from the FIRST clear's results (which don't
+    // include its scope, so it settles defensively), and the re-queued entry's own
+    // clear then finds no waiters left — neither side may dangle.
+    let requeue: (() => Promise<ReadonlyArray<ClearScopeResult>>) | null = null
+    let second: Promise<ReadonlyArray<ClearScopeResult>> | undefined
+    const h = harness({
+      layout: { '1': 0 },
+      maxY: 0,
+      clear: async (_id, scopes) => {
+        if (requeue !== null) {
+          second = requeue()
+          requeue = null
+        }
+        return scopes.map((scope) => ({ scope, ok: true }))
+      },
+    })
+    const drain = makeScrollDrain(h.deps)
+    requeue = () => drain.run('1', ['bookmark'], false)
+
+    const first = drain.run('1', ['like'], false)
+    await vi.runAllTimersAsync()
+
+    await expect(first).resolves.toEqual([{ scope: 'like', ok: true }])
+    await expect(second).resolves.toEqual([{ scope: 'bookmark', ok: false }])
+    expect(h.clearMounted.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ['1', ['like']],
+      ['1', ['bookmark']], // the re-queued entry still gets its own clear on the same pass
+    ])
   })
 
   it('reports each scope outcome in the cleared trace (ok / noop / fail)', async () => {
