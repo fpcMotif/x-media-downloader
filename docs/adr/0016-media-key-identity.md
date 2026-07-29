@@ -4,10 +4,10 @@
 
 ## Context
 
-A `MediaItem.id` is the unit of identity used to de-duplicate the **Detected
-Media Set**, key the launcher count (`store.count`), correlate a download
-(`SaveRequest.id` == `TransferOutcome.requestId`, ADR-0014), match an interrupt
-retry, and name the `.json` sidecar. But `id` was assigned **three different ways**
+A `MediaItem.id` is the adapter-local **Media Key**. It de-duplicates the
+**Detected Media Set** and keys the launcher count (`store.count`). Global media
+and sidecar save artifacts use distinct Save Request IDs. This ADR records the
+earlier X Media Key decision. At the time, `id` was assigned **three different ways**
 depending on which path produced the item:
 
 - the tee / Resolver → `legacy.media[].id_str` (X's numeric media id),
@@ -20,39 +20,45 @@ syndication-recovery review surfaced. The recovery path (ADR-0015) papered over
 the video case with a `recoveredKeys` guard, but the underlying identity was
 incoherent.
 
-This change rides the **DetectionStore** extraction (the overlay's four detection
-containers — `byId` / `byKey` / `recoveredKeys` / `recoveryAttempted` — consolidated
-into `core/adapters/x/detection-store.ts`, behavior-preserving). The store made the
-identity the single thing left to fix.
+This change rides the **DetectionStore** extraction (the overlay's detection
+containers consolidated behind one synchronous store). The store made identity
+the single thing left to fix.
 
 ## Decision
 
-**Identify every Media Item by its Media Key** (CONTEXT.md): the basename of the
-**resolved url** (the `/media/` photo or the chosen MP4), the same value
-`mediaKeyFromUrl` derives for hover matching.
+**Identify every X Media Item by its X Media Key** (CONTEXT.md): the basename of
+the **resolved url** (the `/media/` photo or the chosen MP4), the same value
+`mediaKeyFromUrl` derives for X hover matching. Media Keys remain adapter-local;
+Instagram and Threads own their identity derivation.
 
 - `resolveTweetMedia` (tee / syndication) and `resolveImageElement` (DOM) both set
   `id = basenameId(url)` — `id_str` and `${tweetId}-${index}` are gone. The same
   media now yields the same id from any path.
-- `tweetId` and `index` remain fields on the item (the filename template uses them,
-  `download/filename.ts` — never the id), so filenames are unchanged.
+- `postId` and `index` remain fields on the item. The filename engine uses them,
+  never `id`; legacy `{tweetId}` remains an alias for `{postId}`. Filenames are
+  unchanged.
 - The grain is **pure media key**, not a `${tweetId}:${mediaKey}` composite.
+- DetectionStore replacement is transactional: it removes every URL, poster,
+  post-membership, and post-video alias owned by the prior form before filing the
+  latest item. Passive capture may replace Recovery metadata; Recovery never
+  replaces a known asset.
 
-This was safe to change because **no production code parses the id scheme**:
-`isMirrorableRequest` only checks `!endsWith('.json')`, nothing reconstructs a
-tweetId from an id, and download↔outcome correlation only needs the id to be
-*consistent*, which it now is. (Two test fixtures derived a tweetId via
-`id.split('-')` — harmless no-ops on a dash-free media key.)
+This was safe to change because production code did not parse the prior id scheme.
+Global request identity is now explicit: `mediaRequestId(item)` and
+`sidecarRequestId(item)` produce injective, versioned artifact IDs. Ordinary
+non-reserved X Media Keys retain their raw form only for persisted compatibility.
+No consumer infers artifact kind from a `.json` suffix.
 
 ## Consequences
 
 - The tee-vs-DOM double-count is **gone**: same media → same id → counted once,
   queued once (a regression test pins each: `resolver.test.ts` and
   `xadapter.test.ts` assert tee and DOM agree on `id`).
-- `SaveRequest.id` stays unique per distinct media (the store collapses duplicates
-  *before* the download queue, so no colliding requests reach correlation).
-- Identity is now coherent across all detection paths, so the `recoveredKeys`
-  belt-and-suspenders in the DetectionStore is redundant (kept, harmless).
+- A global media Save Request ID stays unique per distinct media (the store
+  collapses duplicates before admission, so no colliding requests reach correlation).
+- X identity is coherent across its detection paths. The obsolete
+  `recoveredKeys` guard is removed because it blocked later Passive metadata and
+  post ownership.
 
 ## Known limitations (the accepted trade-off)
 
@@ -65,7 +71,7 @@ tweetId from an id, and download↔outcome correlation only needs the id to be
 ## Alternatives considered
 
 - **`${tweetId}:${mediaKey}` composite** — fixes the double-count (same tweet, same
-  media → one) *without* the cross-tweet collapse, and keeps per-tweet copies. A
+  media → one) _without_ the cross-tweet collapse, and keeps per-tweet copies. A
   more surgical change. Rejected in favor of the simpler pure key: cross-tweet
   duplication is rare, and one identity axis is easier to reason about than two.
 - **Keep the dual id/key model, just de-dup the count** — leaves the incoherent

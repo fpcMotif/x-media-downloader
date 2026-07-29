@@ -29,11 +29,9 @@ const SETTINGS_KEYS = [
   'maxFileSizeMB',
   'dailyMaxMB',
   'dailyMaxCount',
-  'local:daily-budget',
   // Advanced section (§3.3 row 8) — not enumerated in the spec's §6.2 list
   // but present in the row table; included here for full coverage.
   'autoRevealSensitiveEnabled',
-  'authFallbackEnabled',
   'showSavedStatus',
 ] as const
 
@@ -66,6 +64,15 @@ describe('Saving panel: nothing dropped from General + Downloads + Filters', () 
   it('merges under one PanelHeader titled Saving', () => {
     expect(source).toContain('title="Saving"')
     expect(source).toContain('SavingPanel')
+  })
+
+  it('uses the background-owned daily budget bridge, never local storage', () => {
+    expect(source).toContain('readDailyBudgetToday')
+    expect(source).toContain('resetDailyBudgetToday')
+    expect(source).not.toContain('local:daily-budget')
+    expect(source).not.toContain("from 'wxt/utils/storage'")
+    expect(source).not.toContain('freshRecord')
+    expect(source).not.toContain('BudgetRecord')
   })
 
   it('drops the dead per-item radius-4 class and overrides --radius on the Download mode wrapper (finding 6)', () => {

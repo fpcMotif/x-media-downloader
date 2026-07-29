@@ -1,24 +1,24 @@
 ---
 name: effect-v4
-description: Effect v4 (4.0.0-beta.78, "effect-smol") API patterns for this repo. Use BEFORE writing or editing any Effect code here (services, Layers, Schema, tagged errors, concurrency, retry). v4 is a rewrite — common v3 idioms (Effect.Service, Schema.optionalWith, decodeUnknownEither, ParseError, catchAll, makeSemaphore) DO NOT EXIST and will not compile.
+description: Effect v4 (4.0.0-beta.92, "effect-smol") API patterns for this repo. Use BEFORE writing or editing any Effect code here (services, Layers, Schema, tagged errors, concurrency, retry). v4 is a rewrite — common v3 idioms (Effect.Service, Schema.optionalWith, decodeUnknownEither, ParseError, catchAll, makeSemaphore) DO NOT EXIST and will not compile.
 ---
 
 # Effect v4 patterns (this repo)
 
-Installed: `effect@4.0.0-beta.78`. `Schema`, `Semaphore`, `Result` live in core (`import { … } from "effect"`); there is **no** `@effect/schema`. Full grounding + citations: [docs/research/2026-06-07-grounding.md](../../../docs/research/2026-06-07-grounding.md) §0,§f,§g.
+Installed: `effect@4.0.0-beta.92`. `Schema`, `Semaphore`, `Result` live in core (`import { … } from "effect"`); there is **no** `@effect/schema`. Full grounding + citations: [docs/research/2026-06-07-grounding.md](../../../docs/research/2026-06-07-grounding.md) §0,§f,§g.
 
 ## v3 → v4 cheatsheet (do NOT use the left column)
 
-| v3 (gone) | v4 (use this) |
-|---|---|
-| `class X extends Effect.Service<X>()("X", {…})` | `class X extends Context.Service<X, Shape>()("app/X") {}` + explicit `Layer` |
-| `X.Default` auto-layer | `Layer.succeed(X, impl)` / `Layer.effect(X, gen)` + `Layer.provide` |
-| `Schema.optionalWith(s, { default })` | `s.pipe(Schema.withDecodingDefaultKey(Effect.succeed(v)))` |
+| v3 (gone)                                            | v4 (use this)                                                                         |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `class X extends Effect.Service<X>()("X", {…})`      | `class X extends Context.Service<X, Shape>()("app/X") {}` + explicit `Layer`          |
+| `X.Default` auto-layer                               | `Layer.succeed(X, impl)` / `Layer.effect(X, gen)` + `Layer.provide`                   |
+| `Schema.optionalWith(s, { default })`                | `s.pipe(Schema.withDecodingDefaultKey(Effect.succeed(v)))`                            |
 | `Schema.decodeUnknownEither` → `Either`/`ParseError` | `Schema.decodeUnknownResult` → `Result`/`SchemaError` (or `decodeUnknownSync` throws) |
-| `Schema.union(a, b)` / `Schema.literal(...)` | `Schema.Union([a, b])` / `Schema.Literals([...])` (ARRAYS) |
-| `Effect.makeSemaphore(n)` | `Semaphore.make(n)` (own module); mutex = `Semaphore.make(1)` |
-| `Effect.catchAll(() => …)` | `Effect.orElseSucceed(() => v)` / `Effect.catchCause` / `Effect.catchTag` |
-| `Schema.Schema.Type<typeof S>` (still works) | prefer `typeof S.Type` |
+| `Schema.union(a, b)` / `Schema.literal(...)`         | `Schema.Union([a, b])` / `Schema.Literals([...])` (ARRAYS)                            |
+| `Effect.makeSemaphore(n)`                            | `Semaphore.make(n)` (own module); mutex = `Semaphore.make(1)`                         |
+| `Effect.catchAll(() => …)`                           | `Effect.orElseSucceed(() => v)` / `Effect.catchCause` / `Effect.catchTag`             |
+| `Schema.Schema.Type<typeof S>` (still works)         | prefer `typeof S.Type`                                                                |
 
 ## Service + Layer + DI
 
@@ -47,22 +47,31 @@ const QueueLive = Layer.effect(
 ## Concurrency + retry
 
 ```ts
-yield* Effect.forEach(items, work, { concurrency })            // number | 'unbounded' | 'inherit'
-self.pipe(Effect.retry(Schedule.exponential('100 millis', 2).pipe(Schedule.both(Schedule.recurs(3)))))
-sem.withPermits(1)(effect)                                     // bound a critical section
+yield * Effect.forEach(items, work, { concurrency }) // number | 'unbounded' | 'inherit'
+self.pipe(
+  Effect.retry(Schedule.exponential('100 millis', 2).pipe(Schedule.both(Schedule.recurs(3)))),
+)
+sem.withPermits(1)(effect) // bound a critical section
 ```
 
 ## Schema
 
 ```ts
 import { Schema, Result, Effect } from 'effect'
-const Item = Schema.Struct({ id: Schema.String, type: Schema.Literals(['photo', 'video', 'gif']), w: Schema.optional(Schema.Number) })
+const Item = Schema.Struct({
+  id: Schema.String,
+  type: Schema.Literals(['photo', 'video', 'gif']),
+  w: Schema.optional(Schema.Number),
+})
 export type Item = typeof Item.Type
-const Msg = Schema.Union([Schema.TaggedStruct('A', {}), Schema.TaggedStruct('B', { n: Schema.Number })])
+const Msg = Schema.Union([
+  Schema.TaggedStruct('A', {}),
+  Schema.TaggedStruct('B', { n: Schema.Number }),
+])
 
-const v = Schema.decodeUnknownSync(Item)(raw)                  // throws SchemaError
-const r = Schema.decodeUnknownResult(Item)(raw)               // Result<Item, SchemaError>
-if (Result.isFailure(r)) handle(r.failure.issue)              // .issue is a SchemaIssue tree
+const v = Schema.decodeUnknownSync(Item)(raw) // throws SchemaError
+const r = Schema.decodeUnknownResult(Item)(raw) // Result<Item, SchemaError>
+if (Result.isFailure(r)) handle(r.failure.issue) // .issue is a SchemaIssue tree
 ```
 
 Repo conventions: pure transforms (resolver, filename) stay plain functions — no service ceremony; only effectful/injected things become `Context.Service`. Tooling: `bun run effect:check` runs the `@effect/language-service` diagnostics CLI; the editor plugin is wired via `tsconfig.json` `compilerOptions.plugins`.

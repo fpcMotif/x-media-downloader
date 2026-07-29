@@ -8,7 +8,7 @@
 Generalize the extension's media-download pipeline — today hardcoded to X/Twitter end to end — so Instagram (`instagram.com`) and Threads (`threads.net` / `threads.com`) can be added as sibling platforms, each with completely different detection/DOM logic underneath, while:
 
 - The popup and options UI stay the shared surface, unchanged in structure — just platform-aware where it currently assumes "X" implicitly.
-- Download queue, admission gate, cloud upload, Convex sync, and export all keep operating on one generalized domain model, oblivious to which platform a `MediaItem` came from.
+- Start Queue, admission gate, cloud upload, Convex sync, and export all keep operating on one generalized domain model, oblivious to which platform a `MediaItem` came from.
 - Existing X users see zero behavior change (same default filenames, same readable Convex history) after the schema generalizes.
 
 This spec is the **abstraction pass only** — it defines the contract every platform implements and the domain-model/schema changes that let it exist. It does **not** implement Instagram or Threads. Those are separate, subsequent plans (see Non-goals).
@@ -16,6 +16,7 @@ This spec is the **abstraction pass only** — it defines the contract every pla
 ## Scope
 
 **In:**
+
 - `Platform` type + generalized `MediaItem`/sync-event schema (`tweetId`→`postId`, `handle`→`author`, new required `platform` field).
 - `PlatformAdapter` interface (`core/adapters/types.ts`) formalizing the contract the existing X adapter already structurally satisfies, plus a `registry.ts` (`adapterForUrl` / `adapterForHostname`).
 - Filename-template placeholder aliasing (`{handle}`/`{tweetId}` permanently alias `{author}`/`{postId}`) so saved user templates never break.
@@ -24,9 +25,10 @@ This spec is the **abstraction pass only** — it defines the contract every pla
 - Research-informed refinements: optional `findMediaNeedingRecovery` adapter method (X-only — no public fallback exists for IG or Threads), a shared `core/adapters/meta-shared/` media-node walker Instagram and Threads can both build on, and a widened `isTrackedResponseUrl(url, requestHeaders?)` signature.
 
 **Out (deferred, not designed here):**
+
 - Building the actual Instagram adapter (network filter, DOM resolution, live-verified selectors/operation names).
 - Building the actual Threads adapter.
-- The Convex backend migration *execution* (the mechanics are designed here; running it happens alongside the first platform's build).
+- The Convex backend migration _execution_ (the mechanics are designed here; running it happens alongside the first platform's build).
 - Clear-on-save equivalents (auto-unlike/unsave) for Instagram or Threads. The adapter interface doesn't preclude adding this later — it's simply not part of `PlatformAdapter` today, matching how `core/clear/*` isn't part of it either.
 - Knowledge Capture (text/reply-tree harvesting into `tweet_captures`) for Instagram or Threads — stays X-only. Its `conversationId`/`inReplyToTweetId` reply-tree model doesn't map onto IG/Threads comment structures and would need its own future design.
 - Instagram Stories. Genuinely lossy under a passive-capture design (only viewable-while-active, no backfill query exists) — a future decision, not blocking this round.
@@ -51,11 +53,11 @@ export const Platform = Schema.Literals(['x', 'instagram', 'threads'])
 export type Platform = typeof Platform.Type
 
 export const MediaItem = Schema.Struct({
-  id: Schema.String,          // media key — already platform-agnostic (hash of url), unchanged
-  platform: Platform,         // NEW
-  postId: Schema.String,      // was `tweetId`
-  author: Schema.String,      // was `handle`
-  type: MediaType,            // unchanged: photo | video | gif — reels/carousel items are just video/photo MediaItems, no new type needed
+  id: Schema.String, // media key — already platform-agnostic (hash of url), unchanged
+  platform: Platform, // NEW
+  postId: Schema.String, // was `tweetId`
+  author: Schema.String, // was `handle`
+  type: MediaType, // unchanged: photo | video | gif — reels/carousel items are just video/photo MediaItems, no new type needed
   url: Schema.String,
   previewUrl: Schema.optional(Schema.String),
   ext: Schema.String,
@@ -66,7 +68,7 @@ export const MediaItem = Schema.Struct({
 })
 ```
 
-Every downstream consumer (download queue, admission gate, `SavedIndex` dedup, cloud upload, export sidecars) already treats `tweetId`/`handle` as opaque strings — this is a mechanical rename at the schema boundary, no logic changes required in `core/download/*`, `core/cloud/*`, or `core/sync/*`.
+Every downstream consumer (Start Queue, admission gate, `SavedIndex` dedup, cloud upload, export sidecars) already treats `tweetId`/`handle` as opaque strings — this is a mechanical rename at the schema boundary, no logic changes required in `core/download/*`, `core/cloud/*`, or `core/sync/*`.
 
 `width`/`height` already existed as optional fields — Instagram's `image_versions2.candidates[]`/`video_versions[]` carry per-candidate dimensions natively, so no schema addition is needed there either.
 
@@ -81,8 +83,8 @@ Same rename, plus a required `platform` field on `media`, `media_state`, and `sy
 ```ts
 export const media = v.object({
   platform: v.union(v.literal('x'), v.literal('instagram'), v.literal('threads')),
-  postId: v.string(),   // was tweetId
-  author: v.string(),   // was handle
+  postId: v.string(), // was tweetId
+  author: v.string(), // was handle
   type: v.string(),
   url: v.string(),
   ext: v.string(),
@@ -92,14 +94,15 @@ export const media = v.object({
 
 `media_state.by_tweet` → `by_post` (`['postId']`); add `by_platform_post` (`['platform', 'postId']`) since `postId` alone is no longer globally unique across platforms (an Instagram shortcode and an X snowflake id colliding is unlikely but not impossible — worth being correct rather than lucky).
 
-`tweet_captures` is **untouched** — Knowledge Capture stays X-only (see Non-goals), so its `tweetId`/`handle`/`conversationId` naming is now *correctly* X-specific, not a generalization gap.
+`tweet_captures` is **untouched** — Knowledge Capture stays X-only (see Non-goals), so its `tweetId`/`handle`/`conversationId` naming is now _correctly_ X-specific, not a generalization gap.
 
 ### Migration mechanics (two-deploy pattern)
 
 1. Push the new schema with `platform`/`postId`/`author` as **optional** fields alongside the old `tweetId`/`handle` — avoids the "required field blocks the whole schema push" trap already noted in the existing schema's own comments (see the `tweetId: v.optional(v.string())` precedent on `media_state`).
-2. Run a backfill mutation over `media_state`/`sync_events`, paged, setting `platform: 'x'`, `postId: row.tweetId`, `author: row.handle` on every row missing them.
-3. Verify 100% coverage (a query confirming zero rows with `platform` still undefined), then flip `postId`/`author`/`platform` to required and drop `tweetId`/`handle` from the validators in a follow-up schema push.
-4. Client-side `sync.ts`/`captures.ts` mutation call sites switch to sending the new field names in the same PR that flips the schema.
+2. During deploy 1, normalize every accepted legacy retry to the new X fields before storage. Run the paged backfill over older `media_state` and `sync_events` rows, then repeat its returned cursors until both tables are done.
+3. Start a server-owned paged audit. Advance it until `done`; deploy 2 only when its cumulative `remaining` is zero and `complete` is true. A final clean page alone proves nothing.
+4. Then flip `postId`/`author`/`platform` to required and drop `tweetId`/`handle` from the validators in a follow-up schema push.
+5. Client-side `sync.ts`/`captures.ts` mutation call sites switch to sending the new field names in the same PR that flips the schema.
 
 ## Adapter contract + registry
 
@@ -167,7 +170,7 @@ core/adapters/
                          # /post/ anchors) + repost/quoted_post unwrapping
 ```
 
-`meta-shared/` exists because Instagram and Threads are, per research, the *same* backend media schema (`image_versions2.candidates[]`, `video_versions[]`, `carousel_media[]` — literally shared field names, not merely similar), while X's schema is unrelated. Sharing where platforms are genuinely the same and separating where they're genuinely different is the concrete test of whether this abstraction is doing its job.
+`meta-shared/` exists because Instagram and Threads are, per research, the _same_ backend media schema (`image_versions2.candidates[]`, `video_versions[]`, `carousel_media[]` — literally shared field names, not merely similar), while X's schema is unrelated. Sharing where platforms are genuinely the same and separating where they're genuinely different is the concrete test of whether this abstraction is doing its job.
 
 ### Two call-site patterns, one registry
 
@@ -194,15 +197,15 @@ Required (not optional), matching the existing X posture — the extension needs
 
 ## Platform capability comparison
 
-| | X (existing) | Instagram | Threads |
-|---|---|---|---|
-| Detection mechanism | MAIN-world fetch/XHR patch, filter by GraphQL operation name in URL | Same patch mechanism. Filter needs both GraphQL (`graphql/query`, matched via `x-fb-friendly-name` request header — more stable than the rotating `doc_id`) *and* REST (`/api/v1/...`) response shapes | Same patch mechanism. Filter by `doc_id`-keyed persisted queries — same dispatch model as X's own tee |
-| Media node shape | X-specific (`media_url_https`, `video_info.variants`) | `image_versions2.candidates[]` (photo), `video_versions[]` (video), `carousel_media[]` (recursive, same shape as a standalone post) | Identical field names to Instagram — literally the same backend schema |
-| No-auth public recovery fallback | Yes — `cdn.syndication.twimg.com`, used by `syndication.ts` | None — oEmbed is Meta-app-registration-gated | None — oEmbed equally gated |
-| DOM identity anchor | `article` + `a[href*="/status/"]` | `article` + `a[href*="/p/"]` or `/reel/"]` | `article` / `[role="article"]` / `div[data-pressable-container="true"]` + `a[href*="/post/"]` |
-| Post id shape | Single numeric tweet id | Numeric `pk` **+** separate URL `shortcode` | Numeric `pk`/thread id **+** separate URL `code` (shortcode) — same split as IG |
-| Ephemeral content | None | Stories (24h) — lossy, viewed-while-active only, no backfill (deferred, see Non-goals) | "Ghost posts" (Oct 2025) — text-only at launch, not a media-detection concern |
-| Reposts/quotes | Retweet wraps original tweet id | N/A (no repost concept) | `reposted_post` (bare repost) vs `quoted_post` (quote-post) — both need their media resolved separately |
+|                                  | X (existing)                                                        | Instagram                                                                                                                                                                                              | Threads                                                                                                 |
+| -------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| Detection mechanism              | MAIN-world fetch/XHR patch, filter by GraphQL operation name in URL | Same patch mechanism. Filter needs both GraphQL (`graphql/query`, matched via `x-fb-friendly-name` request header — more stable than the rotating `doc_id`) _and_ REST (`/api/v1/...`) response shapes | Same patch mechanism. Filter by `doc_id`-keyed persisted queries — same dispatch model as X's own tee   |
+| Media node shape                 | X-specific (`media_url_https`, `video_info.variants`)               | `image_versions2.candidates[]` (photo), `video_versions[]` (video), `carousel_media[]` (recursive, same shape as a standalone post)                                                                    | Identical field names to Instagram — literally the same backend schema                                  |
+| No-auth public recovery fallback | Yes — `cdn.syndication.twimg.com`, used by `syndication.ts`         | None — oEmbed is Meta-app-registration-gated                                                                                                                                                           | None — oEmbed equally gated                                                                             |
+| DOM identity anchor              | `article` + `a[href*="/status/"]`                                   | `article` + `a[href*="/p/"]` or `/reel/"]`                                                                                                                                                             | `article` / `[role="article"]` / `div[data-pressable-container="true"]` + `a[href*="/post/"]`           |
+| Post id shape                    | Single numeric tweet id                                             | Numeric `pk` **+** separate URL `shortcode`                                                                                                                                                            | Numeric `pk`/thread id **+** separate URL `code` (shortcode) — same split as IG                         |
+| Ephemeral content                | None                                                                | Stories (24h) — lossy, viewed-while-active only, no backfill (deferred, see Non-goals)                                                                                                                 | "Ghost posts" (Oct 2025) — text-only at launch, not a media-detection concern                           |
+| Reposts/quotes                   | Retweet wraps original tweet id                                     | N/A (no repost concept)                                                                                                                                                                                | `reposted_post` (bare repost) vs `quoted_post` (quote-post) — both need their media resolved separately |
 
 All endpoint names, `doc_id`/header values, and CSS selectors above are structural/behavioral summaries from current (2024–2025) reverse-engineering research, not a working configuration — every platform's actual adapter build must re-verify against the live site (network tab + DOM inspection) before writing detection code, exactly as the DOM-structure caveats already documented in this codebase (e.g. `docs/testing`) note for X's own selectors.
 

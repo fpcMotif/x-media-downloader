@@ -4,6 +4,10 @@ import { Data } from 'effect'
 export class DownloadError extends Data.TaggedError('DownloadError')<{
   readonly id: string
   readonly reason: string
+  /** False fences a side effect whose reply may have been lost. */
+  readonly retryable?: boolean
+  /** Why a start cannot be classified as a definite failure. */
+  readonly certainty?: 'ambiguous-handoff' | 'deferred-capacity'
 }> {}
 
 /** Media could not be detected/parsed from a source. */

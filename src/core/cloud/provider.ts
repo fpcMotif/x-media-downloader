@@ -1,6 +1,6 @@
 import { bindFetch } from '../fetch'
 import type { Settings } from '../schema'
-import { authHeader } from './http'
+import { authHeader, discardResponseBody } from './http'
 import {
   DROPBOX_HOST_PATTERNS,
   DROPBOX_OAUTH,
@@ -12,23 +12,29 @@ import {
 
 /**
  * The **Cloud Provider** record (CONTEXT.md): one cloud byte-upload destination
- * (ADR-0013). The single place provider identity is encoded — every dispatch site
- * reads a record from {@link PROVIDERS} instead of forking on `'gdrive' vs
- * 'dropbox'`. The byte adapters themselves are the `DriveUploader`/`DropboxUploader`
- * services (ADR-0017); the orchestrator runs them on the shared cloud runtime.
+ * (ADR-0013). Shared identity, OAuth, host, Settings, and revocation facts live
+ * in {@link PROVIDERS}. `CloudProviderSession` owns the one explicit byte-adapter
+ * dispatch and Google Drive's root-folder resolution (ADR-0017).
  */
 
 /** The per-provider flat-`Settings` field layout — every token read/write,
  *  connect, and disconnect reads off this instead of repeating the field names.
  *  `folderId` is gdrive-only; its absence on Dropbox preserves the asymmetric
  *  disconnect wipe (Dropbox must NOT clear a folder field it has no concept of). */
+type StringSettingKey = {
+  [Key in keyof Settings]: Settings[Key] extends string ? Key : never
+}[keyof Settings]
+type NumberSettingKey = {
+  [Key in keyof Settings]: Settings[Key] extends number ? Key : never
+}[keyof Settings]
+
 export interface ProviderFields {
-  readonly clientId: keyof Settings
-  readonly accessToken: keyof Settings
-  readonly refreshToken: keyof Settings
-  readonly expiry: keyof Settings
-  readonly account: keyof Settings
-  readonly folderId?: keyof Settings
+  readonly clientId: StringSettingKey
+  readonly accessToken: StringSettingKey
+  readonly refreshToken: StringSettingKey
+  readonly expiry: NumberSettingKey
+  readonly account: StringSettingKey
+  readonly folderId?: StringSettingKey
 }
 
 /** How a provider revokes its grant on disconnect, as data (ADR-0013 §4). Google
@@ -108,15 +114,15 @@ export async function revokeViaRecipe(
   if (credential === '') return
   const doFetch = bindFetch(fetchImpl)
   try {
-    if (recipe.via === 'formToken') {
-      await doFetch(recipe.endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ token: credential }).toString(),
-      })
-    } else {
-      await doFetch(recipe.endpoint, { method: 'POST', headers: authHeader(credential) })
-    }
+    const response =
+      recipe.via === 'formToken'
+        ? await doFetch(recipe.endpoint, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ token: credential }).toString(),
+          })
+        : await doFetch(recipe.endpoint, { method: 'POST', headers: authHeader(credential) })
+    await discardResponseBody(response)
   } catch {
     /* best-effort; local clear proceeds regardless */
   }

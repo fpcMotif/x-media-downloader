@@ -66,7 +66,7 @@ describe('planDownloads', () => {
     })
     expect(plan).toHaveLength(2)
     const sidecar = plan[1]!
-    expect(sidecar.id).toBe('m1.json')
+    expect(sidecar.id).toBe('xmd:v1:sidecar:x:2:m1')
     expect(sidecar.filename).toBe('alice/123_0.json')
     expect(sidecar.url.startsWith('data:application/json')).toBe(true)
 
@@ -84,6 +84,19 @@ describe('planDownloads', () => {
       date: '2026-06-08',
     })
     expect(plan[0]!.filename).toBe('2026-06-08/123_0.jpg')
+  })
+
+  it('namespaces non-X media and sidecar request IDs', () => {
+    const plan = planDownloads({
+      template: '{handle}/{tweetId}_{index}.{ext}',
+      item: { ...item, platform: 'instagram' },
+      sidecar: true,
+    })
+
+    expect(plan.map((request) => request.id)).toEqual([
+      'xmd:v1:media:instagram:2:m1',
+      'xmd:v1:sidecar:instagram:2:m1',
+    ])
   })
 })
 

@@ -35,6 +35,7 @@ export function makeSavedStatusCoordinator(deps: {
       // coalesces concurrent sweeps, so a scroll burst costs one query.
       void deps.index.refresh(ids, deps.queryConvex).then((fresh) => {
         if (fresh.length > 0) deps.notifyFresh?.(fresh)
+        return undefined
       })
       return { _tag: 'SavedStatusResponse', saved: deps.index.known(ids) }
     },

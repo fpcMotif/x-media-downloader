@@ -1,5 +1,5 @@
 import type { ComponentChildren, VNode } from 'preact'
-import type { Settings } from '@/core/schema'
+import type { Settings, SettingsUiPatch } from '@/core/schema'
 import { FieldGroup } from '@/components/ui/field'
 
 /** Every settings panel reads the live settings and writes through `update`;
@@ -7,7 +7,8 @@ import { FieldGroup } from '@/components/ui/field'
  *  out-of-band (e.g. cloud OAuth stores tokens). */
 export type PanelProps = {
   readonly settings: Settings
-  readonly update: (patch: Partial<Settings>) => Promise<void>
+  /** Caller-owned freshness gate prevents a late UI intent from persisting. */
+  readonly update: (patch: SettingsUiPatch, isCurrent?: () => boolean) => Promise<void>
   readonly reload: () => Promise<void>
 }
 

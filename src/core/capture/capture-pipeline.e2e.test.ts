@@ -164,7 +164,7 @@ describe('capture pipeline e2e (harvest → merge → tree → export)', () => {
   const jsonl = toJsonl(records)
 
   it('re-serves the same root tweet thin, then merges it against the rich thread', () => {
-    expect(rich.map((r) => r.tweetId).sort()).toEqual(['2001', '2002', '2003'])
+    expect(rich.map((r) => r.tweetId).toSorted()).toEqual(['2001', '2002', '2003'])
     expect(thin.map((r) => r.tweetId)).toEqual(['2001'])
     const root = records.find((r) => r.tweetId === '2001')!
     // The thin sighting was the LAST write for 2001 yet must not win.

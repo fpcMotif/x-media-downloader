@@ -1,17 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import {
   instagramAdapter,
-  INSTAGRAM_HOST_MATCH,
-  isInstagramUrl,
   isTrackedInstagramResponseUrl,
   postCodeFromPathname,
   visibleAreaInViewport,
 } from './adapter'
-import { META_CDN_HOSTS } from '../meta-shared/cdn'
+import {
+  INSTAGRAM_DESCRIPTOR,
+  INSTAGRAM_HOST_MATCH,
+  isInstagramUrl,
+  META_CDN_HOSTS,
+} from '../catalog'
+
+const rect = (top: number, left: number, width: number, height: number) => () =>
+  ({ top, left, right: left + width, bottom: top + height, width, height }) as DOMRect
 
 describe('INSTAGRAM_HOST_MATCH / isInstagramUrl', () => {
   it('is the single www.instagram.com host pattern', () => {
-    expect(INSTAGRAM_HOST_MATCH).toEqual(['*://www.instagram.com/*'])
+    expect(INSTAGRAM_HOST_MATCH).toEqual(['https://www.instagram.com/*'])
   })
 
   it('matches an instagram.com page url', () => {
@@ -64,6 +70,7 @@ describe('instagramAdapter', () => {
   it('reports the instagram platform tag and host patterns', () => {
     expect(instagramAdapter.platform).toBe('instagram')
     expect(instagramAdapter.hostMatch).toBe(INSTAGRAM_HOST_MATCH)
+    expect(instagramAdapter.matchesUrl).toBe(INSTAGRAM_DESCRIPTOR.matchesUrl)
   })
 
   it('reports the shared Meta CDN hosts', () => {
@@ -456,9 +463,6 @@ describe('instagramAdapter', () => {
         // smaller-area sibling mid-transition, must NOT also claim that same
         // code. An exact area tie is treated as "don't know which one is
         // active" and resolves to null on both sides, rather than guessing.
-        const rect = (top: number, left: number, width: number, height: number) => () =>
-          ({ top, left, right: left + width, bottom: top + height, width, height }) as DOMRect
-
         it('dominant hovered video (fills the 1024x768 viewport) resolves to post:code:{pathnameCode}, and postCodeFromElement returns the raw code', () => {
           const root = document.createElement('div')
           root.innerHTML = `

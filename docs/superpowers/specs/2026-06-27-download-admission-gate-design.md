@@ -7,26 +7,26 @@
 
 Two gaps in the current download path:
 
-1. **Duplicate downloads.** The only guard is an in-memory `inFlight: Set<MediaItem.id>` ([background.ts:105,696](../../../src/entrypoints/background.ts)) that prevents *concurrent* double-downloads and is cleared when a download settles. Scrolling past an already-saved post in a later session re-downloads it (the browser appends `(1)` to the filename). The `SavedIndex` machinery already answers "is this tweet saved?" (local-first → Convex backstop) but only feeds the timeline badge — it does not gate downloads.
+1. **Duplicate downloads.** The only guard is an in-memory `inFlight: Set<MediaItem.id>` ([background.ts:105,696](../../../src/entrypoints/background.ts)) that prevents _concurrent_ double-downloads and is cleared when a download settles. Scrolling past an already-saved post in a later session re-downloads it (the browser appends `(1)` to the filename). The `SavedIndex` machinery already answers "is this tweet saved?" (local-first → Convex backstop) but only feeds the timeline badge — it does not gate downloads.
 
 2. **No download filters.** There is no user-configurable way to skip large files, skip a media type, skip tiny images, or cap total download volume. The only size logic is a non-configurable 96 MiB OOM guard inside the Fetched strategy.
 
-Both are the same shape: *before scheduling, decide per planned download whether to admit or skip, and why.*
+Both are the same shape: _before scheduling, decide per planned download whether to admit or skip, and why._
 
 ## Decisions (locked during brainstorming)
 
-| Decision | Choice |
-|---|---|
-| Dedup granularity | **Per tweet** — reuses the existing tweetId-keyed `SavedIndex` + Convex `by_tweet` index; no new backend |
-| On duplicate | **Skip + show a count** (no force-override in v1) |
-| Dedup data source | Enabling dedup **auto-enables `downloadHistoryEnabled`**; Convex cross-device backstop stays opt-in (only when sync is configured) |
-| Filters in scope | Per-file size cap, daily total budget, media-type filter, min-resolution filter |
-| Size-cap enforcement | **HEAD preflight probe** (content-length), strategy-agnostic, fail-open |
-| Budget metric | **Both** bytes and file count (whichever limit is reached first) |
-| Budget window | **Per calendar day** (local), durable, auto-resets at midnight |
-| Scope of caps | **All download paths uniformly** (single click, bulk, Quick Grab) |
-| Budget hit | **Hard stop + notice** until the day rolls over or the user resets |
-| Default state | Every filter/cap independently toggleable, **all default off** → gate is a pass-through, identical to today |
+| Decision             | Choice                                                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Dedup granularity    | **Per tweet** — reuses the existing tweetId-keyed `SavedIndex` + Convex `by_tweet` index; no new backend                           |
+| On duplicate         | **Skip + show a count** (no force-override in v1)                                                                                  |
+| Dedup data source    | Enabling dedup **auto-enables `downloadHistoryEnabled`**; Convex cross-device backstop stays opt-in (only when sync is configured) |
+| Filters in scope     | Per-file size cap, daily total budget, media-type filter, min-resolution filter                                                    |
+| Size-cap enforcement | **HEAD preflight probe** (content-length), strategy-agnostic, fail-open                                                            |
+| Budget metric        | **Both** bytes and file count (whichever limit is reached first)                                                                   |
+| Budget window        | **Per calendar day** (local), durable, auto-resets at midnight                                                                     |
+| Scope of caps        | **All download paths uniformly** (single click, bulk, Quick Grab)                                                                  |
+| Budget hit           | **Hard stop + notice** until the day rolls over or the user resets                                                                 |
+| Default state        | Every filter/cap independently toggleable, **all default off** → gate is a pass-through, identical to today                        |
 
 ## Architecture: the Admission Gate
 
@@ -45,18 +45,15 @@ It splits into a **pure decision core** and a **thin async shell**, matching the
 No I/O, fully unit-testable.
 
 ```ts
-export type SkipReason =
-  | 'duplicate' | 'filtered-type' | 'too-small' | 'too-big' | 'daily-budget'
+export type SkipReason = 'duplicate' | 'filtered-type' | 'too-small' | 'too-big' | 'daily-budget'
 
-export type AdmissionDecision =
-  | { admit: true }
-  | { admit: false; reason: SkipReason }
+export type AdmissionDecision = { admit: true } | { admit: false; reason: SkipReason }
 
 export interface AdmissionContext {
-  readonly settings: FilterSettings   // the new Settings fields
+  readonly settings: FilterSettings // the new Settings fields
   readonly savedTweetIds: ReadonlySet<string> // tweets already saved (per-tweet dedup)
-  readonly sizeBytes: number | null   // probed content-length, or null if unknown/not probed
-  readonly budget: { bytes: number; count: number }  // running projection for THIS pass
+  readonly sizeBytes: number | null // probed content-length, or null if unknown/not probed
+  readonly budget: { bytes: number; count: number } // running projection for THIS pass
 }
 
 export function evaluateAdmission(item: MediaItem, ctx: AdmissionContext): AdmissionDecision
@@ -77,7 +74,7 @@ export function evaluateAdmission(item: MediaItem, ctx: AdmissionContext): Admis
 Owns the I/O the pure core forbids:
 
 - **Dedup input:** `SavedIndex.resolve(tweetIds, queryConvex)` → the saved subset → `savedTweetIds`. Local Set first; Convex `by_tweet` backstop only for unknown ids, only when sync configured. Never throws (degrades to local).
-- **Size input:** a new injected port `SizeProbePort { probe(url): Promise<number | null> }` — a HEAD request reading `content-length`. Invoked **only** when `maxFileSizeMB` *or* `dailyMaxBytes` is set, and **only** for candidates that survived the free filters and dedup. Returns `null` on missing header / error (fail-open).
+- **Size input:** a new injected port `SizeProbePort { probe(url): Promise<number | null> }` — a HEAD request reading `content-length`. Invoked **only** when `maxFileSizeMB` _or_ `dailyMaxBytes` is set, and **only** for candidates that survived the free filters and dedup. Returns `null` on missing header / error (fail-open).
 - **Budget input:** the durable daily-tally store (below).
 
 The shell walks candidates in order, builds `AdmissionContext` per item (maintaining the running budget projection), calls `evaluateAdmission`, and returns `{ admitted: PlannedDownload[], skipped: { req, reason }[] }`. `admitted` flows to `queue.enqueue`; `skipped` is summarized for the UI.
@@ -92,23 +89,37 @@ The shell walks candidates in order, builds `AdmissionContext` per item (maintai
 
 Four independent gates, each its own setting:
 
-| Filter | Setting(s) | Enforced via | Skip reason |
-|---|---|---|---|
-| Media-type | `skipTypes: ('video'\|'gif'\|'photo')[]` | `MediaItem.type` (free) | `filtered-type` |
-| Min-resolution | `minWidth`, `minHeight` | `MediaItem.width/height` when present (free) | `too-small` |
-| Per-file size cap | `maxFileSizeMB` | HEAD preflight → content-length | `too-big` |
-| Daily budget | `dailyMaxMB`, `dailyMaxCount` | durable per-day tally | `daily-budget` |
+| Filter            | Setting(s)                               | Enforced via                                 | Skip reason     |
+| ----------------- | ---------------------------------------- | -------------------------------------------- | --------------- |
+| Media-type        | `skipTypes: ('video'\|'gif'\|'photo')[]` | `MediaItem.type` (free)                      | `filtered-type` |
+| Min-resolution    | `minWidth`, `minHeight`                  | `MediaItem.width/height` when present (free) | `too-small`     |
+| Per-file size cap | `maxFileSizeMB`                          | HEAD preflight → content-length              | `too-big`       |
+| Daily budget      | `dailyMaxMB`, `dailyMaxCount`            | durable per-day tally                        | `daily-budget`  |
 
 ### Daily-budget store — `src/core/download/daily-budget.ts`
 
-- Durable record in its own WXT key `local:daily-budget`: `{ day: 'YYYY-MM-DD', bytes: number, count: number }`.
-- Pure logic under an injected clock: `readToday(now)` auto-resets when `day !== today(now)`; `add(bytes, count)` increments.
-- **Accounting timing:** incremented on **download completion** (terminal success — the same hook that fires `SavedIndex.onCompleted`), so failed/interrupted downloads never consume budget.
+- Durable state uses an exact bounded v1 envelope in `local:daily-budget`:
+  `{ version: 1, record: { day, bytes, count, creditedReceiptIds, resetAt } }`.
+  The two prior exact bare shapes migrate. Unknown versions, excess fields, and
+  corrupt values are quarantined.
+- One background owner serializes reads, migrations, completion credits, and
+  reset. A stable terminal projection ID credits once. Receipt count and total
+  JSON bytes are capped.
+- `readTodayForAdmission()` fails closed when another worst-case valid receipt
+  cannot fit. New launches stop before terminal projection can exceed storage.
+- **Accounting timing:** incremented on **download completion**. Failed or
+  interrupted downloads never consume budget. A terminal rejected at capacity
+  stays pending in the Transfer Registry.
 - **In-pass projection:** to enforce tightly within a single bulk grab before any completion lands, the admission pass seeds `budget` from `readToday()` and adds each item it admits this pass. Once the projection would cross either limit, remaining items are skipped `daily-budget`.
 - **Byte count source at completion:** actual `bytesReceived` when available (from the completion/metrics path), else the probed `content-length`, else 0.
-- Settings exposes a **"reset today"** button (zeros the record).
+- Settings exposes a **"reset today"** button. Reset clears receipts and writes
+  a monotonic `resetAt` fence, so an old terminal replay cannot restore usage.
+  Explicit reset may replace corrupt state. Day rollover safely starts a new
+  record.
 
-**Known v1 edge:** two bulk grabs fired back-to-back before any completion lands share a stale persisted total, so the day can overshoot slightly. Acceptable for a daily soft-lock; documented, not engineered around in v1.
+**Known limit:** two bulk grabs fired before completions land can share the same
+persisted usage projection. User-configured byte/count limits may overshoot.
+The durable receipt-capacity guard still stops launches once its ledger is full.
 
 ## Settings & UI
 
@@ -118,7 +129,7 @@ Four independent gates, each its own setting:
 
 ## Skipped feedback channel
 
-Skipped items never enter the queue, so `handleDownload` returns a `skipped` summary alongside its existing per-request outcomes. The overlay surfaces it where the current "saved/queued" feedback shows — e.g. *"5 downloaded · 3 skipped (2 already saved, 1 too big)"*, aggregated by reason.
+Skipped items never enter the queue, so `handleDownload` returns a `skipped` summary alongside its existing per-request outcomes. The overlay surfaces it where the current "saved/queued" feedback shows — e.g. _"5 downloaded · 3 skipped (2 already saved, 1 too big)"_, aggregated by reason.
 
 ## Error handling & edge cases
 

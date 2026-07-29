@@ -4,6 +4,7 @@ import { makeAdmissionGate, PROBE_CONCURRENCY } from './admission-gate'
 import { Settings, type MediaItem } from '../core/schema'
 import type { SavedIndex } from '../core/sync/saved-index'
 import type { SizeProbePort } from '../core/download/size-probe'
+import { DailyBudgetCapacityError } from './daily-budget-store'
 
 const baseSettings = (over: Partial<typeof Settings.Type>): typeof Settings.Type => ({
   ...Schema.decodeUnknownSync(Settings)({}),
@@ -22,6 +23,7 @@ const item = (over: Partial<MediaItem> & Pick<MediaItem, 'id' | 'postId'>): Medi
 
 const savedIndexReturning = (subset: string[]): SavedIndex => ({
   seed: () => {},
+  replace: () => {},
   markSaved: () => {},
   known: () => subset,
   refresh: async () => [],
@@ -65,6 +67,55 @@ describe('makeAdmissionGate', () => {
 
     expect(res.admitted).toEqual([it1, it2])
     expect(sizeProbe.probe).not.toHaveBeenCalled()
+  })
+
+  it('does not read budget state when both daily limits are disabled', async () => {
+    const readTodayBudget = vi.fn<() => Promise<{ bytes: number; count: number }>>(async () => {
+      throw new Error('corrupt budget')
+    })
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ dailyMaxMB: 0, dailyMaxCount: 0 }),
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
+      sizeProbe: { probe: async () => null },
+      readTodayBudget,
+    })
+    const candidate = item({ id: 'a', postId: 'T1' })
+
+    await expect(gate.admit([candidate])).resolves.toEqual({ admitted: [candidate], skipped: [] })
+    expect(readTodayBudget).not.toHaveBeenCalled()
+  })
+
+  it('fails closed on unavailable budget state when either daily limit is enabled', async () => {
+    const readTodayBudget = vi.fn<() => Promise<{ bytes: number; count: number }>>(async () => {
+      throw new Error('corrupt budget')
+    })
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ dailyMaxCount: 1 }),
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
+      sizeProbe: { probe: async () => null },
+      readTodayBudget,
+    })
+
+    await expect(gate.admit([item({ id: 'a', postId: 'T1' })])).rejects.toThrow('corrupt budget')
+    expect(readTodayBudget).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed before launch when the receipt ledger is full', async () => {
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ dailyMaxCount: Number.MAX_SAFE_INTEGER }),
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
+      sizeProbe: { probe: async () => null },
+      readTodayBudget: async () => {
+        throw new DailyBudgetCapacityError()
+      },
+    })
+
+    await expect(gate.admit([item({ id: 'a', postId: 'T1' })])).rejects.toThrow(
+      DailyBudgetCapacityError,
+    )
   })
 
   it('drops a duplicate item via the saved-media set', async () => {
@@ -119,6 +170,34 @@ describe('makeAdmissionGate', () => {
 
     expect(res.admitted).toEqual([])
     expect(res.skipped).toEqual([{ item: again, reason: 'duplicate' }])
+  })
+
+  it('queries duplicate state by global identity across platforms', async () => {
+    const resolve = vi.fn<SavedIndex['resolve']>(async (ids) =>
+      ids.filter((id) => id === 'xmd:v1:media:instagram:6:shared'),
+    )
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ preventDuplicateDownloads: true }),
+      savedMediaIndex: {
+        seed: () => {},
+        replace: () => {},
+        markSaved: () => {},
+        known: () => [],
+        refresh: async () => [],
+        resolve,
+      },
+      queryConvexMedia,
+      sizeProbe: { probe: async () => null },
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+    const x = item({ id: 'shared', postId: '1' })
+    const instagram = item({ id: 'shared', postId: '2', platform: 'instagram' })
+
+    const result = await gate.admit([x, instagram])
+
+    expect(resolve.mock.calls[0]?.[0]).toEqual(['shared', 'xmd:v1:media:instagram:6:shared'])
+    expect(result.admitted).toEqual([x])
+    expect(result.skipped).toEqual([{ item: instagram, reason: 'duplicate' }])
   })
 
   it('size cap skips an over-cap file and fails open on an unknown size', async () => {

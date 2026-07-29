@@ -5,7 +5,7 @@
 
 ## Context
 
-The cloud byte path (`src/core/cloud/`) threaded its dependencies by hand: a `DriveDeps` bag (`{ accessToken, rootFolderId, fetchImpl, fetchSource, folderCache: Map }`) passed through `makeDriveDestination` per upload, with the orchestrator owning the `Map` cache and the SSRF-guarded source fetch. Two asks drove a rewrite:
+The cloud byte path (`src/core/cloud/`) threaded its dependencies by hand: a `DriveDeps` bag (`{ accessToken, rootFolderId, fetchImpl, fetchSource, folderCache: Map }`) passed through `makeDriveDestination` per upload, with the orchestrator owning the `Map` cache and the media-URL-policy source fetch. Two asks drove a rewrite:
 
 - **(a)** move the injected `fetch` from a plain parameter to a Layer-provided **`FetchService`**, so the dependency is tracked in the Effect `R` channel and swapped by a Layer in tests;
 - **(d)** decompose `DriveDeps` into composed Layers, modelling the across-SW-life folder cache as a `Ref`.

@@ -1,3 +1,6 @@
+import { MAX_TEE_BODY_BYTES } from '../../tee-contract'
+import { utf8ByteLengthAtMost } from '../../wire/utf8'
+
 /**
  * Extracts candidate server-embedded data payloads from a page's inline
  * `<script>` tags — the cold-navigation counterpart to the MAIN-world
@@ -24,19 +27,51 @@ export interface ScriptLike {
   readonly textContent: string | null
 }
 
+/** One cold-navigation intake may retain at most one tee body's worth of JSON. */
+export const MAX_INLINE_DATA_BYTES = MAX_TEE_BODY_BYTES
+
+/** Real pages need a few preloaders. This leaves headroom without unbounded fan-out. */
+export const MAX_INLINE_DATA_SCRIPTS = 64
+
+/** Maximum script elements examined during the one-shot cold-navigation scan. */
+export const MAX_INLINE_DOCUMENT_SCRIPTS = 4_096
+
 /**
  * The `textContent` of every `<script type="application/json">` in `scripts`
  * with non-empty content, in document order. Takes an ArrayLike/Iterable so
  * `document.scripts` (an `HTMLCollectionOf<HTMLScriptElement>`, not a real
  * array) can be passed directly without a caller-side `Array.from`.
+ *
+ * Admission is atomic. If candidate count or aggregate UTF-8 bytes exceed the
+ * page budget, no payload is returned and therefore none can reach JSON.parse.
  */
 export function inlineDataPayloads(scripts: ArrayLike<ScriptLike>): string[] {
   const out: string[] = []
-  for (let i = 0; i < scripts.length; i++) {
-    const script = scripts[i] as ScriptLike
-    if (script.type !== 'application/json') continue
-    if (!script.textContent) continue
-    out.push(script.textContent)
+  let candidateScripts = 0
+  let retainedBytes = 0
+  try {
+    const scriptCount = scripts.length
+    if (
+      !Number.isSafeInteger(scriptCount) ||
+      scriptCount < 0 ||
+      scriptCount > MAX_INLINE_DOCUMENT_SCRIPTS
+    )
+      return []
+    for (let i = 0; i < scriptCount; i++) {
+      const script = scripts[i] as ScriptLike
+      const type = script.type
+      if (type !== 'application/json') continue
+      const body = script.textContent
+      candidateScripts += 1
+      if (candidateScripts > MAX_INLINE_DATA_SCRIPTS) return []
+      if (!body) continue
+      const bytes = utf8ByteLengthAtMost(body, MAX_INLINE_DATA_BYTES - retainedBytes)
+      if (bytes === undefined) return []
+      retainedBytes += bytes
+      out.push(body)
+    }
+  } catch {
+    return []
   }
   return out
 }

@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import type { RawMedia } from '../../resolver'
-import { forEachTweetNode, findAuthor, NESTED_TWEET_KEYS, type Author } from './walk'
+import {
+  forEachTweetNode,
+  findAuthor,
+  MAX_TRAVERSAL_NODES,
+  NESTED_TWEET_KEYS,
+  type Author,
+} from './walk'
 import { detectFromJson } from './index'
 import tweetDetailThread from '../../../test/fixtures/tweet-detail-thread.json'
 
@@ -37,6 +43,26 @@ const photoTweet = (rest_id: string, screen_name: string): object => ({
 })
 
 describe('forEachTweetNode', () => {
+  it('fails closed without emitting a partial result when hostile nesting exhausts traversal depth', () => {
+    let json: unknown = 0
+    for (let index = 0; index < 300; index += 1) json = { nested: json }
+    const visited: Visit[] = []
+
+    expect(forEachTweetNode(json, (value) => visited.push(value))).toBe(false)
+    expect(visited).toEqual([])
+  })
+
+  it('fails closed without emitting a partial result when hostile breadth exhausts traversal gas', () => {
+    const json = [
+      photoTweet('partial', 'alice'),
+      ...Array.from({ length: MAX_TRAVERSAL_NODES + 1 }, () => ({})),
+    ]
+    const visited: Visit[] = []
+
+    expect(forEachTweetNode(json, (value) => visited.push(value))).toBe(false)
+    expect(visited).toEqual([])
+  })
+
   it('yields one visit per tweet node with { node, tweetId, handle, author, mediaRaw }', () => {
     const result = photoTweet('1790', 'alice')
     const visits = collect({ data: { tweetResult: { result } } })
@@ -63,6 +89,34 @@ describe('forEachTweetNode', () => {
     })
     expect(visits).toHaveLength(1)
     expect(visits[0]!.tweetId).toBe('7100')
+  })
+
+  it('drops malformed media nodes but keeps a valid sibling', () => {
+    const visits = collect({
+      data: {
+        result: {
+          rest_id: '7200',
+          legacy: {
+            extended_entities: {
+              media: [
+                {
+                  type: 'photo',
+                  media_url_https: 'https://pbs.twimg.com/media/bad-size.jpg',
+                  sizes: { large: { w: 'wide', h: 10 } },
+                },
+                {
+                  type: 'photo',
+                  media_url_https: 'https://pbs.twimg.com/media/valid.jpg',
+                },
+              ],
+            },
+          },
+        },
+      },
+    })
+    expect(visits[0]!.mediaRaw).toEqual([
+      { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/valid.jpg' },
+    ])
   })
 
   it('unwraps TweetWithVisibilityResults to its inner .tweet', () => {

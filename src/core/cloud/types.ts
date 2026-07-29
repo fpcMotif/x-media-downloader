@@ -7,6 +7,12 @@
  */
 
 import { CLOUD_PROVIDERS } from '../schema'
+import { MAX_TRANSFER_FILENAME_LENGTH } from '../wire/limits'
+
+/** Opaque provider object or revision identifier. */
+export const MAX_CLOUD_REMOTE_ID_LENGTH = 4 * 1024
+/** Dropbox API paths add one leading slash to the logical relative path. */
+export const MAX_DROPBOX_API_PATH_LENGTH = MAX_TRANSFER_FILENAME_LENGTH + 1
 
 export type CloudProviderId = (typeof CLOUD_PROVIDERS)[number]
 
@@ -51,12 +57,42 @@ export interface UploadInput {
   readonly target: UploadTarget
 }
 
+/** Durable provider identity for one logical blob. It is bound to a connection
+ * before provider bytes may be written. Paths are placement only, never identity. */
+export type RemoteAttempt =
+  | {
+      readonly kind: 'gdrive'
+      /** SHA-256 binding to the exact OAuth connection that prepared this id. */
+      readonly ownerKey: string
+      /** Pre-generated Drive file id. Every create retry reuses it. */
+      readonly fileId: string
+    }
+  | {
+      readonly kind: 'dropbox'
+      readonly phase: 'prepared'
+      readonly ownerKey: string
+      /** Deterministic, job-owned path inside the Dropbox App Folder. */
+      readonly stagePath: string
+    }
+  | {
+      readonly kind: 'dropbox'
+      readonly phase: 'staged'
+      readonly ownerKey: string
+      readonly stagePath: string
+      /** Stable across Dropbox moves. */
+      readonly fileId: string
+      readonly rev: string
+      readonly contentHash: string
+      readonly bytes: number
+    }
+
 /** Honest, three-way outcome of one upload attempt. `sourceGone` (twimg 403/410,
  *  link-rot) is distinct from a real `failure` — it is never retried as a fault. */
 export type UploadOutcome =
   | {
       readonly kind: 'success'
       readonly bytes: number
+      /** Intended placement when settled; remoteId, when present, is authoritative. */
       readonly remotePath: string
       readonly remoteId?: string
     }
@@ -68,6 +104,26 @@ export type UploadOutcome =
        *  popup classifier dispatch structurally instead of regexing `reason`. */
       readonly status?: number
     }
+
+/** One durable saga step. `progress` must be fenced and persisted before the
+ * adapter may perform its next provider side effect. */
+export type BlobAttemptAdvance =
+  | { readonly kind: 'progress'; readonly attempt: RemoteAttempt }
+  | UploadOutcome
+
+/** Deep provider-attempt seam. Drive and Dropbox both earn it; callers need not
+ * know either provider's create, staging, proof, or move protocol. */
+export interface CloudBlobAttempt {
+  readonly prepare: (input: {
+    readonly jobId: string
+    readonly ownerKey: string
+    readonly upload: UploadInput
+  }) => Promise<RemoteAttempt>
+  readonly advance: (input: {
+    readonly attempt: RemoteAttempt
+    readonly upload: UploadInput
+  }) => Promise<BlobAttemptAdvance>
+}
 
 /** A provider-agnostic byte sink. The Drive/Dropbox adapters each satisfy this
  *  via a factory that captures provider deps (token, fetch, folder cache) in a
@@ -95,9 +151,9 @@ export const GDRIVE_OAUTH: OAuthConfig = {
 export const DROPBOX_OAUTH: OAuthConfig = {
   authEndpoint: 'https://www.dropbox.com/oauth2/authorize',
   tokenEndpoint: 'https://api.dropboxapi.com/oauth2/token',
-  // Least privilege (ADR-0013 §5). The account label comes from the token
-  // response's account_id, which Dropbox returns without account_info.read.
-  scope: 'files.content.write',
+  // App-folder least privilege (ADR-0013 §5). Metadata read is required to
+  // reconcile a stable file id after an uncertain move response.
+  scope: 'files.content.write files.metadata.read',
   extraAuthParams: { token_access_type: 'offline' },
 }
 

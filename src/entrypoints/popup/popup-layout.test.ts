@@ -97,9 +97,9 @@ describe('the bare "Clear" verb is retired everywhere in the popup (design contr
     expect(captureQuickActionsSource).not.toContain('Clear archive')
   })
 
-  it('uses the three-verb system instead: Reset / Erase / Release', () => {
-    expect(popupSource).toContain('Release this page')
-    expect(popupSource).toContain('Release the whole list')
+  it('keeps Reset, Erase, and verified release-after-download', () => {
+    expect(popupSource).toContain('Release after download')
+    expect(popupSource).not.toContain('Release the whole list')
     expect(popupSource).toContain('Reset')
     expect(captureQuickActionsSource).toContain('Erase archive')
     expect(captureQuickActionsSource).toContain('Erase the archive')
@@ -125,22 +125,11 @@ describe('no transition-all anywhere in the popup (spec §2.7)', () => {
   })
 })
 
-describe('popup hosts the whole-list release, gated to list pages via the tab-context matrix', () => {
-  it('messages the release handlers and gates the whole-list row to onListPage', () => {
-    expect(popupSource).toContain('ClearVisibleRequest')
-    expect(popupSource).toContain('ClearWholeListRequest')
-    expect(popupSource).toContain('onListPage')
-    // ordering pin: the whole-list release request only appears after the
-    // onListPage-gated branch of ReleaseCluster begins.
-    const onListPageIdx = popupSource.indexOf('onListPage ?')
-    const wholeListIdx = popupSource.indexOf('ClearWholeListRequest')
-    expect(onListPageIdx).toBeGreaterThan(-1)
-    expect(wholeListIdx).toBeGreaterThan(onListPageIdx)
-  })
-
-  it('renders the Release cluster only inside the X-context branch', () => {
-    expect(popupSource).toContain('ReleaseCluster')
-    expect(popupSource).toContain("(ctx === 'x' || ctx === 'x-list') &&")
+describe('popup excludes unsafe download-free release actions', () => {
+  it('has no direct page or list release intent', () => {
+    expect(popupSource).not.toContain("{ kind: 'release-page' }")
+    expect(popupSource).not.toContain("{ kind: 'release-list' }")
+    expect(popupSource).not.toContain('ReleaseCluster')
   })
 })
 
@@ -168,7 +157,7 @@ describe('popup local data: history wipe stays in Settings, harvest wipe moves i
 
   it('offers a harvest-archive wipe via the inline CaptureQuickActions component', () => {
     expect(popupSource).toContain('CaptureQuickActions')
-    expect(captureQuickActionsSource).toContain('ClearCaptureRequest')
+    expect(captureQuickActionsSource).toContain('requestCaptureErase')
   })
 })
 
@@ -179,7 +168,7 @@ describe('popup hosts a minimal capture toggle', () => {
   })
 
   it('hosts a trimmed (3-row) recent-conversation list with per-conversation exports via CaptureQuickActions', () => {
-    expect(popupSource).toContain('fetchCaptureSummary(3)')
+    expect(popupSource).toContain('useCaptureSummary()')
     expect(captureQuickActionsSource).toContain('RECENT_LIMIT')
     expect(captureQuickActionsSource).toContain('Export all')
   })
@@ -220,7 +209,7 @@ describe('CaptureQuickActions renders a popup-sized recent-archive disclosure', 
     expect(captureQuickActionsSource).toContain(
       'if (tweets === 0 && statusMsg === null) return null',
     )
-    expect(captureQuickActionsSource).toContain("_tag: 'ClearCaptureRequest'")
+    expect(captureQuickActionsSource).toContain('requestCaptureErase')
     expect(captureQuickActionsSource).toContain('Export all')
     expect(captureQuickActionsSource).toContain('ConfirmStrip')
   })

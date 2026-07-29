@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-07
 - **Status:** Draft (awaiting user approval)
-- **Working name:** X Media Downloader (`x-media-downloader`) — *overridable*
+- **Working name:** X Media Downloader (`x-media-downloader`) — _overridable_
 
 ## 1. Overview
 
@@ -18,7 +18,7 @@ Effect-TS for the core, built test-first (TDD).
 - Swift UX: in-page hover controls (zero context switch) **and** a popup queue/manager.
 - Minimalist, well-designed, extensible UI; flexible filename templating.
 - Stay within X policy by default (no scraping / no endpoint enumeration).
-- Everything local: no servers, no telemetry.
+- Local-first with no telemetry by default; remote features are separate opt-ins.
 
 ### Non-goals (YAGNI, this version)
 
@@ -27,25 +27,23 @@ Effect-TS for the core, built test-first (TDD).
 - Non-X sources (the adapter seam exists, but only `XAdapter` ships).
 - Firefox/Safari ports (WXT keeps them cheap later; not targeted now).
 
-## 2. Policy & Compliance Posture *(load-bearing)*
+## 2. Policy & Compliance Posture _(load-bearing)_
 
 The default path never does anything X's ToS treats as scraping. Validated
 against prior art (Media Harvest is explicitly "not a crawler"; it reads the
 page's own tweet responses).
 
 - **Passive layer (default).** A content script injects a script into the page's
-  **MAIN world** that tees X's *own* `fetch`/`XMLHttpRequest` JSON responses
+  **MAIN world** that tees X's _own_ `fetch`/`XMLHttpRequest` JSON responses
   (`TweetDetail`, `TweetResultByRestId`, timeline entries). We **issue no extra
   network requests** in this mode — media URLs come only from data the user's
   own browsing already fetched, plus `<img>`/`<video>` already in the DOM.
   - Photo: rewrite `pbs.twimg.com/...&name=small` → `name=orig`, with the
     gallery-dl fallback chain `[orig, 4096x4096, large, medium, small]`.
   - Video/GIF: pick the max-bitrate entry from `video_info.variants[]`.
-- **Authenticated fallback (hybrid escalation, opt-in per action).** Only when
-  the user explicitly clicks "grab full thread" *and* that data isn't already
-  teed, replay **one** GraphQL request reusing the page's existing
-  session/bearer/csrf (captured from the teed request headers). Rate-limited,
-  gated behind a settings toggle that defaults **off**. No auto-enumeration.
+- **Recovery.** ADR-0015 permits one bounded, unauthenticated request to X's
+  public syndication endpoint for a visibly mounted, tee-missed video. No
+  authenticated replay or profile enumeration.
 - **Guardrails.** Download-only of media the logged-in user can already see;
   per-CDN concurrency limit + backoff; never bypass protected/age-gated auth;
   no external network egress; no analytics.
@@ -83,10 +81,9 @@ layer. All boundary data validated with **Effect Schema**; errors are
 `Data.TaggedError`.
 
 - **`SourceAdapter`** — interface: `detectMedia(ctx) → Effect<MediaItem[], DetectError>`.
-  `XAdapter` is the only impl. The extensibility seam (new sites / media types).
-- **`MediaResolver`** — teed JSON + DOM → validated `MediaItem[]`: photo
-  orig-upgrade, video variant selection, dedupe by canonical id. Mirrors
-  gallery-dl `twitter.py` logic.
+  X, Instagram, and Threads implement the same platform boundary.
+- **`MediaResolver`** — teed JSON + DOM → validated `MediaItem[]`: original-photo
+  selection, best video variant, and dedupe by the adapter's Media Key.
 - **`DownloadQueue`** — `Effect.forEach` over a **Semaphore** (concurrency ~3) +
   `Schedule` exponential backoff retry for transient CDN failures; drives
   `chrome.downloads`. Emits progress events.
@@ -96,20 +93,22 @@ layer. All boundary data validated with **Effect Schema**; errors are
 
 ### Data model (Effect Schema)
 
-- `MediaItem`: `{ id, tweetId, handle, type: 'photo'|'video'|'gif', url, ext, index, width?, height?, bitrate? }`
-- `Settings`: `{ filenameTemplate, downloadConcurrency, authFallbackEnabled, theme }`
+- `MediaItem`: `{ id, platform, postId, author, type: 'photo'|'video'|'gif', url, previewUrl?, ext, index, width?, height?, bitrate? }`
+- `Settings`: `{ filenameTemplate, downloadConcurrency, downloadStrategy, theme }`
 - `Message`: tagged union — `DetectRequest`, `MediaDetected`, `DownloadRequest`,
   `QueueUpdate`, `SettingsGet/Set`.
 
 ## 5. Download mechanism & filename templating
 
-- **Download Strategy** (ADR-0003): *Direct* (default) hands the Original-quality
-  URL to `chrome.downloads.download` (`conflictAction: 'uniquify'`); *Fetched*
-  (opt-in) fetches bytes in the SW and saves via an offscreen document. Both sit
-  behind a seam in `core/download`.
-- Default template: `{handle}/{tweetId}_{index}.{ext}` — editable in settings.
-  Tokens: `{handle} {tweetId} {index} {ext} {type} {date}`. Rendered by a small
-  pure token engine (unit-tested).
+- **Download Strategy** (ADR-0003): _Direct_ (default) hands the Original-quality
+  URL to `chrome.downloads.download` (`conflictAction: 'uniquify'`); _Fetched_
+  (opt-in) checks the HTTP response type, caps the stream at 15 MiB, and builds a
+  Blob URL through an offscreen document before the worker saves it. It does not
+  hash or inspect file bytes. Both sit behind a seam in `core/download`.
+- Default template: `{platform}/{tweetId}_{index}.{ext}` — editable in settings.
+  Tokens: `{author} {postId} {platform} {index} {ext} {type} {date}`.
+  `{handle}` and `{tweetId}` remain aliases for saved templates. A small pure
+  token engine renders them.
 - Bulk = enqueue every `MediaItem` from the tweet/thread through `DownloadQueue`
   (rate-limited, resumable).
 
@@ -166,7 +165,7 @@ Core stays UI/chrome-agnostic → pure-unit-testable and reusable behind the ada
 
 - **EltonChou/TwitterMediaHarvest** (Media Harvest) — MV3 TS extension; "not a
   crawler," reads tweet responses, customizable filenames, original-size. Product
-  + posture reference. (Uses `cookies`; we avoid it.)
+  - posture reference. (Uses `cookies`; we avoid it.)
 - **mikf/gallery-dl** `gallery_dl/extractor/twitter.py` — canonical extraction:
   `name=orig` size fallback chain, max-bitrate variant. Resolver logic + fixture shapes.
 - **rxliuli — "Intercepting network requests in Chrome extensions"** — MAIN-world
@@ -178,13 +177,14 @@ Core stays UI/chrome-agnostic → pure-unit-testable and reusable behind the ada
 ## 11. Decisions taken (overridable)
 
 - Name: `x-media-downloader`.
-- Extraction: hybrid (passive default, auth fallback opt-in, default off).
+- Extraction: passive, with ADR-0015's bounded unauthenticated X-video recovery.
 - Bulk scope: tweet + thread.
 - UI: both in-page overlays and popup manager; Preact + Tailwind v4.
-- Default filename: `{handle}/{tweetId}_{index}.{ext}`.
+- Default filename: `{platform}/{tweetId}_{index}.{ext}`.
 - ZIP + profile-tab enumeration: out of scope this version.
 - Deployment: CWS requires a privacy-policy URL + Privacy Practices tab +
-  Limited-Use certification even though we're local-only / no-telemetry (task 013).
+  Limited-Use certification. The product is local-first with no telemetry by
+  default (task 013).
 
 ## 12. Milestones (detailed plan to follow via writing-plans)
 

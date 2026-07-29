@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
+import { Schema } from 'effect'
 import { fakeBrowser } from 'wxt/testing'
 import { makeTabBroadcaster, type TabsPort } from './tab-broadcaster'
-import { allAdapterHostMatch } from '../core/adapters/registry'
+import { allPlatformHostMatch } from '../core/adapters/catalog'
+import { projectContentSettings, Settings } from '../core/schema'
 
-// The tab-broadcaster SHELL through an injected TabsPort. Pins the irreversible-clear
-// targeting guarantee that clear-coordinator.test.ts mocks away: the origin tab is
-// tried FIRST and the loop stops at the first MOUNTED tab, so a background list tab can
-// never win and un-bookmark a post meant only for its own feed's clear.
+// The tab-broadcaster shell proves the irreversible boundary: Locate is read-only;
+// Clear has one explicit tab id and never falls through after a lost reply.
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0))
 
@@ -15,7 +15,7 @@ function fakeTabs(ids: number[], responses: Record<number, unknown> = {}) {
   const sent: Array<{ tabId: number; message: unknown }> = []
   return {
     sent,
-    queryXTabs: vi.fn<TabsPort['queryXTabs']>(async () => ids),
+    queryPlatformTabs: vi.fn<TabsPort['queryPlatformTabs']>(async () => ids),
     sendTabMessage: vi.fn<TabsPort['sendTabMessage']>(async (tabId, message) => {
       sent.push({ tabId, message })
       const r = responses[tabId]
@@ -25,71 +25,85 @@ function fakeTabs(ids: number[], responses: Record<number, unknown> = {}) {
   }
 }
 
-/** A mounted tab's ClearTweetResponse (only `.results` is read by the shell). */
-const clearResp = (...scopes: ReadonlyArray<'bookmark' | 'like' | 'notInterested'>) => ({
-  results: scopes.map((scope) => ({ scope, ok: true })),
+const locateResp = (...scopes: ReadonlyArray<'bookmark' | 'like' | 'notInterested'>) => ({
+  _tag: 'LocateClearTweetResponse',
+  mounted: true,
+  results: scopes.map((scope) => ({ scope, state: 'actionable' })),
 })
 
-describe('sendClearToTabs — clear targeting', () => {
-  it('messages the origin tab first and short-circuits at the first mounted tab', async () => {
-    const tabs = fakeTabs([1, 2, 3], { 2: clearResp('bookmark') })
-    const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'], 2)
-    expect(res).toEqual({ mounted: true, results: [{ scope: 'bookmark', ok: true }] })
-    expect(tabs.sendTabMessage).toHaveBeenCalledTimes(1) // stopped after the origin tab
-    expect(tabs.sent[0]!.tabId).toBe(2) // origin tab tried FIRST, before 1 and 3
+describe('locateClearTweet — read-only targeting', () => {
+  it('queries every tab, with the origin first, and retains every mounted candidate', async () => {
+    const tabs = fakeTabs([1, 2, 3], {
+      1: { _tag: 'LocateClearTweetResponse', mounted: false },
+      2: locateResp('bookmark'),
+      3: locateResp('bookmark'),
+    })
+    const res = await makeTabBroadcaster(tabs).locateClearTweet('1', ['bookmark'], 2, false)
+    expect(res.map(({ tabId }) => tabId)).toEqual([2, 3])
+    expect(tabs.sent.map((s) => s.tabId)).toEqual([2, 1, 3])
+    expect(
+      tabs.sent.every((s) => (s.message as { _tag: string })._tag === 'LocateClearTweetRequest'),
+    ).toBe(true)
   })
 
-  it('skips a tab without the article and stops at the first that has it', async () => {
-    const tabs = fakeTabs([1, 2, 3], { 1: { results: [] }, 2: clearResp('like') })
-    const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['like'])
-    expect(res.mounted).toBe(true)
-    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2]) // tab 3 never reached
+  it('drops malformed replies rather than selecting a destructive target', async () => {
+    const tabs = fakeTabs([1, 2], {
+      1: { _tag: 'LocateClearTweetResponse', mounted: true, results: [] },
+      2: locateResp('like'),
+    })
+    const res = await makeTabBroadcaster(tabs).locateClearTweet('1', ['like'])
+    expect(res.map(({ tabId }) => tabId)).toEqual([2])
   })
 
-  it('skips a dead tab (thrown sendMessage) and tries the next', async () => {
-    const tabs = fakeTabs([1, 2], { 1: new Error('no content script'), 2: clearResp('bookmark') })
-    const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'])
-    expect(res.mounted).toBe(true)
-    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2])
-  })
-
-  it('returns mounted:false (defer) when no tab has the article', async () => {
-    const tabs = fakeTabs([1, 2], { 1: { results: [] }, 2: { results: [] } })
-    const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'])
-    expect(res).toEqual({ mounted: false, results: [] })
-    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2]) // every tab tried
-  })
-
-  it('falls through past an open-but-empty origin tab to a later mounted tab', async () => {
-    // The documented clear-loss case: the origin tab is still OPEN but DOM
-    // virtualization scrolled the post out of its view (empty results), so the clear
-    // must reach a later tab that still has it — never give up at the origin tab.
-    const tabs = fakeTabs([1, 2], { 1: { results: [] }, 2: clearResp('bookmark') })
-    const res = await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'], 1)
-    expect(res.mounted).toBe(true)
-    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2]) // origin (1) first, then fall through to 2
-  })
-
-  it('falls back to natural order when the origin tab is gone', async () => {
-    const tabs = fakeTabs([1, 2], { 2: clearResp('bookmark') })
-    await makeTabBroadcaster(tabs).sendClearToTabs('t1', ['bookmark'], 9) // 9 not open
-    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2])
-  })
-
-  it('sends a ClearTweetRequest carrying the tweetId, scopes, and allLists flag', async () => {
-    const tabs = fakeTabs([1], { 1: clearResp('bookmark') })
-    await makeTabBroadcaster(tabs).sendClearToTabs('t99', ['bookmark', 'like'], 1, true)
+  it('sends exact location payload including a 20-digit snowflake', async () => {
+    const id = '12345678901234567890'
+    const tabs = fakeTabs([1], { 1: locateResp('bookmark', 'like') })
+    await makeTabBroadcaster(tabs).locateClearTweet(id, ['bookmark', 'like'], 1, true)
     expect(tabs.sent[0]!.message).toEqual({
-      _tag: 'ClearTweetRequest',
-      tweetId: 't99',
+      _tag: 'LocateClearTweetRequest',
+      tweetId: id,
       scopes: ['bookmark', 'like'],
       allLists: true,
     })
   })
 })
 
+describe('clearTweetInTab — one destructive target', () => {
+  it('sends once to the named tab and returns its exact per-scope reply', async () => {
+    const tabs = fakeTabs([1, 2], {
+      2: {
+        _tag: 'ClearTweetResponse',
+        results: [{ scope: 'bookmark', state: 'cleared' }],
+      },
+    })
+    const result = await makeTabBroadcaster(tabs).clearTweetInTab(2, '1', ['bookmark'], false)
+    expect(result).toEqual({
+      _tag: 'ClearTweetResponse',
+      results: [{ scope: 'bookmark', state: 'cleared' }],
+    })
+    expect(tabs.sent).toEqual([
+      {
+        tabId: 2,
+        message: {
+          _tag: 'ClearTweetRequest',
+          tweetId: '1',
+          scopes: ['bookmark'],
+          allLists: false,
+        },
+      },
+    ])
+  })
+
+  it('turns a lost or malformed reply into undefined and never sends a second tab', async () => {
+    const tabs = fakeTabs([1, 2], { 2: { _tag: 'ClearTweetResponse', results: [] } })
+    const result = await makeTabBroadcaster(tabs).clearTweetInTab(2, '1', ['bookmark'], false)
+    expect(result).toBeUndefined()
+    expect(tabs.sent.map((s) => s.tabId)).toEqual([2])
+  })
+})
+
 describe('reportTransferOutcome', () => {
-  it('fans the terminal outcome out to every open X tab', async () => {
+  it('fans the terminal outcome out to every open registered-platform tab', async () => {
     const tabs = fakeTabs([1, 2])
     makeTabBroadcaster(tabs).reportTransferOutcome('req-1', 'complete', 1234)
     await tick() // fire-and-forget
@@ -102,11 +116,11 @@ describe('reportTransferOutcome', () => {
     })
   })
 
-  it('skips a .json sidecar (it carries no badge)', async () => {
+  it('does not infer artifact kind from a valid media key suffix', async () => {
     const tabs = fakeTabs([1, 2])
     makeTabBroadcaster(tabs).reportTransferOutcome('req-1.json', 'complete', 1234)
     await tick()
-    expect(tabs.sendTabMessage).not.toHaveBeenCalled()
+    expect(tabs.sent).toHaveLength(2)
   })
 })
 
@@ -117,32 +131,33 @@ describe('reportTransferOutcome', () => {
 // itself — that the query widened off X_HOST_MATCH alone — spy on the global
 // `browser.tabs.query` the default port calls through, and construct the
 // broadcaster with NO injected port so it falls back to `defaultTabsPort()`.
-describe('defaultTabsPort.queryXTabs — widened host query', () => {
-  it('queries browser.tabs with every registered adapter hostMatch, not X alone', async () => {
+describe('defaultTabsPort.queryPlatformTabs — registered host query', () => {
+  it('queries browser.tabs with every cataloged platform match, not X alone', async () => {
     fakeBrowser.reset()
     const spy = vi.spyOn(fakeBrowser.tabs, 'query')
-    await makeTabBroadcaster().queryXTabs()
-    expect(spy).toHaveBeenCalledWith({ url: [...allAdapterHostMatch()] })
+    await makeTabBroadcaster().queryPlatformTabs()
+    expect(spy).toHaveBeenCalledWith({ url: [...allPlatformHostMatch()] })
     const [{ url: queried }] = spy.mock.calls[0]!
-    expect(queried).toEqual(expect.arrayContaining(['*://www.instagram.com/*']))
+    expect(queried).toEqual(expect.arrayContaining(['https://www.instagram.com/*']))
     expect(queried).toEqual(
-      expect.arrayContaining(['*://www.threads.net/*', '*://www.threads.com/*']),
+      expect.arrayContaining(['https://www.threads.net/*', 'https://www.threads.com/*']),
     )
-    expect(queried).toEqual(expect.arrayContaining(['*://x.com/*', '*://twitter.com/*']))
+    expect(queried).toEqual(expect.arrayContaining(['https://x.com/*', 'https://twitter.com/*']))
   })
 })
 
-describe('broadcastToXTabs', () => {
-  it('swallows a dead tab without rejecting, and still attempts every tab', async () => {
+describe('broadcastToPlatformTabs', () => {
+  const settingsChanged = {
+    _tag: 'SettingsChanged' as const,
+    settings: projectContentSettings(Schema.decodeUnknownSync(Settings)({})),
+  }
+
+  it.each([
+    { _tag: 'TransferOutcome' as const, requestId: 'r', outcome: 'complete' as const, at: 0 },
+    settingsChanged,
+  ])('fans out only a TabBroadcast and swallows a dead tab: $._tag', async (message) => {
     const tabs = fakeTabs([1, 2], { 1: new Error('dead') })
-    await expect(
-      makeTabBroadcaster(tabs).broadcastToXTabs({
-        _tag: 'TransferOutcome',
-        requestId: 'r',
-        outcome: 'complete',
-        at: 0,
-      }),
-    ).resolves.toBeUndefined()
+    await expect(makeTabBroadcaster(tabs).broadcastToPlatformTabs(message)).resolves.toBeUndefined()
     expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2])
   })
 })

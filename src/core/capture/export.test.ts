@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_CAPTURE_EXPORT_FRAGMENT_BYTES,
+  exportTweetJsonFragments,
+  jsonValueFragments,
   toExportTweet,
   toJsonl,
   toMarkdown,
   toRows,
   toTreeJson,
+  treeJsonFragments,
   type ExportTweet,
   type Row,
 } from './export'
-import { buildTree } from './tree'
+import { buildTree, type TweetNode } from './tree'
 import type { TweetRecord } from './record'
 
 /** Minimal self-consistent TweetRecord; only the fields each converter reads vary. */
@@ -161,6 +165,23 @@ describe('toJsonl', () => {
   })
 })
 
+describe('bounded JSON fragments', () => {
+  it('matches JSON.stringify and bounds every UTF-8 fragment', () => {
+    const value = { text: `${'😀'.repeat(40_000)}\n${'x'.repeat(80_000)}` }
+    const fragments = [...jsonValueFragments(value)]
+    expect(fragments.join('')).toBe(JSON.stringify(value))
+    expect(
+      Math.max(...fragments.map((fragment) => new TextEncoder().encode(fragment).byteLength)),
+    ).toBeLessThanOrEqual(MAX_CAPTURE_EXPORT_FRAGMENT_BYTES)
+  })
+
+  it('streams one export row with the same bytes as JSONL', () => {
+    expect([...exportTweetJsonFragments(quoting, byId(all))].join('')).toBe(
+      toJsonl([quoting, quoted]).split('\n')[0],
+    )
+  })
+})
+
 describe('toTreeJson', () => {
   it('emits pretty nested JSON under `tweets` with quoted text inlined', () => {
     const tree = buildTree(all).find((t) => t.conversationId === 'C')!
@@ -178,6 +199,57 @@ describe('toTreeJson', () => {
 
   it('handles an empty tree and empty record set', () => {
     expect(() => JSON.parse(toTreeJson({ conversationId: 'C', roots: [] }, []))).not.toThrow()
+  })
+
+  it('keeps pretty output byte-identical through the fragment API', () => {
+    const tree = buildTree(all).find((candidate) => candidate.conversationId === 'C')!
+    const records = byId(all)
+    const legacyNode = (node: TweetNode): object => ({
+      ...toExportTweet(node, records),
+      children: node.children.map(legacyNode),
+    })
+    const legacy = JSON.stringify(
+      { conversationId: tree.conversationId, tweets: tree.roots.map(legacyNode) },
+      null,
+      2,
+    )
+    const fragments = [...treeJsonFragments(tree, byId(all))]
+    expect(fragments.join('')).toBe(legacy)
+    expect(toTreeJson(tree, all)).toBe(legacy)
+    expect(
+      Math.max(...fragments.map((fragment) => new TextEncoder().encode(fragment).byteLength)),
+    ).toBeLessThanOrEqual(MAX_CAPTURE_EXPORT_FRAGMENT_BYTES)
+  })
+
+  it('renders a deep reply chain without recursive traversal', () => {
+    const records = Array.from({ length: 750 }, (_, index) =>
+      rec({
+        tweetId: String(index),
+        conversationId: 'DEEP',
+        ...(index === 0 ? {} : { inReplyToTweetId: String(index - 1) }),
+      }),
+    )
+    const tree = buildTree(records)[0]!
+    const parsed = JSON.parse([...treeJsonFragments(tree, byId(records))].join('')) as {
+      tweets: Array<{ id: string; children: Array<unknown> }>
+    }
+    expect(parsed.tweets[0]?.id).toBe('0')
+  })
+
+  it('renders cycle-defended buildTree output', () => {
+    const records = [
+      rec({ tweetId: 'A', conversationId: 'CYCLE', inReplyToTweetId: 'B' }),
+      rec({ tweetId: 'B', conversationId: 'CYCLE', inReplyToTweetId: 'A' }),
+    ]
+    const tree = buildTree(records)[0]!
+    const json = [...treeJsonFragments(tree, byId(records))].join('')
+    const parsed = JSON.parse(json) as {
+      conversationId: string
+      tweets: Array<{ children: Array<unknown> }>
+    }
+    expect(parsed.conversationId).toBe('CYCLE')
+    expect(parsed.tweets).toHaveLength(1)
+    expect(parsed.tweets[0]!.children).toHaveLength(1)
   })
 })
 

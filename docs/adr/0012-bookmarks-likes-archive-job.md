@@ -6,7 +6,7 @@
 
 Bookmarks and Likes pile up as a reading queue. Users want a **save job**: scoop
 every Media Item out of the bookmarked/liked tweets, keep a durable record of
-*the tweets themselves* (text and outbound links — above all scholarly links:
+_the tweets themselves_ (text and outbound links — above all scholarly links:
 arXiv, DOI, Springer, Cambridge UP, OUP, …), then **clear the bookmark/like**
 so the queue empties itself. Re-running the job must never re-download media it
 already saved, and the saved state should be mirrorable to the user's own
@@ -20,8 +20,8 @@ Constraints inherited from ADR-0001/0003/0005/0007:
   archives what the user has scrolled past, it never enumerates.
 - **No new install-time permissions.** Tweet-history records ride the sidecar
   `data:`-URL download path (ADR-0007).
-- **Removing a like/bookmark is a write** against the user's own session — the
-  same class as Auth fallback: **opt-in, default off**, executed in the X tab
+- **Removing a like/bookmark is a write** against the user's own session —
+  **opt-in, default off**, executed in the X tab
   (same-origin fetch, `ct0` cookie) so the extension needs no `cookies`
   permission and no header smuggling.
 
@@ -42,12 +42,12 @@ Constraints inherited from ADR-0001/0003/0005/0007:
    query dropped), record keys are `tweet:{id}:record`. The job plans only
    unsaved work; a completed key is never downloaded again, across sessions
    and browser restarts. This intentionally extends ADR-0005 ("no persistent
-   history") — the ledger is *minimal provenance-free keys*, not history.
+   history") — the ledger is _minimal provenance-free keys_, not history.
 4. **Sessions are marked.** The latest job's summary (saved / failed / skipped
    / cleaned counts) persists in `local:archive-session`; the popup shows it.
 5. **Cleanup** (`DeleteBookmark` / `UnfavoriteTweet` GraphQL mutations, the
    exact calls X's own web app makes) runs **only** after a tweet's media
-   *and* record have all completed, only when `archiveRemoveAfterSave` is on,
+   _and_ record have all completed, only when `archiveRemoveAfterSave` is on,
    and executes inside the X tab. Failures are tolerated and reported, never
    retried into a loop.
 6. **Remote mirror, never the gate.** When configured, saved keys are mirrored
@@ -68,9 +68,9 @@ Constraints inherited from ADR-0001/0003/0005/0007:
 
 ## Alternatives considered
 
-- **Enumerate bookmarks via Auth fallback** — rejected: violates passive-first
+- **Enumerate bookmarks by authenticated GraphQL replay** — rejected: violates passive-first
   scope for a v1; scroll-to-capture is predictable and visible to the user.
 - **Ledger in `storage.session`** — rejected: idempotency across restarts is
   the whole point.
 - **Remote ledger as source of truth** — rejected: reintroduces a remote
-  dependency into the download path (contradicts PRODUCT.md local-only).
+  dependency into the download path (contradicts the local-first posture).

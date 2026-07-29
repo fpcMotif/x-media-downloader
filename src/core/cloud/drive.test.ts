@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { DriveUploader, DriveUploaderLive, type DriveArgs } from './drive'
 import { FetchService } from '../fetch-service'
@@ -37,12 +37,30 @@ const sourceStub = (make: () => Response): Layer.Layer<SourceFetch> =>
 
 type Route = (url: string, init?: RequestInit) => Response
 
+const statusOnlyResponse = (
+  status: number,
+  cancel: () => Promise<void>,
+  headers: HeadersInit = {},
+): Response =>
+  ({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers(headers),
+    body: { cancel },
+  }) as unknown as Response
+
 const isGet = (init?: RequestInit): boolean => (init?.method ?? 'GET') === 'GET'
 const filesFound = (id: string): Response =>
   new Response(JSON.stringify({ files: [{ id }] }), { status: 200 })
+const isFolderLookup = (url: string): boolean =>
+  (new URL(url).searchParams.get('q') ?? '').includes(
+    "mimeType='application/vnd.google-apps.folder'",
+  )
 const folderResolved: Route = (url, init) =>
   url.includes('/drive/v3/files?') && isGet(init)
-    ? filesFound('folder')
+    ? isFolderLookup(url)
+      ? filesFound('folder')
+      : new Response(JSON.stringify({ files: [] }), { status: 200 })
     : new Response('x', { status: 500 })
 
 /** The standard Drive REST router (folders + multipart + resumable). */
@@ -64,8 +82,14 @@ const driveRoute: Route = (url, init) => {
 const routeRootId: Route = () => new Response(JSON.stringify({ id: 'root-id' }), { status: 200 })
 const routeRootFails: Route = () => new Response('down', { status: 500 })
 const routeRootNoId: Route = () => new Response(JSON.stringify({}), { status: 200 })
-const routeFolderX: Route = () => filesFound('x')
-const routeFolderExisting: Route = () => filesFound('existing')
+const routeFolderX: Route = (url) =>
+  isFolderLookup(url)
+    ? filesFound('x')
+    : new Response(JSON.stringify({ files: [] }), { status: 200 })
+const routeFolderExisting: Route = (url) =>
+  isFolderLookup(url)
+    ? filesFound('existing')
+    : new Response(JSON.stringify({ files: [] }), { status: 200 })
 const routeFolderCreateFails: Route = (url, init) =>
   isGet(init)
     ? new Response(JSON.stringify({ files: [] }), { status: 200 })
@@ -121,10 +145,16 @@ interface Call {
   readonly method: string
 }
 
-const harness = (route: Route, src: Layer.Layer<SourceFetch>) => {
+const harness = (
+  route: Route,
+  src: Layer.Layer<SourceFetch>,
+  options: { readonly routeProbe?: boolean } = {},
+) => {
   const calls: Call[] = []
   const record = (url: string, init?: RequestInit): Response => {
     calls.push({ url, method: init?.method ?? 'GET' })
+    if (!options.routeProbe && /\/drive\/v3\/files\/[^/?]+\?fields=id,size,trashed$/u.test(url))
+      return new Response('', { status: 404 })
     return route(url, init)
   }
   const fetchLayer = Layer.succeed(FetchService, {
@@ -139,8 +169,10 @@ const harness = (route: Route, src: Layer.Layer<SourceFetch>) => {
   const DEFAULT_ARGS: DriveArgs = { accessToken: 'AT', rootFolderId: 'root-1' }
   return {
     calls,
-    upload: (i: UploadInput, args: DriveArgs = DEFAULT_ARGS) =>
-      rt.runPromise(Effect.flatMap(DriveUploader, (u) => u.upload(args, i))),
+    upload: (i: UploadInput, args: DriveArgs = DEFAULT_ARGS, fileId = 'file-mp') =>
+      rt.runPromise(Effect.flatMap(DriveUploader, (u) => u.advance(args, i, fileId))),
+    generateFileId: (token = 'AT') =>
+      rt.runPromise(Effect.flatMap(DriveUploader, (u) => u.generateFileId(token))),
     ensureRoot: (token = 'AT') =>
       rt.runPromise(Effect.flatMap(DriveUploader, (u) => u.ensureRoot(token))),
   }
@@ -151,7 +183,7 @@ const folderCreates = (calls: Call[]): Call[] =>
     (c) => c.url.includes('/drive/v3/files?') && !c.url.includes('/upload/') && c.method === 'POST',
   )
 
-describe('DriveUploader.upload', () => {
+describe('DriveUploader.advance', () => {
   it('maps a 403 source to sourceGone (link-rot), not a failure', async () => {
     const h = harness(
       driveRoute,
@@ -189,7 +221,7 @@ describe('DriveUploader.upload', () => {
       driveRoute,
       sourceStub(() => sourceResponse(new Uint8Array(300).fill(9), { contentLength: null })),
     )
-    const out = await h.upload(input())
+    const out = await h.upload(input(), undefined, 'file-rs')
     expect(out).toMatchObject({ kind: 'success', bytes: 300, remoteId: 'file-rs' })
     expect(h.calls.filter((c) => c.url === 'https://session.example/put')).toHaveLength(1)
   })
@@ -210,6 +242,273 @@ describe('DriveUploader.upload', () => {
     await h.upload(input())
     await h.upload(input('alice/t2_0.jpg'))
     expect(folderCreates(h.calls).length).toBe(1) // folder resolved once, then a Ref hit
+  })
+
+  it('scopes the folder cache to the resolved Drive root', async () => {
+    const h = harness(
+      driveRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(16))),
+    )
+    await h.upload(input(), { accessToken: 'old-token', rootFolderId: 'old-root' })
+    await h.upload(input('alice/t2_0.jpg'), {
+      accessToken: 'new-token',
+      rootFolderId: 'new-root',
+    })
+    expect(folderCreates(h.calls)).toHaveLength(2)
+  })
+})
+
+describe('DriveUploader — durable id reconciliation', () => {
+  it('generates one file id for the caller to persist', async () => {
+    const h = harness(
+      (url) =>
+        url.includes('/generateIds')
+          ? new Response(JSON.stringify({ ids: ['generated-id'] }), { status: 200 })
+          : new Response('unexpected', { status: 500 }),
+      sourceStub(() => sourceResponse(new Uint8Array(1))),
+    )
+    expect(await h.generateFileId()).toBe('generated-id')
+  })
+
+  it.each([
+    ['missing', { ids: [] }],
+    ['wrongly typed', { ids: [42] }],
+    ['oversized', { ids: ['x'.repeat(4_097)] }],
+  ])('rejects a %s generated Drive id', async (_case, body) => {
+    const h = harness(
+      (url) =>
+        url.includes('/generateIds')
+          ? new Response(JSON.stringify(body), { status: 200 })
+          : new Response('unexpected', { status: 500 }),
+      sourceStub(() => sourceResponse(new Uint8Array(1))),
+    )
+    await expect(h.generateFileId()).rejects.toThrow('Drive generated id must be bounded text')
+  })
+
+  it.each([
+    ['missing id', { size: '8', trashed: false }],
+    ['wrong size type', { id: 'existing-id', size: 8, trashed: false }],
+    ['wrong trashed type', { id: 'existing-id', size: '8', trashed: 'false' }],
+    ['oversized id', { id: 'x'.repeat(4_097), size: '8', trashed: false }],
+  ])('fails closed on a %s Drive proof without another create', async (_case, proof) => {
+    const fetchSource = vi.fn<(url: string) => Effect.Effect<Response>>(() =>
+      Effect.succeed(sourceResponse(new Uint8Array(8))),
+    )
+    const h = harness(
+      (url) =>
+        url.includes('/drive/v3/files/existing-id?')
+          ? new Response(JSON.stringify(proof), { status: 200 })
+          : new Response('unexpected', { status: 500 }),
+      Layer.succeed(SourceFetch, { fetch: fetchSource }),
+      { routeProbe: true },
+    )
+    expect(await h.upload(input(), undefined, 'existing-id')).toMatchObject({ kind: 'failure' })
+    expect(fetchSource).not.toHaveBeenCalled()
+    expect(h.calls.some((call) => call.url.includes('uploadType='))).toBe(false)
+  })
+
+  it('bounds a malformed Drive error body', async () => {
+    const h = harness(
+      () => new Response('x'.repeat(20_000), { status: 500 }),
+      sourceStub(() => sourceResponse(new Uint8Array(8))),
+    )
+    const out = await h.upload(input(), undefined, 'existing-id')
+    expect(out).toMatchObject({ kind: 'failure', status: 500 })
+    expect((out as { reason: string }).reason).toHaveLength('drive HTTP 500: '.length + 200)
+  })
+
+  it('settles from GET proof without fetching or creating bytes', async () => {
+    const fetchSource = vi.fn<(url: string) => Effect.Effect<Response>>(() =>
+      Effect.succeed(sourceResponse(new Uint8Array(8))),
+    )
+    const h = harness(
+      (url) =>
+        url.includes('/drive/v3/files/existing-id?')
+          ? new Response(
+              JSON.stringify({
+                id: 'existing-id',
+                size: '12',
+                trashed: false,
+                name: 't1_0.jpg',
+                parents: ['folder'],
+              }),
+              { status: 200 },
+            )
+          : url.includes('/drive/v3/files?')
+            ? filesFound('folder')
+            : new Response('unexpected', { status: 500 }),
+      Layer.succeed(SourceFetch, { fetch: fetchSource }),
+      { routeProbe: true },
+    )
+    expect(await h.upload(input(), undefined, 'existing-id')).toMatchObject({
+      kind: 'success',
+      bytes: 12,
+      remoteId: 'existing-id',
+    })
+    expect(fetchSource).not.toHaveBeenCalled()
+    expect(h.calls.some((call) => call.url.includes('uploadType='))).toBe(false)
+  })
+
+  it('sends the persisted id in multipart and resumable create metadata', async () => {
+    let multipart = ''
+    let resumable = ''
+    const route: Route = (url, init) => {
+      if (url.includes('uploadType=multipart')) {
+        multipart = new TextDecoder().decode(init?.body as Uint8Array)
+        return new Response(JSON.stringify({ id: 'persisted-id' }), { status: 200 })
+      }
+      if (url.includes('uploadType=resumable')) {
+        resumable = String(init?.body)
+        return new Response(null, {
+          status: 200,
+          headers: { location: 'https://persisted.example/put' },
+        })
+      }
+      if (url === 'https://persisted.example/put')
+        return new Response(JSON.stringify({ id: 'persisted-id' }), { status: 200 })
+      if (url.includes('/drive/v3/files?'))
+        return new Response(JSON.stringify({ files: [] }), { status: 200 })
+      return new Response('unexpected', { status: 500 })
+    }
+    const small = harness(
+      route,
+      sourceStub(() => sourceResponse(new Uint8Array(8))),
+    )
+    await small.upload(input('pic.jpg', ''), undefined, 'persisted-id')
+    const large = harness(
+      route,
+      sourceStub(() => sourceResponse(new Uint8Array(8), { contentLength: null })),
+    )
+    await large.upload(input('pic.jpg', ''), undefined, 'persisted-id')
+    expect(multipart).toContain('"id":"persisted-id"')
+    expect(resumable).toContain('"id":"persisted-id"')
+  })
+
+  it('accepts a 409 only after GET proves the same generated id', async () => {
+    let probes = 0
+    let creates = 0
+    const h = harness(
+      (url) => {
+        if (url.includes('/drive/v3/files/proven-id?')) {
+          probes += 1
+          return probes === 1
+            ? new Response('', { status: 404 })
+            : new Response(
+                JSON.stringify({
+                  id: 'proven-id',
+                  size: '64',
+                  trashed: false,
+                  name: 'pic.jpg',
+                  parents: ['root-1'],
+                }),
+                { status: 200 },
+              )
+        }
+        if (url.includes('uploadType=multipart')) {
+          creates += 1
+          return new Response('already exists', { status: 409 })
+        }
+        if (url.includes('/drive/v3/files?'))
+          return new Response(JSON.stringify({ files: [] }), { status: 200 })
+        return new Response('unexpected', { status: 500 })
+      },
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      { routeProbe: true },
+    )
+    expect(await h.upload(input('pic.jpg', ''), undefined, 'proven-id')).toMatchObject({
+      kind: 'success',
+      remoteId: 'proven-id',
+      bytes: 64,
+    })
+    expect({ probes, creates }).toEqual({ probes: 2, creates: 1 })
+  })
+
+  it('keeps a 409 as failure when GET cannot prove the id', async () => {
+    const h = harness(
+      (url) => {
+        if (url.includes('/drive/v3/files/unproven-id?')) return new Response('', { status: 404 })
+        if (url.includes('uploadType=multipart'))
+          return new Response('already exists', { status: 409 })
+        if (url.includes('/drive/v3/files?'))
+          return new Response(JSON.stringify({ files: [] }), { status: 200 })
+        return new Response('unexpected', { status: 500 })
+      },
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      { routeProbe: true },
+    )
+    expect(await h.upload(input('pic.jpg', ''), undefined, 'unproven-id')).toMatchObject({
+      kind: 'failure',
+      status: 409,
+    })
+  })
+
+  it('honors a user rename or move once the generated id proves the file', async () => {
+    const fetchSource = vi.fn<(url: string) => Effect.Effect<Response>>(() =>
+      Effect.succeed(sourceResponse(new Uint8Array(8))),
+    )
+    const h = harness(
+      (url) =>
+        url.includes('/drive/v3/files/moved-id?')
+          ? new Response(
+              JSON.stringify({
+                id: 'moved-id',
+                size: '8',
+                trashed: false,
+                name: 'renamed.jpg',
+                parents: ['other-folder'],
+              }),
+              { status: 200 },
+            )
+          : url.includes('/drive/v3/files?')
+            ? filesFound('folder')
+            : new Response('unexpected', { status: 500 }),
+      Layer.succeed(SourceFetch, { fetch: fetchSource }),
+      { routeProbe: true },
+    )
+
+    expect(await h.upload(input(), undefined, 'moved-id')).toMatchObject({
+      kind: 'success',
+      remoteId: 'moved-id',
+      remotePath: 'alice/t1_0.jpg',
+      bytes: 8,
+    })
+    expect(fetchSource).not.toHaveBeenCalled()
+  })
+
+  it('rejects a second job for the same target before fetching or creating bytes', async () => {
+    let targetExists = false
+    let creates = 0
+    const fetchSource = vi.fn<(url: string) => Effect.Effect<Response>>(() =>
+      Effect.succeed(sourceResponse(new Uint8Array(8))),
+    )
+    const h = harness(
+      (url) => {
+        if (isFolderLookup(url)) return filesFound('folder')
+        if (url.includes('uploadType=multipart')) {
+          creates += 1
+          targetExists = true
+          return new Response(JSON.stringify({ id: 'first-id' }), { status: 200 })
+        }
+        if (url.includes('/drive/v3/files?'))
+          return targetExists
+            ? filesFound('first-id')
+            : new Response(JSON.stringify({ files: [] }), { status: 200 })
+        return new Response('unexpected', { status: 500 })
+      },
+      Layer.succeed(SourceFetch, { fetch: fetchSource }),
+    )
+
+    expect(await h.upload(input(), undefined, 'first-id')).toMatchObject({
+      kind: 'success',
+      remoteId: 'first-id',
+    })
+    expect(await h.upload(input(), undefined, 'second-id')).toMatchObject({
+      kind: 'failure',
+      status: 409,
+      reason: expect.stringContaining('refusing to create a duplicate'),
+    })
+    expect(fetchSource).toHaveBeenCalledTimes(1)
+    expect(creates).toBe(1)
   })
 })
 
@@ -255,7 +554,8 @@ describe('DriveUploader — destination folder resolution', () => {
         contentType: 'image/jpeg',
       },
     })
-    const q = decodeURIComponent(new URL(h.calls[0]!.url).searchParams.get('q') ?? '')
+    const listCall = h.calls.find((call) => call.url.includes('?q='))
+    const q = decodeURIComponent(new URL(listCall!.url).searchParams.get('q') ?? '')
     expect(q).toContain("name='a\\'b\\\\c'")
   })
 
@@ -283,7 +583,7 @@ describe('DriveUploader — destination folder resolution', () => {
       driveRoute,
       sourceStub(() => sourceResponse(new Uint8Array(300).fill(9), { contentLength: null })),
     )
-    const out = await h.upload(input('big.mp4', ''))
+    const out = await h.upload(input('big.mp4', ''), undefined, 'file-rs')
     expect(out).toMatchObject({ kind: 'success', remoteId: 'file-rs' })
     expect(folderCreates(h.calls).length).toBe(0)
   })
@@ -333,7 +633,7 @@ describe('DriveUploader — error & resumable edge paths', () => {
     )
     const out = await h.upload(input())
     expect(out).toMatchObject({ kind: 'failure' })
-    expect((out as { reason: string }).reason).toMatch(/file id/)
+    expect((out as { reason: string }).reason).toMatch(/no id/)
   })
 
   it('resumable: final PUT error status → failure', async () => {
@@ -346,15 +646,17 @@ describe('DriveUploader — error & resumable edge paths', () => {
 
   it('resumable multi-chunk: 308 on non-final chunk then 200 on the last', async () => {
     const puts: string[] = []
+    const initCancel = vi.fn<() => Promise<void>>(async () => {})
+    const chunkCancel = vi.fn<() => Promise<void>>(async () => {})
     // Captures `puts` (test-local), so it legitimately lives here, not at module scope.
     const route: Route = (url, init) => {
       if (url.includes('uploadType=resumable'))
-        return new Response(null, { status: 200, headers: { location: 'https://s/put' } })
+        return statusOnlyResponse(200, initCancel, { location: 'https://s/put' })
       if (url === 'https://s/put') {
         const range = ((init?.headers ?? {}) as Record<string, string>)['content-range'] ?? ''
         puts.push(range)
         return range.endsWith('/*')
-          ? new Response(null, { status: 308 })
+          ? statusOnlyResponse(308, chunkCancel)
           : new Response(JSON.stringify({ id: 'big-file' }), { status: 200 })
       }
       return folderResolved(url, init)
@@ -364,10 +666,12 @@ describe('DriveUploader — error & resumable edge paths', () => {
       route,
       sourceStub(() => sourceResponse(new Uint8Array(9 * 1024 * 1024))),
     )
-    const out = await h.upload(input('alice/big.mp4'))
+    const out = await h.upload(input('alice/big.mp4'), undefined, 'big-file')
     expect(out).toMatchObject({ kind: 'success', remoteId: 'big-file', bytes: 9 * 1024 * 1024 })
     expect(puts.length).toBe(2)
     expect(puts[0]!.endsWith('/*')).toBe(true) // non-final
+    expect(initCancel).toHaveBeenCalledOnce()
+    expect(chunkCancel).toHaveBeenCalledOnce()
   })
 
   it('resumable: a 500 on a non-final chunk → failure', async () => {
@@ -388,7 +692,7 @@ describe('DriveUploader — error & resumable edge paths', () => {
           ),
       }),
     )
-    const out = await h.upload(input())
+    const out = await h.upload(input(), undefined, 'file-rs')
     expect(out).toMatchObject({ kind: 'failure', reason: 'empty source' })
     expect(h.calls.find((c) => c.url === 'https://session.example/put')).toBeDefined()
   })
@@ -420,11 +724,6 @@ describe('DriveUploader — error & resumable edge paths', () => {
   })
 })
 
-// Folder list non-2xx → falls through to create (found.ok === false).
-const routeListFailsThenCreate: Route = (url, init) =>
-  isGet(init)
-    ? new Response('down', { status: 500 })
-    : new Response(JSON.stringify({ id: 'folder-x' }), { status: 200 })
 // Folder create returns 200 but no id → Effect.die.
 const routeFolderCreateNoId: Route = (url, init) =>
   isGet(init)
@@ -439,14 +738,18 @@ const routePutThrows: Route = (url, init) => {
 }
 
 describe('DriveUploader — folder + transport edge branches', () => {
-  it('folder resolution: falls through to create when the list query is not ok', async () => {
+  it('fails closed on a folder-list error instead of creating a duplicate folder', async () => {
+    const route: Route = (_url, init) =>
+      isGet(init)
+        ? new Response('list unavailable', { status: 500 })
+        : new Response(JSON.stringify({ id: 'folder-x' }), { status: 200 })
     const h = harness(
-      routeListFailsThenCreate,
+      route,
       sourceStub(() => sourceResponse(new Uint8Array(64))),
     )
-    const out = await h.upload(input())
-    expect(out).toMatchObject({ kind: 'success' })
-    expect(folderCreates(h.calls).length).toBe(1) // list !ok → the folder is created
+    const out = await h.upload(input(), undefined, 'folder-x')
+    expect(out).toMatchObject({ kind: 'failure', status: 500 })
+    expect(folderCreates(h.calls)).toHaveLength(0)
   })
 
   it('fails when folder creation returns no id', async () => {

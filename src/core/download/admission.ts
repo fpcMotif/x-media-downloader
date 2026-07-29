@@ -1,4 +1,5 @@
 import type { MediaItem, MediaType } from '../schema'
+import { mediaRequestId } from './request-identity'
 
 export type SkipReason = 'duplicate' | 'filtered-type' | 'too-small' | 'too-big' | 'daily-budget'
 
@@ -17,14 +18,15 @@ export type AdmissionDecision = { admit: true } | { admit: false; reason: SkipRe
 export function freeReason(
   item: MediaItem,
   settings: FilterSettings,
-  savedMediaIds: ReadonlySet<string>,
+  savedRequestIds: ReadonlySet<string>,
 ): SkipReason | null {
   if (settings.skipTypes.includes(item.type)) return 'filtered-type'
   if (item.width !== undefined && settings.minWidth > 0 && item.width < settings.minWidth)
     return 'too-small'
   if (item.height !== undefined && settings.minHeight > 0 && item.height < settings.minHeight)
     return 'too-small'
-  if (settings.preventDuplicateDownloads && savedMediaIds.has(item.id)) return 'duplicate'
+  if (settings.preventDuplicateDownloads && savedRequestIds.has(mediaRequestId(item)))
+    return 'duplicate'
   return null
 }
 
@@ -47,14 +49,14 @@ export function budgetReason(
 
 export interface AdmissionContext {
   readonly settings: FilterSettings
-  readonly savedMediaIds: ReadonlySet<string>
+  readonly savedRequestIds: ReadonlySet<string>
   readonly sizeBytes: number | null
   readonly running: { bytes: number; count: number }
 }
 
 export function evaluateAdmission(item: MediaItem, ctx: AdmissionContext): AdmissionDecision {
-  const { settings, savedMediaIds, sizeBytes, running } = ctx
-  const free = freeReason(item, settings, savedMediaIds)
+  const { settings, savedRequestIds, sizeBytes, running } = ctx
+  const free = freeReason(item, settings, savedRequestIds)
   if (free) return { admit: false, reason: free }
   const size = sizeReason(sizeBytes, settings.maxFileSizeBytes)
   if (size) return { admit: false, reason: size }

@@ -1,127 +1,38 @@
-import { describe, it, expect } from 'vitest'
-import {
-  ALL_ADAPTERS,
-  adapterForUrl,
-  adapterForHostname,
-  originsForAllAdapters,
-  allAdapterHostMatch,
-  cdnHostsForAllAdapters,
-  cdnMatchPatternsForAllAdapters,
-} from './registry'
-import { xAdapter } from './x/adapter'
+import { describe, expect, it } from 'vitest'
+import { PLATFORM_CATALOG } from './catalog'
+import { ALL_ADAPTERS, adapterForHostname, adapterForUrl } from './registry'
 import { instagramAdapter } from './instagram/adapter'
 import { threadsAdapter } from './threads/adapter'
-import { X_HOST_MATCH } from './x'
-import { INSTAGRAM_HOST_MATCH } from './instagram/adapter'
-import { THREADS_HOST_MATCH } from './threads/adapter'
+import { xAdapter } from './x/adapter'
 
-describe('ALL_ADAPTERS', () => {
-  it('registers the x, instagram, and threads adapters', () => {
-    expect(ALL_ADAPTERS).toContain(xAdapter)
-    expect(ALL_ADAPTERS).toContain(instagramAdapter)
-    expect(ALL_ADAPTERS).toContain(threadsAdapter)
-    expect(ALL_ADAPTERS).toHaveLength(3)
+describe('behavior adapter registry', () => {
+  it('has one behavior adapter per catalog descriptor, in catalog order', () => {
+    expect(ALL_ADAPTERS).toEqual([xAdapter, instagramAdapter, threadsAdapter])
+    for (const [index, adapter] of ALL_ADAPTERS.entries()) {
+      const descriptor = PLATFORM_CATALOG[index]!
+      expect(adapter.platform).toBe(descriptor.platform)
+      expect(adapter.hostMatch).toBe(descriptor.hostMatch)
+      expect(adapter.cdnHosts).toBe(descriptor.cdnHosts)
+      expect(adapter.matchesUrl).toBe(descriptor.matchesUrl)
+    }
   })
-})
 
-describe('adapterForUrl', () => {
-  it('finds the x adapter for an x.com or twitter.com url', () => {
+  it('finds behavior by page URL', () => {
     expect(adapterForUrl('https://x.com/alice/status/1')).toBe(xAdapter)
     expect(adapterForUrl('https://twitter.com/alice/status/1')).toBe(xAdapter)
-  })
-
-  it('finds the instagram adapter for an instagram.com url, never the x adapter', () => {
-    const adapter = adapterForUrl('https://www.instagram.com/p/CODE1/')
-    expect(adapter).toBe(instagramAdapter)
-    expect(adapter).not.toBe(xAdapter)
-  })
-
-  it('finds the threads adapter for a threads.net or threads.com url, never the x adapter', () => {
-    const netAdapter = adapterForUrl('https://www.threads.net/@alice/post/CODE1')
-    const comAdapter = adapterForUrl('https://www.threads.com/@alice/post/CODE1')
-    expect(netAdapter).toBe(threadsAdapter)
-    expect(comAdapter).toBe(threadsAdapter)
-    expect(netAdapter).not.toBe(xAdapter)
-    expect(comAdapter).not.toBe(xAdapter)
-  })
-
-  it('returns undefined for a url on no registered platform', () => {
+    expect(adapterForUrl('https://www.instagram.com/p/CODE1/')).toBe(instagramAdapter)
+    expect(adapterForUrl('https://www.threads.net/@alice/post/CODE1')).toBe(threadsAdapter)
+    expect(adapterForUrl('https://www.threads.com/@alice/post/CODE1')).toBe(threadsAdapter)
     expect(adapterForUrl('https://example.com/')).toBeUndefined()
   })
-})
 
-describe('adapterForHostname', () => {
-  it('finds the x adapter for x.com/twitter.com hostnames', () => {
+  it('finds behavior by exact hostname', () => {
     expect(adapterForHostname('x.com')).toBe(xAdapter)
     expect(adapterForHostname('twitter.com')).toBe(xAdapter)
-  })
-
-  it('finds the instagram adapter for www.instagram.com, never the x adapter', () => {
-    const adapter = adapterForHostname('www.instagram.com')
-    expect(adapter).toBe(instagramAdapter)
-    expect(adapter).not.toBe(xAdapter)
-  })
-
-  it('finds the threads adapter for www.threads.net/www.threads.com, never the x adapter', () => {
-    const netAdapter = adapterForHostname('www.threads.net')
-    const comAdapter = adapterForHostname('www.threads.com')
-    expect(netAdapter).toBe(threadsAdapter)
-    expect(comAdapter).toBe(threadsAdapter)
-    expect(netAdapter).not.toBe(xAdapter)
-    expect(comAdapter).not.toBe(xAdapter)
-  })
-
-  it('returns undefined for a hostname on no registered platform', () => {
+    expect(adapterForHostname('www.instagram.com')).toBe(instagramAdapter)
+    expect(adapterForHostname('www.threads.net')).toBe(threadsAdapter)
+    expect(adapterForHostname('www.threads.com')).toBe(threadsAdapter)
     expect(adapterForHostname('example.com')).toBeUndefined()
     expect(adapterForHostname('instagram.com')).toBeUndefined()
-  })
-})
-
-describe('originsForAllAdapters', () => {
-  it('returns exactly the 5 origins across x, instagram, and threads', () => {
-    expect([...originsForAllAdapters()].toSorted()).toEqual(
-      [
-        'https://x.com',
-        'https://twitter.com',
-        'https://www.instagram.com',
-        'https://www.threads.net',
-        'https://www.threads.com',
-      ].toSorted(),
-    )
-  })
-})
-
-describe('allAdapterHostMatch', () => {
-  it('returns the deduplicated union of every adapter hostMatch', () => {
-    expect(allAdapterHostMatch().toSorted()).toEqual(
-      [...new Set([...X_HOST_MATCH, ...INSTAGRAM_HOST_MATCH, ...THREADS_HOST_MATCH])].toSorted(),
-    )
-  })
-})
-
-describe('cdnHostsForAllAdapters', () => {
-  it('returns the deduplicated union of every adapter cdnHosts, in registration order', () => {
-    expect(cdnHostsForAllAdapters()).toEqual([
-      { host: 'pbs.twimg.com', includeSubdomains: false },
-      { host: 'video.twimg.com', includeSubdomains: false },
-      { host: 'cdninstagram.com', includeSubdomains: true },
-    ])
-  })
-
-  it('dedups the cdninstagram.com entry Instagram and Threads both share (by host+includeSubdomains), not listing it twice', () => {
-    const cdninstagramEntries = cdnHostsForAllAdapters().filter(
-      (h) => h.host === 'cdninstagram.com',
-    )
-    expect(cdninstagramEntries).toHaveLength(1)
-  })
-})
-
-describe('cdnMatchPatternsForAllAdapters', () => {
-  it('maps an exact host to a bare match pattern, and an includeSubdomains host to a *.host wildcard', () => {
-    expect(cdnMatchPatternsForAllAdapters()).toEqual([
-      'https://pbs.twimg.com/*',
-      'https://video.twimg.com/*',
-      'https://*.cdninstagram.com/*',
-    ])
   })
 })

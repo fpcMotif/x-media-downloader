@@ -12,12 +12,10 @@ import {
   findFeedbackButton,
   findNotInterestedItem,
   flipConfirmed,
-  isClearableTweetId,
   isClearedStub,
   isForYouHome,
   isMember,
   notInterestedConfirmed,
-  pageScope,
   shouldClickScope,
   tweetIdOfArticle,
 } from './clearer'
@@ -32,22 +30,6 @@ function article(opts: { tweetId: string; bookmarked?: boolean; liked?: boolean 
   `
   return el
 }
-
-describe('clearer — isClearableTweetId (DOM-locatable id guard)', () => {
-  it('accepts X numeric snowflake ids, rejects the media-key fallback', () => {
-    expect(isClearableTweetId('2069527192787472572')).toBe(true)
-    expect(isClearableTweetId('1')).toBe(true)
-    // The adapter's `tweetId ?? key` fallback yields a non-numeric media key that
-    // can never match a `/status/{id}` article — clearing it only defer-then-drops.
-    expect(isClearableTweetId('jO4OvymczbTx7WL4')).toBe(false)
-    expect(isClearableTweetId('HLkY8gTWsAASx-7')).toBe(false)
-    expect(isClearableTweetId('')).toBe(false)
-    // Anchored: no partial/embedded/whitespace match, and over-wide ids rejected.
-    expect(isClearableTweetId('123abc')).toBe(false)
-    expect(isClearableTweetId('12 34')).toBe(false)
-    expect(isClearableTweetId('123456789012345678901')).toBe(false)
-  })
-})
 
 describe('clearer DOM helpers', () => {
   beforeEach(() => {
@@ -99,14 +81,6 @@ describe('clearer DOM helpers', () => {
     // card's 'removeBookmark' must be ignored, so isMember(bookmark) is false.
     expect(isMember(el, 'bookmark')).toBe(false)
     expect(clearControl(el, 'bookmark')).toBe(null)
-  })
-
-  it('pageScope is list-specific (Likes→like, Bookmarks→bookmark, else none)', () => {
-    expect(Option.getOrNull(pageScope('/lambda_functor/likes'))).toBe('like')
-    expect(Option.getOrNull(pageScope('/i/bookmarks'))).toBe('bookmark')
-    expect(Option.getOrNull(pageScope('/i/bookmarks/all'))).toBe('bookmark')
-    expect(Option.getOrNull(pageScope('/home'))).toBe(null)
-    expect(Option.getOrNull(pageScope('/jack/status/123'))).toBe(null)
   })
 
   it('prefers the timestamp permalink over a bare status anchor', () => {

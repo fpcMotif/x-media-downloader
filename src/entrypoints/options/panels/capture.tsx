@@ -2,17 +2,23 @@ import { useEffect, useState } from 'preact/hooks'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, Section, type PanelProps } from '../ui'
-import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
+import { fetchCaptureSummary, type CaptureSummaryResult } from '@/components/capture-export'
 import { plural } from '@/components/capture-copy'
+import { useAsyncAuthority } from '@/components/use-async-authority'
 
 export function CapturePanel({ settings, update }: PanelProps) {
-  const [summary, setSummary] = useState<CaptureSummary | null>(null)
+  const [summary, setSummary] = useState<CaptureSummaryResult | null>(null)
+  const summaryAuthority = useAsyncAuthority()
 
   // Counts only (limit 0) — browsing and exporting the archive itself now lives
   // on its own page; this panel only needs the numbers for its link-out.
   useEffect(() => {
-    void fetchCaptureSummary(0).then(setSummary)
-  }, [])
+    const epoch = summaryAuthority.begin()
+    void (async () => {
+      const next = await fetchCaptureSummary(0)
+      if (summaryAuthority.isCurrent(epoch)) setSummary(next)
+    })()
+  }, [summaryAuthority])
 
   const syncConfigured = settings.convexUrl !== '' && settings.convexSyncSecret !== ''
 
@@ -60,7 +66,7 @@ export function CapturePanel({ settings, update }: PanelProps) {
             <FieldLabel htmlFor="captureMirrorEnabled">Mirror to Convex</FieldLabel>
             <FieldDescription>
               {syncConfigured ? (
-                'Also mirror captured tweets to your Convex deployment'
+                'Also mirror captured tweets to your Convex deployment. Erasing this device’s archive removes pending mirror work, not copies already sent.'
               ) : (
                 <>
                   <span className="font-mono">Uses your Sync connection</span> — set that up first (
@@ -91,8 +97,11 @@ export function CapturePanel({ settings, update }: PanelProps) {
           className="-mx-1 flex min-h-10 items-center justify-between gap-3 rounded-[var(--xmd-radius-3)] px-1 py-0.5 text-sm no-underline outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           <span className="font-mono tabular-nums text-muted-foreground">
-            {plural(summary?.tweets ?? 0, 'tweet')} ·{' '}
-            {plural(summary?.conversations ?? 0, 'conversation')}
+            {summary === null
+              ? 'Loading archive…'
+              : summary.status === 'unavailable'
+                ? 'Archive unavailable'
+                : `${plural(summary.summary.tweets, 'tweet')} · ${plural(summary.summary.conversations, 'conversation')}`}
           </span>
           <span className="shrink-0 text-primary">Open archive ›</span>
         </a>

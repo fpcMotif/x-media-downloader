@@ -190,6 +190,37 @@ describe('makeSavedIndex', () => {
     expect(idx.known(['T1'])).toEqual(['T1'])
   })
 
+  it('replace drops old saved ids and cached misses', async () => {
+    const idx = makeSavedIndex()
+    idx.seed(['old'])
+    const qc = vi.fn<QueryConvex>(async () => [])
+    await idx.refresh(['miss'], qc)
+
+    idx.replace(['new'])
+
+    expect(idx.known(['old', 'new'])).toEqual(['new'])
+    await idx.refresh(['miss'], qc)
+    expect(qc).toHaveBeenCalledTimes(2)
+  })
+
+  it('replace fences an older in-flight backstop result', async () => {
+    const idx = makeSavedIndex()
+    let release: ((hits: string[]) => void) | undefined
+    const pending = idx.refresh(
+      ['old'],
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        }),
+    )
+
+    idx.replace(['new'])
+    release!(['old'])
+
+    expect(await pending).toEqual([])
+    expect(idx.known(['old', 'new'])).toEqual(['new'])
+  })
+
   it('resolve joins an in-flight refresh instead of double-querying, and still blocks', async () => {
     const idx = makeSavedIndex()
     let release: ((hits: string[]) => void) | undefined

@@ -40,19 +40,24 @@ Add a **syndication fallback** that recovers a tee-missed video on demand.
   returns the tweet ids whose rendered video player has a poster media-key absent
   from the already-detected keys. A teed video contributes its poster key (its
   `previewUrl`), so it is correctly skipped; de-duplicated by tweet id.
-- **Background fetch** (`background.ts`): a `RecoverTweetMediaRequest { tweetId }`
-  handler builds the URL from the **digits-only** id and fetches it in the service
-  worker (which holds the host permission, so CORS — the endpoint allows only
-  `platform.twitter.com` — does not apply), replying with the raw body. The
-  content script parses it; nothing page-supplied beyond the validated id steers
-  the fetch, so there is no SSRF surface.
+- **Background fetch** (`background/syndication-recovery.ts`): a
+  `RecoverTweetMediaRequest { tweetId }` handler accepts only a 1–20 digit
+  snowflake, builds the fixed URL, and streams at most 64 KiB of UTF-8 JSON in
+  the service worker (which holds the host permission, so CORS — the endpoint
+  allows only `platform.twitter.com` — does not apply). `Content-Length` rejects
+  known oversize responses; the stream count catches a missing or lying header;
+  cancellation stops the reader. Any invalid, failed, cancelled, or oversize
+  response becomes the stable tag-only `RecoverTweetMediaResponse`. The content
+  script parses a present body. Nothing page-supplied beyond the validated id
+  steers the fetch, so there is no SSRF surface.
 - **Overlay wiring** (`overlay.content`): the rendered-media scan calls
   `recoverMissingVideos`, which fires one request per flagged tweet id (an
   `recoveryAttempted` set bounds it to once per page session) and folds the
-  recovered video into the detected set via `addRecoveredItems` — **video/GIF
-  only**, key-deduped, so a DOM-detectable photo is never re-added. A
-  `recoveredKeys` set suppresses a later tee re-surfacing of the same media (the
-  tee ids by media id, syndication by poster basename), preventing a double count.
+  recovered video into the detected set via `reconcileRecovered` — **video/GIF
+  only**, key-deduped, so a DOM-detectable photo is never re-added. ADR-0016 now
+  gives Passive capture and Recovery one Media Key identity: Recovery inserts
+  only an absent asset, while a later Passive observation replaces its metadata
+  without changing the count.
   A bounded `settleRenderedScan` (two short timers) re-scans after mount /
   locationchange so an async-mounted player is caught without a scroll.
 
@@ -69,6 +74,10 @@ Add a **syndication fallback** that recovers a tee-missed video on demand.
   the endpoint; the SW with host permission is the only path that works.
 - **Videos/GIFs only** — photos are always DOM-recoverable and carry a different
   id scheme, so recovery deliberately ignores them.
+- **64 KiB response cap** — the current real endpoint fixture is 3,053 bytes;
+  64 KiB matches the existing export-fragment budget, leaves more than 21×
+  headroom, and stays well below the 256 KiB Capture-record budget. The endpoint
+  returns metadata for at most four X media attachments, never media bytes.
 
 ## Consequences
 

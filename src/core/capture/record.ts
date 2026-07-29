@@ -1,65 +1,18 @@
-import { Schema } from 'effect'
-import { findAuthor, type Author } from '../adapters/x/walk'
-import { resolveTweetMedia, type RawMedia } from '../resolver'
-import { cardMeta, expandText, linksFromEntities, type Link, type UrlEntity } from './card'
+import { findAuthor } from '../adapters/x/walk'
+import { normalizeRawMediaList } from '../adapters/x/raw-media'
+import { resolveTweetMedia } from '../resolver'
+import { cardMeta, expandText, linksFromEntities, type UrlEntity } from './card'
+import type { Author, Link, MediaRef, TweetRecord } from './record-schema'
+
+export { Author, Link, MediaRef, TweetRecord } from './record-schema'
 
 /** The tee path a record came from; ranks a rich TweetDetail over a thin timeline. */
 export type Source = 'tweetDetail' | 'timeline' | 'other'
 
 /** TweetDetail outranks every timeline/other sighting (spec §6.4 merge rule). */
-export function sourceRank(source: Source): number {
+export function sourceRank(source: Source): 1 | 2 {
   return source === 'tweetDetail' ? 2 : 1
 }
-
-const AuthorSchema = Schema.Struct({
-  handle: Schema.String,
-  name: Schema.optional(Schema.String),
-  userId: Schema.optional(Schema.String),
-})
-
-const LinkSchema = Schema.Struct({
-  expandedUrl: Schema.String,
-  displayUrl: Schema.optional(Schema.String),
-  title: Schema.optional(Schema.String),
-  description: Schema.optional(Schema.String),
-  domain: Schema.optional(Schema.String),
-})
-
-/** Media identity carried from the shared traversal's resolution (ADR-0016), with
- *  only the description fields — no download-lifecycle concerns. */
-export const MediaRef = Schema.Struct({
-  id: Schema.String,
-  type: Schema.Literals(['photo', 'video', 'gif']),
-  url: Schema.String,
-  ext: Schema.String,
-  index: Schema.Number,
-  width: Schema.optional(Schema.Number),
-  height: Schema.optional(Schema.Number),
-})
-export type MediaRef = typeof MediaRef.Type
-
-/** A normalized, self-consistent snapshot of one captured tweet (spec §6.1). */
-export const TweetRecord = Schema.Struct({
-  tweetId: Schema.String,
-  conversationId: Schema.String,
-  inReplyToTweetId: Schema.optional(Schema.String),
-  inReplyToHandle: Schema.optional(Schema.String),
-  author: AuthorSchema,
-  text: Schema.String,
-  rawText: Schema.String,
-  createdAt: Schema.optional(Schema.Number),
-  lang: Schema.optional(Schema.String),
-  links: Schema.Array(LinkSchema),
-  media: Schema.Array(MediaRef),
-  mentions: Schema.Array(Schema.String),
-  hashtags: Schema.Array(Schema.String),
-  quotedTweetId: Schema.optional(Schema.String),
-  retweetOf: Schema.optional(Schema.String),
-  source: Schema.Literals(['tweetDetail', 'timeline', 'other']),
-  sourceRank: Schema.Number,
-  capturedAt: Schema.Number,
-})
-export type TweetRecord = typeof TweetRecord.Type
 
 type Obj = Record<string, unknown>
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
@@ -77,6 +30,20 @@ const nestedRestId = (node: Obj, key: string): string | undefined => {
 
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
 
+/** Keep the first external entity for a stable, schema-valid record. */
+const firstBy = <T>(values: ReadonlyArray<T>, key: (value: T) => string | number): T[] => {
+  const seen = new Set<string | number>()
+  return values.filter((value) => {
+    const identity = key(value)
+    if (seen.has(identity)) return false
+    seen.add(identity)
+    return true
+  })
+}
+
+const firstFolded = (values: ReadonlyArray<string>): string[] =>
+  firstBy(values, (value) => value.toLowerCase())
+
 const urlEntities = (legacy: Obj): UrlEntity[] => {
   const entities = legacy['entities']
   const urls = isObj(entities) ? entities['urls'] : undefined
@@ -86,17 +53,21 @@ const urlEntities = (legacy: Obj): UrlEntity[] => {
 const mentions = (legacy: Obj): string[] => {
   const entities = legacy['entities']
   const ms = isObj(entities) ? entities['user_mentions'] : undefined
-  return arr(ms)
-    .map((m) => (isObj(m) ? str(m['screen_name']) : undefined))
-    .filter((s): s is string => s !== undefined)
+  return firstFolded(
+    arr(ms)
+      .map((m) => (isObj(m) ? str(m['screen_name']) : undefined))
+      .filter((s): s is string => s !== undefined),
+  )
 }
 
 const hashtags = (legacy: Obj): string[] => {
   const entities = legacy['entities']
   const hs = isObj(entities) ? entities['hashtags'] : undefined
-  return arr(hs)
-    .map((h) => (isObj(h) ? str(h['text']) : undefined))
-    .filter((s): s is string => s !== undefined)
+  return firstFolded(
+    arr(hs)
+      .map((h) => (isObj(h) ? str(h['text']) : undefined))
+      .filter((s): s is string => s !== undefined),
+  )
 }
 
 /** Join each card's `{ title, description, domain }` onto the link whose source
@@ -107,9 +78,13 @@ const joinedLinks = (legacy: Obj, card: unknown): Link[] => {
   const cardLegacy = isObj(card) && isObj(card['legacy']) ? (card['legacy'] as Obj) : undefined
   const cardUrl = cardLegacy ? str(cardLegacy['url']) : undefined
   const target = entities.findIndex((e) => e.url === cardUrl)
-  if (cardUrl === undefined || target < 0) return links
+  if (cardUrl === undefined || target < 0) return firstBy(links, (link) => link.expandedUrl)
   const meta = cardMeta(card)
-  return links.map((link, i) => (i === target ? Object.assign({}, link, meta) : link))
+  const targetUrl = links[target]?.expandedUrl
+  return firstBy(
+    links.map((link) => (link.expandedUrl === targetUrl ? Object.assign({}, link, meta) : link)),
+    (link) => link.expandedUrl,
+  )
 }
 
 const createdAtMs = (legacy: Obj): number | undefined => {
@@ -119,11 +94,11 @@ const createdAtMs = (legacy: Obj): number | undefined => {
   return Number.isNaN(ms) ? undefined : ms
 }
 
-const mediaRefs = (tweetId: string, handle: string, mediaRaw: unknown[]): MediaRef[] =>
-  resolveTweetMedia({
+const mediaRefs = (tweetId: string, handle: string, mediaRaw: unknown[]): MediaRef[] => {
+  const refs = resolveTweetMedia({
     tweetId,
     handle,
-    media: mediaRaw.filter(isObj) as unknown as RawMedia[],
+    media: normalizeRawMediaList(mediaRaw),
   }).map((m) =>
     Object.assign(
       { id: m.id, type: m.type, url: m.url, ext: m.ext, index: m.index },
@@ -131,6 +106,15 @@ const mediaRefs = (tweetId: string, handle: string, mediaRaw: unknown[]): MediaR
       optionalEntry('height', m.height),
     ),
   )
+  const ids = new Set<string>()
+  const indexes = new Set<number>()
+  return refs.filter((media) => {
+    if (ids.has(media.id) || indexes.has(media.index)) return false
+    ids.add(media.id)
+    indexes.add(media.index)
+    return true
+  })
+}
 
 /**
  * Normalize one visited tweet node into an immutable {@link TweetRecord}. The

@@ -35,7 +35,7 @@ The smells it targets:
    `${tweetId}:${mediaKey}` composite. Consequence the user accepted: the same image
    anywhere on the page downloads **once**, filed under whichever tweet surfaced it
    **last** (last-writer wins on `tweetId`/`index`). No SaveRequest.id collision —
-   the store collapses to one item *before* the download queue.
+   the store collapses to one item _before_ the Start Queue.
 5. **Sequencing of the behavior change:** **three isolated milestones** so a
    count/download regression bisects to exactly one.
 
@@ -64,6 +64,7 @@ The smells it targets:
 ## Milestones — each loop-verifiable
 
 ### M1 — In-place polish (zero behavior change)
+
 1. Track `settleRenderedScan`'s two timers in a handle array; clear them in
    `ctx.onInvalidated`, matching every other timer in the file.
    - verify: `rg "setTimeout\(" src/entrypoints/overlay.content/index.tsx` shows
@@ -71,10 +72,12 @@ The smells it targets:
      `onInvalidated` block clears the settle timers.
 2. SKIP the `keysForItem`→`[]` host-check (review finding 3): unreachable with
    trusted X data; record as explicitly out of scope in the commit message.
+
 - M1 done: `bun run typecheck && bun run lint && bunx vitest run` green; `git diff`
   shows only timer-tracking (no logic change).
 
 ### M2 — Behavior-PRESERVING DetectionStore extraction
+
 1. Create `src/core/adapters/x/detection-store.ts`: `makeDetectionStore()` owning
    `byId`+`byKey`+`recoveredKeys`+`recoveryAttempted` with **identical** dual-index
    semantics. API from the call sites: `addDetected(items): MediaItem[]`,
@@ -84,6 +87,7 @@ The smells it targets:
 2. Repoint all ~35 overlay call sites to the store; delete the loose closures.
    - verify: `rg "\b(byId|byKey|recoveredKeys|recoveryAttempted)\b" src/entrypoints/overlay.content/index.tsx`
      returns 0; `bun run typecheck` green (compiler proves every site moved).
+
 - M2 done: `detection-store.test.ts` ports the review's 5 invariants as
   **characterization** tests (CURRENT behavior, incl. the suspected double-count
   UNCHANGED) + every query method; `bun run test:coverage` keeps `src/core` at 100%
@@ -91,6 +95,7 @@ The smells it targets:
   run on the bug tweet shows the SAME count + working download/hover/recovery.
 
 ### M3 — Unify identity on media-key (behavior change; ADR'd)
+
 1. Every path assigns `id = mediaKey` (tee photo/video via `resolveTweetMedia`, DOM
    via `resolveImageElement`, syndication); collapse the store to a single
    media-key index.
@@ -104,11 +109,13 @@ The smells it targets:
 4. Write `docs/adr/0016-media-key-identity.md`: media-key choice, the cross-tweet
    collapse + last-writer-filename trade-off, consequences. (CONTEXT.md **Media
    Key** / **Detected Media Set** terms already landed in this session.)
+
 - M3 done: `bun run check` green; `/verify` on
   https://x.com/ooaoau/status/2068286123399676218 shows correct count, working
   video download, no double-count on a multi-photo tweet, intact correlation.
 
 ## Caveats / known edges
+
 - **M3 is the only behavior change.** M1+M2 are safe to land regardless; if M3's
   cross-tweet/last-writer semantics ever feel wrong, it reverts without touching
   the extraction.
@@ -119,5 +126,6 @@ The smells it targets:
   unit suite alone.
 
 ## Definition of done
+
 All three milestones' "done" gates pass, including the two `/verify` runs, and
 ADR-0016 + the CONTEXT.md terms are in place.

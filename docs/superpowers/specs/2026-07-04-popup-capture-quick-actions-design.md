@@ -12,6 +12,7 @@ This spec reverses that trim **for the Capture/harvest surface only** (not for d
 ## Scope
 
 **In:**
+
 - New `CaptureQuickActions` component (own file) rendered inside the popup's existing Capture `Field`.
 - A collapsed-by-default disclosure ("Recent ›"), shown only when `tweets > 0`.
 - Expanded: up to 3 recent conversations (handle, snippet, count, date) each with `JSON` / `Markdown` export links; an "Export all · JSONL" button; a confirm-gated "Clear archive…" button; an aria-live status line.
@@ -19,6 +20,7 @@ This spec reverses that trim **for the Capture/harvest surface only** (not for d
 - Edits to `popup-layout.test.ts` to flip the two assertions that currently forbid this (see Testing).
 
 **Out (unchanged):**
+
 - The Archive tab (`archive.tsx`) keeps its full surface — search, pagination beyond 3, "Showing newest N of M" — the popup mirrors only a 3-row slice of it.
 - Download-history clear (`ClearHistoryRequest`) stays Settings-only; this spec does not touch it or its test assertions.
 - No backend/message changes: `fetchCaptureSummary`, `runCaptureExport`, and `ClearCaptureRequest` already exist and already generalize for this (the `capture-export.ts` header comment already calls itself "used by the options panel AND the popup").
@@ -42,6 +44,7 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
 Internal state: `open` (disclosure, default `false`), `statusMsg` (aria-live, auto-clears after 5s — same pattern as `archive.tsx`).
 
 Rendering:
+
 - Returns `null` when `(summary?.tweets ?? 0) === 0` — nothing to act on, keep the popup compact for new users.
 - Collapsed: a single button/row, `Recent ›` (or `Recent ‹` when open) toggling `open`.
 - Expanded: `summary.recent.slice(0, 3)` rendered exactly like `archive.tsx`'s list rows (handle/snippet/count/date + `JSON`/`Markdown` export links calling `runCaptureExport('tree'|'markdown', conversationId)`), then the two buttons:

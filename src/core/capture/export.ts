@@ -60,6 +60,173 @@ const isoOrNull = (ms: number | undefined): string | null =>
 const indexById = (all: ReadonlyArray<TweetRecord>): Map<string, TweetRecord> =>
   new Map(all.map((r) => [r.tweetId, r]))
 
+/** Largest UTF-8 fragment handed to an export byte sink. */
+export const MAX_CAPTURE_EXPORT_FRAGMENT_BYTES = 64 * 1024
+
+type JsonToken = { readonly text: string; readonly bytes: number }
+
+const ascii = (text: string): JsonToken => ({ text, bytes: text.length })
+
+const utf8Bytes = (codePoint: number): number =>
+  codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4
+
+/** JSON.stringify-compatible string tokens, including lone-surrogate escaping. */
+function* jsonStringTokens(value: string): Generator<JsonToken> {
+  yield ascii('"')
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i)
+    const escape =
+      code === 0x22
+        ? '\\"'
+        : code === 0x5c
+          ? '\\\\'
+          : code === 0x08
+            ? '\\b'
+            : code === 0x0c
+              ? '\\f'
+              : code === 0x0a
+                ? '\\n'
+                : code === 0x0d
+                  ? '\\r'
+                  : code === 0x09
+                    ? '\\t'
+                    : code < 0x20 || (code >= 0xd800 && code <= 0xdfff)
+                      ? `\\u${code.toString(16).padStart(4, '0')}`
+                      : undefined
+    if (escape !== undefined) {
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const low = value.charCodeAt(i + 1)
+        if (low >= 0xdc00 && low <= 0xdfff) {
+          const text = value.slice(i, i + 2)
+          yield { text, bytes: 4 }
+          i += 1
+          continue
+        }
+      }
+      yield ascii(escape)
+      continue
+    }
+    const text = value[i]!
+    yield { text, bytes: utf8Bytes(code) }
+  }
+  yield ascii('"')
+}
+
+const unsupportedJsonValue = (value: unknown): boolean =>
+  value === undefined || typeof value === 'function' || typeof value === 'symbol'
+
+/** Schema-record JSON serializer. Iteration bounds output; tree traversal is separate. */
+function* jsonTokens(
+  value: unknown,
+  space = 0,
+  depth = 0,
+  ancestors = new Set<object>(),
+): Generator<JsonToken> {
+  if (value === null) {
+    yield ascii('null')
+    return
+  }
+  if (typeof value === 'string') {
+    yield* jsonStringTokens(value)
+    return
+  }
+  if (typeof value === 'number') {
+    yield ascii(Number.isFinite(value) ? String(value === 0 ? 0 : value) : 'null')
+    return
+  }
+  if (typeof value === 'boolean') {
+    yield ascii(String(value))
+    return
+  }
+  if (typeof value === 'bigint') throw new TypeError('Do not know how to serialize a BigInt')
+  if (unsupportedJsonValue(value)) return
+
+  const object = value as object
+  if (ancestors.has(object)) throw new TypeError('Converting circular structure to JSON')
+  ancestors.add(object)
+  const indent = (level: number): JsonToken => ascii(' '.repeat(space * level))
+  if (Array.isArray(value)) {
+    yield ascii('[')
+    for (let index = 0; index < value.length; index++) {
+      yield ascii(index === 0 ? (space === 0 ? '' : '\n') : space === 0 ? ',' : ',\n')
+      if (space !== 0) yield indent(depth + 1)
+      const item = value[index]
+      yield* jsonTokens(unsupportedJsonValue(item) ? null : item, space, depth + 1, ancestors)
+    }
+    if (value.length > 0 && space !== 0) {
+      yield ascii('\n')
+      yield indent(depth)
+    }
+    yield ascii(']')
+  } else {
+    const entries = Object.keys(value as Record<string, unknown>)
+      .map((key) => [key, (value as Record<string, unknown>)[key]] as const)
+      .filter((entry) => !unsupportedJsonValue(entry[1]))
+    yield ascii('{')
+    for (let index = 0; index < entries.length; index++) {
+      const [key, item] = entries[index]!
+      yield ascii(index === 0 ? (space === 0 ? '' : '\n') : space === 0 ? ',' : ',\n')
+      if (space !== 0) yield indent(depth + 1)
+      yield* jsonStringTokens(key)
+      yield ascii(space === 0 ? ':' : ': ')
+      yield* jsonTokens(item, space, depth + 1, ancestors)
+    }
+    if (entries.length > 0 && space !== 0) {
+      yield ascii('\n')
+      yield indent(depth)
+    }
+    yield ascii('}')
+  }
+  ancestors.delete(object)
+}
+
+function* splitToken(token: JsonToken): Generator<JsonToken> {
+  if (token.bytes <= MAX_CAPTURE_EXPORT_FRAGMENT_BYTES) {
+    yield token
+    return
+  }
+  let text = ''
+  let bytes = 0
+  for (const character of token.text) {
+    const size = utf8Bytes(character.codePointAt(0)!)
+    if (bytes + size > MAX_CAPTURE_EXPORT_FRAGMENT_BYTES) {
+      yield { text, bytes }
+      text = ''
+      bytes = 0
+    }
+    text += character
+    bytes += size
+  }
+  if (text !== '') yield { text, bytes }
+}
+
+function* boundedFragments(tokens: Iterable<JsonToken>): Generator<string> {
+  let parts: string[] = []
+  let bytes = 0
+  for (const token of tokens) {
+    for (const piece of splitToken(token)) {
+      if (bytes > 0 && bytes + piece.bytes > MAX_CAPTURE_EXPORT_FRAGMENT_BYTES) {
+        yield parts.join('')
+        parts = []
+        bytes = 0
+      }
+      parts.push(piece.text)
+      bytes += piece.bytes
+      if (bytes === MAX_CAPTURE_EXPORT_FRAGMENT_BYTES) {
+        yield parts.join('')
+        parts = []
+        bytes = 0
+      }
+    }
+  }
+  if (parts.length > 0) yield parts.join('')
+}
+
+/** Compact JSON fragments, each at most 64 KiB after UTF-8 encoding. */
+export function* jsonValueFragments(value: unknown): Generator<string> {
+  yield* boundedFragments(jsonTokens(value))
+}
+
 /** Project one stored `TweetRecord` to the clean public {@link ExportTweet}. A
  *  `quotedTweetId` is resolved against `byId` so the quote carries the quoted
  *  author's permalink + inlined text (null text when the quote wasn't captured). */
@@ -106,27 +273,113 @@ export function toExportTweet(r: TweetRecord, byId: Map<string, TweetRecord>): E
  *  resolved against the whole batch so a referenced quote carries its text. */
 export function toJsonl(records: ReadonlyArray<TweetRecord>): string {
   const byId = indexById(records)
-  return records.map((r) => JSON.stringify(toExportTweet(r, byId))).join('\n')
+  const fragments: string[] = []
+  for (const [index, record] of records.entries()) {
+    if (index > 0) fragments.push('\n')
+    fragments.push(...exportTweetJsonFragments(record, byId))
+  }
+  return fragments.join('')
 }
 
 export interface ExportTreeNode extends ExportTweet {
   readonly children: ReadonlyArray<ExportTreeNode>
 }
 
-const toTreeNode = (node: TweetNode, byId: Map<string, TweetRecord>): ExportTreeNode => ({
-  ...toExportTweet(node, byId),
-  children: node.children.map((c) => toTreeNode(c, byId)),
-})
+/** One compact JSONL row, split on UTF-8-safe fragment boundaries. */
+export function* exportTweetJsonFragments(
+  record: TweetRecord,
+  byId: Map<string, TweetRecord>,
+): Generator<string> {
+  yield* boundedFragments(jsonTokens(toExportTweet(record, byId)))
+}
+
+function* treeJsonTokens(
+  tree: ConversationTree,
+  byId: Map<string, TweetRecord>,
+): Generator<JsonToken> {
+  const indent = (depth: number): JsonToken => ascii('  '.repeat(depth))
+  yield ascii('{\n  "conversationId": ')
+  yield* jsonTokens(tree.conversationId, 2, 1)
+  yield ascii(',\n  "tweets": [')
+
+  type Frame = {
+    readonly node: TweetNode
+    readonly depth: number
+    readonly tweet: ExportTweet
+    nextChild: number
+    opened: boolean
+  }
+  const stack: Frame[] = []
+  for (let rootIndex = 0; rootIndex < tree.roots.length; rootIndex++) {
+    yield ascii(rootIndex === 0 ? '\n' : ',\n')
+    yield indent(2)
+    stack.push({
+      node: tree.roots[rootIndex]!,
+      depth: 2,
+      tweet: toExportTweet(tree.roots[rootIndex]!, byId),
+      nextChild: 0,
+      opened: false,
+    })
+    while (stack.length > 0) {
+      const frame = stack.at(-1)!
+      if (!frame.opened) {
+        frame.opened = true
+        yield ascii('{')
+        const entries = Object.entries(frame.tweet)
+        for (const [key, value] of entries) {
+          yield ascii('\n')
+          yield indent(frame.depth + 1)
+          yield* jsonStringTokens(key)
+          yield ascii(': ')
+          yield* jsonTokens(value, 2, frame.depth + 1)
+          yield ascii(',')
+        }
+        yield ascii('\n')
+        yield indent(frame.depth + 1)
+        yield ascii('"children": [')
+      }
+
+      const child = frame.node.children[frame.nextChild]
+      if (child !== undefined) {
+        yield ascii(frame.nextChild === 0 ? '\n' : ',\n')
+        yield indent(frame.depth + 2)
+        frame.nextChild += 1
+        stack.push({
+          node: child,
+          depth: frame.depth + 2,
+          tweet: toExportTweet(child, byId),
+          nextChild: 0,
+          opened: false,
+        })
+        continue
+      }
+
+      if (frame.nextChild > 0) {
+        yield ascii('\n')
+        yield indent(frame.depth + 1)
+      }
+      yield ascii(']\n')
+      yield indent(frame.depth)
+      yield ascii('}')
+      stack.pop()
+    }
+  }
+  if (tree.roots.length > 0) yield ascii('\n  ')
+  yield ascii(']\n}')
+}
+
+/** Pretty tree JSON fragments. Traversal is iterative. */
+export function* treeJsonFragments(
+  tree: ConversationTree,
+  byId: Map<string, TweetRecord>,
+): Generator<string> {
+  yield* boundedFragments(treeJsonTokens(tree, byId))
+}
 
 /** One conversation as a nested tree of {@link ExportTweet}s (replies under their
  *  parent as `children`); pretty-printed for human + AI reading of one thread. */
 export function toTreeJson(tree: ConversationTree, all: ReadonlyArray<TweetRecord>): string {
-  const byId = indexById(all)
-  return JSON.stringify(
-    { conversationId: tree.conversationId, tweets: tree.roots.map((r) => toTreeNode(r, byId)) },
-    null,
-    2,
-  )
+  return [...treeJsonFragments(tree, indexById(all))].join('')
 }
 
 /** Per-tweet ordered `type → count` so a media line is emitted once per type. */

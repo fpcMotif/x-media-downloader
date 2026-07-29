@@ -1,7 +1,27 @@
 import { describe, it, expect } from 'vitest'
-import { forEachPostNode } from './post-node'
+import { forEachPostNode, MAX_TRAVERSAL_NODES } from './post-node'
 
 describe('forEachPostNode', () => {
+  it('fails closed without emitting a partial result when hostile nesting exhausts traversal depth', () => {
+    let json: unknown = { code: 'FIRST', user: { username: 'alice' } }
+    for (let index = 0; index < 300; index += 1) json = { nested: json }
+    const visited: unknown[] = []
+
+    expect(forEachPostNode(json, (ctx) => visited.push(ctx))).toBe(false)
+    expect(visited).toEqual([])
+  })
+
+  it('fails closed without emitting a partial result when hostile breadth exhausts traversal gas', () => {
+    const json = [
+      { code: 'FIRST', user: { username: 'alice' } },
+      ...Array.from({ length: MAX_TRAVERSAL_NODES + 1 }, () => ({})),
+    ]
+    const visited: unknown[] = []
+
+    expect(forEachPostNode(json, (ctx) => visited.push(ctx))).toBe(false)
+    expect(visited).toEqual([])
+  })
+
   it('finds a post node anywhere in an arbitrary response tree', () => {
     const json = {
       data: {

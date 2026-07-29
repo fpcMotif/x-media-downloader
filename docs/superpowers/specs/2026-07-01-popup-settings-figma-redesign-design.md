@@ -25,8 +25,8 @@ Artboards: **Popup · Active · Light** (`1:4`) and **Popup · Idle · Dark** (`
 Top to bottom:
 
 1. **Header** — unchanged: title, status dot, gear → Settings.
-2. **Download monitor** (conditional on an active batch) — unchanged content. Polish fix: "Clear monitor" used to be a full-width button stacked *above* the card; it's now a small ghost "Clear" link inline with the `NN%` figure in the card's own header row, so a housekeeping action doesn't cost its own row.
-3. **"On this page" card** — 4 actions, same hierarchy as shipped code: primary (filled) *Download + clear this page*, secondary (outline) *Download + clear, one by one*, tertiary (ghost) *Clear this page now (no download)*, destructive (red outline/wash) *Clear entire list (no download)*, disabled off list pages with a hint line. Active/Light mocks the disabled state; Idle/Dark mocks the enabled state, so between the two artboards both states are visible.
+2. **Download monitor** (conditional on an active batch) — unchanged content. Polish fix: "Clear monitor" used to be a full-width button stacked _above_ the card; it's now a small ghost "Clear" link inline with the `NN%` figure in the card's own header row, so a housekeeping action doesn't cost its own row.
+3. **"On this page" card** — 4 actions, same hierarchy as shipped code: primary (filled) _Download + clear this page_, secondary (outline) _Download + clear, one by one_, tertiary (ghost) _Clear this page now (no download)_, destructive (red outline/wash) _Clear entire list (no download)_, disabled off list pages with a hint line. Active/Light mocks the disabled state; Idle/Dark mocks the enabled state, so between the two artboards both states are visible.
 4. **"Behavior" card** — download-mode segmented control, divider, `Clear after download` toggle. When on (mocked in Idle/Dark), the `CLEAR FROM` sub-toggles (Bookmarks / Likes / For You) render inside a subtly indented, tinted sub-block rather than as flat sibling rows — this grouping treatment also carries over to the new Worklist & clearing Settings panel for visual consistency between the two surfaces.
 5. **Harvest row** — new, minimal: single switch + "N,NNN tweets · Settings ›" link. No list, no export controls.
 6. **Recent** — unchanged 3-item peek, conditional (Idle/Dark only, matching the original mock's split).
@@ -49,18 +49,19 @@ One group, "Clear after download": header (icon + title + description), divider,
 ### New panel: Knowledge Capture (`Settings · Dark — Knowledge Capture`, extends `5:2`'s shell)
 
 Two groups, matching [`capture.tsx`](../../../src/entrypoints/options/panels/capture.tsx):
+
 - **Capture** — Harvest tweets / Capture everything scrolled / Mirror to Convex toggles (the latter two shown dependent/dimmed, matching the real disabled-until-parent-condition behavior).
 - **Harvest** — tweet/conversation count badges + Refresh, a populated sample conversation list (handle + text + Export tree / Export Markdown per row, mocked with real-looking sample data rather than the empty state), then Export all (JSONL) + Clear harvest.
 
 ## Design tokens used (from [`src/app.css`](../../../src/app.css), no new tokens invented)
 
-| Token | Value | Used for |
-|---|---|---|
-| `--xmd-accent` | `oklch(0.58 0.176 250)` ≈ `#2D6FF6` | primary buttons, active nav, links (light) |
-| accent, dark variant | `#6BA1FF` (existing file sample) | primary buttons, active nav (dark) |
-| `--xmd-danger` | `oklch(0.58 0.19 28)` ≈ `#D33B33` (approximated — see note) | destructive "Clear entire list" |
-| `--radius` | `0.625rem` / 10px base | buttons ~9–12px, cards 14–15px |
-| Card fill/border/shadow | sampled directly from existing Figma nodes | all new cards match existing card style exactly |
+| Token                   | Value                                                       | Used for                                        |
+| ----------------------- | ----------------------------------------------------------- | ----------------------------------------------- |
+| `--xmd-accent`          | `oklch(0.58 0.176 250)` ≈ `#2D6FF6`                         | primary buttons, active nav, links (light)      |
+| accent, dark variant    | `#6BA1FF` (existing file sample)                            | primary buttons, active nav (dark)              |
+| `--xmd-danger`          | `oklch(0.58 0.19 28)` ≈ `#D33B33` (approximated — see note) | destructive "Clear entire list"                 |
+| `--radius`              | `0.625rem` / 10px base                                      | buttons ~9–12px, cards 14–15px                  |
+| Card fill/border/shadow | sampled directly from existing Figma nodes                  | all new cards match existing card style exactly |
 
 **Note on the destructive red:** no destructive treatment existed anywhere in the original Figma file (the "Clear entire list" button is new this round), so its color was derived from `--xmd-danger`'s OKLCH value via manual conversion rather than sampled from an existing node. It's a close visual approximation, not pixel-exact — the shipped code already has the exact value via the CSS variable, so this only affects the mockup's fidelity, not the build.
 
@@ -72,6 +73,7 @@ Two groups, matching [`capture.tsx`](../../../src/entrypoints/options/panels/cap
 ## Code implementation (next step, separate plan)
 
 Not built yet. Follow-up `writing-plans` pass should cover:
+
 1. **Popup** ([`App.tsx`](../../../src/entrypoints/popup/App.tsx)): remove the Knowledge Capture list/export card and the Local Data card; fold "Clear monitor" into the monitor card header; add the compact Harvest toggle row.
 2. **Settings sidebar** ([`App.tsx`](../../../src/entrypoints/options/App.tsx)): add a distinct `FunnelIcon` to [`icons.tsx`](../../../src/components/icons.tsx) and point `Filters` at it instead of sharing `SlidersIcon` with `General`.
 3. **Settings panels**: [`worklist.tsx`](../../../src/entrypoints/options/panels/worklist.tsx) and [`capture.tsx`](../../../src/entrypoints/options/panels/capture.tsx) already have the right functional content — this is a visual-grouping pass (indent/tint the `CLEAR FROM` sub-toggles) rather than new functionality.

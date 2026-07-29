@@ -1,5 +1,6 @@
 import { Option } from 'effect'
-import { resolveTweetMedia, type RawMedia } from '../../resolver'
+import { resolveTweetMedia } from '../../resolver'
+import { normalizeRawMediaList } from './raw-media'
 import type { MediaItem } from '../../schema'
 
 /**
@@ -60,5 +61,5 @@ export function parseSyndicationTweet(json: unknown): MediaItem[] {
   if (tweetId === '') return []
   const user = isObj(json['user']) ? json['user'] : undefined
   const handle = typeof user?.['screen_name'] === 'string' ? user['screen_name'] : ''
-  return resolveTweetMedia({ tweetId, handle, media: media as ReadonlyArray<RawMedia> })
+  return resolveTweetMedia({ tweetId, handle, media: normalizeRawMediaList(media) })
 }

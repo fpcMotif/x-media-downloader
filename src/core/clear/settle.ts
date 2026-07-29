@@ -11,10 +11,9 @@
  *
  * Pure: no `chrome.*`, no timers. The probe arrives as plain data (real
  * `chrome.downloads.search` in the SW; a fixture row in tests — the two adapters
- * that earn the port), and the verdict maps onto the Completion Ledger's `Settle`
- * / `LateInterrupt` actions. A missing probe (`undefined` — the search found no
- * row, or threw and the adapter swallowed it) is NOT a settle: fail closed, so
- * the Clear never fires on a download whose landing we couldn't confirm.
+ * that earn the port). A missing probe (`undefined` — the search found no row)
+ * is NOT a settle: fail closed, so the Clear never fires on a download whose
+ * landing we couldn't confirm.
  */
 
 /** The minimal `chrome.downloads.search` row the settle gate reads — just the two
@@ -24,11 +23,6 @@ export interface DownloadProbe {
   readonly exists?: boolean
 }
 
-/** Which Completion Ledger action a settle check resolves to: `settle` confirms
- *  the byte landed (the Clear may proceed); `lateInterrupt` retracts the recorded
- *  completion (the Clear must not fire). */
-export type SettleVerdict = 'settle' | 'lateInterrupt'
-
 /**
  * Did the download truly land? `complete` AND not known-missing — `exists`
  * `undefined` means the browser didn't report deletion, treated as present. A
@@ -37,7 +31,3 @@ export type SettleVerdict = 'settle' | 'lateInterrupt'
  */
 export const didLand = (probe: DownloadProbe | undefined): boolean =>
   probe?.state === 'complete' && probe.exists !== false
-
-/** The settle verdict for a probed download — the sole gate on the irreversible Clear. */
-export const decideSettle = (probe: DownloadProbe | undefined): SettleVerdict =>
-  didLand(probe) ? 'settle' : 'lateInterrupt'

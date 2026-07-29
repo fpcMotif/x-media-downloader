@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   INTERRUPT_RETRY_MAX,
+  decodeInterruptRetryQueue,
   interruptBackoffMs,
   isRetryableInterruptReason,
+  normalizePendingInterruptRetry,
   planInterruptRetry,
 } from './interrupt-retry'
 
@@ -60,4 +62,77 @@ describe('planInterruptRetry', () => {
       schedule: false,
     })
   })
+})
+
+describe('interrupt retry identity', () => {
+  const request = { id: 'm1', url: 'https://cdn.example/a.jpg', filename: 'a.jpg' }
+
+  it('normalizes legacy queued rows to Direct', () => {
+    expect(
+      normalizePendingInterruptRetry({
+        ...request,
+        attempt: 1,
+        nextRetryAt: 2_000,
+      }),
+    ).toMatchObject({ mode: 'direct' })
+  })
+
+  it('strictly decodes legacy rows, preserving their media schema', () => {
+    const raw = [
+      {
+        ...request,
+        attempt: 1,
+        nextRetryAt: 2_000,
+        item: {
+          id: 'm1',
+          platform: 'x',
+          postId: 'p1',
+          author: 'a',
+          type: 'photo',
+          url: 'https://cdn.example/a.jpg',
+          ext: 'jpg',
+          index: 0,
+        },
+      },
+    ]
+    expect(decodeInterruptRetryQueue(raw)).toMatchObject({
+      ok: true,
+      retries: [{ id: 'm1', mode: 'direct' }],
+    })
+  })
+
+  const invalidQueues: ReadonlyArray<unknown> = [
+    [{ ...request, mode: 'other', attempt: 1, nextRetryAt: 2_000 }],
+    [{ ...request, attempt: -1, nextRetryAt: 2_000 }],
+    [{ ...request, attempt: 1, nextRetryAt: Number.NaN }],
+    [{ ...request, attempt: 1, nextRetryAt: 2_000, unknown: true }],
+    [
+      {
+        ...request,
+        attempt: 1,
+        nextRetryAt: 2_000,
+        item: {
+          id: 'm1',
+          platform: 'not-a-platform',
+          postId: 'p1',
+          author: 'a',
+          type: 'photo',
+          url: 'https://cdn.example/a.jpg',
+          ext: 'jpg',
+          index: 0,
+        },
+      },
+    ],
+    [
+      { ...request, attempt: 1, nextRetryAt: 2_000 },
+      { ...request, attempt: 2, nextRetryAt: 3_000 },
+    ],
+  ]
+
+  it.each(invalidQueues.map((raw): [unknown] => [raw]))(
+    'fails closed on invalid queue: %#',
+    (raw) => {
+      expect(decodeInterruptRetryQueue(raw)).toMatchObject({ ok: false, retries: [] })
+    },
+  )
 })

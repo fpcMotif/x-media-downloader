@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
+  MAX_SWEEP_WORKLIST_BYTES,
+  MAX_SWEEP_WORKLIST_ENTRIES,
   capWorklist,
-  decodeWorklist,
+  decodeStoredWorklist,
   emptyWorklist,
+  encodeWorklist,
   enqueue,
   isCleared,
   keyFor,
@@ -10,6 +13,14 @@ import {
   summarize,
   type SweepWorklist,
 } from './worklist'
+
+const tiedTerminalEntries = (tweetIds: readonly string[]) =>
+  Object.fromEntries(
+    tweetIds.map((tweetId) => [
+      keyFor('like', tweetId),
+      { tweetId, scope: 'like', state: 'cleared', at: 5 } as const,
+    ]),
+  )
 
 describe('sweep worklist', () => {
   it('enqueue adds a queued entry and is idempotent in state', () => {
@@ -102,23 +113,23 @@ describe('sweep worklist', () => {
 
   it('capWorklist evicts oldest TERMINAL entries first, never in-flight ones', () => {
     let wl: SweepWorklist = emptyWorklist
-    wl = enqueue(wl, 'q1', 'like', 100) // queued (in-flight)
-    wl = markState(enqueue(wl, 'd1', 'like', 101), 'd1', 'like', 'downloaded', 102) // downloaded (in-flight)
+    wl = enqueue(wl, '100', 'like', 100) // queued (in-flight)
+    wl = markState(enqueue(wl, '101', 'like', 101), '101', 'like', 'downloaded', 102) // downloaded (in-flight)
     for (let i = 0; i < 4; i++)
-      wl = markState(enqueue(wl, `c${i}`, 'like', i), `c${i}`, 'like', 'cleared', i)
-    // max=4: keep both in-flight (q1,d1) + the 2 most-recent terminal (c3,c2).
+      wl = markState(enqueue(wl, String(i + 200), 'like', i), String(i + 200), 'like', 'cleared', i)
+    // max=4: keep both in-flight + the 2 most-recent terminal rows.
     const capped = capWorklist(wl, 4)
     expect(
       Object.values(capped)
         .map((e) => e.tweetId)
         .toSorted(),
-    ).toEqual(['c2', 'c3', 'd1', 'q1'])
+    ).toEqual(['100', '101', '202', '203'])
   })
 
-  it('capWorklist never evicts in-flight entries even past max', () => {
+  it('capWorklist rejects active overflow instead of evicting it', () => {
     let wl: SweepWorklist = emptyWorklist
     for (let i = 0; i < 5; i++) wl = enqueue(wl, String(i), 'like', i) // all queued
-    expect(Object.keys(capWorklist(wl, 3))).toHaveLength(5)
+    expect(() => capWorklist(wl, 3)).toThrow(/active/i)
   })
 
   it('capWorklist returns the same reference within bounds', () => {
@@ -133,7 +144,7 @@ describe('sweep worklist', () => {
     wl = markState(enqueue(wl, '1', 'bookmark', 1), '1', 'bookmark', 'cleared', 2)
     wl = markState(enqueue(wl, '1', 'like', 1), '1', 'like', 'cleared', 2)
     for (let i = 0; i < 3; i++)
-      wl = markState(enqueue(wl, `f${i}`, 'like', i), `f${i}`, 'like', 'cleared', i)
+      wl = markState(enqueue(wl, String(i + 10), 'like', i), String(i + 10), 'like', 'cleared', i)
     const capped = capWorklist(wl, 4) // 5 terminal → drop the oldest, keep both tweet-1 scopes
     expect(capped[keyFor('bookmark', '1')]?.scope).toBe('bookmark')
     expect(capped[keyFor('like', '1')]?.scope).toBe('like')
@@ -141,27 +152,108 @@ describe('sweep worklist', () => {
     expect(isCleared(capped, '1', 'like')).toBe(true)
   })
 
-  it('decodeWorklist round-trips valid data and resets corruption to empty', () => {
-    const wl = markState(
-      enqueue(emptyWorklist, '1', 'bookmark', 1),
-      '1',
-      'bookmark',
-      'downloaded',
-      2,
-    )
-    expect(decodeWorklist(JSON.parse(JSON.stringify(wl)))).toEqual(wl)
-    expect(decodeWorklist(null)).toEqual(emptyWorklist)
-    expect(decodeWorklist({ '1': { tweetId: '1', state: 'bogus' } })).toEqual(emptyWorklist)
+  it('rejects invalid identities, states, and times before constructing entries', () => {
+    expect(() => enqueue(emptyWorklist, 'bad-id', 'like', 1)).toThrow(/snowflake/i)
+    expect(() => enqueue(emptyWorklist, '1', 'like', -1)).toThrow(/time/i)
+    const worklist = enqueue(emptyWorklist, '1', 'like', 1)
+    expect(() => markState(worklist, 'bad-id', 'like', 'failed', 2)).toThrow(/snowflake/i)
+    expect(() => markState(worklist, '1', 'like', 'failed', 1.5)).toThrow(/time/i)
+    expect(() => markState(worklist, '1', 'like', 'bogus' as never, 2)).toThrow(/state/i)
   })
 
-  it('decodeWorklist migrates pre-scope bare-tweetId keys to the scoped key', () => {
-    // Old persisted data keyed by bare tweetId is re-keyed by (scope, tweetId), so
-    // a previously-cleared post still skips correctly after the key change.
-    const migrated = decodeWorklist({
-      '1': { tweetId: '1', scope: 'like', state: 'cleared', at: 5 },
+  it('decodes only the exact v2 envelope and treats nullish storage as absent', () => {
+    const entry = { tweetId: '123', scope: 'like', state: 'queued', at: 5 } as const
+    const worklist = { 'like:123': entry }
+
+    expect(decodeStoredWorklist(null)).toEqual({ kind: 'absent', worklist: emptyWorklist })
+    expect(decodeStoredWorklist(undefined)).toEqual({ kind: 'absent', worklist: emptyWorklist })
+    expect(decodeStoredWorklist(encodeWorklist(worklist))).toEqual({
+      kind: 'current',
+      worklist,
     })
-    expect(Object.keys(migrated)).toEqual([keyFor('like', '1')])
-    expect(isCleared(migrated, '1', 'like')).toBe(true)
-    expect(isCleared(migrated, '1', 'bookmark')).toBe(false)
+    expect(decodeStoredWorklist({ version: 2, entries: worklist, extra: true })).toEqual({
+      kind: 'corrupt',
+    })
+    expect(
+      decodeStoredWorklist({
+        version: 2,
+        entries: { 'like:123': { ...entry, at: 1.5 } },
+      }),
+    ).toEqual({ kind: 'corrupt' })
+    expect(
+      decodeStoredWorklist({
+        version: 2,
+        entries: { 'like:123': { ...entry, projectionRevision: 0 } },
+      }),
+    ).toEqual({ kind: 'corrupt' })
+  })
+
+  it('migrates only safe legacy keys and rejects conflicting logical duplicates', () => {
+    const entry = { tweetId: '123', scope: 'like', state: 'cleared', at: 5 } as const
+    expect(decodeStoredWorklist({ '123': entry })).toEqual({
+      kind: 'legacy',
+      worklist: { 'like:123': entry },
+    })
+    expect(decodeStoredWorklist({ '123': entry, 'like:123': { ...entry } })).toEqual({
+      kind: 'legacy',
+      worklist: { 'like:123': entry },
+    })
+    expect(
+      decodeStoredWorklist({
+        '123': entry,
+        'like:123': { ...entry, state: 'failed' },
+      }),
+    ).toEqual({ kind: 'corrupt' })
+    expect(decodeStoredWorklist({ arbitrary: entry })).toEqual({ kind: 'corrupt' })
+    expect(
+      decodeStoredWorklist({
+        '123': { ...entry, projectionRevision: 1 },
+      }),
+    ).toEqual({ kind: 'corrupt' })
+  })
+
+  it('rejects unsafe entry shapes and persisted bounds', () => {
+    const entry = { tweetId: '123', scope: 'like', state: 'queued', at: 5 } as const
+    expect(decodeStoredWorklist({ '123': { ...entry, tweetId: 'not-a-snowflake' } })).toEqual({
+      kind: 'corrupt',
+    })
+    expect(decodeStoredWorklist({ '123': { ...entry, extra: true } })).toEqual({
+      kind: 'corrupt',
+    })
+    let reads = 0
+    const accessorEntry = { ...entry }
+    Object.defineProperty(accessorEntry, 'projectionRevision', {
+      enumerable: true,
+      get: () => {
+        reads += 1
+        throw new Error('must not run')
+      },
+    })
+    expect(decodeStoredWorklist({ '123': accessorEntry })).toEqual({ kind: 'corrupt' })
+    expect(reads).toBe(0)
+
+    const tooMany = Object.fromEntries(
+      Array.from({ length: MAX_SWEEP_WORKLIST_ENTRIES + 1 }, (_, index) => [
+        String(index),
+        { ...entry, tweetId: String(index) },
+      ]),
+    )
+    expect(decodeStoredWorklist(tooMany)).toEqual({ kind: 'corrupt' })
+    expect(
+      decodeStoredWorklist({
+        ['x'.repeat(MAX_SWEEP_WORKLIST_BYTES + 1)]: entry,
+      }),
+    ).toEqual({ kind: 'corrupt' })
+  })
+
+  it('uses the canonical key as a deterministic terminal tie-break', () => {
+    expect(Object.keys(capWorklist(tiedTerminalEntries(['3', '1', '2']), 2))).toEqual([
+      'like:1',
+      'like:2',
+    ])
+    expect(Object.keys(capWorklist(tiedTerminalEntries(['2', '1', '3']), 2))).toEqual([
+      'like:1',
+      'like:2',
+    ])
   })
 })

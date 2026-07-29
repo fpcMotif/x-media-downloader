@@ -1,20 +1,34 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { Option } from 'effect'
 import { cn } from '@/lib/utils'
 import { convexOriginPattern } from '@/core/sync/convex'
-import type { SyncStatus } from '@/core/sync/status'
 import { FETCHED_HOST_PATTERNS } from '@/core/download/fetched-strategy'
 import type { CloudProviderId } from '@/core/cloud/types'
 import { PROVIDERS } from '@/core/cloud/provider'
+import { requestCloudBackfill, requestCloudConnect, requestCloudStatus } from '@/core/cloud/client'
+import { requestSyncStatus, requestSyncTest } from '@/core/sync/client'
 import { describeUploadSummary, type CloudUploadStatus } from '@/core/cloud/status'
+import type { SyncStatus } from '@/core/sync/status'
+import { expectReply, safeSend } from '@/core/messaging'
 import { Button } from '@/components/ui/button'
+import { useAsyncAuthority } from '@/components/use-async-authority'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, Section, type PanelProps } from '../ui'
 
+const CLOUD_STATUS_POLL_MS = 2_000
+
 const retryUploads = async (): Promise<void> => {
-  await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
+  await safeSend(() => browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }))
+}
+
+type ProviderIntent = 'connecting' | 'disconnecting'
+
+const isExactDisconnectSuccess = (reply: unknown): reply is { readonly ok: true } => {
+  if (reply === null || typeof reply !== 'object' || Array.isArray(reply)) return false
+  const keys = Reflect.ownKeys(reply)
+  return keys.length === 1 && keys[0] === 'ok' && (reply as { readonly ok?: unknown }).ok === true
 }
 
 export function SyncPanel({ settings, update, reload }: PanelProps) {
@@ -22,106 +36,189 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   const [testingSync, setTestingSync] = useState(false)
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [cloudStatus, setCloudStatus] = useState<CloudUploadStatus | null>(null)
-  const [connecting, setConnecting] = useState<CloudProviderId | null>(null)
+  const [providerIntents, setProviderIntents] = useState<
+    Partial<Record<CloudProviderId, ProviderIntent>>
+  >({})
+  const pendingProviderIntents = useRef(new Set<CloudProviderId>())
   const [connectMsg, setConnectMsg] = useState('')
+  const lifetime = useAsyncAuthority()
+  const permissionAuthority = useAsyncAuthority()
+  const testAuthority = useAsyncAuthority()
+  const noticeAuthority = useAsyncAuthority()
+
+  const beginProviderIntent = (provider: CloudProviderId, intent: ProviderIntent): boolean => {
+    if (pendingProviderIntents.current.has(provider)) return false
+    pendingProviderIntents.current.add(provider)
+    if (lifetime.isMounted()) setProviderIntents((current) => ({ ...current, [provider]: intent }))
+    return true
+  }
+
+  const endProviderIntent = (provider: CloudProviderId): void => {
+    pendingProviderIntents.current.delete(provider)
+    if (lifetime.isMounted()) setProviderIntents(({ [provider]: _intent, ...current }) => current)
+  }
 
   const cloudOn = settings.cloudSyncEnabled
   const convexUrl = settings.convexUrl
   const convexSecret = settings.convexSyncSecret
+  const syncConfig = useRef({ convexUrl, convexSecret })
   useEffect(() => {
+    const epoch = permissionAuthority.begin()
+    setConvexGranted(null)
     if (!cloudOn || convexUrl === '') return
     const pattern = convexOriginPattern(convexUrl)
     if (Option.isNone(pattern)) {
       setConvexGranted(null)
       return
     }
-    void browser.permissions.contains({ origins: [pattern.value] }).then(setConvexGranted)
-  }, [cloudOn, convexUrl])
+    void (async () => {
+      const granted = await browser.permissions
+        .contains({ origins: [pattern.value] })
+        .catch(() => false)
+      if (permissionAuthority.isCurrent(epoch)) setConvexGranted(granted)
+    })()
+  }, [cloudOn, convexUrl, permissionAuthority])
   useEffect(() => {
-    if (!cloudOn) {
-      setSyncStatus(null)
-      return
+    testAuthority.invalidate()
+    setTestingSync(false)
+  }, [cloudOn, convexUrl, convexSecret, testAuthority])
+  useEffect(() => {
+    let cancelled = false
+    const changedConfig =
+      syncConfig.current.convexUrl !== convexUrl || syncConfig.current.convexSecret !== convexSecret
+    syncConfig.current = { convexUrl, convexSecret }
+    const setCurrentSyncStatus = (status: SyncStatus | null): void => {
+      if (!cancelled) setSyncStatus(status)
     }
-    void browser.runtime
-      .sendMessage({ _tag: 'SyncStatusRequest' })
-      .then((s) => setSyncStatus((s as SyncStatus | null) ?? null))
+    if (!cloudOn || changedConfig) {
+      setCurrentSyncStatus(null)
+      return () => {
+        cancelled = true
+      }
+    }
+    void requestSyncStatus((request) => browser.runtime.sendMessage(request))
+      .then((s) => setCurrentSyncStatus(s))
       .catch(() => {})
-  }, [cloudOn])
-  useEffect(() => {
-    setSyncStatus(null)
-  }, [convexUrl, convexSecret])
+    return () => {
+      cancelled = true
+    }
+  }, [cloudOn, convexUrl, convexSecret])
 
   const uploadOn = settings.cloudUploadEnabled
   useEffect(() => {
+    let cancelled = false
+    let nextPoll: ReturnType<typeof setTimeout> | undefined
     if (!uploadOn) {
       setCloudStatus(null)
-      return
+      return () => {
+        cancelled = true
+      }
     }
-    const poll = (): void => {
-      void browser.runtime
-        .sendMessage({ _tag: 'CloudStatusRequest' })
-        .then((s) => setCloudStatus((s as CloudUploadStatus | null) ?? null))
-        .catch(() => {})
+    const poll = async (): Promise<void> => {
+      try {
+        const status = await requestCloudStatus((request) => browser.runtime.sendMessage(request))
+        if (!cancelled) setCloudStatus(status)
+      } catch {
+        // A missing worker is transient. The next completion-scheduled poll retries.
+      } finally {
+        if (!cancelled) nextPoll = setTimeout(() => void poll(), CLOUD_STATUS_POLL_MS)
+      }
     }
-    poll()
-    const handle = setInterval(poll, 2000)
-    return () => clearInterval(handle)
+    void poll()
+    return () => {
+      cancelled = true
+      if (nextPoll !== undefined) clearTimeout(nextPoll)
+    }
   }, [uploadOn])
 
   const requestConvexAccess = async (): Promise<void> => {
+    const epoch = permissionAuthority.begin()
     const pattern = convexOriginPattern(settings.convexUrl)
     if (Option.isNone(pattern)) return
-    setConvexGranted(await browser.permissions.request({ origins: [pattern.value] }))
+    const granted = await browser.permissions
+      .request({ origins: [pattern.value] })
+      .catch(() => false)
+    if (permissionAuthority.isCurrent(epoch)) setConvexGranted(granted)
   }
 
   const testConvexConnection = async (): Promise<void> => {
+    const epoch = testAuthority.begin()
     setTestingSync(true)
     try {
-      const res = await browser.runtime.sendMessage({ _tag: 'SyncTestRequest' })
-      setSyncStatus((res as SyncStatus | null) ?? null)
+      const status = await requestSyncTest((request) => browser.runtime.sendMessage(request))
+      if (!testAuthority.isCurrent(epoch)) return
+      setSyncStatus(
+        status ?? { ok: false, detail: 'The extension background did not respond.', pending: 0 },
+      )
     } catch {
+      if (!testAuthority.isCurrent(epoch)) return
       setSyncStatus({ ok: false, detail: 'The extension background did not respond.', pending: 0 })
     } finally {
-      setTestingSync(false)
+      if (testAuthority.isCurrent(epoch)) setTestingSync(false)
     }
   }
 
   // Grant the provider API + twimg source origins from THIS click (user gesture),
   // then run the PKCE flow in the background SW (it survives this tab losing focus).
   const connectProvider = async (provider: CloudProviderId, clientId: string): Promise<void> => {
-    setConnecting(provider)
-    setConnectMsg('')
+    if (!beginProviderIntent(provider, 'connecting')) return
+    const noticeEpoch = noticeAuthority.begin()
+    if (noticeAuthority.isCurrent(noticeEpoch)) setConnectMsg('')
     try {
       const origins = [...PROVIDERS[provider].hostPatterns, ...FETCHED_HOST_PATTERNS]
       const granted = await browser.permissions.request({ origins }).catch(() => false)
       if (!granted) {
-        setConnectMsg(
-          'Access denied — the upload needs permission to reach the provider and X media.',
-        )
+        if (noticeAuthority.isCurrent(noticeEpoch))
+          setConnectMsg(
+            'Access denied — the upload needs permission to reach the provider and X media.',
+          )
         return
       }
-      const res = (await browser.runtime
-        .sendMessage({ _tag: 'CloudConnectRequest', provider, clientId })
-        .catch(() => null)) as { ok?: boolean; detail?: string } | null
+      const res = await requestCloudConnect(
+        { _tag: 'CloudConnectRequest', provider, clientId },
+        (request) => browser.runtime.sendMessage(request),
+      )
       await reload()
-      setConnectMsg(res?.detail ?? 'The extension background did not respond.')
+      if (noticeAuthority.isCurrent(noticeEpoch))
+        setConnectMsg(res?.detail ?? 'The extension background did not respond.')
     } finally {
-      setConnecting(null)
+      endProviderIntent(provider)
     }
   }
 
   const disconnectProvider = async (provider: CloudProviderId): Promise<void> => {
-    await browser.runtime.sendMessage({ _tag: 'CloudDisconnectRequest', provider }).catch(() => {})
-    await reload()
-    setConnectMsg(`Disconnected ${PROVIDERS[provider].label}.`)
+    if (!beginProviderIntent(provider, 'disconnecting')) return
+    const noticeEpoch = noticeAuthority.begin()
+    if (noticeAuthority.isCurrent(noticeEpoch)) setConnectMsg('')
+    try {
+      const reply = expectReply(
+        await safeSend(() =>
+          browser.runtime.sendMessage({ _tag: 'CloudDisconnectRequest', provider }),
+        ),
+      )
+      const disconnected = reply.status === 'ok' && isExactDisconnectSuccess(reply.reply)
+      try {
+        await reload()
+      } catch {
+        // The message outcome remains the user-visible truth; the next panel open retries reload.
+      }
+      if (noticeAuthority.isCurrent(noticeEpoch))
+        setConnectMsg(
+          disconnected
+            ? `Disconnected ${PROVIDERS[provider].label}.`
+            : `Could not disconnect ${PROVIDERS[provider].label}. Try again.`,
+        )
+    } finally {
+      endProviderIntent(provider)
+    }
   }
 
   const backfillUploads = async (): Promise<void> => {
-    setConnectMsg('Queuing past downloads…')
-    const res = (await browser.runtime
-      .sendMessage({ _tag: 'CloudBackfillRequest' })
-      .catch(() => null)) as { detail?: string } | null
-    setConnectMsg(res?.detail ?? 'The extension background did not respond.')
+    const noticeEpoch = noticeAuthority.begin()
+    if (noticeAuthority.isCurrent(noticeEpoch)) setConnectMsg('Queuing past downloads…')
+    const res = await requestCloudBackfill((request) => browser.runtime.sendMessage(request))
+    if (noticeAuthority.isCurrent(noticeEpoch))
+      setConnectMsg(res?.detail ?? 'The extension background did not respond.')
   }
 
   return (
@@ -144,14 +241,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
             id="cloudSyncEnabled"
             aria-label="Cloud sync"
             checked={settings.cloudSyncEnabled}
-            onCheckedChange={(checked: boolean) =>
-              void update({
-                cloudSyncEnabled: checked,
-                ...(checked && settings.cloudDeviceId === ''
-                  ? { cloudDeviceId: crypto.randomUUID() }
-                  : {}),
-              })
-            }
+            onCheckedChange={(checked: boolean) => void update({ cloudSyncEnabled: checked })}
           />
         </Field>
 
@@ -252,7 +342,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               clientId={settings.gdriveClientId}
               connected={settings.gdriveRefreshToken !== ''}
               account={settings.gdriveAccount}
-              connecting={connecting === 'gdrive'}
+              intent={providerIntents.gdrive}
               onConnect={(clientId) => void connectProvider('gdrive', clientId)}
               onDisconnect={() => void disconnectProvider('gdrive')}
             />
@@ -261,7 +351,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               clientId={settings.dropboxClientId}
               connected={settings.dropboxRefreshToken !== ''}
               account={settings.dropboxAccount}
-              connecting={connecting === 'dropbox'}
+              intent={providerIntents.dropbox}
               onConnect={(clientId) => void connectProvider('dropbox', clientId)}
               onDisconnect={() => void disconnectProvider('dropbox')}
             />
@@ -314,7 +404,7 @@ function CloudProviderRow({
   clientId,
   connected,
   account,
-  connecting,
+  intent,
   onConnect,
   onDisconnect,
 }: {
@@ -322,12 +412,13 @@ function CloudProviderRow({
   clientId: string
   connected: boolean
   account: string
-  connecting: boolean
+  intent: ProviderIntent | undefined
   onConnect: (clientId: string) => void
   onDisconnect: () => void
 }) {
   const label = PROVIDERS[provider].label
   const idLabel = provider === 'gdrive' ? 'OAuth client ID' : 'App key'
+  const pending = intent !== undefined
   // Client id lives in local draft state and rides with Connect — the panel never
   // writes it to the settings blob (single-writer, ADR-0005). Seed from the
   // persisted value and resync when it changes (e.g. after a successful connect).
@@ -354,6 +445,7 @@ function CloudProviderRow({
           aria-label={`${label} ${idLabel}`}
           placeholder={provider === 'gdrive' ? 'xxxx.apps.googleusercontent.com' : 'your app key'}
           value={draft}
+          disabled={pending}
           onChange={(e: Event) => setDraft((e.target as HTMLInputElement).value)}
         />
         <FieldDescription>
@@ -377,10 +469,10 @@ function CloudProviderRow({
           variant={connected ? 'outline' : 'default'}
           size="sm"
           className="min-h-10"
-          disabled={connecting || draft === ''}
+          disabled={pending || draft === ''}
           onClick={() => onConnect(draft)}
         >
-          {connecting ? 'Connecting…' : connected ? 'Reconnect' : 'Connect'}
+          {intent === 'connecting' ? 'Connecting…' : connected ? 'Reconnect' : 'Connect'}
         </Button>
         {connected && (
           <Button
@@ -388,9 +480,10 @@ function CloudProviderRow({
             variant="outline"
             size="sm"
             className="min-h-10"
+            disabled={pending}
             onClick={onDisconnect}
           >
-            Disconnect
+            {intent === 'disconnecting' ? 'Disconnecting…' : 'Disconnect'}
           </Button>
         )}
       </div>

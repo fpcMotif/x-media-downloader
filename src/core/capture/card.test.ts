@@ -75,6 +75,13 @@ const cardNodeOf = (key: 'flatCardTweet' | 'unifiedCardTweet') =>
   (cardFixture as Record<string, { data: { tweetResult: { result: { card: unknown } } } }>)[key]!
     .data.tweetResult.result.card
 
+const unifiedWith = (inner: unknown) =>
+  cardMeta({
+    legacy: {
+      binding_values: [{ key: 'unified_card', value: { string_value: JSON.stringify(inner) } }],
+    },
+  })
+
 describe('cardMeta', () => {
   it('reads title/description/domain from a flat summary card', () => {
     expect(cardMeta(cardNodeOf('flatCardTweet'))).toEqual({
@@ -112,13 +119,6 @@ describe('cardMeta', () => {
   })
 
   it('reads partial unified_card fields and omits the rest', () => {
-    const unifiedWith = (inner: unknown) =>
-      cardMeta({
-        legacy: {
-          binding_values: [{ key: 'unified_card', value: { string_value: JSON.stringify(inner) } }],
-        },
-      })
-
     // component present but `data` not a record, no destination_objects → all omitted.
     expect(unifiedWith({ component_objects: { c1: { data: 'nope' } } })).toEqual({})
     // component map whose only value is not a record, and a destination whose

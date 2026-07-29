@@ -1,22 +1,47 @@
 // Shared Knowledge Capture export, used by the options panel AND the popup.
 //
-// The MV3 service worker can't mint blob: URLs, so it only BUILDS the artifact
-// text (ExportCaptureRequest → { ok, filename, text }); the download happens here
-// in an extension PAGE, which has a DOM, URL.createObjectURL, and chrome.downloads.
+// The background streams a bounded artifact through the shared offscreen Blob
+// gateway and hands it to Chrome. Popup/options receive only the exact outcome.
 // Heavily logged ([XMD] capture-export …) so a failed click is diagnosable from
 // the page console without guessing.
 
-export type CaptureExportKind = 'jsonl' | 'tree' | 'markdown'
+import { expectReply, safeSend } from '@/core/messaging'
+import { DEFAULT_CAPTURE_SUMMARY_LIMIT, MAX_CAPTURE_SUMMARY_LIMIT } from '@/core/capture/contract'
+import {
+  decodeCaptureExportResult,
+  decodeCaptureSummary,
+  type CaptureExportKind,
+  type CaptureExportResult,
+  type ExportCaptureRequest,
+  type CaptureSummary as CaptureSummaryContract,
+} from '@/core/schema/capture'
 
-interface ExportResponse {
-  readonly ok?: boolean
-  readonly filename?: string
-  readonly text?: string
-}
+export type { CaptureExportKind } from '@/core/schema/capture'
 
 export interface ExportOutcome {
   readonly ok: boolean
   readonly detail: string
+}
+
+const EXPORT_FAILED = 'Could not build the export. Try again.'
+const EXPORT_EMPTY = 'Nothing harvested yet — turn on Capture and browse X.'
+const EXPORT_TOO_LARGE = 'Export exceeds the 15 MiB limit.'
+const EXPORT_UNAVAILABLE = 'Export is unavailable. Other archive actions still work.'
+const EXPORT_UNCERTAIN = 'Export may have started. Check your Downloads folder.'
+
+export type CaptureExportSender = (request: ExportCaptureRequest) => Promise<unknown>
+
+export const requestCaptureExport = async (
+  kind: CaptureExportKind,
+  conversationId: string | undefined,
+  send: CaptureExportSender,
+): Promise<CaptureExportResult | null> => {
+  const request =
+    conversationId === undefined
+      ? { _tag: 'ExportCaptureRequest' as const, kind }
+      : { _tag: 'ExportCaptureRequest' as const, kind, conversationId }
+  const reply = expectReply(await safeSend(() => send(request)))
+  return reply.status === 'ok' ? (decodeCaptureExportResult(reply.reply) ?? null) : null
 }
 
 export async function runCaptureExport(
@@ -25,67 +50,54 @@ export async function runCaptureExport(
 ): Promise<ExportOutcome> {
   console.info(`[XMD] capture-export click kind=${kind} conv=${conversationId ?? '-'}`)
 
-  let res: ExportResponse | null = null
-  try {
-    res = (await browser.runtime.sendMessage({
-      _tag: 'ExportCaptureRequest',
-      kind,
-      conversationId,
-    })) as ExportResponse | null
-  } catch (err) {
-    console.error('[XMD] capture-export sendMessage threw', err)
-    return { ok: false, detail: 'Could not reach the extension worker.' }
-  }
+  const res = await requestCaptureExport(kind, conversationId, (request) =>
+    browser.runtime.sendMessage(request),
+  )
 
   console.info('[XMD] capture-export response', {
-    ok: res?.ok,
-    filename: res?.filename,
-    bytes: res?.text?.length ?? 0,
+    tag: res?._tag,
+    filename: res?._tag === 'CaptureExportStarted' ? res.filename : undefined,
   })
-  if (!res?.ok || typeof res.text !== 'string' || res.text.length === 0) {
-    return { ok: false, detail: 'Nothing harvested yet — turn on Capture and browse X.' }
-  }
-
-  const filename = res.filename ?? 'xharvest.jsonl'
-  const url = URL.createObjectURL(new Blob([res.text], { type: 'application/octet-stream' }))
-
-  // A synthetic <a download> click fires the download on the button's user
-  // gesture — reliable in both the options tab AND the popup, with no Save dialog
-  // (a dialog would close the popup on focus loss and cancel the download). The
-  // file lands silently in the browser's Downloads folder; the returned detail
-  // tells the user where to look.
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.rel = 'noopener'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 60_000)
-  console.info(`[XMD] capture-export <a download> fired → ${filename} (${res.text.length} bytes)`)
-  return { ok: true, detail: `Exported ${filename} — check your Downloads folder.` }
+  if (res === null) return { ok: false, detail: EXPORT_FAILED }
+  if (res._tag === 'CaptureExportEmpty') return { ok: false, detail: EXPORT_EMPTY }
+  if (res._tag === 'CaptureExportTooLarge') return { ok: false, detail: EXPORT_TOO_LARGE }
+  if (res._tag === 'CaptureExportUnavailable') return { ok: false, detail: EXPORT_UNAVAILABLE }
+  if (res._tag === 'CaptureExportUncertain') return { ok: false, detail: EXPORT_UNCERTAIN }
+  if (res._tag === 'CaptureExportFailed') return { ok: false, detail: EXPORT_FAILED }
+  console.info(`[XMD] capture-export download started → ${res.filename}`)
+  return { ok: true, detail: `Exported ${res.filename} — check your Downloads folder.` }
 }
 
-export interface CaptureSummary {
-  readonly tweets: number
-  readonly conversations: number
-  readonly recent: ReadonlyArray<{
-    readonly conversationId: string
-    readonly rootHandle: string
-    readonly rootText: string
-    readonly count: number
-    readonly lastAt: number
-  }>
-}
+export type CaptureSummary = CaptureSummaryContract
+
+export type CaptureSummaryResult =
+  | { readonly status: 'available'; readonly summary: CaptureSummary }
+  | { readonly status: 'unavailable' }
+
+export type CaptureSummarySender = (request: {
+  readonly _tag: 'CaptureSummaryRequest'
+  readonly limit?: number
+}) => Promise<unknown>
 
 /** `limit` caps the `recent` list: 0 = counts only (popup), omitted = background
  *  default, large = the options archive browser. */
-export const fetchCaptureSummary = (limit?: number): Promise<CaptureSummary | null> =>
-  browser.runtime
-    .sendMessage(
-      limit === undefined
-        ? { _tag: 'CaptureSummaryRequest' }
-        : { _tag: 'CaptureSummaryRequest', limit },
-    )
-    .then((s) => (s as CaptureSummary | null) ?? null)
-    .catch(() => null)
+export const fetchCaptureSummary = async (
+  limit?: number,
+  send: CaptureSummarySender = (request) => browser.runtime.sendMessage(request),
+): Promise<CaptureSummaryResult> => {
+  if (
+    limit !== undefined &&
+    (!Number.isSafeInteger(limit) || limit < 0 || limit > MAX_CAPTURE_SUMMARY_LIMIT)
+  )
+    return { status: 'unavailable' }
+  const request =
+    limit === undefined
+      ? { _tag: 'CaptureSummaryRequest' as const }
+      : { _tag: 'CaptureSummaryRequest' as const, limit }
+  const reply = expectReply(await safeSend(() => send(request)))
+  const summary =
+    reply.status === 'ok'
+      ? decodeCaptureSummary(reply.reply, limit ?? DEFAULT_CAPTURE_SUMMARY_LIMIT)
+      : undefined
+  return summary === undefined ? { status: 'unavailable' } : { status: 'available', summary }
+}

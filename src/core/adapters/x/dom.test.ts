@@ -6,6 +6,8 @@ import {
   isGrabbablePhotoUrl,
   isGrabbableMediaPreviewUrl,
   extFromImgUrl,
+  STATUS_LINK_SEL,
+  TWEET_ARTICLE_SEL,
   videoPosterUrl,
 } from './dom'
 
@@ -25,6 +27,13 @@ const media = (id: string, tweetId: string, index: number, url: string): MediaIt
   url,
   ext: 'jpg',
   index,
+})
+
+describe('X Post selectors', () => {
+  it('pins the shared Post root and permalink contracts', () => {
+    expect(TWEET_ARTICLE_SEL).toBe('article[data-testid="tweet"]')
+    expect(STATUS_LINK_SEL).toBe('a[href*="/status/"]')
+  })
 })
 
 describe('mediaKeyFromUrl', () => {

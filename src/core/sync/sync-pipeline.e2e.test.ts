@@ -3,7 +3,7 @@ import { Effect, type Layer } from 'effect'
 import { outcomeEvent, queuedEvent, type SyncEvent } from './events'
 import {
   append,
-  decodeOutbox,
+  decodeOutboxResult,
   emptyOutbox,
   isReady,
   markDrained,
@@ -128,13 +128,14 @@ describe('sync pipeline (e2e: events × outbox × convex port × idempotent back
     let state = append(emptyOutbox, [queuedEvent(i, 'dev-1', 1_000)])
     state = append(state, [outcomeEvent(i.id, 'completed', 'dev-1', 2_000)])
     expect(state.pending).toHaveLength(2)
+    const expectedIds = state.pending.map((event) => event.eventId)
 
     const dep = fakeDeployment({ secret: 's3cret' })
     const r = await drainOnce(state, port, dep.layer, 's3cret', 3_000)
     expect(r.ok).toBe(true)
     expect(r.state.pending).toHaveLength(0)
     expect(dep.store.size).toBe(2)
-    expect([...dep.store.keys()]).toEqual(['dev-1/req-1/queued', 'dev-1/req-1/completed'])
+    expect([...dep.store.keys()]).toEqual(expectedIds)
   })
 
   it('is exactly-once even if the same batch is delivered twice (at-least-once channel)', async () => {
@@ -183,7 +184,9 @@ describe('sync pipeline (e2e: events × outbox × convex port × idempotent back
     const i = item()
     const state = append(emptyOutbox, [queuedEvent(i, 'dev-1', 1_000)])
     const persisted = JSON.parse(JSON.stringify(state))
-    const restored = decodeOutbox(persisted)
+    const decoded = decodeOutboxResult(persisted)
+    if (!decoded.ok) throw new Error('expected persisted Sync outbox')
+    const restored = decoded.state
     expect(restored.pending).toHaveLength(1)
 
     const dep = fakeDeployment({ secret: 's' })

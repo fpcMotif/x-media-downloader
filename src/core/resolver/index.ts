@@ -1,5 +1,13 @@
 import { Option } from 'effect'
-import type { MediaItem } from '../schema'
+import {
+  isHttpsMediaUrl,
+  MAX_MEDIA_AUTHOR_LENGTH,
+  MAX_MEDIA_EXTENSION_LENGTH,
+  MAX_MEDIA_POST_ID_LENGTH,
+  MAX_MEDIA_URL_LENGTH,
+  type MediaItem,
+} from '../schema/media'
+import { MAX_MEDIA_ID_LENGTH, MAX_X_MEDIA_PER_SWEEP_POST } from '../wire/limits'
 
 export interface Variant {
   readonly content_type: string
@@ -41,6 +49,25 @@ function extFromUrl(url: string, fallback: string): string {
 }
 
 /**
+ * `resolveTweetMedia` feeds DetectionStore directly after X's raw-media
+ * boundary. Bound fields derived from otherwise-valid URLs before that handoff.
+ * URL syntax itself belongs to raw-media so direct resolver callers retain their
+ * established relative-URL behavior.
+ */
+const isOutputMediaItem = (item: MediaItem): boolean =>
+  item.id.length > 0 &&
+  item.id.length <= MAX_MEDIA_ID_LENGTH &&
+  item.postId.length > 0 &&
+  item.postId.length <= MAX_MEDIA_POST_ID_LENGTH &&
+  item.author.length <= MAX_MEDIA_AUTHOR_LENGTH &&
+  item.url.length > 0 &&
+  item.url.length <= MAX_MEDIA_URL_LENGTH &&
+  (item.previewUrl === undefined ||
+    (item.previewUrl.length > 0 && item.previewUrl.length <= MAX_MEDIA_URL_LENGTH)) &&
+  item.ext.length > 0 &&
+  item.ext.length <= MAX_MEDIA_EXTENSION_LENGTH
+
+/**
  * Turn a tweet's media entries into original-quality MediaItems, de-duplicated
  * by media id. Photos are upgraded to `name=orig`; videos/GIFs use the
  * highest-bitrate MP4 variant. Entries with no usable variant are skipped.
@@ -48,16 +75,27 @@ function extFromUrl(url: string, fallback: string): string {
 export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
   const out: MediaItem[] = []
   const seen = new Set<string>()
-  tweet.media.forEach((m) => {
+  const append = (candidate: MediaItem): void => {
+    // Adapter output bypasses wire decoding on its way to DetectionStore. Keep
+    // this one runtime gate for URL-derived id/ext and tweet metadata, so types
+    // cannot mask hostile external values.
+    if (!isOutputMediaItem(candidate) || seen.has(candidate.id)) return
+    seen.add(candidate.id)
+    out.push(candidate)
+  }
+
+  for (const m of tweet.media) {
+    if (out.length >= MAX_X_MEDIA_PER_SWEEP_POST) break
     if (m.type === 'photo') {
-      const url = upgradePhotoUrl(m.media_url_https)
+      const upgraded = upgradePhotoUrl(m.media_url_https)
+      // Preserve a valid source URL if adding `name=orig` would cross the
+      // shared output bound.
+      const url = isHttpsMediaUrl(upgraded) ? upgraded : m.media_url_https
       // Identity is the media key (the resolved-url basename) — the SAME value the
       // tee, the DOM resolver, and syndication each derive for this media, so one
       // media is one item no matter which path saw it (ADR-0016).
       const id = basenameId(url)
-      if (seen.has(id)) return
-      seen.add(id)
-      out.push({
+      append({
         id,
         platform: 'x',
         postId: tweet.tweetId,
@@ -68,14 +106,12 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
         ext: extFromUrl(m.media_url_https, 'jpg'),
         index: out.length,
       })
-      return
+      continue
     }
     const variant = m.video_info ? pickVideoVariant(m.video_info.variants) : Option.none()
-    if (Option.isNone(variant)) return
+    if (Option.isNone(variant)) continue
     const id = basenameId(variant.value.url)
-    if (seen.has(id)) return
-    seen.add(id)
-    out.push({
+    append({
       id,
       platform: 'x',
       postId: tweet.tweetId,
@@ -87,7 +123,7 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
       index: out.length,
       ...(variant.value.bitrate !== undefined ? { bitrate: variant.value.bitrate } : {}),
     })
-  })
+  }
   return out
 }
 

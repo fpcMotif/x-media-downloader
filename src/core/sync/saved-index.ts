@@ -19,6 +19,8 @@ export type QueryConvex = (tweetIds: string[]) => Promise<string[]>
 export interface SavedIndex {
   /** Prime the Set from local history; cheap to call repeatedly at boot. */
   readonly seed: (tweetIds: Iterable<string>) => void
+  /** Replace every projection and invalidate older in-flight backstop reads. */
+  readonly replace: (tweetIds: Iterable<string>) => void
   /** A download just completed: this id is saved as of now, no query needed. */
   readonly markSaved: (tweetId: string) => void
   /** Sync, memory-only: the subset of `tweetIds` known saved right now
@@ -55,12 +57,21 @@ export function makeSavedIndex(opts: { now?: () => number; missTtlMs?: number } 
   const misses = new Map<string, number>()
   /** id → the in-flight backstop query covering it; a concurrent refresh joins it. */
   const inflight = new Map<string, Promise<void>>()
+  let generation = 0
 
   const seed: SavedIndex['seed'] = (tweetIds) => {
     for (const id of tweetIds) {
       saved.add(id)
       misses.delete(id)
     }
+  }
+
+  const replace: SavedIndex['replace'] = (tweetIds) => {
+    generation += 1
+    saved.clear()
+    misses.clear()
+    inflight.clear()
+    seed(tweetIds)
   }
 
   const markSaved: SavedIndex['markSaved'] = (tweetId) => {
@@ -82,6 +93,7 @@ export function makeSavedIndex(opts: { now?: () => number; missTtlMs?: number } 
   }
 
   const refresh: SavedIndex['refresh'] = async (tweetIds, queryConvex) => {
+    const startedGeneration = generation
     const at = now()
     const preKnown = new Set(tweetIds.filter((id) => saved.has(id)))
 
@@ -105,9 +117,11 @@ export function makeSavedIndex(opts: { now?: () => number; missTtlMs?: number } 
     }
 
     if (toQuery.length > 0) {
-      const flight = (async () => {
+      let flight!: Promise<void>
+      flight = (async () => {
         try {
           const hits = new Set(await queryConvex(toQuery))
+          if (generation !== startedGeneration) return
           for (const id of toQuery) {
             if (hits.has(id)) {
               saved.add(id)
@@ -121,9 +135,7 @@ export function makeSavedIndex(opts: { now?: () => number; missTtlMs?: number } 
           // Offline / backend down: degrade to the local subset. Don't stamp a
           // miss — we never learned the answer, so a later refresh should retry.
         } finally {
-          // The flight owns these entries for its whole lifetime (a joiner never
-          // replaces them, a new flight only starts for ids NOT in the map).
-          for (const id of toQuery) inflight.delete(id)
+          for (const id of toQuery) if (inflight.get(id) === flight) inflight.delete(id)
         }
       })()
       for (const id of toQuery) inflight.set(id, flight)
@@ -131,6 +143,7 @@ export function makeSavedIndex(opts: { now?: () => number; missTtlMs?: number } 
     }
 
     await Promise.all(joined)
+    if (generation !== startedGeneration) return []
 
     // The delta: input ids now known-saved that weren't when the call began.
     const out: string[] = []
@@ -149,5 +162,5 @@ export function makeSavedIndex(opts: { now?: () => number; missTtlMs?: number } 
     return known(tweetIds)
   }
 
-  return { seed, markSaved, known, refresh, resolve }
+  return { seed, replace, markSaved, known, refresh, resolve }
 }

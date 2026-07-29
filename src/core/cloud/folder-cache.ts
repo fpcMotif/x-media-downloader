@@ -1,9 +1,9 @@
 import { Context, Effect, Layer, Option, Ref } from 'effect'
 
 /**
- * folder name → Drive folder id. The `Ref` is created ONCE when the layer is built,
- * so it lives as long as the runtime that owns it (the SW-life cloud runtime).
- * An SW recycle rebuilds the runtime → a fresh cache, matching the prior `Map`.
+ * Drive-root/folder key → Drive folder id. Callers include the resolved root id,
+ * so one SW-life runtime cannot reuse a folder from another OAuth account.
+ * An SW recycle rebuilds the runtime → a fresh cache.
  */
 export class FolderCache extends Context.Service<
   FolderCache,

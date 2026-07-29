@@ -42,11 +42,23 @@ export function buildTree(records: ReadonlyArray<TweetRecord>): ConversationTree
     }
 
     const visited = new Set<TweetNode>()
+    /** Stable pre-order without call-stack growth on a valid long reply chain. */
     const order = (level: TweetNode[]): TweetNode[] => {
-      const out = [...level].sort(bySortKey)
-      for (const node of out) {
+      const out = level.toSorted(bySortKey)
+      const stack: Array<{ readonly nodes: TweetNode[]; index: number }> = [
+        { nodes: out, index: 0 },
+      ]
+      while (stack.length > 0) {
+        const frame = stack.at(-1)!
+        const node = frame.nodes[frame.index]
+        if (node === undefined) {
+          stack.pop()
+          continue
+        }
+        frame.index += 1
         visited.add(node)
-        node.children = order(node.children.filter((c) => !visited.has(c)))
+        node.children = node.children.filter((child) => !visited.has(child)).toSorted(bySortKey)
+        if (node.children.length > 0) stack.push({ nodes: node.children, index: 0 })
       }
       return out
     }
@@ -57,7 +69,9 @@ export function buildTree(records: ReadonlyArray<TweetRecord>): ConversationTree
       if (!visited.has(node)) orderedRoots.push(...order([node]))
     }
 
-    trees.push({ conversationId, roots: orderedRoots })
+    // Cycle-only components are promoted after the ordinary-root walk. Sort the
+    // finished forest too, so promotion timing cannot change the public order.
+    trees.push({ conversationId, roots: orderedRoots.toSorted(bySortKey) })
   }
 
   return trees

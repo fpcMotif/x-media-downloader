@@ -3,45 +3,15 @@
 // Erase / Release — design contract line 3). Pure string builders only: no
 // JSX, no state, no browser API. The one runtime dependency is `plural` from
 // capture-copy.ts (already the shared pluralization helper for the capture
-// surfaces) — everything else here is self-contained so this module can be
-// imported from either the popup or options trees without pulling in adapter
-// registry / schema types (which would risk a circular import back out to
-// `popup/context.ts`, the other consumer of these strings).
+// surfaces). The list-scope link is type-only and disappears from runtime
+// bundles. This module therefore stays safe for both popup and options trees
+// without importing the popup tree back into shared components.
 //
 // Copy is copied verbatim from spec §2.3 — implementers of Batch B/C should
 // import these builders rather than re-typing the sentences inline.
 
 import { plural } from '@/components/capture-copy'
-
-/** The one typed-word gate in the product (whole-list release). */
-export const RELEASE_WORD = 'RELEASE'
-
-// ── Release cluster (§2.3 "Release cluster") ──
-
-export const releasePageConfirm =
-  "Release every post on this page — un-like on Likes, un-bookmark on Bookmarks. This can't be undone."
-
-export const releaseListConfirm =
-  "Release the whole list — scrolls the entire list and releases every post. This can affect hundreds of posts and can't be undone."
-
-export const RELEASE_PAGE_CONFIRM_LABEL = 'Release this page'
-export const RELEASE_LIST_CONFIRM_LABEL = 'Release the list'
-
-export const releasedPageResult = (n: number): string =>
-  `Released ${plural(n, 'post')} on this page.`
-
-export interface ReleaseListResult {
-  readonly cleared?: number
-  readonly reason?: string
-}
-
-export const releasedListResult = (res: ReleaseListResult | null): string => {
-  if (res?.reason === 'not-list-page') return 'Open a Likes or Bookmarks list to release it.'
-  const n = res?.cleared ?? 0
-  return n === 0
-    ? 'No posts to release on this list.'
-    : `Released ${plural(n, 'post')} across the list.`
-}
+import type { MembershipScope } from '@/core/clear/scope'
 
 // ── Preferences zone — Release-after-download toggle-ON gate (§2.3, §3.3) ──
 
@@ -82,6 +52,10 @@ export const sweepResult = (res: SweepResult | null, willClear: boolean): string
 export const PAGE_UNREACHABLE = 'Could not reach the page — reload the X tab and try again.'
 export const NO_ACTIVE_TAB = 'No active tab.'
 export const SWEEP_STALE_CONTEXT = 'Reload the X tab (the extension was updated), then try again.'
+export const DOWNLOAD_START_FAILED =
+  'The download could not start in the background — reload the X tab and try again.'
+export const INVALID_RESPONSE =
+  'The page returned an unexpected response — reload the X tab and try again.'
 
 // ── Cluster status lifecycle (§2.6) ──
 
@@ -92,6 +66,8 @@ const PERSISTENT_STATUS_MESSAGES: ReadonlySet<string> = new Set([
   PAGE_UNREACHABLE,
   NO_ACTIVE_TAB,
   SWEEP_STALE_CONTEXT,
+  DOWNLOAD_START_FAILED,
+  INVALID_RESPONSE,
 ])
 
 export const isPersistentStatus = (m: string | null): boolean =>
@@ -104,9 +80,8 @@ export const isPersistentStatus = (m: string | null): boolean =>
  *  the popup tree; the two types are structurally identical. */
 export type ContextLabelInput = 'x-list' | 'x' | 'instagram' | 'threads' | 'none'
 
-/** Narrow local mirror of `MembershipScope` (`@/core/clear/clearer`) for the
- *  same reason: structural, not imported. */
-export type ContextLabelScope = 'bookmark' | 'like'
+/** The list-page scope rendered in the context label. */
+export type ContextLabelScope = MembershipScope
 
 export const contextLabel = (ctx: ContextLabelInput, scope?: ContextLabelScope): string => {
   switch (ctx) {

@@ -4,9 +4,17 @@ import {
   detectRenderedImageElements,
   resolveImageElement,
   videoTweetsNeedingRecovery,
-  isXUrl,
 } from './index'
+import { isXUrl } from '../catalog'
+import { makeDetectionStore } from '../detection-store'
 import { renderFilename } from '../../download/filename'
+import {
+  decodeMediaItem,
+  MAX_MEDIA_EXTENSION_LENGTH,
+  MAX_MEDIA_ID_LENGTH,
+} from '../../schema/media'
+import { MAX_TEE_BODY_BYTES } from '../../tee-contract'
+import { mediaKeyFromUrl } from './dom'
 import tweetDetail from '../../../test/fixtures/tweet-detail.json'
 
 /** Build a detached subtree and return the nth `<img>` in document order. */
@@ -74,6 +82,76 @@ describe('detectFromJson', () => {
       previewUrl: 'https://pbs.twimg.com/ext_tw_video_thumb/77/pu/img/V1.jpg',
       platform: 'x',
     })
+  })
+
+  it('skips malformed media but detects a valid sibling', () => {
+    const items = detectFromJson({
+      data: {
+        tweetResult: {
+          result: {
+            rest_id: '78',
+            legacy: {
+              extended_entities: {
+                media: [
+                  {
+                    type: 'video',
+                    media_url_https: 'https://pbs.twimg.com/media/bad.jpg',
+                    video_info: null,
+                  },
+                  {
+                    type: 'photo',
+                    media_url_https: 'https://pbs.twimg.com/media/valid-sibling.jpg',
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    })
+    expect(items).toMatchObject([
+      { type: 'photo', url: 'https://pbs.twimg.com/media/valid-sibling.jpg?name=orig' },
+    ])
+  })
+
+  it('never retains a near-8MiB raw URL in the detected-media store', () => {
+    const prefix = 'https://pbs.twimg.com/media/'
+    const hostileUrl = `${prefix}${'x'.repeat(MAX_TEE_BODY_BYTES - prefix.length)}`
+    const items = detectFromJson({
+      data: {
+        tweetResult: {
+          result: {
+            rest_id: '79',
+            legacy: {
+              extended_entities: {
+                media: [
+                  { type: 'photo', media_url_https: hostileUrl },
+                  {
+                    type: 'photo',
+                    media_url_https: `https://pbs.twimg.com/media/${'i'.repeat(MAX_MEDIA_ID_LENGTH + 1)}.jpg`,
+                  },
+                  {
+                    type: 'photo',
+                    media_url_https: `https://pbs.twimg.com/media/photo.${'x'.repeat(MAX_MEDIA_EXTENSION_LENGTH + 1)}`,
+                  },
+                  { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/kept.jpg' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    })
+
+    const store = makeDetectionStore({ mediaKeyFromUrl })
+    expect(store.reconcileDetected(items)).toEqual({ added: 1, updated: 0, changed: true })
+    expect(store.values()).toEqual([
+      expect.objectContaining({
+        id: 'kept',
+        url: 'https://pbs.twimg.com/media/kept.jpg?name=orig',
+      }),
+    ])
+    expect(store.values().every((item) => decodeMediaItem(item) !== undefined)).toBe(true)
   })
 
   it("attributes a quoting tweet's media to its OWN author, not the quoted author", () => {
@@ -613,7 +691,10 @@ describe('videoTweetsNeedingRecovery', () => {
 describe('isXUrl', () => {
   it('matches x.com and twitter.com pages, rejects other hosts', () => {
     expect(isXUrl('https://x.com/alice/status/1')).toBe(true)
-    expect(isXUrl('http://twitter.com/bob')).toBe(true)
+    expect(isXUrl('http://twitter.com/bob')).toBe(false)
     expect(isXUrl('https://example.com/x.com/fake')).toBe(false)
+    expect(isXUrl('https://example.com/?next=https://x.com/alice')).toBe(false)
+    expect(isXUrl('https://x.com.evil.test/alice')).toBe(false)
+    expect(isXUrl('not a url')).toBe(false)
   })
 })

@@ -53,8 +53,8 @@ export const captureLink = v.object({
   domain: v.optional(v.string()),
 })
 
-export const captureRow = v.object({
-  captureId: v.string(), // `${deviceId}/${tweetId}`
+export const captureRowFields = {
+  captureId: v.string(),
   deviceId: v.string(),
   tweetId: v.string(),
   conversationId: v.string(),
@@ -65,7 +65,9 @@ export const captureRow = v.object({
   links: v.optional(v.array(captureLink)),
   sourceRank: v.number(),
   at: v.number(),
-})
+}
+
+export const captureRow = v.object(captureRowFields)
 
 export default defineSchema({
   // Append-only ledger of extension state transitions (ADR-0009). `eventId`
@@ -73,6 +75,7 @@ export default defineSchema({
   // from the extension outbox becomes exactly-once recording here.
   sync_events: defineTable(syncEventFields)
     .index('by_event_id', ['eventId'])
+    .index('by_device_request', ['deviceId', 'requestId'])
     .index('by_at', ['at']),
 
   // Latest state per request — the URL/state cache view that Phase 2 export
@@ -85,14 +88,17 @@ export default defineSchema({
     // whole schema push (and with it every other table, incl. tweet_captures). The
     // sync.ts backfill derives it from `media.tweetId`; new rows always set it.
     tweetId: v.optional(v.string()),
-    // Generalized twin of `tweetId` (multi-platform design, see the `media`
-    // comment above) — `postId` + `platform` are optional for the same reason:
-    // pre-migration rows lack them; `backfillPlatformFields` (below) fills them
-    // in, and new rows always set both. `by_tweet` stays until a follow-up
+    // Generalized twins of `tweetId`/`handle` (multi-platform design, see the
+    // `media` comment above). `postId`/`author`/`platform` stay optional while
+    // old rows exist; `backfillPlatformFields` fills them, and new rows always
+    // set all three. `by_tweet` stays until a follow-up
     // change removes `tweetId` entirely; `by_post`/`by_platform_post` are the
     // NEW indexes future queries should use.
     postId: v.optional(v.string()),
     platform: v.optional(platform),
+    // Same staged migration as postId/platform. New projections always write
+    // it; the optional validator keeps deploy 1 compatible with stored X rows.
+    author: v.optional(v.string()),
     lastKind: kind,
     at: v.number(),
     media: v.optional(media),
@@ -107,8 +113,9 @@ export default defineSchema({
   // Cloud byte-upload ledger mirror (ADR-0013). Control plane ONLY — bytes never
   // transit Convex; they go extension → provider (Drive/Dropbox) directly. This
   // mirrors the extension's durable local ledger so upload status is visible
-  // cross-device. `jobId` (`${deviceId}/${requestId}/${provider}`) is the
-  // idempotency key; last-write-wins by `at`.
+  // cross-device. New `jobId` values are length-delimited v2 tuples. The
+  // mutation accepts exact old tuples only for deployed-client compatibility.
+  // It derives either form server-side; callers cannot choose an identity.
   upload_jobs: defineTable({
     jobId: v.string(),
     deviceId: v.string(),
@@ -123,6 +130,9 @@ export default defineSchema({
       v.literal('skipped'),
     ),
     attempts: v.number(),
+    // Optional during the deployed-row/client migration. New clients always send
+    // a positive lease revision after settlement.
+    revision: v.optional(v.number()),
     at: v.number(),
     remotePath: v.optional(v.string()),
     bytes: v.optional(v.number()),
@@ -131,13 +141,27 @@ export default defineSchema({
     .index('by_job', ['jobId'])
     .index('by_at', ['at']),
 
+  // Server-owned cursor and total for the deploy-2 platform-field audit. A
+  // stateless final page cannot prove earlier pages were clean.
+  platform_backfill_audits: defineTable({
+    mediaStateCursor: v.optional(v.string()),
+    mediaStateDone: v.boolean(),
+    syncEventsCursor: v.optional(v.string()),
+    syncEventsDone: v.boolean(),
+    remaining: v.number(),
+    done: v.boolean(),
+  }),
+
   // Tweet Harvest "Capture" mirror (§9). Best-effort cloud mirror of the
   // extension's local TweetRecord store; IndexedDB remains source of truth.
-  // `captureId` (`${deviceId}/${tweetId}`) is the idempotency key; upserts apply
-  // the §6.4 rank-then-`at` merge (NOT last-write-wins) so a thin timeline
-  // sighting never overwrites a rich TweetDetail row.
+  // `captureId` is the client's length-delimited, injective idempotency key.
+  // Upserts apply the §6.4 rank-then-`at` merge (NOT last-write-wins) so a thin
+  // timeline sighting never overwrites a rich TweetDetail row.
   tweet_captures: defineTable(captureRow)
     .index('by_capture_id', ['captureId'])
     .index('by_conversation', ['conversationId'])
+    .index('by_conversation_at', ['conversationId', 'at'])
+    .index('by_device_at', ['deviceId', 'at'])
+    .index('by_device_conversation_at', ['deviceId', 'conversationId', 'at'])
     .index('by_at', ['at']),
 })

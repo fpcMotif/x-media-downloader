@@ -15,7 +15,7 @@ bounce attracts; the azure glyph identifies the extension; the badge otherwise
 stays quiet.
 
 This is the third fast path alongside Quick Grab (modifier + dwell) and the
-global launcher (bulk). It targets the user who *sees* a photo and wants it,
+global launcher (bulk). It targets the user who _sees_ a photo and wants it,
 without knowing or holding a modifier.
 
 ### Goals

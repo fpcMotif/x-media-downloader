@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { Option } from 'effect'
-import { storage } from 'wxt/utils/storage'
-import type { MediaType, Settings } from '@/core/schema'
+import type { DailyBudgetUsage, MediaType, Settings } from '@/core/schema'
 import { aria2OriginPattern } from '@/core/download/aria2'
+import { readDailyBudgetToday, resetDailyBudgetToday } from '@/core/download/daily-budget-client'
 import { DOWNLOAD_MODES } from '@/core/download/strategy'
-import { freshRecord, type BudgetRecord } from '@/core/download/daily-budget'
 import { dedupeToggleDelta } from '@/core/settings/coupling'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import {
@@ -21,12 +20,8 @@ import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { PanelHeader, Section, type PanelProps } from '../ui'
 import { EraserIcon } from '@/components/icons'
-
-// Moved intact from filters.tsx (the "Daily budget" section reads/resets this
-// same `local:` storage item — nothing about its shape changes here).
-const budgetItem = storage.defineItem<BudgetRecord>('local:daily-budget', {
-  fallback: { day: '', bytes: 0, count: 0 },
-})
+import { useAsyncAuthority } from '@/components/use-async-authority'
+import { useFetchedStrategySelection } from '@/components/use-fetched-strategy-selection'
 
 const TYPE_FILTERS: ReadonlyArray<{ value: MediaType; label: string }> = [
   { value: 'photo', label: 'Photos' },
@@ -34,7 +29,16 @@ const TYPE_FILTERS: ReadonlyArray<{ value: MediaType; label: string }> = [
   { value: 'gif', label: 'GIFs' },
 ]
 
-const clampNonNegative = (raw: string): number => Math.max(0, Math.floor(Number(raw) || 0))
+const clampNonNegative = (raw: string): number => {
+  const value = Number(raw)
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+}
+
+const clampBoundedInteger = (raw: string, minimum: number, maximum: number): number => {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return minimum
+  return Math.min(maximum, Math.max(minimum, Math.floor(value)))
+}
 
 const toggleType = (
   skipTypes: ReadonlyArray<MediaType>,
@@ -47,39 +51,62 @@ const toggleType = (
  *  scrollable, hairline-sectioned panel instead of three nav items. */
 export function SavingPanel({ settings, update }: PanelProps) {
   const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
-  const [usage, setUsage] = useState<BudgetRecord | null>(null)
+  const [fetchedNotice, setFetchedNotice] = useState<string | null>(null)
+  const [usage, setUsage] = useState<DailyBudgetUsage | null>(null)
+  const budgetUsageIntent = useRef(0)
+  const aria2PermissionAuthority = useAsyncAuthority()
+  const selectDownloadStrategy = useFetchedStrategySelection(update, setFetchedNotice)
 
   const strategy = settings.downloadStrategy
   const rpcUrl = settings.aria2RpcUrl
   useEffect(() => {
+    const epoch = aria2PermissionAuthority.begin()
+    setAria2Granted(null)
     if (strategy !== 'aria2') return
     const pattern = aria2OriginPattern(rpcUrl)
     if (Option.isNone(pattern)) {
       setAria2Granted(null)
       return
     }
-    void browser.permissions.contains({ origins: [pattern.value] }).then(setAria2Granted)
-  }, [strategy, rpcUrl])
+    void (async () => {
+      const granted = await browser.permissions
+        .contains({ origins: [pattern.value] })
+        .catch(() => false)
+      if (aria2PermissionAuthority.isCurrent(epoch)) setAria2Granted(granted)
+    })()
+  }, [aria2PermissionAuthority, strategy, rpcUrl])
 
   const requestAria2Access = async (): Promise<void> => {
+    const epoch = aria2PermissionAuthority.begin()
     const pattern = aria2OriginPattern(settings.aria2RpcUrl)
     if (Option.isNone(pattern)) return
-    setAria2Granted(await browser.permissions.request({ origins: [pattern.value] }))
+    const granted = await browser.permissions
+      .request({ origins: [pattern.value] })
+      .catch(() => false)
+    if (aria2PermissionAuthority.isCurrent(epoch)) setAria2Granted(granted)
   }
 
   const activeMode = DOWNLOAD_MODES.find((option) => option.value === settings.downloadStrategy)
 
-  const refreshUsage = async (): Promise<void> => {
-    const stored = await budgetItem.getValue()
-    setUsage(freshRecord(stored, Date.now()))
+  const requestUsage = async (
+    request: () => ReturnType<typeof readDailyBudgetToday>,
+  ): Promise<void> => {
+    const intent = ++budgetUsageIntent.current
+    setUsage(null)
+    const outcome = await request()
+    if (intent !== budgetUsageIntent.current) return
+    setUsage(outcome.status === 'available' ? outcome.usage : null)
   }
   useEffect(() => {
-    void refreshUsage()
+    void requestUsage(readDailyBudgetToday)
+    const budgetIntent = budgetUsageIntent
+    return () => {
+      ++budgetIntent.current
+    }
   }, [])
 
   const resetToday = async (): Promise<void> => {
-    await budgetItem.setValue(freshRecord(null, Date.now()))
-    await refreshUsage()
+    await requestUsage(resetDailyBudgetToday)
   }
 
   const usedMB = usage ? Math.round((usage.bytes / 1_000_000) * 10) / 10 : 0
@@ -241,7 +268,11 @@ export function SavingPanel({ settings, update }: PanelProps) {
             value={settings.downloadConcurrency}
             onChange={(e: Event) =>
               void update({
-                downloadConcurrency: Number((e.target as HTMLInputElement).value) || 1,
+                downloadConcurrency: clampBoundedInteger(
+                  (e.target as HTMLInputElement).value,
+                  1,
+                  10,
+                ),
               })
             }
           />
@@ -261,7 +292,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
           aria-label="Download mode"
           value={settings.downloadStrategy}
           onValueChange={(value: string) => {
-            if (value) void update({ downloadStrategy: value as Settings['downloadStrategy'] })
+            if (value) selectDownloadStrategy(value as Settings['downloadStrategy'])
           }}
         >
           {DOWNLOAD_MODES.map((option) => (
@@ -275,6 +306,11 @@ export function SavingPanel({ settings, update }: PanelProps) {
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
+        {fetchedNotice && (
+          <p aria-live="polite" className="text-sm text-pretty text-muted-foreground">
+            {fetchedNotice}
+          </p>
+        )}
         {activeMode && (
           <p className="text-sm text-pretty text-muted-foreground">{activeMode.hint}</p>
         )}
@@ -292,7 +328,9 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 aria-label="aria2 split"
                 value={settings.aria2Split}
                 onChange={(e: Event) =>
-                  void update({ aria2Split: Number((e.target as HTMLInputElement).value) || 1 })
+                  void update({
+                    aria2Split: clampBoundedInteger((e.target as HTMLInputElement).value, 1, 16),
+                  })
                 }
               />
             </Field>
@@ -483,7 +521,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
           <FieldContent>
             <FieldLabel>Used today</FieldLabel>
             <FieldDescription className="font-mono tabular-nums">
-              {usedMB} MB · {usage?.count ?? 0} files
+              {usage === null ? 'Unavailable' : `${usedMB} MB · ${usage.count} files`}
             </FieldDescription>
           </FieldContent>
           <Button
@@ -519,21 +557,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             onCheckedChange={(checked: boolean) =>
               void update({ autoRevealSensitiveEnabled: checked })
             }
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="authFallbackEnabled">Authenticated fallback</FieldLabel>
-            <FieldDescription>
-              Opt-in — reuse your X session to reach media the public path misses
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="authFallbackEnabled"
-            aria-label="Authenticated fallback"
-            checked={settings.authFallbackEnabled}
-            onCheckedChange={(checked: boolean) => void update({ authFallbackEnabled: checked })}
           />
         </Field>
 

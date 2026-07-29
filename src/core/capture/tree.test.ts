@@ -86,7 +86,7 @@ describe('buildTree', () => {
       n.children.forEach(walk)
     }
     trees[0]!.roots.forEach(walk)
-    expect(seen.sort()).toEqual(['X', 'Y'])
+    expect(seen.toSorted()).toEqual(['X', 'Y'])
   })
 
   it('orders roots and children by createdAt then tweetId', () => {
@@ -106,12 +106,23 @@ describe('buildTree', () => {
     expect(ids(r0.children)).toEqual(['cNoTimeA', 'cNoTimeB', 'cA', 'cB'])
   })
 
+  it('sorts promoted cycle roots with ordinary roots', () => {
+    const trees = buildTree([
+      rec({ tweetId: 'late', conversationId: 'C', createdAt: 30 }),
+      rec({ tweetId: 'cycle-a', conversationId: 'C', inReplyToTweetId: 'cycle-b', createdAt: 10 }),
+      rec({ tweetId: 'cycle-b', conversationId: 'C', inReplyToTweetId: 'cycle-a', createdAt: 20 }),
+    ])
+
+    expect(ids(trees[0]!.roots)).toEqual(['cycle-a', 'late'])
+    expect(ids(trees[0]!.roots[0]!.children)).toEqual(['cycle-b'])
+  })
+
   it('returns one ConversationTree per distinct conversationId', () => {
     const trees = buildTree([
       rec({ tweetId: 'a', conversationId: 'C1', createdAt: 1 }),
       rec({ tweetId: 'b', conversationId: 'C2', createdAt: 1 }),
     ])
-    expect(trees.map((t) => t.conversationId).sort()).toEqual(['C1', 'C2'])
+    expect(trees.map((t) => t.conversationId).toSorted()).toEqual(['C1', 'C2'])
   })
 
   it('returns no trees for empty input', () => {

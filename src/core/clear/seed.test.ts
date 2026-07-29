@@ -64,12 +64,21 @@ describe('planClearSeed — skip reasons', () => {
     expect(verdict).toEqual({ decision: 'skip', reason: 'no-scopes' })
   })
 
+  it('skips Clear when no request has a clearable tweet, without blocking the download batch', () => {
+    const verdict = planClearSeed({
+      requests: [req('m0')],
+      mediaById: mediaById(photo('m0', 'quote-card-key')),
+      settings: CLEAR_ON,
+    })
+    expect(verdict).toEqual({ decision: 'skip', reason: 'no-clearable-tweet' })
+  })
+
   it('a sweep never hits no-scopes: its own list scope alone is enough, even with every hook toggle off', () => {
     // Unlike the hook path, `clearScopes` for a sweep always includes `sweep.scope`,
     // so it can never observe clearScopes.length === 0 — this pins that asymmetry.
     const verdict = planClearSeed({
-      requests: [],
-      mediaById: mediaById(),
+      requests: [req('m0')],
+      mediaById: mediaById(photo('m0', '100')),
       sweep: { scope: 'bookmark' },
       settings: settings({
         clearOnSave: true,
@@ -126,24 +135,26 @@ describe('planClearSeed — seeding', () => {
     const verdict = planClearSeed({
       requests: [req('m0')],
       mediaById: mediaById(photo('m0', '100')),
-      clearExpect: [{ tweetId: '100', ids: ['m0', 'm1', 'm2'] }],
+      clearExpect: [{ tweetId: '100', requestIds: ['m0', 'm1', 'm2'] }],
       settings: CLEAR_ON,
     })
     expect(verdict.decision).toBe('seed')
     if (verdict.decision !== 'seed') return
     expect(verdict.byTweet.get('100')).toEqual(['m0', 'm1', 'm2'])
+    expect(verdict.startingByTweet.get('100')).toEqual(['m0'])
   })
 
   it('clearExpect is a no-op when the tweetId is not already in byTweet', () => {
     const verdict = planClearSeed({
       requests: [req('m0')],
       mediaById: mediaById(photo('m0', '100')),
-      clearExpect: [{ tweetId: '999', ids: ['x0', 'x1'] }],
+      clearExpect: [{ tweetId: '999', requestIds: ['x0', 'x1'] }],
       settings: CLEAR_ON,
     })
     expect(verdict.decision).toBe('seed')
     if (verdict.decision !== 'seed') return
     expect([...verdict.byTweet.keys()]).toEqual(['100'])
+    expect([...verdict.startingByTweet.keys()]).toEqual(['100'])
     expect(verdict.byTweet.get('100')).toEqual(['m0'])
   })
 })
@@ -167,6 +178,9 @@ describe('planClearSeed — sweep-vs-hook scope asymmetry (pinned as current beh
     expect(verdict.decision).toBe('seed')
     if (verdict.decision !== 'seed') return
     expect(verdict.origin).toBe('sweep')
+    expect(verdict.manualScopes).toEqual(['bookmark'])
+    expect(verdict.automaticScopes).toEqual(['bookmark', 'like'])
+    expect(verdict.crossListAutomaticScopes).toEqual(['bookmark', 'like'])
     expect([...verdict.scopes].toSorted()).toEqual(['bookmark', 'like'])
   })
 
@@ -192,6 +206,9 @@ describe('planClearSeed — sweep-vs-hook scope asymmetry (pinned as current beh
     expect(verdict.decision).toBe('seed')
     if (verdict.decision !== 'seed') return
     expect(verdict.origin).toBe('sweep')
+    expect(verdict.manualScopes).toEqual(['bookmark'])
+    expect(verdict.automaticScopes).toEqual([])
+    expect(verdict.crossListAutomaticScopes).toEqual([])
     expect(verdict.scopes).toEqual(['bookmark'])
   })
 
@@ -204,6 +221,9 @@ describe('planClearSeed — sweep-vs-hook scope asymmetry (pinned as current beh
     expect(verdict.decision).toBe('seed')
     if (verdict.decision !== 'seed') return
     expect(verdict.origin).toBe('hook')
+    expect(verdict.manualScopes).toEqual([])
+    expect(verdict.automaticScopes).toEqual(['bookmark', 'like', 'notInterested'])
+    expect(verdict.crossListAutomaticScopes).toEqual([])
     expect(verdict.scopes).toEqual(['bookmark', 'like', 'notInterested'])
   })
 })

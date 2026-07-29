@@ -1,10 +1,33 @@
-import { Context, Effect, Layer } from 'effect'
+import { Cause, Context, Effect, Layer } from 'effect'
+import { errorReason } from '../error'
 import { streamInChunks } from './chunk'
-import { authHeader, CloudHttpError, errText, okJson, runUpload } from './http'
+import {
+  authHeader,
+  CloudHttpError,
+  discardResponseBody,
+  errText,
+  okJson,
+  readControlJson,
+  runUpload,
+} from './http'
 import { FetchService } from '../fetch-service'
 import { SourceFetch } from './source-fetch'
 import { parseSource } from './source'
-import { type UploadInput, type UploadOutcome } from './types'
+import {
+  MAX_CLOUD_REMOTE_ID_LENGTH,
+  MAX_DROPBOX_API_PATH_LENGTH,
+  type BlobAttemptAdvance,
+  type RemoteAttempt,
+  type UploadInput,
+  type UploadOutcome,
+} from './types'
+import {
+  controlRecord,
+  controlSafeInteger,
+  controlString,
+  optionalControlString,
+} from './control-json'
+import { MAX_DIAGNOSTIC_TEXT_LENGTH } from '../diagnostic-text'
 
 /**
  * Dropbox v2 upload adapter (ADR-0013 §5, ADR-0017). Small media
@@ -15,18 +38,88 @@ import { type UploadInput, type UploadOutcome } from './types'
  */
 
 const CONTENT = 'https://content.dropboxapi.com/2'
+const CONTROL = 'https://api.dropboxapi.com/2'
 /** A valid Dropbox session chunk is a 4 MiB multiple; 2 × 4 MiB = 8 MiB. */
 const SESSION_CHUNK = 2 * 4 * 1024 * 1024
+const BASE64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
 
 export interface DropboxArgs {
   readonly accessToken: string
 }
 
+const base64Url = (bytes: Uint8Array): string => {
+  let out = ''
+  for (let offset = 0; offset < bytes.length; offset += 3) {
+    const a = bytes[offset]!
+    const b = bytes[offset + 1]
+    const c = bytes[offset + 2]
+    out += BASE64URL[a >> 2]
+    out += BASE64URL[((a & 3) << 4) | ((b ?? 0) >> 4)]
+    if (b !== undefined) out += BASE64URL[((b & 15) << 2) | ((c ?? 0) >> 6)]
+    if (c !== undefined) out += BASE64URL[c & 63]
+  }
+  return out
+}
+
+/** Fixed-size, job-owned staging path. A SHA-256 digest keeps every allowed
+ * Unicode job id inside Dropbox's path bound without truncating identity. */
+export const dropboxStagePath = async (jobId: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(jobId))
+  return `/.xmd-stage/v2/${base64Url(new Uint8Array(digest))}`
+}
+
+const canonicalPath = (path: string): string => `/${path.replace(/^\/+/u, '')}`.toLowerCase()
+
 interface FileMetadata {
+  readonly '.tag'?: string
   readonly id?: string
   readonly size?: number
   readonly path_display?: string
+  readonly path_lower?: string
+  readonly rev?: string
+  readonly content_hash?: string
 }
+
+const fileMetadata = (value: unknown, label = 'Dropbox metadata'): FileMetadata => {
+  const record = controlRecord(value, label)
+  const tag = optionalControlString(record['.tag'], `${label} tag`, 32)
+  const id = optionalControlString(record.id, `${label} id`, MAX_CLOUD_REMOTE_ID_LENGTH)
+  const pathDisplay = optionalControlString(
+    record.path_display,
+    `${label} display path`,
+    MAX_DROPBOX_API_PATH_LENGTH,
+  )
+  const pathLower = optionalControlString(
+    record.path_lower,
+    `${label} lower path`,
+    MAX_DROPBOX_API_PATH_LENGTH,
+  )
+  const rev = optionalControlString(record.rev, `${label} revision`, MAX_CLOUD_REMOTE_ID_LENGTH)
+  const contentHash = optionalControlString(record.content_hash, `${label} content hash`, 64)
+  return {
+    ...(tag === undefined ? {} : { '.tag': tag }),
+    ...(id === undefined ? {} : { id }),
+    ...(record.size === undefined
+      ? {}
+      : { size: controlSafeInteger(record.size, `${label} size`) }),
+    ...(pathDisplay === undefined ? {} : { path_display: pathDisplay }),
+    ...(pathLower === undefined ? {} : { path_lower: pathLower }),
+    ...(rev === undefined ? {} : { rev }),
+    ...(contentHash === undefined ? {} : { content_hash: contentHash }),
+  }
+}
+
+const metadataEnvelope = (value: unknown, label: string): FileMetadata => {
+  const record = controlRecord(value, label)
+  return fileMetadata(record.metadata, `${label} metadata`)
+}
+
+const sessionIdEnvelope = (value: unknown): string =>
+  controlString(
+    controlRecord(value, 'Dropbox session start').session_id,
+    'Dropbox session id',
+    MAX_CLOUD_REMOTE_ID_LENGTH,
+  )
 
 /** Dropbox-API-Arg must be ASCII; escape any non-ASCII char as \uXXXX. */
 function asciiArg(obj: unknown): string {
@@ -37,21 +130,81 @@ function asciiArg(obj: unknown): string {
   })
 }
 
-const commitInfo = (path: string) => ({ path, mode: 'add', autorename: true, mute: false })
-
-/** Build the success outcome from Dropbox metadata, falling back to local values. */
-const dropboxSuccess = (
-  meta: FileMetadata,
-  fallbackBytes: number,
-  path: string,
-): UploadOutcome => ({
-  kind: 'success',
-  bytes: meta.size ?? fallbackBytes,
-  remotePath: meta.path_display ?? path,
-  ...(meta.id !== undefined ? { remoteId: meta.id } : {}),
+const commitInfo = (path: string) => ({
+  path,
+  mode: 'add',
+  autorename: false,
+  strict_conflict: false,
+  mute: false,
 })
 
-const targetPath = (input: UploadInput): string => `/${input.target.path.replace(/^\/+/, '')}`
+interface DropboxProof {
+  readonly fileId: string
+  readonly rev: string
+  readonly contentHash: string
+  readonly bytes: number
+  readonly pathLower: string
+}
+
+interface StageUploadSuccess extends Extract<UploadOutcome, { readonly kind: 'success' }> {
+  readonly proof: DropboxProof
+}
+
+const fileProof = (meta: FileMetadata): DropboxProof => {
+  if (
+    (meta['.tag'] !== undefined && meta['.tag'] !== 'file') ||
+    meta.id === undefined ||
+    meta.id === '' ||
+    meta.rev === undefined ||
+    meta.rev === '' ||
+    meta.content_hash === undefined ||
+    !/^[\da-f]{64}$/u.test(meta.content_hash) ||
+    meta.path_lower === undefined ||
+    meta.path_lower === '' ||
+    !Number.isSafeInteger(meta.size) ||
+    (meta.size ?? -1) < 0
+  )
+    throw new Error('dropbox: file metadata proof is incomplete')
+  return {
+    fileId: meta.id,
+    rev: meta.rev,
+    contentHash: meta.content_hash,
+    bytes: meta.size!,
+    pathLower: meta.path_lower,
+  }
+}
+
+const stageSuccess = (meta: FileMetadata, stagePath: string): StageUploadSuccess => {
+  const proof = fileProof(meta)
+  if (proof.pathLower !== canonicalPath(stagePath))
+    throw new Error('dropbox: upload returned a different staging path')
+  return {
+    kind: 'success',
+    bytes: proof.bytes,
+    remotePath: stagePath,
+    remoteId: proof.fileId,
+    proof,
+  }
+}
+
+const targetPath = (input: UploadInput): string => `/${input.target.path.replace(/^\/+/u, '')}`
+
+const parentPaths = (filePath: string): ReadonlyArray<string> => {
+  const parts = filePath.replace(/^\/+/u, '').split('/')
+  const paths: string[] = []
+  for (let index = 1; index < parts.length; index += 1)
+    paths.push(`/${parts.slice(0, index).join('/')}`)
+  return paths
+}
+
+const sameStagedBlob = (
+  proof: DropboxProof,
+  attempt: Extract<RemoteAttempt, { readonly kind: 'dropbox'; readonly phase: 'staged' }>,
+): boolean =>
+  proof.fileId === attempt.fileId &&
+  proof.rev === attempt.rev &&
+  proof.contentHash === attempt.contentHash &&
+  proof.bytes === attempt.bytes
 
 /** Read the error body, then fail with a tagged Dropbox HTTP error. */
 const dropboxFail = (res: Response): Effect.Effect<never, CloudHttpError> =>
@@ -61,7 +214,14 @@ const dropboxFail = (res: Response): Effect.Effect<never, CloudHttpError> =>
 
 export class DropboxUploader extends Context.Service<
   DropboxUploader,
-  { readonly upload: (args: DropboxArgs, input: UploadInput) => Effect.Effect<UploadOutcome> }
+  {
+    readonly prepare: (jobId: string, ownerKey: string) => Promise<RemoteAttempt>
+    readonly advance: (
+      args: DropboxArgs,
+      input: UploadInput,
+      attempt: RemoteAttempt,
+    ) => Effect.Effect<BlobAttemptAdvance>
+  }
 >()('cloud/DropboxUploader') {}
 
 export const DropboxUploaderLive = Layer.effect(
@@ -87,6 +247,112 @@ export const DropboxUploaderLive = Layer.effect(
         body,
       })
 
+    const control = (
+      accessToken: string,
+      endpoint: string,
+      arg: unknown,
+    ): Effect.Effect<Response, never, never> =>
+      http
+        .fetch(`${CONTROL}/${endpoint}`, {
+          method: 'POST',
+          headers: { ...authHeader(accessToken), 'content-type': 'application/json' },
+          body: JSON.stringify(arg),
+        })
+        .pipe(
+          Effect.catchTag('FetchError', (error) =>
+            Effect.die(new Error(`dropbox: ${error.message}`)),
+          ),
+        )
+
+    const getMetadata = (
+      accessToken: string,
+      pathOrId: string,
+    ): Effect.Effect<FileMetadata, CloudHttpError> =>
+      Effect.gen(function* () {
+        const res = yield* control(accessToken, 'files/get_metadata', {
+          path: pathOrId,
+          include_deleted: false,
+        })
+        if (!res.ok) return yield* dropboxFail(res)
+        return fileMetadata(yield* okJson(res))
+      })
+
+    const probeMetadata = (
+      accessToken: string,
+      path: string,
+    ): Effect.Effect<FileMetadata | null, CloudHttpError> =>
+      Effect.gen(function* () {
+        const res = yield* control(accessToken, 'files/get_metadata', {
+          path,
+          include_deleted: false,
+        })
+        if (res.ok) return fileMetadata(yield* okJson(res))
+        if (res.status !== 409) return yield* dropboxFail(res)
+        const body = controlRecord(
+          yield* Effect.promise(() => readControlJson(res)),
+          'Dropbox error',
+        )
+        const error =
+          body.error === undefined ? undefined : controlRecord(body.error, 'Dropbox error detail')
+        const pathError =
+          error?.path === undefined ? undefined : controlRecord(error.path, 'Dropbox path error')
+        const errorTag = optionalControlString(error?.['.tag'], 'Dropbox error tag', 64)
+        const pathTag = optionalControlString(pathError?.['.tag'], 'Dropbox path error tag', 64)
+        if (errorTag === 'path' && pathTag === 'not_found') return null
+        const summary = optionalControlString(
+          body.error_summary,
+          'Dropbox error summary',
+          MAX_DIAGNOSTIC_TEXT_LENGTH,
+        )
+        return yield* new CloudHttpError({
+          provider: 'dropbox',
+          status: 409,
+          body: summary ?? 'metadata conflict',
+        })
+      })
+
+    const ensureParentFolders = (
+      accessToken: string,
+      filePath: string,
+    ): Effect.Effect<void, CloudHttpError> =>
+      Effect.gen(function* () {
+        for (const path of parentPaths(filePath)) {
+          const res = yield* control(accessToken, 'files/create_folder_v2', {
+            path,
+            autorename: false,
+          })
+          if (res.ok) {
+            yield* Effect.promise(() => discardResponseBody(res))
+            continue
+          }
+          if (res.status !== 409) return yield* dropboxFail(res)
+          yield* Effect.promise(() => discardResponseBody(res))
+          const existing = yield* getMetadata(accessToken, path)
+          if (existing['.tag'] !== 'folder')
+            return yield* new CloudHttpError({
+              provider: 'dropbox',
+              status: 409,
+              body: `parent path is not a folder: ${path}`,
+            })
+        }
+      })
+
+    const moveFile = (
+      accessToken: string,
+      fileId: string,
+      destination: string,
+    ): Effect.Effect<FileMetadata, CloudHttpError> =>
+      Effect.gen(function* () {
+        const res = yield* control(accessToken, 'files/move_v2', {
+          from_path: fileId,
+          to_path: destination,
+          autorename: false,
+          allow_ownership_transfer: false,
+        })
+        if (!res.ok) return yield* dropboxFail(res)
+        return metadataEnvelope(yield* okJson(res), 'Dropbox move')
+      })
+
     const simpleUpload = (
       accessToken: string,
       bytes: Uint8Array<ArrayBuffer>,
@@ -101,7 +367,7 @@ export const DropboxUploaderLive = Layer.effect(
           catch: (e) => new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
         })
         if (!res.ok) return yield* dropboxFail(res)
-        return yield* okJson<FileMetadata>(res)
+        return fileMetadata(yield* okJson(res))
       })
 
     /**
@@ -136,7 +402,7 @@ export const DropboxUploaderLive = Layer.effect(
                   status: res.status,
                   body: await errText(res),
                 })
-              sessionId = ((await res.json()) as { session_id: string }).session_id
+              sessionId = sessionIdEnvelope(await readControlJson(res))
               cursorOffset = chunk.length
               startedClosed = info.isLast
               return
@@ -155,7 +421,7 @@ export const DropboxUploaderLive = Layer.effect(
                   status: res.status,
                   body: await errText(res),
                 })
-              meta = (await res.json()) as FileMetadata
+              meta = fileMetadata(await readControlJson(res))
               cursorOffset += chunk.length
               return
             }
@@ -171,6 +437,7 @@ export const DropboxUploaderLive = Layer.effect(
                 status: res.status,
                 body: await errText(res),
               })
+            await discardResponseBody(res)
             cursorOffset += chunk.length
           })
 
@@ -188,7 +455,7 @@ export const DropboxUploaderLive = Layer.effect(
                 status: res.status,
                 body: await errText(res),
               })
-            meta = (await res.json()) as FileMetadata
+            meta = fileMetadata(await readControlJson(res))
           }
           /* v8 ignore next -- streamInChunks always emits a final chunk, so meta is set */
           if (meta === null) throw new Error('dropbox: session finished without metadata')
@@ -200,23 +467,145 @@ export const DropboxUploaderLive = Layer.effect(
             : new CloudHttpError({ provider: 'dropbox', status: 0, body: String(e) }),
       })
 
-    const upload = (args: DropboxArgs, input: UploadInput): Effect.Effect<UploadOutcome> => {
-      const path = targetPath(input)
-      return runUpload(parseSource(input).pipe(Effect.provideService(SourceFetch, source)), {
+    const uploadStage = (
+      args: DropboxArgs,
+      input: UploadInput,
+      stagePath: string,
+    ): Effect.Effect<StageUploadSuccess | Exclude<UploadOutcome, { readonly kind: 'success' }>> =>
+      runUpload(parseSource(input).pipe(Effect.provideService(SourceFetch, source)), {
         simple: (bytes) =>
-          simpleUpload(args.accessToken, bytes, path).pipe(
-            Effect.map((meta) => dropboxSuccess(meta, bytes.length, path)),
+          simpleUpload(args.accessToken, bytes, stagePath).pipe(
+            Effect.map((meta) => stageSuccess(meta, stagePath)),
           ),
         streamed: (body) =>
-          sessionUpload(args.accessToken, body, path).pipe(
+          sessionUpload(args.accessToken, body, stagePath).pipe(
             Effect.map(({ meta, bytes }) => ({
-              outcome: dropboxSuccess(meta, bytes, path),
+              outcome: stageSuccess(meta, stagePath),
               bytes,
             })),
           ),
       })
+
+    const prepare = async (jobId: string, ownerKey: string): Promise<RemoteAttempt> => ({
+      kind: 'dropbox',
+      phase: 'prepared',
+      ownerKey,
+      stagePath: await dropboxStagePath(jobId),
+    })
+
+    const advanceOperation = (
+      args: DropboxArgs,
+      input: UploadInput,
+      attempt: Extract<RemoteAttempt, { readonly kind: 'dropbox' }>,
+    ): Effect.Effect<BlobAttemptAdvance, CloudHttpError> =>
+      Effect.gen(function* () {
+        const destination = targetPath(input)
+        if (canonicalPath(destination).startsWith('/.xmd-stage/'))
+          return {
+            kind: 'failure',
+            reason: 'dropbox: destination uses the reserved .xmd-stage namespace',
+          }
+        if (attempt.phase === 'prepared') {
+          const existing = yield* probeMetadata(args.accessToken, attempt.stagePath)
+          if (existing !== null) {
+            const proof = fileProof(existing)
+            if (proof.pathLower !== canonicalPath(attempt.stagePath))
+              return {
+                kind: 'failure',
+                reason: 'dropbox: staged path resolved to a different file path',
+              }
+            return {
+              kind: 'progress',
+              attempt: {
+                ...attempt,
+                phase: 'staged',
+                fileId: proof.fileId,
+                rev: proof.rev,
+                contentHash: proof.contentHash,
+                bytes: proof.bytes,
+              },
+            }
+          }
+          yield* ensureParentFolders(args.accessToken, attempt.stagePath)
+          const uploaded = yield* uploadStage(args, input, attempt.stagePath)
+          if (uploaded.kind !== 'success') return uploaded
+          return {
+            kind: 'progress',
+            attempt: {
+              ...attempt,
+              phase: 'staged',
+              fileId: uploaded.proof.fileId,
+              rev: uploaded.proof.rev,
+              contentHash: uploaded.proof.contentHash,
+              bytes: uploaded.proof.bytes,
+            },
+          }
+        }
+
+        const current = fileProof(yield* getMetadata(args.accessToken, attempt.fileId))
+        if (!sameStagedBlob(current, attempt))
+          return {
+            kind: 'failure',
+            reason: 'dropbox: staged file changed; refusing to move or overwrite it',
+          }
+        const targetLower = canonicalPath(destination)
+        if (current.pathLower === targetLower)
+          return {
+            kind: 'success',
+            bytes: current.bytes,
+            remoteId: current.fileId,
+            remotePath: input.target.path,
+          }
+        if (current.pathLower !== canonicalPath(attempt.stagePath))
+          return {
+            kind: 'success',
+            bytes: current.bytes,
+            remoteId: current.fileId,
+            remotePath: input.target.path,
+          }
+
+        yield* ensureParentFolders(args.accessToken, destination)
+        const moved = fileProof(yield* moveFile(args.accessToken, attempt.fileId, destination))
+        if (!sameStagedBlob(moved, attempt) || moved.pathLower !== targetLower)
+          return {
+            kind: 'failure',
+            reason: 'dropbox: move returned a different file proof',
+          }
+        return {
+          kind: 'success',
+          bytes: moved.bytes,
+          remoteId: moved.fileId,
+          remotePath: input.target.path,
+        }
+      })
+
+    const advance = (
+      args: DropboxArgs,
+      input: UploadInput,
+      attempt: RemoteAttempt,
+    ): Effect.Effect<BlobAttemptAdvance> => {
+      if (attempt.kind !== 'dropbox')
+        return Effect.succeed({
+          kind: 'failure',
+          reason: 'dropbox: remote attempt belongs to another provider',
+        })
+      return advanceOperation(args, input, attempt).pipe(
+        Effect.catchTag('CloudHttpError', (error) =>
+          Effect.succeed<BlobAttemptAdvance>({
+            kind: 'failure',
+            reason: error.message,
+            status: error.status,
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.succeed<BlobAttemptAdvance>({
+            kind: 'failure',
+            reason: errorReason(Cause.squash(cause)),
+          }),
+        ),
+      )
     }
 
-    return { upload }
+    return { prepare, advance }
   }),
 )

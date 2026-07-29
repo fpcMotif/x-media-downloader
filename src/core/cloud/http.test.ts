@@ -1,6 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Effect } from 'effect'
-import { authHeader, CloudHttpError, errText, httpErr, runUpload } from './http'
+import {
+  authHeader,
+  CloudHttpError,
+  discardResponseBody,
+  errText,
+  httpErr,
+  MAX_CONTROL_JSON_BYTES,
+  MAX_PROVIDER_ERROR_BYTES,
+  readControlJson,
+  runUpload,
+} from './http'
 import { FetchError } from '../fetch-service'
 import type { ParsedSource } from './source'
 import { SIMPLE_MAX_BYTES, type UploadOutcome } from './types'
@@ -30,6 +40,40 @@ const streamOf = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
       controller.close()
     },
   })
+
+function controlledBody(
+  reads: ReadonlyArray<ReadableStreamReadResult<Uint8Array> | Error>,
+  streamCancelImpl: () => Promise<void> = async () => {},
+): {
+  readonly body: ReadableStream<Uint8Array>
+  readonly readerCancel: ReturnType<typeof vi.fn>
+  readonly streamCancel: ReturnType<typeof vi.fn>
+  readonly releaseLock: ReturnType<typeof vi.fn>
+} {
+  let at = 0
+  const readerCancel = vi.fn<(reason?: unknown) => Promise<void>>(async () => {})
+  const streamCancel = vi.fn<() => Promise<void>>(streamCancelImpl)
+  const releaseLock = vi.fn<() => void>()
+  const reader = {
+    read: vi.fn<() => Promise<ReadableStreamReadResult<Uint8Array>>>(async () => {
+      const next = reads[at] ?? ({ done: true, value: undefined } as const)
+      at += 1
+      if (next instanceof Error) throw next
+      return next
+    }),
+    cancel: readerCancel,
+    releaseLock,
+  }
+  return {
+    body: {
+      getReader: () => reader,
+      cancel: streamCancel,
+    } as unknown as ReadableStream<Uint8Array>,
+    readerCancel,
+    streamCancel,
+    releaseLock,
+  }
+}
 
 const okSource = (
   over: {
@@ -115,6 +159,61 @@ describe('runUpload — template method', () => {
     expect(overCap.simple).not.toHaveBeenCalled()
   })
 
+  it('rejects a lying small Content-Length when actual bytes cross 8 MiB', async () => {
+    const source = controlledBody([{ done: false, value: new Uint8Array(SIMPLE_MAX_BYTES + 1) }])
+    const s = sinks()
+
+    const outcome = await Effect.runPromise(runUpload(okSource({ size: 1, body: source.body }), s))
+
+    expect(outcome).toEqual({
+      kind: 'failure',
+      reason: `body exceeds ${SIMPLE_MAX_BYTES}-byte limit`,
+    })
+    expect(s.simple).not.toHaveBeenCalled()
+    expect(s.streamed).not.toHaveBeenCalled()
+    expect(source.readerCancel).toHaveBeenCalledOnce()
+    expect(source.streamCancel).toHaveBeenCalledOnce()
+  })
+
+  it('cancels an unread source when the streamed sink rejects', async () => {
+    const source = controlledBody([])
+    const sinkError = new Error('sink rejected')
+    const s = sinks({ streamed: () => Effect.die(sinkError) })
+
+    const outcome = await Effect.runPromise(
+      runUpload(okSource({ size: null, body: source.body }), s),
+    )
+
+    expect(outcome).toEqual({ kind: 'failure', reason: 'sink rejected' })
+    expect(source.streamCancel).toHaveBeenCalledOnce()
+  })
+
+  it('never lets cancellation failure replace the sink failure', async () => {
+    const source = controlledBody([], async () => {
+      throw new Error('cancel failed')
+    })
+    const s = sinks({ streamed: () => Effect.die(new Error('sink failed')) })
+
+    await expect(
+      Effect.runPromise(runUpload(okSource({ size: null, body: source.body }), s)),
+    ).resolves.toEqual({ kind: 'failure', reason: 'sink failed' })
+  })
+
+  it('cancels when a streamed sink throws before returning its Effect', async () => {
+    const source = controlledBody([])
+    const sinkError = new Error('sink construction failed')
+    const s = sinks({
+      streamed: () => {
+        throw sinkError
+      },
+    })
+
+    await expect(
+      Effect.runPromise(runUpload(okSource({ size: null, body: source.body }), s)),
+    ).resolves.toEqual({ kind: 'failure', reason: sinkError.message })
+    expect(source.streamCancel).toHaveBeenCalledOnce()
+  })
+
   it('maps a CloudHttpError to a failure outcome carrying the numeric status', async () => {
     const s = sinks({
       simple: () =>
@@ -156,7 +255,83 @@ describe('http helpers', () => {
     expect(e.status).toBe(404)
   })
 
+  it('discards a status-only response without exposing cleanup failure', async () => {
+    const cancel = vi.fn<() => Promise<void>>(async () => {
+      throw new Error('cancel failed')
+    })
+    const res = { body: { cancel } } as unknown as Response
+
+    await expect(discardResponseBody(res)).resolves.toBeUndefined()
+    expect(cancel).toHaveBeenCalledOnce()
+    await expect(discardResponseBody({ body: null } as Response)).resolves.toBeUndefined()
+  })
+
   it('errText returns the response body text', async () => {
     expect(await errText(new Response('boom'))).toBe('boom')
+  })
+
+  it('bounds hostile provider error text by raw bytes and cancels the remainder', async () => {
+    const source = controlledBody([
+      {
+        done: false,
+        value: new TextEncoder().encode('é'.repeat(MAX_PROVIDER_ERROR_BYTES / 2 + 1)),
+      },
+    ])
+    const res = { body: source.body } as Response
+
+    const text = await errText(res)
+
+    expect(text).toBe('é'.repeat(MAX_PROVIDER_ERROR_BYTES / 2))
+    expect(source.readerCancel).toHaveBeenCalledOnce()
+    expect(source.releaseLock).toHaveBeenCalledOnce()
+  })
+
+  it('returns empty error text after a failed read and still attempts cancellation', async () => {
+    const source = controlledBody([new Error('connection reset')])
+
+    await expect(errText({ body: source.body } as Response)).resolves.toBe('')
+    expect(source.readerCancel).toHaveBeenCalledOnce()
+    expect(source.releaseLock).toHaveBeenCalledOnce()
+  })
+
+  it('parses valid control JSON exactly at the 1 MiB cap', async () => {
+    const padding = 'x'.repeat(MAX_CONTROL_JSON_BYTES - 8)
+    const json = `{"x":"${padding}"}`
+    expect(new TextEncoder().encode(json)).toHaveLength(MAX_CONTROL_JSON_BYTES)
+
+    await expect(readControlJson(new Response(json))).resolves.toEqual({
+      x: padding,
+    })
+  })
+
+  it('rejects control JSON over 1 MiB despite a lying small header', async () => {
+    const source = controlledBody([
+      { done: false, value: new Uint8Array(MAX_CONTROL_JSON_BYTES + 1) },
+    ])
+    const res = {
+      body: source.body,
+      headers: new Headers({ 'content-length': '1' }),
+    } as Response
+
+    await expect(readControlJson(res)).rejects.toMatchObject({
+      name: 'ResponseBodyTooLargeError',
+      maxBytes: MAX_CONTROL_JSON_BYTES,
+    })
+    expect(source.readerCancel).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an honestly oversized control response before pulling', async () => {
+    const source = controlledBody([])
+    const res = {
+      body: source.body,
+      headers: new Headers({ 'content-length': String(MAX_CONTROL_JSON_BYTES + 1) }),
+    } as Response
+
+    await expect(readControlJson(res)).rejects.toMatchObject({
+      name: 'ResponseBodyTooLargeError',
+      maxBytes: MAX_CONTROL_JSON_BYTES,
+    })
+    expect(source.streamCancel).toHaveBeenCalledOnce()
+    expect(source.releaseLock).not.toHaveBeenCalled()
   })
 })

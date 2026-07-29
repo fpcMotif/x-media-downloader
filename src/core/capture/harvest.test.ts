@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as walk from '../adapters/x/walk'
+import { MAX_TRAVERSAL_NODES } from '../adapters/x/walk'
 import { harvestTweets } from './harvest'
 import thread from '../../test/fixtures/tweet-detail-thread.json'
 
@@ -211,11 +212,18 @@ describe('harvestTweets over a module-nested thread (reinforces 002)', () => {
       includeTextOnly: false,
       capturedAt: at,
     })
-    expect(ids(recs).sort()).toEqual(['2001', '2002', '2003'])
+    expect(ids(recs).toSorted()).toEqual(['2001', '2002', '2003'])
   })
 })
 
 describe('harvestTweets traversal', () => {
+  it('drops the whole capture rather than returning early records when traversal gas is exhausted', () => {
+    const hostile = [mixed, ...Array.from({ length: MAX_TRAVERSAL_NODES + 1 }, () => ({}))]
+    expect(
+      harvestTweets(hostile, { source: 'timeline', includeTextOnly: false, capturedAt: at }),
+    ).toEqual([])
+  })
+
   it('consumes forEachTweetNode exactly once (no second walk)', () => {
     const spy = vi.spyOn(walk, 'forEachTweetNode')
     harvestTweets(mixed, { source: 'timeline', includeTextOnly: false, capturedAt: at })

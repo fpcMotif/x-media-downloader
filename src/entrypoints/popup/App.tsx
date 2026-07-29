@@ -1,44 +1,39 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { getSettings, setSettings } from '@/core/settings'
 import { DOWNLOAD_MODES } from '@/core/download/strategy'
+import { requestClearLog, type ClearLogOutcome } from '@/core/clear/log-client'
 import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
-import { adapterForUrl } from '@/core/adapters/registry'
-import type { PlatformAdapter } from '@/core/adapters/types'
-import type { MembershipScope } from '@/core/clear/clearer'
-import type { MetricsSnapshot, Settings } from '@/core/schema'
+import { platformForUrl } from '@/core/adapters/catalog'
+import type { MembershipScope } from '@/core/clear/scope'
+import type { Platform, Settings, SettingsUiPatch } from '@/core/schema'
+import type { MetricsSnapshot } from '@/core/schema/download'
 import { cn } from '@/lib/utils'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { LayersIcon, CheckIcon } from '@/components/icons'
-import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
+import { useSettingsEditor } from '@/components/use-settings-editor'
+import { useAsyncAuthority } from '@/components/use-async-authority'
+import { useFetchedStrategySelection } from '@/components/use-fetched-strategy-selection'
+import type { CaptureSummaryResult } from '@/components/capture-export'
 import { plural } from '@/components/capture-copy'
 import { ConfirmStrip } from '@/components/confirm-strip'
 import {
-  RELEASE_WORD,
-  RELEASE_PAGE_CONFIRM_LABEL,
-  RELEASE_LIST_CONFIRM_LABEL,
   TURN_ON_RELEASE_LABEL,
-  releasePageConfirm,
-  releaseListConfirm,
-  releasedPageResult,
-  releasedListResult,
   turnOnReleaseConfirm,
-  drainResult,
-  sweepResult,
   hoverGrabLine,
   wholePostLine,
   firstRunBody,
   modifierLabel,
   secondModifierLabel,
-  PAGE_UNREACHABLE,
-  NO_ACTIVE_TAB,
-  isPersistentStatus,
 } from '@/components/action-copy'
 import { tabContext, tabScope, isXContext, contextLabel, type TabContext } from './context'
 import { recordOpen, markDone, shouldShowIntro, type FirstRunState } from './first-run'
 import { CaptureQuickActions } from './capture-quick-actions'
+import { ClearLogSection } from './clear-log-section'
+import { makePopupActions, type PopupActionView, type PopupIntent } from './popup-actions'
+import { useCaptureSummary } from './use-capture-summary'
+import { useDownloadMonitor } from './use-download-monitor'
 
 function fmtRate(bps: number): string {
   if (bps <= 0) return '-'
@@ -53,17 +48,11 @@ function fmtBytes(bytes: number): string {
   return `${bytes} B`
 }
 
-// Poll the download monitor briskly while a batch is live, but back off when
-// idle — the snapshot is only surfaced when total > 0, so a 1s round-trip to
-// the SW every second is wasted work for an open popup with no batch running.
-const POLL_ACTIVE_MS = 1000
-const POLL_IDLE_MS = 3000
-
 // [inline] — not in action-copy.ts's landed surface (Batch A shipped without
 // an aria2-caveat builder); action-copy.ts is Batch A's file, out of this
 // batch's scope to extend, so the literal lives here verbatim from spec §2.3.
 const ARIA2_CAVEAT =
-  "aria2 hand-offs can't be verified — posts download but aren't released (use Direct or Fetched)."
+  'aria2 downloads are tracked, but cannot release posts because they have no Chrome download ID.'
 
 const ROUTES: ReadonlyArray<{ url: string; label: string }> = [
   { url: 'https://x.com', label: 'x.com' },
@@ -88,48 +77,12 @@ const clearScopeSummary = (settings: Settings): string => {
 const LINK_SLOP =
   'relative rounded-sm outline-none transition-colors after:absolute after:-inset-x-1 after:-inset-y-3 focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97]'
 
-/** A page action that messages the active tab's content script and turns the
- *  reply into a status line. Owns its own busy state and the query-tab → send
- *  → format → error skeleton, writing the result into a shared `setMsg` slot
- *  so siblings never leave a stale line; ConfirmStrip gates *when* `run` is
- *  invoked (JSX-level, spec §2.6) — this hook no longer knows about confirm. */
-function usePageAction<R>(config: {
-  request: { _tag: string }
-  format: (res: R | null) => string
-  /** Cluster-scoped status-line setter (downloadMsg or releaseMsg) — cleared
-   *  on run start, set on completion/error. */
-  setMsg: (m: string | null) => void
-}): { busy: boolean; run: () => Promise<void> } {
-  const [busy, setBusy] = useState(false)
-
-  const run = async (): Promise<void> => {
-    setBusy(true)
-    config.setMsg(null)
-    try {
-      const [tab] = await browser.tabs.query({
-        active: true,
-        currentWindow: true,
-      })
-      if (tab?.id === undefined) {
-        config.setMsg(NO_ACTIVE_TAB)
-        return
-      }
-      const res = (await browser.tabs.sendMessage(tab.id, config.request)) as R | null
-      config.setMsg(config.format(res))
-    } catch {
-      config.setMsg(PAGE_UNREACHABLE)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return { busy, run }
-}
-
 const openOptions = (): void => void browser.runtime.openOptionsPage()
 
 const openOptionsSection = (hash: string): void =>
-  void browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}#${hash}` })
+  void browser.tabs.create({
+    url: `${browser.runtime.getURL('/options.html')}#${hash}`,
+  })
 
 // openOptionsPage can't carry a hash, so it always lands on Saving; the
 // capture/release cards deep-link straight to their panel instead (the
@@ -235,10 +188,10 @@ function MonitorZone({ metrics, onReset }: { metrics: MetricsSnapshot; onReset: 
 function StageZone({
   ctx,
   onXTab,
-  willClear,
+  downloadWillClear,
+  sweepWillClear,
   aria2Caveat,
-  drainBusy,
-  sweepBusy,
+  active,
   onDrain,
   onSweep,
   downloadMsg,
@@ -247,10 +200,10 @@ function StageZone({
 }: {
   ctx: TabContext
   onXTab: boolean
-  willClear: boolean
+  downloadWillClear: boolean
+  sweepWillClear: boolean
   aria2Caveat: boolean
-  drainBusy: boolean
-  sweepBusy: boolean
+  active: PopupActionView['active']
   onDrain: () => void
   onSweep: () => void
   downloadMsg: string | null
@@ -264,12 +217,12 @@ function StageZone({
           type="button"
           data-slot="button"
           className="h-11 w-full rounded-[var(--xmd-radius-2)] bg-primary text-sm font-semibold text-primary-foreground outline-none transition-colors hover:bg-primary/90 active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
-          disabled={!onXTab || drainBusy}
+          disabled={!onXTab || active !== null}
           onClick={onDrain}
         >
-          {drainBusy
+          {active === 'download-page'
             ? 'Queuing…'
-            : willClear
+            : downloadWillClear
               ? 'Download + release this page'
               : 'Download this page'}
         </button>
@@ -278,14 +231,14 @@ function StageZone({
           type="button"
           data-slot="button"
           className="flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--xmd-radius-3)] text-xs font-medium text-foreground/80 outline-none transition-colors hover:bg-muted active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
-          disabled={!onXTab || sweepBusy}
+          disabled={!onXTab || active !== null}
           onClick={onSweep}
         >
           <LayersIcon className="size-3.5" />
-          {sweepBusy ? 'Sweeping…' : 'One by one'}
+          {active === 'sweep-list' ? 'Sweeping…' : 'One by one'}
         </button>
 
-        {willClear && (
+        {(downloadWillClear || sweepWillClear) && (
           <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
             Release after download is on
@@ -336,151 +289,26 @@ function StageZone({
   )
 }
 
-// ── Zone 4 — Release cluster (§2.2, §2.3, §2.4) — X tabs only ──
-
-function ReleaseTrigger({
-  label,
-  busy,
-  onClick,
-}: {
-  label: string
-  busy: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      data-slot="button"
-      disabled={busy}
-      className="flex min-h-10 items-center rounded-[var(--xmd-radius-3)] px-1 text-[13px] font-medium text-destructive outline-none transition-colors hover:bg-destructive/10 active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
-      onClick={onClick}
-    >
-      {label}
-    </button>
-  )
-}
-
-function ReleaseCluster({
-  onListPage,
-  releaseMsg,
-  releasePageBusy,
-  releaseListBusy,
-  onReleasePage,
-  onReleaseList,
-}: {
-  onListPage: boolean
-  releaseMsg: string | null
-  releasePageBusy: boolean
-  releaseListBusy: boolean
-  onReleasePage: () => void
-  onReleaseList: () => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <section aria-label="Release" className="grid gap-2 border-t border-border px-3.5 py-4">
-      <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
-        Release without downloading
-      </span>
-
-      {onListPage ? (
-        <div className="grid gap-1">
-          <ConfirmStrip
-            sentence={releasePageConfirm}
-            confirmLabel={RELEASE_PAGE_CONFIRM_LABEL}
-            kind="one-shot"
-            onConfirm={onReleasePage}
-          >
-            {(arm) => (
-              <ReleaseTrigger label="Release this page…" busy={releasePageBusy} onClick={arm} />
-            )}
-          </ConfirmStrip>
-          <ConfirmStrip
-            sentence={releaseListConfirm}
-            confirmLabel={RELEASE_LIST_CONFIRM_LABEL}
-            kind="one-shot"
-            typedWord={RELEASE_WORD.toLowerCase()}
-            onConfirm={onReleaseList}
-          >
-            {(arm) => (
-              <ReleaseTrigger
-                label="Release the whole list…"
-                busy={releaseListBusy}
-                onClick={arm}
-              />
-            )}
-          </ConfirmStrip>
-        </div>
-      ) : (
-        <div className="grid gap-1">
-          <button
-            type="button"
-            data-slot="button"
-            aria-expanded={expanded}
-            className="flex min-h-10 items-center justify-between rounded-[var(--xmd-radius-3)] px-1 text-[13px] font-medium text-destructive outline-none transition-colors hover:bg-destructive/10 active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50"
-            onClick={() => setExpanded((v) => !v)}
-          >
-            Release
-            <span aria-hidden="true" className="relative inline-grid size-3 place-items-center">
-              <span
-                className={cn(
-                  'col-start-1 row-start-1 transition-[opacity,transform] duration-[180ms] ease-[var(--xmd-ease)]',
-                  expanded ? 'scale-100 opacity-100' : 'scale-90 opacity-0',
-                )}
-              >
-                ⌃
-              </span>
-              <span
-                className={cn(
-                  'col-start-1 row-start-1 transition-[opacity,transform] duration-[180ms] ease-[var(--xmd-ease)]',
-                  expanded ? 'scale-90 opacity-0' : 'scale-100 opacity-100',
-                )}
-              >
-                ›
-              </span>
-            </span>
-          </button>
-          {expanded && (
-            <div className="animate-in fade-in slide-in-from-top-1 duration-[220ms] ease-[var(--xmd-ease)]">
-              <ConfirmStrip
-                sentence={releasePageConfirm}
-                confirmLabel={RELEASE_PAGE_CONFIRM_LABEL}
-                kind="one-shot"
-                onConfirm={onReleasePage}
-              >
-                {(arm) => (
-                  <ReleaseTrigger label="Release this page…" busy={releasePageBusy} onClick={arm} />
-                )}
-              </ConfirmStrip>
-            </div>
-          )}
-        </div>
-      )}
-
-      {releaseMsg && (
-        <p aria-live="polite" className="text-pretty text-xs leading-snug text-muted-foreground">
-          {releaseMsg}
-        </p>
-      )}
-    </section>
-  )
-}
-
-// ── Zone 5 — Preferences (§2.2, §2.3) — global, rows suppressed per platform ──
+// ── Zone 4 — Preferences (§2.2, §2.3) — global, rows suppressed per platform ──
 
 function PreferencesZone({
   ctx,
   settings,
   update,
+  onSelectDownloadStrategy,
+  fetchedNotice,
   captureSummary,
 }: {
   ctx: TabContext
   settings: Settings
-  update: (patch: Partial<Settings>) => Promise<void>
-  captureSummary: CaptureSummary | null
+  update: (patch: SettingsUiPatch) => Promise<void>
+  onSelectDownloadStrategy: (value: Settings['downloadStrategy']) => void
+  fetchedNotice: string | null
+  captureSummary: CaptureSummaryResult | null
 }) {
   const isMetaContext = ctx === 'instagram' || ctx === 'threads'
-  const tweets = captureSummary?.tweets ?? 0
+  const summary = captureSummary?.status === 'available' ? captureSummary.summary : null
+  const tweets = summary?.tweets ?? 0
 
   return (
     <section className="grid gap-4 border-t border-border px-3.5 py-4">
@@ -495,7 +323,7 @@ function PreferencesZone({
           aria-label="Download mode"
           value={settings.downloadStrategy}
           onValueChange={(value: string) => {
-            if (value) void update({ downloadStrategy: value as Settings['downloadStrategy'] })
+            if (value) onSelectDownloadStrategy(value as Settings['downloadStrategy'])
           }}
         >
           {DOWNLOAD_MODES.map((option) => (
@@ -510,6 +338,11 @@ function PreferencesZone({
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
+        {fetchedNotice && (
+          <p aria-live="polite" className="text-xs leading-snug text-muted-foreground">
+            {fetchedNotice}
+          </p>
+        )}
       </div>
 
       {isMetaContext ? (
@@ -563,6 +396,10 @@ function PreferencesZone({
               <FieldDescription className="flex items-center gap-1.5">
                 {!settings.captureEnabled ? (
                   'Off — captures tweet text locally as you scroll.'
+                ) : captureSummary === null ? (
+                  'Loading archive…'
+                ) : captureSummary.status === 'unavailable' ? (
+                  'Archive unavailable.'
                 ) : tweets > 0 ? (
                   <>
                     <span className="font-mono tabular-nums">{plural(tweets, 'tweet')}</span>
@@ -620,181 +457,156 @@ function Footer({
 }
 
 export function App() {
-  const [settings, setSettingsState] = useState<Settings | null>(null)
-  const [saved, setSaved] = useState(false)
-  const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
-  const [tabAdapter, setTabAdapter] = useState<PlatformAdapter | undefined>(undefined)
+  const [fetchedNotice, setFetchedNotice] = useState<string | null>(null)
+  const { load, notice: saveNotice, update, reload } = useSettingsEditor({ successMs: 1200 })
+  const settings = load.settings
+  const selectDownloadStrategy = useFetchedStrategySelection(update, setFetchedNotice)
+  const mounted = useRef(true)
+  const tabAuthority = useAsyncAuthority()
+  const { metrics, reset: resetMonitor } = useDownloadMonitor()
+  const [tabPlatform, setTabPlatform] = useState<Platform | undefined>(undefined)
   const [ctx, setCtx] = useState<TabContext>('none')
   const [scope, setScope] = useState<MembershipScope | undefined>(undefined)
-  // Cluster-scoped status lines (§2.6) — a download-cluster result can never
-  // overwrite the release cluster's line, and vice versa.
-  const [downloadMsg, setDownloadMsg] = useState<string | null>(null)
-  const [releaseMsg, setReleaseMsg] = useState<string | null>(null)
-  const [captureSummary, setCaptureSummary] = useState<CaptureSummary | null>(null)
+  const { result: captureSummary, clear: clearCaptureSummary } = useCaptureSummary()
+  const [clearLog, setClearLog] = useState<ClearLogOutcome | null>(null)
   const [introState, setIntroState] = useState<FirstRunState | null>(null)
-
-  // Whether the last Stage download action completed without hitting an
-  // actionable error (page unreachable / no active tab) — read right after
-  // `run()` resolves to decide whether it counts as the "Stage action
-  // completes successfully once" first-run dismissal trigger (spec §2.2).
-  // A ref (not state) because it must be readable synchronously the instant
-  // the triggering promise settles, not after the next render.
-  const downloadOkRef = useRef(false)
-  const trackDownloadMsg = (m: string | null): void => {
-    downloadOkRef.current = m !== null && m !== PAGE_UNREACHABLE && m !== NO_ACTIVE_TAB
-    setDownloadMsg(m)
+  const actionsRef = useRef<ReturnType<typeof makePopupActions> | null>(null)
+  if (actionsRef.current === null) {
+    actionsRef.current = makePopupActions({
+      tabs: browser.tabs,
+      clock: {
+        now: () => Date.now(),
+        after: (ms, task) => {
+          const timer = setTimeout(task, ms)
+          return () => clearTimeout(timer)
+        },
+      },
+      tabContext,
+      markDone: async () => {
+        const state = await markDone()
+        if (mounted.current) setIntroState(state)
+      },
+    })
   }
+  const actions = actionsRef.current
+  const [actionView, setActionView] = useState<PopupActionView>(() => actions.inspect())
 
-  // Whether a Stage action will ALSO release: "Release after download" is on AND
-  // the strategy is byte-verifiable (aria2 hand-offs are excluded). Drives the
-  // primary button's label and the standing status line. Computed before the
-  // loading early-return so the action hooks below (which must run
-  // unconditionally) can close over it.
-  const willClear =
+  // Release needs a verified Chrome download ID; aria2 media has none.
+  const clearCapable =
     settings !== null && settings.clearOnSave && settings.downloadStrategy !== 'aria2'
+  const downloadWillClear =
+    settings !== null &&
+    clearCapable &&
+    (scope === 'bookmark'
+      ? settings.autoUnbookmarkOnSave
+      : scope === 'like'
+        ? settings.autoUnlikeOnSave
+        : settings.autoUnbookmarkOnSave ||
+          settings.autoUnlikeOnSave ||
+          settings.autoNotInterestedOnSave)
+  // Sweep owns its explicit list scope. Per-scope automatic toggles do not revoke it.
+  const sweepWillClear = clearCapable && scope !== undefined
   const aria2Caveat = settings?.clearOnSave === true && settings.downloadStrategy === 'aria2'
 
-  const drain = usePageAction<{ count?: number }>({
-    request: { _tag: 'DrainPageRequest' },
-    format: (res) => drainResult(res?.count ?? 0, willClear),
-    setMsg: trackDownloadMsg,
-  })
-
-  const sweep = usePageAction<{ queued?: number; skipped?: number; reason?: string }>({
-    request: { _tag: 'SweepPageRequest' },
-    format: (res) => sweepResult(res, willClear),
-    setMsg: trackDownloadMsg,
-  })
-
-  // Manual one-shot release: un-bookmark / un-like every post currently on the
-  // X page, via the content script (the same click path that works by hand).
-  // Page-scoped: the content script derives bookmark-vs-like from the list URL
-  // itself, so this carries no scope payload.
-  const releasePage = usePageAction<{ cleared?: number }>({
-    request: { _tag: 'ClearVisibleRequest' },
-    format: (res) => releasedPageResult(res?.cleared ?? 0),
-    setMsg: setReleaseMsg,
-  })
-
-  // Whole-list release: auto-scroll the entire Likes/Bookmarks list and
-  // un-like / un-bookmark every post — heavier and irreversible, gated by the
-  // typed-word Confirm Strip and to list pages only.
-  const releaseList = usePageAction<{ cleared?: number; reason?: string }>({
-    request: { _tag: 'ClearWholeListRequest' },
-    format: (res) => releasedListResult(res),
-    setMsg: setReleaseMsg,
-  })
-
   useEffect(() => {
-    void getSettings().then(setSettingsState)
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
   }, [])
 
   useEffect(() => {
+    const unsubscribe = actions.subscribe(() => setActionView(actions.inspect()))
+    return () => {
+      unsubscribe()
+      actions.dispose()
+    }
+  }, [actions])
+
+  useEffect(() => {
+    const epoch = tabAuthority.begin()
     void (async () => {
       try {
         const tabs = await browser.tabs.query({
           active: true,
           currentWindow: true,
         })
+        if (!tabAuthority.isCurrent(epoch)) return
         const tab = tabs[0]
         if (!tab) return
         const url = tab.url ?? ''
-        setTabAdapter(adapterForUrl(url))
+        setTabPlatform(platformForUrl(url))
         // Recomputes the list-page check from the adapter/platform field
         // directly (ADR-0019's safety property — never an X-specific URL
-        // matcher), independently of the tabAdapter assignment above; the
-        // registry-backed derivation itself is unit-tested by context.test.ts.
+        // matcher), independently of the tabPlatform assignment above; the
+        // catalog-backed derivation itself is unit-tested by context.test.ts.
         setCtx(tabContext(url))
         setScope(tabScope(url))
       } catch {
         /* permission unavailable; the action stays disabled */
       }
     })()
-  }, [])
+  }, [tabAuthority])
 
   useEffect(() => {
-    // limit 3: enough for the popup's own trimmed recent-conversation disclosure
-    // (CaptureQuickActions) without paying for the full archive-browser payload.
-    void fetchCaptureSummary(3).then(setCaptureSummary)
-  }, [])
-
-  useEffect(() => {
-    void recordOpen().then(setIntroState)
-  }, [])
-
-  useEffect(() => {
-    let handle: ReturnType<typeof setTimeout>
-    const poll = (): void => {
-      void browser.runtime
-        .sendMessage({ _tag: 'MetricsRequest' })
-        .then((m) => {
-          const snapshot = m as MetricsSnapshot | null
-          setMetrics(snapshot)
-          // Slow the cadence when no batch is active — the monitor (and thus the
-          // snapshot) is only shown while total > 0.
-          const next = snapshot && snapshot.total > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS
-          handle = setTimeout(poll, next)
-          return next
-        })
-        .catch(() => {
-          handle = setTimeout(poll, POLL_IDLE_MS)
-        })
+    let cancelled = false
+    void requestClearLog((request) => browser.runtime.sendMessage(request)).then((log) => {
+      if (!cancelled && mounted.current) setClearLog(log)
+      return undefined
+    })
+    return () => {
+      cancelled = true
     }
-    poll()
-    return () => clearTimeout(handle)
   }, [])
 
-  // Cluster status lines auto-clear after 6s (§2.6) — except the actionable
-  // errors in isPersistentStatus, which stay put until the next action in
-  // that same cluster starts (already handled: usePageAction's `run()` clears
-  // its own slot on start via `config.setMsg(null)`).
   useEffect(() => {
-    if (downloadMsg === null || isPersistentStatus(downloadMsg)) return
-    const timer = setTimeout(() => setDownloadMsg(null), 6000)
-    return () => clearTimeout(timer)
-  }, [downloadMsg])
+    let cancelled = false
+    void (async () => {
+      try {
+        const state = await recordOpen()
+        if (!cancelled && mounted.current) setIntroState(state)
+      } catch {
+        // Onboarding state cannot block the popup.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  useEffect(() => {
-    if (releaseMsg === null || isPersistentStatus(releaseMsg)) return
-    const timer = setTimeout(() => setReleaseMsg(null), 6000)
-    return () => clearTimeout(timer)
-  }, [releaseMsg])
-
-  if (!settings) {
-    return <div className="xmd-popup xmd-popup--loading">Loading...</div>
+  if (settings === null) {
+    return (
+      <div className="xmd-popup xmd-popup--loading">
+        {load.status === 'unavailable' ? (
+          <>
+            <p>Settings unavailable.</p>
+            <button
+              type="button"
+              className="text-primary hover:underline"
+              onClick={() => void reload()}
+            >
+              Retry
+            </button>
+          </>
+        ) : (
+          'Loading...'
+        )}
+      </div>
+    )
   }
 
-  const onXTab = tabAdapter?.platform === 'x'
-  const onListPage = ctx === 'x-list'
+  const onXTab = tabPlatform === 'x'
   const isMetaContext = ctx === 'instagram' || ctx === 'threads'
 
-  const update = async (patch: Partial<Settings>): Promise<void> => {
-    setSettingsState(await setSettings(patch))
-    setSaved(true)
-    setTimeout(() => setSaved(false), 1200)
-  }
+  const dismissFirstRun = (): void =>
+    void markDone()
+      .then((state) => {
+        if (mounted.current) setIntroState(state)
+        return undefined
+      })
+      .catch(() => undefined)
 
-  const dismissFirstRun = (): void => void markDone().then(setIntroState)
-
-  const runDrain = (): void => {
-    void (async () => {
-      await drain.run()
-      if (downloadOkRef.current) dismissFirstRun()
-    })()
-  }
-  const runSweep = (): void => {
-    void (async () => {
-      await sweep.run()
-      if (downloadOkRef.current) dismissFirstRun()
-    })()
-  }
-
-  const resetMonitor = async (): Promise<void> => {
-    const res = await browser.runtime
-      .sendMessage({ _tag: 'ClearDownloadMonitorRequest' })
-      .catch(() => null)
-    if ((res as { ok?: boolean } | null)?.ok) setMetrics(null)
-  }
+  const runAction = (intent: PopupIntent): void => void actions.run(intent)
 
   // Only surface the monitor for a real download batch — not for stray hover/UI
   // trace events that also ride the metrics snapshot.
@@ -815,41 +627,31 @@ export function App() {
       <StageZone
         ctx={ctx}
         onXTab={onXTab}
-        willClear={willClear}
+        downloadWillClear={downloadWillClear}
+        sweepWillClear={sweepWillClear}
         aria2Caveat={aria2Caveat}
-        drainBusy={drain.busy}
-        sweepBusy={sweep.busy}
-        onDrain={runDrain}
-        onSweep={runSweep}
-        downloadMsg={downloadMsg}
+        active={actionView.active}
+        onDrain={() => runAction({ kind: 'download-page', releaseAfter: downloadWillClear })}
+        onSweep={() => runAction({ kind: 'sweep-list', releaseAfter: sweepWillClear })}
+        downloadMsg={actionView.notices.download?.text ?? null}
         mod={mod}
         mod2={mod2}
       />
-
-      {(ctx === 'x' || ctx === 'x-list') && (
-        <ReleaseCluster
-          onListPage={onListPage}
-          releaseMsg={releaseMsg}
-          releasePageBusy={releasePage.busy}
-          releaseListBusy={releaseList.busy}
-          onReleasePage={() => void releasePage.run()}
-          onReleaseList={() => void releaseList.run()}
-        />
-      )}
 
       <PreferencesZone
         ctx={ctx}
         settings={settings}
         update={update}
+        onSelectDownloadStrategy={selectDownloadStrategy}
+        fetchedNotice={fetchedNotice}
         captureSummary={captureSummary}
       />
 
       {!isMetaContext && (
-        <CaptureQuickActions
-          summary={captureSummary}
-          onCleared={() => setCaptureSummary({ tweets: 0, conversations: 0, recent: [] })}
-        />
+        <CaptureQuickActions summary={captureSummary} onCleared={clearCaptureSummary} />
       )}
+
+      <ClearLogSection log={clearLog} />
 
       <Footer cloudSyncEnabled={settings.cloudSyncEnabled} onOpenOptions={openOptions} />
 
@@ -857,12 +659,19 @@ export function App() {
         aria-live="polite"
         className={cn(
           'pointer-events-none fixed right-3 bottom-3 transition-[opacity,transform] ease-[var(--xmd-ease)]',
-          saved ? 'translate-y-0 opacity-100 duration-200' : 'translate-y-1 opacity-0 duration-150',
+          saveNotice !== 'idle'
+            ? 'translate-y-0 opacity-100 duration-200'
+            : 'translate-y-1 opacity-0 duration-150',
         )}
       >
-        <span className="flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-2.5 py-1 text-xs font-medium text-success">
-          <CheckIcon className="size-3" />
-          Saved
+        <span
+          className={cn(
+            'flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-2.5 py-1 text-xs font-medium',
+            saveNotice === 'saved' ? 'text-success' : 'text-destructive',
+          )}
+        >
+          {saveNotice === 'saved' ? <CheckIcon className="size-3" /> : null}
+          {saveNotice === 'saved' ? 'Saved' : 'Save failed'}
         </span>
       </div>
     </div>

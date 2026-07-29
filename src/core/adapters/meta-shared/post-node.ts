@@ -28,6 +28,11 @@
 type Obj = Record<string, unknown>
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
 
+/** Gas limits for one hostile response traversal. Exhaustion drops every derived result. */
+export const MAX_TRAVERSAL_NODES = 10_000
+export const MAX_TRAVERSAL_DEPTH = 128
+export const MAX_TRAVERSAL_OUTPUTS = 1_000
+
 export interface PostContext {
   /** Stable numeric-or-string id (`pk`), falling back to the shortcode when absent. */
   readonly postId: string
@@ -64,19 +69,40 @@ export function isPostShaped(node: unknown): boolean {
  *  the design spec's error-handling contract requires failing closed rather
  *  than throwing into the tee's dispatch loop — see media-node.ts's own
  *  identical carousel-recursion gap, fixed the same way in detect.ts). */
-export function forEachPostNode(json: unknown, visit: (ctx: PostContext, node: Obj) => void): void {
-  const visiting = new WeakSet<Obj>()
-  const walk = (node: unknown): void => {
-    if (Array.isArray(node)) {
-      for (const v of node) walk(v)
-      return
+export function forEachPostNode(
+  json: unknown,
+  visit: (ctx: PostContext, node: Obj) => void,
+): boolean {
+  const visited = new WeakSet<Obj>()
+  const stack: Array<{ readonly node: unknown; readonly depth: number }> = [
+    { node: json, depth: 0 },
+  ]
+  const results: Array<{ readonly ctx: PostContext; readonly node: Obj }> = []
+  let nodes = 0
+  try {
+    while (stack.length > 0) {
+      const current = stack.pop()!
+      if (current.depth > MAX_TRAVERSAL_DEPTH || ++nodes > MAX_TRAVERSAL_NODES) return false
+      if (Array.isArray(current.node)) {
+        if (current.node.length > MAX_TRAVERSAL_NODES) return false
+        for (let index = current.node.length - 1; index >= 0; index -= 1)
+          stack.push({ node: current.node[index], depth: current.depth + 1 })
+        continue
+      }
+      if (!isObj(current.node) || visited.has(current.node)) continue
+      visited.add(current.node)
+      const ctx = postContext(current.node)
+      if (ctx) {
+        if (results.length >= MAX_TRAVERSAL_OUTPUTS) return false
+        results.push({ ctx, node: current.node })
+      }
+      const values = Object.values(current.node)
+      for (let index = values.length - 1; index >= 0; index -= 1)
+        stack.push({ node: values[index], depth: current.depth + 1 })
     }
-    if (!isObj(node)) return
-    if (visiting.has(node)) return
-    visiting.add(node)
-    const ctx = postContext(node)
-    if (ctx) visit(ctx, node)
-    for (const v of Object.values(node)) walk(v)
+  } catch {
+    return false
   }
-  walk(json)
+  for (const result of results) visit(result.ctx, result.node)
+  return true
 }

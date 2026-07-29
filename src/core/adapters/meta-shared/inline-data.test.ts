@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { inlineDataPayloads } from './inline-data'
+import {
+  inlineDataPayloads,
+  MAX_INLINE_DATA_BYTES,
+  MAX_INLINE_DATA_SCRIPTS,
+  MAX_INLINE_DOCUMENT_SCRIPTS,
+} from './inline-data'
 import { detectMediaItems, postCodesInResponse } from './detect'
 
 describe('inlineDataPayloads', () => {
@@ -40,6 +45,123 @@ describe('inlineDataPayloads', () => {
       { type: 'application/json', textContent: '{"second":true}' },
     ]
     expect(inlineDataPayloads(scripts)).toEqual(['{"first":true}', '{"second":true}'])
+  })
+
+  it('accepts the exact script-count cap', () => {
+    const scripts = Array.from({ length: MAX_INLINE_DATA_SCRIPTS }, (_, index) => ({
+      type: 'application/json',
+      textContent: String(index),
+    }))
+
+    expect(inlineDataPayloads(scripts)).toHaveLength(MAX_INLINE_DATA_SCRIPTS)
+  })
+
+  it('drops the whole intake when a later script crosses the count cap', () => {
+    const scripts = Array.from({ length: MAX_INLINE_DATA_SCRIPTS + 1 }, (_, index) => ({
+      type: 'application/json',
+      textContent: String(index),
+    }))
+
+    expect(inlineDataPayloads(scripts)).toEqual([])
+  })
+
+  it('counts empty application/json scripts against the intake cap', () => {
+    const scripts = [
+      ...Array.from({ length: MAX_INLINE_DATA_SCRIPTS }, () => ({
+        type: 'application/json',
+        textContent: '',
+      })),
+      { type: 'application/json', textContent: '{"late":true}' },
+    ]
+
+    expect(inlineDataPayloads(scripts)).toEqual([])
+  })
+
+  it('accepts the exact aggregate UTF-8 byte cap', () => {
+    const scripts = [
+      {
+        type: 'application/json',
+        textContent: 'a'.repeat(MAX_INLINE_DATA_BYTES - 2),
+      },
+      { type: 'application/json', textContent: '¢' },
+    ]
+
+    expect(inlineDataPayloads(scripts)).toHaveLength(2)
+  })
+
+  it('drops the whole intake when a later script crosses the aggregate byte cap', () => {
+    const scripts = [
+      {
+        type: 'application/json',
+        textContent: 'a'.repeat(MAX_INLINE_DATA_BYTES - 1),
+      },
+      { type: 'application/json', textContent: '€' },
+    ]
+
+    expect(inlineDataPayloads(scripts)).toEqual([])
+  })
+
+  it('snapshots each body once before measuring and returning it', () => {
+    let bodyReads = 0
+    const scripts = [
+      {
+        type: 'application/json',
+        get textContent() {
+          bodyReads += 1
+          return bodyReads === 1 ? '{"safe":true}' : 'x'.repeat(MAX_INLINE_DATA_BYTES + 1)
+        },
+      },
+    ]
+
+    expect(inlineDataPayloads(scripts)).toEqual(['{"safe":true}'])
+    expect(bodyReads).toBe(1)
+  })
+
+  it('snapshots a live collection length once', () => {
+    let lengthReads = 0
+    const scripts = {
+      ...Object.fromEntries(
+        Array.from({ length: MAX_INLINE_DATA_SCRIPTS + 1 }, (_, index) => [
+          index,
+          { type: 'application/json', textContent: String(index) },
+        ]),
+      ),
+      get length() {
+        lengthReads += 1
+        return lengthReads === 1 ? MAX_INLINE_DATA_SCRIPTS + 1 : MAX_INLINE_DATA_SCRIPTS
+      },
+    }
+
+    expect(inlineDataPayloads(scripts)).toEqual([])
+    expect(lengthReads).toBe(1)
+  })
+
+  it('rejects an excessive document script count before reading entries', () => {
+    let entryRead = false
+    const scripts = {
+      get 0() {
+        entryRead = true
+        return { type: 'text/javascript', textContent: '' }
+      },
+      length: MAX_INLINE_DOCUMENT_SCRIPTS + 1,
+    }
+
+    expect(inlineDataPayloads(scripts)).toEqual([])
+    expect(entryRead).toBe(false)
+  })
+
+  it('drops atomically when a candidate accessor throws', () => {
+    const scripts = [
+      { type: 'application/json', textContent: '{"first":true}' },
+      {
+        type: 'application/json',
+        get textContent(): string {
+          throw new Error('hostile getter')
+        },
+      },
+    ]
+
+    expect(inlineDataPayloads(scripts)).toEqual([])
   })
 
   /**

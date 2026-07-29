@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { findFreshMediaItem, mergeRetryUrl, refreshMediaUrlFromTabs } from './media-url-refresh'
 import type { MediaItem } from '../schema'
+import { MAX_MEDIA_URL_LENGTH } from '../schema/media'
 
 const photo = (id: string, postId: string, index: number, url: string): MediaItem => ({
   id,
@@ -54,17 +55,34 @@ describe('refreshMediaUrlFromTabs', () => {
       queryTabs: async () => [{ id: 1 }, { id: 2 }],
       sendTabMessage: async (tabId) => {
         calls.push(tabId)
-        return tabId === 2 ? { url: 'https://pbs.twimg.com/media/fresh.jpg?name=orig' } : {}
+        return tabId === 2
+          ? {
+              _tag: 'RefreshMediaUrlResponse',
+              url: 'https://pbs.twimg.com/media/fresh.jpg?name=orig',
+            }
+          : { _tag: 'RefreshMediaUrlResponse' }
       },
     })
     expect(url).toBe('https://pbs.twimg.com/media/fresh.jpg?name=orig')
     expect(calls).toEqual([1, 2])
   })
 
+  it('keeps a schema-valid long refreshed URL', async () => {
+    const prefix = 'https://pbs.twimg.com/media/'
+    const url = `${prefix}${'x'.repeat(MAX_MEDIA_URL_LENGTH - prefix.length)}`
+
+    await expect(
+      refreshMediaUrlFromTabs(item, {
+        queryTabs: async () => [{ id: 1 }],
+        sendTabMessage: async () => ({ _tag: 'RefreshMediaUrlResponse', url }),
+      }),
+    ).resolves.toBe(url)
+  })
+
   it('returns null when no tab responds with a url', async () => {
     const url = await refreshMediaUrlFromTabs(item, {
       queryTabs: async () => [{ id: 1 }],
-      sendTabMessage: async () => ({}),
+      sendTabMessage: async () => ({ _tag: 'RefreshMediaUrlResponse' }),
     })
     expect(url).toBeNull()
   })
@@ -74,9 +92,29 @@ describe('refreshMediaUrlFromTabs', () => {
       queryTabs: async () => [{ id: 1 }, { id: 2 }],
       sendTabMessage: async (tabId) => {
         if (tabId === 1) throw new Error('no receiver')
-        return { url: 'https://pbs.twimg.com/media/fresh.jpg?name=orig' }
+        return {
+          _tag: 'RefreshMediaUrlResponse',
+          url: 'https://pbs.twimg.com/media/fresh.jpg?name=orig',
+        }
       },
     })
     expect(url).toBe('https://pbs.twimg.com/media/fresh.jpg?name=orig')
+  })
+
+  it('rejects malformed and non-HTTPS tab replies', async () => {
+    const replies = [
+      { url: 'https://pbs.twimg.com/media/untagged.jpg' },
+      { _tag: 'RefreshMediaUrlResponse', url: 'http://unsafe.example/a.jpg' },
+      {
+        _tag: 'RefreshMediaUrlResponse',
+        url: 'https://pbs.twimg.com/media/extra.jpg',
+        extra: true,
+      },
+    ]
+    const url = await refreshMediaUrlFromTabs(item, {
+      queryTabs: async () => replies.map((_, id) => ({ id })),
+      sendTabMessage: async (id) => replies[id],
+    })
+    expect(url).toBeNull()
   })
 })

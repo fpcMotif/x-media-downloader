@@ -1,7 +1,29 @@
 # Worklist Clear-on-Complete — Design Spec
 
+> **Amended (2026-07-26).** Clear is default-off. Authority lives in IndexedDB
+> `xmd-clear`, not a `storage.local` ledger. Manual Worklist state is projected
+> through an alarm-backed transactional outbox. Later durable Clear and safety
+> specs govern conflicts.
+
+## Current contract
+
+- Clear and every automatic scope default off. A manual Sweep still requires
+  Clear enabled and a browser download strategy.
+- Sweep handles detected media in currently mounted Likes or Bookmarks posts.
+  It does not auto-scroll. Scrolling and rerunning finds more.
+- One durable Clear seed must own every detected Media Item in a swept post
+  before its Worklist row is claimed or any transfer starts.
+- Each destructive request carries exactly one scope. Locate is read-only;
+  positive inactive-control evidence may settle without a click.
+- IndexedDB `xmd-clear` owns completion, safety, immutable tombstones, Clear Log,
+  and a coalescing Worklist outbox. A recurring recovery alarm is armed before a
+  producer commit or irreversible click.
+
+The remaining text records the original 2026-06-15 baseline. Later specs and
+this section supersede it wherever they conflict.
+
 - **Status:** Approved (design) — 2026-06-15
-- **Topic:** Auto-remove an X post from the user's bookmarks/likes once *all* of its
+- **Topic:** Auto-remove an X post from the user's bookmarks/likes once _all_ of its
   media has been truly downloaded, so those lists act as a self-emptying download
   worklist.
 - **Supersedes/amends:** narrows ADR-0001 (read-only posture) for one write action;
@@ -10,12 +32,12 @@
 ## 1. Goal
 
 Treat the user's **Bookmarks** and **Likes** as a download **Worklist**. When every
-Media Item in a Tweet has *truly* landed on disk, the extension **Clears** that Tweet
+Media Item in a Tweet has _truly_ landed on disk, the extension **Clears** that Tweet
 from the Worklist (un-bookmark and/or un-like). The lists thereby empty themselves as
 downloads complete.
 
-A Tweet carries up to four photos **or** one video **or** one GIF (CONTEXT.md). All of
-its Media Items must complete before it is Cleared; a partial Tweet is never Cleared.
+An X Tweet carries at most four mixed media attachments (CONTEXT.md). All of its
+Media Items must complete before it is Cleared; a partial Tweet is never Cleared.
 
 ## 2. Locked decisions
 
@@ -23,7 +45,7 @@ These were decided with the user and are not re-litigated here:
 
 1. **Posture — full-auto, immediate.** The moment a Tweet is Truly Complete it is
    Cleared, with no per-post confirmation.
-2. **Mechanism — DOM-click only (v1).** Clearing is a synthetic click on X's *own*
+2. **Mechanism — DOM-click only (v1).** Clearing is a synthetic click on X's _own_
    native un-bookmark / un-like control, in-page. The authenticated mutation-replay
    path is **deferred** (see §9) — it would require net-new credential capture, an
    ADR-0001 amendment, an `x-client-transaction-id` we may be unable to synthesize, and
@@ -34,18 +56,15 @@ These were decided with the user and are not re-litigated here:
 4. **Scope — both lists, on by default.** Un-bookmark and un-like are both enabled out
    of the box, each independently toggleable.
 5. **Prerequisite — Truly Complete.** "Complete" means every Media Item reached the
-   *real* `chrome.downloads.onChanged` terminal `complete` state. Any failure or
+   _real_ `chrome.downloads.onChanged` terminal `complete` state. Any failure or
    interruption keeps the Tweet on the Worklist.
 
 ### Mechanism correction (recorded deliberately)
 
-The initial framing that the replay path would "reuse the existing Auth-fallback
-machinery" was **false** and was corrected during design. Verified against code:
-`src/entrypoints/inject.content.ts:13-14` tees only response **bodies** (`{path, body}`)
-and never reads outbound auth headers; `settings.authFallbackEnabled`
-(`src/core/schema/index.ts:42`) is a stub that gates nothing today. Replay would be a
-**net-new** capture of `bearer` + `ct0` (CSRF) + `x-client-transaction-id`. Hence v1 is
-DOM-click only.
+The initial framing that replay could reuse existing authenticated machinery was **false**
+and was corrected during design. The tee reads response bodies, never outbound auth
+headers. Replay would require net-new capture of `bearer` + `ct0` (CSRF) +
+`x-client-transaction-id`. Hence v1 is DOM-click only.
 
 ## 3. Domain nouns (to add to CONTEXT.md)
 
@@ -56,10 +75,10 @@ DOM-click only.
 - **Clear** — the write action that removes a Tweet from the Worklist by un-bookmarking
   and/or un-liking it. The project's **first** mutation of the user's X account;
   **irreversible**; only ever performed on a Truly Complete Tweet.
-- **Truly Complete** — a Tweet whose *every* Media Item reached the real
+- **Truly Complete** — a Tweet whose _every_ Media Item reached the real
   `chrome.downloads.onChanged` terminal `complete` state and has left the in-progress
   set. Defined in **explicit opposition** to the legacy start-time "saved" verdict (set
-  when `chrome.downloads.download()` is merely *called* — the blind spot documented in
+  when `chrome.downloads.download()` is merely _called_ — the blind spot documented in
   `src/core/download/handoff.integration.test.ts:131-142`).
 - **Completion Ledger** — the durable, per-Tweet record (expected / done / failed Media
   Item ids, scope, origin, per-scope clear latch) that is the **sole authority** gating
@@ -104,7 +123,7 @@ A pure reducer. One entry per Tweet:
 - Dedupe `done`/`failed` by set membership (mirrors `src/core/metrics.ts:113`) so a
   duplicate `onChanged` can't make `done` exceed `expected`.
 - **`inProgress` is its own set, separate from `done`, drained by a distinct `Settle`
-  action.** *(Prototype-validated, see `src/core/clear/NOTES.md`.)* This separation is the
+  action.** _(Prototype-validated, see `src/core/clear/NOTES.md`.)_ This separation is the
   only thing that makes a late `interrupted`-after-`complete` safe: such an id moves
   `done → failed` and the Clear never fires. Collapsing completion into one "done" set
   would wrongly Clear it.
@@ -113,7 +132,7 @@ A pure reducer. One entry per Tweet:
   **`failed` is re-claimable** (retry when next mounted); **`cleared` and `clearing` are
   not** (no double-mutation, and a user re-bookmark is a no-op). Formally:
   `canClaim = TrulyComplete && inScope && (status === 'none' || status === 'failed')`.
-  *(Prototype-validated.)*
+  _(Prototype-validated.)_
 
 ### 4.2 Truly Complete gate
 
@@ -127,9 +146,8 @@ A Tweet is **clearable** only when:
 
 Any id in `failed` → not clearable; the Tweet stays on the Worklist.
 
-**aria2 / external downloads are excluded** from auto-Clear: `background.ts:185-193`
-records `complete` at hand-off, not bytes-to-disk, so treating them as Truly Complete
-re-opens the blind spot. v1 excludes them and surfaces "downloaded, not auto-cleared".
+**aria2 media is excluded** from auto-Clear. It now has durable `tellStatus`
+observation, but has no Chrome `downloadId`; Clear requires that browser identity.
 
 ### 4.3 Reconcile is the primary completion path
 
@@ -168,8 +186,8 @@ post is seen or on the next Drain.
 - **Clear-on-complete hook** (always-on): any download → on Truly Complete, if the post
   is mounted and on the Worklist, Clear it.
 - **Drain** — `src/core/clear/drain.ts`, orchestrated from the content script: walk the
-  page top-to-bottom — download each Tweet → await Truly Complete → Clear *while
-  mounted* → scroll for more → repeat until empty. A persisted **Drain Cursor** survives
+  page top-to-bottom — download each Tweet → await Truly Complete → Clear _while
+  mounted_ → scroll for more → repeat until empty. A persisted **Drain Cursor** survives
   reload; a **watchdog** times out stalled scroll/await phases.
 - **Both funnel through one compare-and-set** on the per-scope latch: claim `clearing`
   **before** the click, resolve to `cleared` only on confirmed flip. The Ledger is
@@ -179,17 +197,17 @@ post is seen or on the next Drain.
 
 ## 5. Failure matrix
 
-| Scenario | Behavior |
-|---|---|
-| 3 of 4 photos land, 1 fails/interrupts | Not Cleared; Tweet stays; failed item re-downloadable. |
-| Clear-click fires but button not found / testid didn't flip | Scope `clearing` → `failed`; retried when next mounted; never marked cleared. |
-| Tweet in both lists; un-bookmark ok, un-like fails | `bookmark: cleared`, `like: failed`; no double-unbookmark on retry; not done until both resolve. |
-| User manually re-bookmarks right after auto-Clear | Latch is `cleared` → we do not re-Clear; never fight a deliberate user action. |
-| Virtualization resolves wrong tweetId | id-match guard aborts the click → no wrong post un-bookmarked. |
-| Browser closed mid-Drain | Drain Cursor + Ledger (storage.local, §7) survive → resumes / re-evaluates on restart. |
-| Download via aria2 | Excluded from auto-Clear; surfaced as "downloaded, not auto-cleared". |
-| Double `onChanged` for one id | Set-membership dedupe in the Ledger. |
-| `complete` then late `interrupted` | Gate waits for the download to leave the in-progress set, so the Clear never fired. |
+| Scenario                                                    | Behavior                                                                                         |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| 3 of 4 photos land, 1 fails/interrupts                      | Not Cleared; Tweet stays; failed item re-downloadable.                                           |
+| Clear-click fires but button not found / testid didn't flip | Scope `clearing` → `failed`; retried when next mounted; never marked cleared.                    |
+| Tweet in both lists; un-bookmark ok, un-like fails          | `bookmark: cleared`, `like: failed`; no double-unbookmark on retry; not done until both resolve. |
+| User manually re-bookmarks right after auto-Clear           | Latch is `cleared` → we do not re-Clear; never fight a deliberate user action.                   |
+| Virtualization resolves wrong tweetId                       | id-match guard aborts the click → no wrong post un-bookmarked.                                   |
+| Browser closed mid-Drain                                    | Drain Cursor + Ledger (storage.local, §7) survive → resumes / re-evaluates on restart.           |
+| Download via aria2                                          | Observed through `tellStatus`; excluded from auto-Clear because no Chrome `downloadId` exists.   |
+| Double `onChanged` for one id                               | Set-membership dedupe in the Ledger.                                                             |
+| `complete` then late `interrupted`                          | Gate waits for the download to leave the in-progress set, so the Clear never fired.              |
 
 ## 6. Anti-abuse pacing (v1 circuit breaker)
 
@@ -203,22 +221,23 @@ non-human cadence. Clears go through:
 
 ## 7. State placement
 
-The Ledger holds *"Truly Complete but not yet Cleared"* intent for an **irreversible**
+The Ledger holds _"Truly Complete but not yet Cleared"_ intent for an **irreversible**
 action. `storage.session` wipes on browser close (ADR-0005); losing that fact means a
 post never Clears or is re-downloaded-and-Cleared. Therefore:
 
 - **Completion Ledger → `storage.local`** (durable; pruned after successful Clear).
 - Drain Cursor + Membership cache may stay in `storage.session`.
 
-This amends ADR-0005 ("Captures → session / no persistent download history in v1").
+This originally amended ADR-0005's v1 persistence split. Later amendments make
+Transfers, Captures, and Download History durable under bounded stores.
 
 ## 8. Irreversibility surface
 
 Because the action is on-by-default and has no undo:
 
-- **First-run announcement** — the first time it would Clear: a one-time "*This starts
+- **First-run announcement** — the first time it would Clear: a one-time "_This starts
   removing posts from your bookmarks/likes as they finish downloading — [Keep on] /
-  [Turn off]*". Informs without begging permission (stays true to on-by-default).
+  [Turn off]_". Informs without begging permission (stays true to on-by-default).
 - **Kill switch** — per-scope toggles (default on) + a master pause.
 - **Clear Log** — a persisted, popup-visible record of every Clear (tweetId, scope,
   mechanism, time, permalink). Each entry links back so the user can manually re-bookmark
@@ -232,7 +251,7 @@ Because the action is on-by-default and has no undo:
   annotates ADR-0001's read-only framing and folds in the §6 pacing policy.
 - **ADR-0016 — Completion Ledger persistence:** durable `storage.local` Ledger,
   persisted `downloadId ↔ tweetId` map, reconcile-as-primary; amends ADR-0005.
-  *(ADR numbers provisional; 0011–0014 already exist.)*
+  _(ADR numbers provisional; 0011–0014 already exist.)_
 - **Deferred ADRs** (written only if/when replay is built): authenticated-replay
   Clearer, its own consent flag (not the read flag), auth-header capture boundary,
   write-pacing circuit breaker.
@@ -255,7 +274,7 @@ Two throwaway spikes; **neither fires destructive live writes at scale**:
 1. **Ledger state-machine prototype** — a runnable terminal model driving the Ledger
    through Truly Complete, partial failure, double-`onChanged`, late-interrupt,
    sweep-vs-hook race, per-scope partial Clear. Proves the logic before Chrome wiring.
-2. **X DOM probe** — *read-only* on a real bookmarks/likes page: confirm the current
+2. **X DOM probe** — _read-only_ on a real bookmarks/likes page: confirm the current
    un-bookmark / un-like `data-testid`s, the "…" caret-menu structure, and how
    virtualization mounts/unmounts articles + whether tweetId resolution stays stable.
    **Also settles definitively whether bookmarks/likes merged into a "history"
@@ -268,20 +287,20 @@ Two throwaway spikes; **neither fires destructive live writes at scale**:
   change; the Clearer must fail safe (never mark cleared without a verified flip).
 - **Ban risk residual:** even DOM clicks at Drain scale are a behavioral anomaly; §6
   pacing is load-bearing, defaults need empirical confirmation during the prototype.
-- **aria2 users** get no auto-Clear in v1 (deliberate); revisit with an aria2 completion
-  poll later.
+- **aria2 users** get no auto-Clear. Completion is observed through `tellStatus`,
+  but that does not create the Chrome `downloadId` Clear requires.
 - **Replay path** remains desirable for off-screen/queued posts; deferred behind its own
   ADR + consent + circuit breaker, contingent on the `x-client-transaction-id` question.
 - **Media-less Worklist entries never empty (open decision).** `TrulyComplete` requires
   `expected.size > 0` (`src/core/clear/ledger.prototype.ts:120`), so a text-only Like or
   Bookmark — nothing to download — is never Truly Complete and is therefore never
-  Cleared. This is *safe* (it can never un-like on an empty download), but it breaks the
+  Cleared. This is _safe_ (it can never un-like on an empty download), but it breaks the
   "self-emptying list" promise for **Likes**, which are heavily text-only: a Drain leaves
   every text-only post behind, and its await-phase watchdog (§4.6) times out on each.
   **Decision needed:** does a confirmed archive-record write (ADR-0012's
   `{tweetId}_tweet.json`, ledger key `tweet:{id}:record`) count as the completing artifact
   for a media-less in-scope Tweet — i.e. the record joins `expected` — so the list can
-  actually empty? If yes, the record's save must clear the *same* `onChanged`/reconcile
+  actually empty? If yes, the record's save must clear the _same_ `onChanged`/reconcile
   bar as media (never Clear on a planned-but-unsaved record). If no, document that
   text-only posts are never auto-Cleared and the Drain must **skip** (not stall on) them.
 - **Reconcile is the load-bearing unbuilt piece (build-order risk).** Per §4.3 the live
@@ -289,7 +308,7 @@ Two throwaway spikes; **neither fires destructive live writes at scale**:
   (`if (id === undefined || !live) return`, now `src/entrypoints/background.ts:561`; the
   §4.2/§4.3 line refs `:185-193`/`:321` predate the interrupt-retry rewrite). The Clear
   hook must gate on reconciled `chrome.downloads.search` **terminal** state via a
-  *persisted* `downloadId ↔ tweetId` map — never on the start-time queue verdict
+  _persisted_ `downloadId ↔ tweetId` map — never on the start-time queue verdict
   (`res.completed`, `background.ts:542`) nor a bare non-null `live`. Until ADR-0016's
   persistence + reconcile land, the irreversible Clear is only as honest as in-memory
   state: this is the one place the "un-like on an unverified download" failure can still

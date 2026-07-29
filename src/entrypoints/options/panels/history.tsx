@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'preact/hooks'
-import type { DownloadRecord } from '@/core/history/record'
 import { Badge } from '@/components/ui/badge'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
@@ -10,20 +9,30 @@ import {
   historyEmptyLabel,
   confirmEraseHistoryCopy,
   fetchHistory,
+  requestHistoryErase,
+  type HistoryLoad,
 } from '@/entrypoints/popup/history-section'
 import { PanelHeader, Section, type PanelProps } from '../ui'
+import { useAsyncAuthority } from '@/components/use-async-authority'
 
 export function HistoryPanel({ settings, update }: PanelProps) {
-  const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
+  const [history, setHistory] = useState<HistoryLoad | null>(null)
+  const historyAuthority = useAsyncAuthority()
 
   useEffect(() => {
-    void fetchHistory().then(setHistory)
-  }, [])
+    const epoch = historyAuthority.begin()
+    void (async () => {
+      const next = await fetchHistory()
+      if (historyAuthority.isCurrent(epoch)) setHistory(next)
+    })()
+  }, [historyAuthority])
 
   const eraseHistory = async (): Promise<void> => {
-    await browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' }).catch(() => {})
-    setHistory([])
+    if ((await requestHistoryErase()) && historyAuthority.isMounted())
+      setHistory({ status: 'available', records: [] })
   }
+
+  const records = history?.status === 'available' ? history.records : []
 
   return (
     <>
@@ -48,9 +57,13 @@ export function HistoryPanel({ settings, update }: PanelProps) {
           />
         </Field>
 
-        {settings.downloadHistoryEnabled && history.length > 0 ? (
+        {history === null ? (
+          <FieldDescription>Loading download history…</FieldDescription>
+        ) : history.status === 'unavailable' ? (
+          <FieldDescription>Download history is unavailable. Try again.</FieldDescription>
+        ) : settings.downloadHistoryEnabled && records.length > 0 ? (
           <>
-            {groupByAuthor(history).map((group) => (
+            {groupByAuthor(records).map((group) => (
               <div key={group.handle} className="grid gap-1.5">
                 <span className="text-xs font-semibold text-muted-foreground">@{group.handle}</span>
                 <ol className="grid gap-1" aria-label={`Downloads for ${group.handle}`}>
@@ -82,7 +95,7 @@ export function HistoryPanel({ settings, update }: PanelProps) {
               </div>
             ))}
             <ConfirmStrip
-              sentence={confirmEraseHistoryCopy(history.length)}
+              sentence={confirmEraseHistoryCopy(records.length)}
               confirmLabel="Erase history"
               kind="one-shot"
               onConfirm={() => void eraseHistory()}
@@ -100,7 +113,7 @@ export function HistoryPanel({ settings, update }: PanelProps) {
           </>
         ) : (
           <FieldDescription className="text-pretty">
-            {historyEmptyLabel(settings.downloadHistoryEnabled, history.length)}
+            {historyEmptyLabel(settings.downloadHistoryEnabled, records.length)}
           </FieldDescription>
         )}
       </Section>

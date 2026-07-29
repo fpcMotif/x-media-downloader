@@ -5,10 +5,10 @@ const appSource = readFileSync('src/entrypoints/options/App.tsx', 'utf8')
 
 /** Pull the `group: '<...>'` value out of a `{ id: '<id>', ... }` SECTIONS entry. */
 const sectionGroup = (id: string): string | undefined => {
-  const idx = appSource.indexOf(`id: '${id}'`)
+  const idx = appSource.search(new RegExp(`id:\\s*['"]${id}['"]`))
   if (idx === -1) return undefined
   const chunk = appSource.slice(idx, appSource.indexOf('}', idx) + 1)
-  return chunk.match(/group:\s*'(\w+)'/)?.[1]
+  return chunk.match(/group:\s*['"](\w+)['"]/)?.[1]
 }
 
 describe('settings sidebar is text-only (R4: no icon tiles anywhere in Settings)', () => {
@@ -53,12 +53,24 @@ describe('hash aliases (§3.2 — add-only, every old deep-link must still resol
       ['cloud', 'sync'],
     ]
     for (const [from, to] of pairs) {
-      expect(appSource).toMatch(new RegExp(`${from}:\\s*'${to}'`))
+      expect(appSource).toMatch(new RegExp(`${from}:\\s*['"]${to}['"]`))
     }
   })
 
   it('resolves through a lookup table, not the old single-ternary alias', () => {
     expect(appSource).toContain('HASH_ALIASES[hash] ?? hash')
     expect(appSource).not.toMatch(/hash === 'worklist' \? 'clearing' : hash/)
+  })
+})
+
+describe('Settings recovery warning', () => {
+  it('explains the global safe projection and links to Recovery', () => {
+    expect(appSource).toMatch(
+      /Safe Direct mode is active\. Cloud upload, Cloud Sync, Clear, and Capture Mirror\s*are paused\./,
+    )
+    expect(appSource).toContain("onClick={() => select('recovery')}")
+    expect(appSource).toContain('inspectSettingsRecovery')
+    expect(appSource).toContain('await refreshSettingsRecovery()')
+    expect(appSource).not.toContain('watchSettings')
   })
 })

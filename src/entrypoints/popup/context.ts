@@ -1,6 +1,6 @@
 import { Option } from 'effect'
-import { adapterForUrl } from '@/core/adapters/registry'
-import { pageScope, type MembershipScope } from '@/core/clear/clearer'
+import { platformForUrl } from '@/core/adapters/catalog'
+import { pageScope, type MembershipScope } from '@/core/clear/scope'
 import { contextLabel as contextLabelCopy } from '@/components/action-copy'
 
 /** The popup's tab-context state matrix (spec §2.2) — the single input that
@@ -10,7 +10,7 @@ import { contextLabel as contextLabelCopy } from '@/components/action-copy'
 export type TabContext = 'x-list' | 'x' | 'instagram' | 'threads' | 'none'
 
 /** Derive the popup's tab context from a tab URL — the single seam between
- *  the platform-adapter registry + the X list-page scope check (`pageScope`)
+ *  the Platform Catalog + the X list-page scope check (`pageScope`)
  *  and the popup's zone-rendering decisions. Never throws: an unparsable URL
  *  (e.g. a `chrome://` page, or `tabs.query` racing a navigating tab) is
  *  simply `'none'`, same as a tab with no matching adapter at all. */
@@ -21,9 +21,8 @@ export function tabContext(url: string): TabContext {
   } catch {
     return 'none'
   }
-  const adapter = adapterForUrl(url)
-  if (!adapter) return 'none'
-  const { platform } = adapter
+  const platform = platformForUrl(url)
+  if (!platform) return 'none'
   if (platform !== 'x') return platform
   return Option.isSome(pageScope(pathname)) ? 'x-list' : 'x'
 }

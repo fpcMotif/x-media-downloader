@@ -7,13 +7,9 @@
  * fails safe: no verified flip ⇒ `ok: false`, never a silent "cleared".
  */
 import { Option } from 'effect'
+import { STATUS_LINK_SEL, TWEET_ARTICLE_SEL } from '../adapters/x/dom'
 import type { ClearScope } from '../schema'
-
-/** The two membership scopes cleared by a single button-flip (un-bookmark /
- *  un-like). `notInterested` is NOT one of these — it has no membership control
- *  and is cleared via the caret menu (see the `notInterested*` helpers below), so
- *  the flip helpers are typed to exclude it. */
-export type MembershipScope = Exclude<ClearScope, 'notInterested'>
+import { pageScope, type MembershipScope } from './scope'
 
 /** X's `data-testid`s per membership scope: the control shown while the tweet IS
  *  a member (the one we click), and the control it flips to once cleared. */
@@ -23,20 +19,6 @@ export const CLEAR_TESTID: Record<
 > = {
   bookmark: { active: 'removeBookmark', cleared: 'bookmark' },
   like: { active: 'unlike', cleared: 'like' },
-}
-
-export const TWEET_ARTICLE_SEL = 'article[data-testid="tweet"]'
-
-/** The membership Worklist scope for a LIST page: a Likes page clears only Likes,
- *  a Bookmarks page clears only Bookmarks. Null anywhere else (incl. the timeline).
- *  Clearing is list-scoped so a post is only ever removed from the list you're
- *  viewing — never un-liked AND un-bookmarked in one action. This drives the
- *  manual Drain/Sweep buttons, which are list-only; the download hook uses the
- *  wider `clearableScope` (which also recognizes the For You feed). */
-export function pageScope(pathname: string): Option.Option<MembershipScope> {
-  if (/\/likes\/?$/.test(pathname)) return Option.some('like')
-  if (/\/bookmarks(\/|$)/.test(pathname)) return Option.some('bookmark')
-  return Option.none()
 }
 
 /** An element's trimmed text. The `?? ''` only satisfies the DOM lib's
@@ -127,7 +109,7 @@ const QUOTE_CARD_SEL = 'div[role="link"]'
  * irreversible clear. Null if no own permalink is mounted yet.
  */
 export function tweetIdOfArticle(article: Element): Option.Option<string> {
-  const anchors = [...article.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]')].filter(
+  const anchors = [...article.querySelectorAll<HTMLAnchorElement>(STATUS_LINK_SEL)].filter(
     (a) => a.closest(QUOTE_CARD_SEL) === null,
   )
   const ordered = [
@@ -135,7 +117,7 @@ export function tweetIdOfArticle(article: Element): Option.Option<string> {
     ...anchors.filter((a) => a.querySelector('time') === null),
   ]
   for (const a of ordered) {
-    // `?? ''`: unreachable defensive fallback — the `a[href*="/status/"]` selector
+    // `?? ''`: unreachable defensive fallback — `STATUS_LINK_SEL`
     // guarantees every `a` here has an href containing "/status/", so getAttribute
     // is never null. Kept for the `string | null` type; the branch can't be hit.
     /* v8 ignore next */
@@ -143,18 +125,6 @@ export function tweetIdOfArticle(article: Element): Option.Option<string> {
     if (m?.[1]) return Option.some(m[1])
   }
   return Option.none()
-}
-
-/** Can the Clear even LOCATE this post? `findArticle` matches a tweet ONLY by its
- *  numeric `/status/{id}` permalink, so a tweetId that isn't X's numeric snowflake
- *  can never match a mounted article — it would defer-then-drop on every tab and
- *  silently leave the post in its lists ("not mounted"). That happens for the
- *  media-key fallback the X adapter uses when a photo's tweet context can't be
- *  resolved (`tweetId ?? key` — e.g. a quote-card image, whose id belongs to a
- *  DIFFERENT post and must NOT be cleared). Gate clear seeding on this so such items
- *  are skipped honestly up front, never seeded into a clear that can only fail. */
-export function isClearableTweetId(tweetId: string): boolean {
-  return /^[0-9]{1,20}$/.test(tweetId)
 }
 
 /** The mounted `<article>` whose resolved tweetId matches — the id-match guard

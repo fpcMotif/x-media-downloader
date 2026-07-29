@@ -8,6 +8,9 @@ const lastSegment = (pathname: string): string => pathname.slice(pathname.lastIn
  *  tweetId context for a rendered media element. */
 export const STATUS_LINK_SEL = 'a[href*="/status/"]'
 
+/** X's mounted Post root. Shared by detection, Recovery, Clear, and saved marks. */
+export const TWEET_ARTICLE_SEL = 'article[data-testid="tweet"]'
+
 /**
  * Extract the stable media key from a twimg URL — the final path segment without
  * its extension. A rendered `<img>` on the page and a detected MediaItem's

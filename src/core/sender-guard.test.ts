@@ -1,19 +1,25 @@
 import { describe, it, expect } from 'vitest'
 import { isMessageAllowed, isFromExtensionWorker, CONTENT_SCRIPT_TAGS } from './sender-guard'
-import { originsForAllAdapters } from './adapters/registry'
+import { originsForAllPlatforms } from './adapters/catalog'
 
 const OWN = 'self-extension-id'
 const UI_TAG = 'CloudConnectRequest' // privileged, UI-only
 const CS_TAG = 'DownloadRequest' // content-script-allowed
+const SETTINGS_UPDATE_TAG = 'SettingsUpdateRequest' // privileged, UI-only
+const SETTINGS_READ_TAG = 'SettingsReadRequest' // read-only, content-script-allowed
+const DAILY_BUDGET_READ_TAG = 'DailyBudgetReadRequest' // privileged, UI-only
 
 describe('CONTENT_SCRIPT_TAGS', () => {
   it('is exactly the overlay-sent tag set', () => {
     expect([...CONTENT_SCRIPT_TAGS].toSorted()).toEqual(
       [
+        'SettingsReadRequest',
         'DownloadRequest',
         'DownloadTraceEvent',
         'RecoverTweetMediaRequest',
         'SweepEnqueueRequest',
+        'ClearVisibilityPulse',
+        'CaptureEpochRequest',
         'CaptureTweets',
         'SavedStatusRequest',
       ].toSorted(),
@@ -22,11 +28,11 @@ describe('CONTENT_SCRIPT_TAGS', () => {
 })
 
 describe('ALLOWED_CONTENT_SCRIPT_ORIGINS', () => {
-  // Pin: the registry-derived origin set must equal today's literal allow-list
-  // exactly, so swapping the literal for `originsForAllAdapters()` is a
+  // Pin: the catalog-derived origin set must equal today's literal allow-list
+  // exactly, so deriving it from `originsForAllPlatforms()` is a
   // zero-behavior-change refactor (docs/adr/0019-platform-identity-derives-from-adapter-registry.md).
-  it('matches the adapter-registry-derived origin set exactly', () => {
-    expect([...originsForAllAdapters()].toSorted()).toEqual(
+  it('matches the Platform-Catalog-derived origin set exactly', () => {
+    expect([...originsForAllPlatforms()].toSorted()).toEqual(
       [
         'https://x.com',
         'https://twitter.com',
@@ -53,11 +59,65 @@ describe('Saved-status sweep', () => {
   })
 })
 
+describe('Clear visibility pulse', () => {
+  it('allows the content-script wake-up hint, not a privileged clear', () => {
+    expect(
+      isMessageAllowed(
+        'ClearVisibilityPulse',
+        { id: OWN, tab: { id: 1 }, origin: 'https://x.com' },
+        OWN,
+      ),
+    ).toBe(true)
+  })
+})
+
+describe('Clear Log', () => {
+  const cs = { id: OWN, tab: { id: 1 }, origin: 'https://x.com' }
+
+  it('allows the UI request but never a content script', () => {
+    expect(isMessageAllowed('ClearLogRequest', { id: OWN }, OWN)).toBe(true)
+    expect(isMessageAllowed('ClearLogRequest', cs, OWN)).toBe(false)
+  })
+})
+
+describe('Transfer recovery', () => {
+  const cs = { id: OWN, tab: { id: 1 }, origin: 'https://x.com' }
+
+  it('is Options-only', () => {
+    expect(isMessageAllowed('TransferRecoveryRequest', { id: OWN }, OWN)).toBe(true)
+    expect(isMessageAllowed('TransferRecoveryRequest', cs, OWN)).toBe(false)
+    expect(CONTENT_SCRIPT_TAGS.has('TransferRecoveryRequest')).toBe(false)
+  })
+})
+
+describe('Settings recovery', () => {
+  const cs = { id: OWN, tab: { id: 1 }, origin: 'https://x.com' }
+
+  it('is Options-only', () => {
+    expect(isMessageAllowed('SettingsRecoveryRequest', { id: OWN }, OWN)).toBe(true)
+    expect(isMessageAllowed('SettingsRecoveryRequest', cs, OWN)).toBe(false)
+    expect(CONTENT_SCRIPT_TAGS.has('SettingsRecoveryRequest')).toBe(false)
+  })
+})
+
+describe('Daily budget', () => {
+  const cs = { id: OWN, tab: { id: 1 }, origin: 'https://x.com' }
+
+  it('allows UI reads/resets but never a content script', () => {
+    for (const tag of ['DailyBudgetReadRequest', 'DailyBudgetResetRequest'] as const) {
+      expect(isMessageAllowed(tag, { id: OWN }, OWN)).toBe(true)
+      expect(isMessageAllowed(tag, cs, OWN)).toBe(false)
+    }
+    expect(CONTENT_SCRIPT_TAGS.has(DAILY_BUDGET_READ_TAG)).toBe(false)
+  })
+})
+
 describe('Tweet Harvest capture tags', () => {
   const cs = { id: OWN, tab: { id: 1 }, origin: 'https://x.com' }
   const ui = { id: OWN }
 
-  it('allows the overlay content script to push CaptureTweets', () => {
+  it('allows the overlay to read its epoch and push CaptureTweets', () => {
+    expect(isMessageAllowed('CaptureEpochRequest', cs, OWN)).toBe(true)
     expect(isMessageAllowed('CaptureTweets', cs, OWN)).toBe(true)
   })
 
@@ -97,6 +157,32 @@ describe('isMessageAllowed', () => {
     const ui = { id: OWN }
     expect(isMessageAllowed(UI_TAG, ui, OWN)).toBe(true)
     expect(isMessageAllowed(CS_TAG, ui, OWN)).toBe(true)
+  })
+
+  it('allows an options document opened in a tab to send UI-only tags', () => {
+    const options = {
+      id: OWN,
+      tab: { id: 1 },
+      documentId: 'options-document',
+      origin: `chrome-extension://${OWN}`,
+      url: `chrome-extension://${OWN}/options.html`,
+    }
+    expect(isMessageAllowed(UI_TAG, options, OWN)).toBe(true)
+    expect(isMessageAllowed('ClearCaptureRequest', options, OWN)).toBe(true)
+  })
+
+  it('does not trust a tabbed extension URL for another extension host', () => {
+    expect(
+      isMessageAllowed(
+        UI_TAG,
+        {
+          id: OWN,
+          tab: { id: 1 },
+          url: 'chrome-extension://other-extension/options.html',
+        },
+        OWN,
+      ),
+    ).toBe(false)
   })
 
   it('allows a content-script tag from an x.com / twitter.com content script', () => {
@@ -139,6 +225,27 @@ describe('isMessageAllowed', () => {
     ).toBe(false)
   })
 
+  it('allows SettingsUpdateRequest from UI but denies a content script', () => {
+    expect(isMessageAllowed(SETTINGS_UPDATE_TAG, { id: OWN }, OWN)).toBe(true)
+    expect(
+      isMessageAllowed(
+        SETTINGS_UPDATE_TAG,
+        { id: OWN, tab: { id: 1 }, origin: 'https://x.com' },
+        OWN,
+      ),
+    ).toBe(false)
+  })
+
+  it('allows SettingsReadRequest from an allowed content script', () => {
+    expect(
+      isMessageAllowed(
+        SETTINGS_READ_TAG,
+        { id: OWN, tab: { id: 1 }, origin: 'https://x.com' },
+        OWN,
+      ),
+    ).toBe(true)
+  })
+
   it('rejects a content script on a non-allowlisted origin', () => {
     expect(
       isMessageAllowed(CS_TAG, { id: OWN, tab: { id: 1 }, origin: 'https://evil.example' }, OWN),
@@ -173,8 +280,8 @@ describe('isFromExtensionWorker', () => {
     expect(isFromExtensionWorker({ id: 'other' }, OWN)).toBe(false)
   })
 
-  it('accepts the background worker (our id, no tab)', () => {
-    expect(isFromExtensionWorker({ id: OWN }, OWN)).toBe(true)
+  it('accepts the background worker (our id, no tab or document id)', () => {
+    expect(isFromExtensionWorker({ id: OWN, documentId: undefined }, OWN)).toBe(true)
   })
 
   it('rejects our own content script (our id, but carries a tab)', () => {
@@ -185,6 +292,13 @@ describe('isFromExtensionWorker', () => {
 
   it('treats a null tab as the worker/UI (allowed)', () => {
     expect(isFromExtensionWorker({ id: OWN, tab: null }, OWN)).toBe(true)
+  })
+
+  it.each([
+    ['popup', 'popup-document-id'],
+    ['options', 'options-document-id'],
+  ])('rejects our %s document', (_surface, documentId) => {
+    expect(isFromExtensionWorker({ id: OWN, documentId }, OWN)).toBe(false)
   })
 
   it('rejects when id is missing even if other fields present', () => {

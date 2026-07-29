@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decideSettle, didLand, type DownloadProbe } from './settle'
+import { didLand } from './settle'
 
 describe('didLand (the byte-landed predicate)', () => {
   it('complete + exists:true → landed', () => {
@@ -26,26 +26,7 @@ describe('didLand (the byte-landed predicate)', () => {
     expect(didLand({})).toBe(false)
   })
 
-  it('no probe at all (search found nothing, or threw and the adapter swallowed it) → NOT landed', () => {
+  it('no probe at all (search found nothing) → NOT landed', () => {
     expect(didLand(undefined)).toBe(false)
-  })
-})
-
-describe('decideSettle (verdict on the irreversible Clear)', () => {
-  const landed: DownloadProbe[] = [{ state: 'complete', exists: true }, { state: 'complete' }]
-  const notLanded: Array<DownloadProbe | undefined> = [
-    { state: 'complete', exists: false },
-    { state: 'interrupted', exists: true },
-    { state: 'in_progress' },
-    {},
-    undefined,
-  ]
-
-  it.each(landed)('a landed probe settles: %o', (probe) => {
-    expect(decideSettle(probe)).toBe('settle')
-  })
-
-  it.each(notLanded)('anything unconfirmed is a late interrupt (fail closed): %o', (probe) => {
-    expect(decideSettle(probe)).toBe('lateInterrupt')
   })
 })

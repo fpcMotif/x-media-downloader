@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { xAdapter, X_CDN_HOSTS } from './adapter'
-import { X_HOST_MATCH } from './index'
+import { xAdapter } from './adapter'
+import { X_CDN_HOSTS, X_DESCRIPTOR, X_HOST_MATCH } from '../catalog'
 
 describe('xAdapter', () => {
   it('reports the x platform tag and X_HOST_MATCH host patterns', () => {
     expect(xAdapter.platform).toBe('x')
     expect(xAdapter.hostMatch).toBe(X_HOST_MATCH)
+    expect(xAdapter.matchesUrl).toBe(X_DESCRIPTOR.matchesUrl)
   })
 
   it('reports X_CDN_HOSTS, both exact-only (no subdomains)', () => {

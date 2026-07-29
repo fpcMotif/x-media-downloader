@@ -5,6 +5,7 @@
  * logged-in Instagram + Threads), so one module covers both, same as
  * `detect.ts`/`media-node.ts`/`post-node.ts` already do for the network path.
  */
+import { isCdnHostnameForPlatform } from '../catalog'
 
 /** True for any cdninstagram.com host — both Instagram's region-prefixed form
  *  (`scontent-lga3-2.cdninstagram.com`) and Threads' bare form
@@ -14,7 +15,7 @@
  *  '.cdninstagram.com' suffix boundary (either bare or with a subdomain dot
  *  immediately before it) the same way X's `mediaKeyFromUrl` guards `.twimg.com`. */
 export function isCdninstagramHost(hostname: string): boolean {
-  return hostname === 'cdninstagram.com' || hostname.endsWith('.cdninstagram.com')
+  return isCdnHostnameForPlatform('instagram', hostname)
 }
 
 /**

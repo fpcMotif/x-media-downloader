@@ -19,6 +19,7 @@ The default filename template is `{handle}/{tweetId}_{index}.{ext}`; the `/` mak
   `X Media Downloader/<handle>/<basename>` via `resolveHandleFolder(target.handle)`.
 
 So there are three gaps:
+
 1. The default nests by handle instead of producing a flat, prefixed filename.
 2. There is no configurable "save into this folder" base path.
 3. Drive and Dropbox don't even agree on the resulting layout.
@@ -40,15 +41,15 @@ So there are three gaps:
 
 ## Decisions (from brainstorming)
 
-| Question | Decision |
-|---|---|
-| Scope | **Cloud + local unified** — one strategy drives everything. |
-| Default name suffix | **`handle-{tweetId}_{index}.{ext}`** (keep tweetId + index, handle as prefix). |
-| Customization UI | **Preset dropdown + Custom escape hatch.** |
-| Base folder default | **`"X Media"`** (applied to every destination; user may rename or clear). |
-| UI placement | **Downloads panel → "Save defaults".** |
-| Drive cleanup | **Included** — drop Drive's hardcoded `X Media Downloader` root so both clouds agree. |
-| Migration | Untouched installs auto-flip to the new flat default; customized templates are preserved as `custom`. |
+| Question            | Decision                                                                                              |
+| ------------------- | ----------------------------------------------------------------------------------------------------- |
+| Scope               | **Cloud + local unified** — one strategy drives everything.                                           |
+| Default name suffix | **`handle-{tweetId}_{index}.{ext}`** (keep tweetId + index, handle as prefix).                        |
+| Customization UI    | **Preset dropdown + Custom escape hatch.**                                                            |
+| Base folder default | **`"X Media"`** (applied to every destination; user may rename or clear).                             |
+| UI placement        | **Downloads panel → "Save defaults".**                                                                |
+| Drive cleanup       | **Included** — drop Drive's hardcoded `X Media Downloader` root so both clouds agree.                 |
+| Migration           | Untouched installs auto-flip to the new flat default; customized templates are preserved as `custom`. |
 
 ## Architecture
 
@@ -57,11 +58,11 @@ So there are three gaps:
 In [`src/core/schema/index.ts`](../../../src/core/schema/index.ts), replace the lone
 `filenameTemplate` field with three:
 
-| Field | Type | Default | Role |
-|---|---|---|---|
-| `saveFolder` | `Schema.String` | `"X Media"` | Base folder prefixed onto every destination. Empty = destination root. |
-| `namingStrategy` | `Schema.Literals(['handlePrefix','mediaId','handleFolder','custom'])` | `'handlePrefix'` | Selects the filename template. |
-| `filenameTemplate` | `Schema.String` | `'{handle}-{tweetId}_{index}.{ext}'` | **Only** consulted when `namingStrategy === 'custom'`. |
+| Field              | Type                                                                  | Default                              | Role                                                                   |
+| ------------------ | --------------------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------- |
+| `saveFolder`       | `Schema.String`                                                       | `"X Media"`                          | Base folder prefixed onto every destination. Empty = destination root. |
+| `namingStrategy`   | `Schema.Literals(['handlePrefix','mediaId','handleFolder','custom'])` | `'handlePrefix'`                     | Selects the filename template.                                         |
+| `filenameTemplate` | `Schema.String`                                                       | `'{handle}-{tweetId}_{index}.{ext}'` | **Only** consulted when `namingStrategy === 'custom'`.                 |
 
 All three use `Schema.withDecodingDefaultKey` (the existing idiom).
 
@@ -70,7 +71,7 @@ All three use `Schema.withDecodingDefaultKey` (the existing idiom).
 ```ts
 export const CANONICAL_TEMPLATES = {
   handlePrefix: '{handle}-{tweetId}_{index}.{ext}', // jack-123_0.jpg  (default)
-  mediaId:      '{tweetId}_{index}.{ext}',          // 123_0.jpg
+  mediaId: '{tweetId}_{index}.{ext}', // 123_0.jpg
   handleFolder: '{handle}/{tweetId}_{index}.{ext}', // jack/123_0.jpg  (old behavior)
 } as const
 
@@ -126,11 +127,12 @@ const LEGACY_TEMPLATE = '{handle}/{tweetId}_{index}.{ext}'
 function migrate(raw: unknown): unknown {
   if (typeof raw !== 'object' || raw === null) return raw
   const r = raw as Record<string, unknown>
-  if ('namingStrategy' in r) return r                       // already migrated / explicit
+  if ('namingStrategy' in r) return r // already migrated / explicit
   const t = r.filenameTemplate
-  const strategy = t === undefined || t === LEGACY_TEMPLATE
-    ? 'handlePrefix'                                         // untouched → new flat default
-    : 'custom'                                               // user-customized → preserve it
+  const strategy =
+    t === undefined || t === LEGACY_TEMPLATE
+      ? 'handlePrefix' // untouched → new flat default
+      : 'custom' // user-customized → preserve it
   return { ...r, namingStrategy: strategy }
 }
 ```
@@ -155,7 +157,7 @@ write), `migrate` is a no-op.
 ```ts
 // Split target.path into directory segments + basename; ensure each nested folder
 // from My Drive root, caching per joined folder-path in the SW-life folderCache.
-async function resolvePathParent(deps, path): Promise<string | null>  // leaf folder id, or null = My Drive root
+async function resolvePathParent(deps, path): Promise<string | null> // leaf folder id, or null = My Drive root
 ```
 
 - `dirs = path.split('/').slice(0, -1)`; walk them from My Drive root, `ensureFolder(name, parentId)`
@@ -187,7 +189,7 @@ A blank `saveFolder` yields the destination root on each (Drive → My Drive roo
 2. **Naming strategy** select/toggle (`namingStrategy`): Handle prefix · Media ID · Handle folder · Custom.
 3. **Custom template** input, shown only when strategy = `custom`, bound to `filenameTemplate`,
    with the existing `{handle} {tweetId} {index} {ext} {type} {date}` token hint.
-   - **Seeding rule:** when the user switches the dropdown *to* Custom from a preset, prefill
+   - **Seeding rule:** when the user switches the dropdown _to_ Custom from a preset, prefill
      `filenameTemplate` with that preset's canonical template (`CANONICAL_TEMPLATES[prev]`), so
      the box starts from what was just active rather than a stale stored value. This matters for
      migrated installs, whose stored `filenameTemplate` may still hold the legacy folder template
@@ -235,16 +237,16 @@ settings ─ resolveTemplate ─┬─ planDownloads.template ─ renderFilename
 
 ## Files touched
 
-| File | Change |
-|---|---|
-| `src/core/schema/index.ts` | Add `saveFolder`, `namingStrategy`; retune `filenameTemplate` default. |
-| `src/core/settings/index.ts` | Add `migrate(raw)` before decode in `get` + `watch`. |
-| `src/core/download/naming.ts` | **New** pure module: canonical templates + `resolveTemplate`. |
-| `src/entrypoints/background.ts` | One-line seam: `settings.filenameTemplate` → `resolveTemplate(settings)`. |
-| `src/core/cloud/drive.ts` | Resolve folders from `target.path`; drop hardcoded handle folder. |
-| `src/core/cloud/provider.ts` | Drive `makeDestination` drops fixed-root resolution; `gdriveFolderId` deprecated. |
-| `src/entrypoints/options/panels/downloads.tsx` | Save-folder input + strategy dropdown + custom box + preview. |
-| `*.test.ts` (per above) | New + updated tests. |
+| File                                           | Change                                                                            |
+| ---------------------------------------------- | --------------------------------------------------------------------------------- |
+| `src/core/schema/index.ts`                     | Add `saveFolder`, `namingStrategy`; retune `filenameTemplate` default.            |
+| `src/core/settings/index.ts`                   | Add `migrate(raw)` before decode in `get` + `watch`.                              |
+| `src/core/download/naming.ts`                  | **New** pure module: canonical templates + `resolveTemplate`.                     |
+| `src/entrypoints/background.ts`                | One-line seam: `settings.filenameTemplate` → `resolveTemplate(settings)`.         |
+| `src/core/cloud/drive.ts`                      | Resolve folders from `target.path`; drop hardcoded handle folder.                 |
+| `src/core/cloud/provider.ts`                   | Drive `makeDestination` drops fixed-root resolution; `gdriveFolderId` deprecated. |
+| `src/entrypoints/options/panels/downloads.tsx` | Save-folder input + strategy dropdown + custom box + preview.                     |
+| `*.test.ts` (per above)                        | New + updated tests.                                                              |
 
 ## Open risks
 

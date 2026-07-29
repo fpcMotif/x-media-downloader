@@ -148,21 +148,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
           page” or “One by one”. This setting only decides whether those actions also release.
         </FieldDescription>
       </Section>
-
-      <Section
-        title="Release from the popup"
-        description="Two rows in the toolbar popup release immediately, without downloading anything first. They appear only on X tabs."
-      >
-        <p className="text-[13px] leading-relaxed text-muted-foreground text-pretty">
-          Release this page… — releases every post currently rendered on the page. Asks you to
-          confirm.
-        </p>
-        <p className="text-[13px] leading-relaxed text-muted-foreground text-pretty">
-          Release the whole list… — scrolls the entire Likes or Bookmarks list and releases
-          everything in it. The single most destructive control in the extension; asks you to type
-          RELEASE first.
-        </p>
-      </Section>
     </>
   )
 }

@@ -1,12 +1,21 @@
 import { describe, it, expect } from 'vitest'
 import { Effect, Exit } from 'effect'
 import {
+  DOWNLOAD_MODES,
   makeDirectStrategy,
   makeSchemeRoutingStrategy,
   type DownloadsPort,
   type DownloadStrategy,
   type SaveRequest,
 } from './strategy'
+
+describe('DOWNLOAD_MODES', () => {
+  it('describes Fetched mode without claiming byte verification', () => {
+    expect(DOWNLOAD_MODES.find((mode) => mode.value === 'fetched')?.hint).toBe(
+      'Checks the HTTP response type, then streams files up to 15 MiB before saving.',
+    )
+  })
+})
 
 const req: SaveRequest = {
   id: 'm1',

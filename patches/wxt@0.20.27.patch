@@ -1,0 +1,33 @@
+diff --git a/dist/core/utils/environments/browser-environment.mjs b/dist/core/utils/environments/browser-environment.mjs
+index 3bcfe39cfc38cecd6e749614da1335a7a0397c51..389891f7047254ca7e971a9735bd28ea6eb2b895 100644
+--- a/dist/core/utils/environments/browser-environment.mjs
++++ b/dist/core/utils/environments/browser-environment.mjs
+@@ -7,8 +7,14 @@ function getBrowserEnvironmentGlobals() {
+       <body></body>
+     </html>
+   `);
++	// Safely enumerate globals: linkedom's `global` proxies to globalThis, so
++	// some properties (e.g. localStorage on Bun/Node 22+) throw on access.
++	const safeGlobal = {};
++	for (const key of Object.keys(global)) {
++		try { safeGlobal[key] = global[key]; } catch {}
++	}
+ 	return {
+-		...global,
++		...safeGlobal,
+ 		window,
+ 		document,
+ 		self: global
+diff --git a/dist/core/utils/environments/environment.mjs b/dist/core/utils/environments/environment.mjs
+index e3634d47ddf7592dc57d96f9a8f78e34301c85ae..bc637746d34185cec7c87319daa5cd63ad4a0446 100644
+--- a/dist/core/utils/environments/environment.mjs
++++ b/dist/core/utils/environments/environment.mjs
+@@ -23,7 +23,7 @@ function createEnvironment(getGlobals) {
+ }
+ function getOgGlobals(envGlobals) {
+ 	return Object.keys(envGlobals).reduce((acc, key) => {
+-		acc[key] = globalThis[key];
++		try { acc[key] = globalThis[key]; } catch {}
+ 		return acc;
+ 	}, {});
+ }

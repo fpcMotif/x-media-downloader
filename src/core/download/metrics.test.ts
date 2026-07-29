@@ -33,6 +33,12 @@ describe('emptyMetrics + snapshot', () => {
     const s = emptyMetrics({ total: 1, concurrencyCap: 1, startedAt: 1000 })
     expect(snapshot(s, 4000).elapsedMs).toBe(3000)
   })
+
+  it('keeps elapsedMs finite and nonnegative across wall-clock rollback', () => {
+    const s = emptyMetrics({ total: 1, concurrencyCap: 1, startedAt: 1000 })
+    expect(snapshot(s, 500).elapsedMs).toBe(0)
+    expect(snapshot(s, Number.NaN).elapsedMs).toBe(0)
+  })
 })
 
 describe('recordSample', () => {

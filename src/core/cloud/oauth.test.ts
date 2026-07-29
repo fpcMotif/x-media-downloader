@@ -440,6 +440,47 @@ describe('refreshAccessToken', () => {
   })
 })
 
+describe('OAuth token-response bounds', () => {
+  const exchangeWith = (body: unknown, now = 1_000) =>
+    runExchange((async () => jsonResponse(body)) as typeof fetch, {
+      cfg: GDRIVE_OAUTH,
+      clientId: 'cid',
+      code: 'c',
+      codeVerifier: 'v',
+      redirectUri: REDIRECT,
+      now,
+    })
+
+  it.each([
+    ['a string', '3600', 'token endpoint returned invalid JSON (HTTP 200)'],
+    ['a negative number', -1, 'token endpoint returned invalid JSON (HTTP 200)'],
+    ['an unsafe integer', Number.MAX_SAFE_INTEGER, 'token response expires_in is out of range'],
+  ])('rejects expires_in when it is %s', async (_case, expires_in, message) => {
+    await expect(
+      exchangeWith({ access_token: 'AT', refresh_token: 'RT', expires_in }),
+    ).rejects.toThrow(message)
+  })
+
+  it('saturates an epoch deadline at Number.MAX_SAFE_INTEGER', async () => {
+    await expect(
+      exchangeWith(
+        { access_token: 'AT', refresh_token: 'RT', expires_in: 1 },
+        Number.MAX_SAFE_INTEGER - 500,
+      ),
+    ).resolves.toMatchObject({ expiresAt: Number.MAX_SAFE_INTEGER })
+  })
+
+  it('rejects token and account strings beyond their persisted bounds', async () => {
+    await expect(
+      exchangeWith({
+        access_token: 'a'.repeat(16_385),
+        refresh_token: 'RT',
+        account_id: 'b'.repeat(1_025),
+      }),
+    ).rejects.toThrow('token endpoint returned invalid JSON (HTTP 200)')
+  })
+})
+
 describe('isTokenExpired', () => {
   it('is true within the skew window', () => {
     expect(isTokenExpired(100_000, 100_000 - 30_000, 60_000)).toBe(true)

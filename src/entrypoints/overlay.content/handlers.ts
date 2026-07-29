@@ -2,40 +2,55 @@
 // 226-line `handleRuntimeMessage` router in index.tsx. Pure relocation: each
 // handler is a named function taking an explicit `HandlerDeps` context that
 // threads main()'s closed-over mutable state as LIVE references (getters/setters
-// + sibling helpers), never value copies — so the badge/launcher correction in
-// `handleTransferOutcome` and the `store.clear()` reset in
-// `handleClearDetectedMedia` still read AND write the same live state they did
-// when inlined. The dispatch table at the bottom maps each message `_tag` to its
-// handler; the router in index.tsx collapses to a single table lookup.
-import { Option, Result, Schema } from 'effect'
-import { resolveOutcome, type BadgeState } from '../../core/badge'
-import { resolveOutcomeAll, type LauncherPhase } from '../../core/launcher'
+// + sibling helpers), never value copies. The dispatch table at the bottom maps
+// each message `_tag` to its handler; the router in index.tsx collapses to a
+// single table lookup.
+import { Option } from 'effect'
 import type { PlatformAdapter } from '../../core/adapters/types'
-import { safeSend } from '../../core/messaging'
+import { TWEET_ARTICLE_SEL } from '../../core/adapters/x/dom'
+import { expectReply, safeSend } from '../../core/messaging'
 import { findFreshMediaItem } from '../../core/download/media-url-refresh'
-import { makeListClear } from '../../core/clear/list-clear'
 import {
-  TWEET_ARTICLE_SEL,
-  clearControl,
+  alreadyCleared,
+  caretControl,
   clearableScope,
   findArticle,
   isMember,
-  pageScope,
   shouldClickScope,
   tweetIdOfArticle,
-  type MembershipScope,
 } from '../../core/clear/clearer'
+import { pageScope, type MembershipScope } from '../../core/clear/scope'
 import type { makeDetectionStore } from '../../core/adapters/detection-store'
-import type { ClearScope, MediaItem } from '../../core/schema'
 import {
-  TAB_MESSAGE_MEMBERS,
-  TransferOutcome,
-  SavedStatusUpdate,
-  ClearDetectedMediaRequest,
+  decodeCaptureEpochChanged,
+  decodeQueueUpdate as decodeQueueUpdateReply,
+  decodeSettingsChanged,
+  decodeSweepEnqueueResponse,
+  type ClearScope,
+  type ClearTweetState,
+  type MediaItem,
+  type QueueUpdate,
 } from '../../core/schema'
+import { isFromExtensionWorker, type MessageSenderLike } from '../../core/sender-guard'
+import { decodeOverlayInboundMessage, readOverlayInboundTag } from '../../core/schema/tab'
+export { decodeSavedStatusResponse } from '../../core/schema/saved-status'
+import { partitionSweepPosts, type SweepBatchPost } from './request-batching'
+import { markArticleSaved } from './saved-status-marks'
+export {
+  clearSavedStatusMarks,
+  isSavedStatusScope,
+  savedStatusVisible,
+  sweepSavedStatus,
+} from './saved-status-marks'
+import type { TrackedStart } from './tracked-download'
 
-type HoverMediaElement = HTMLImageElement | HTMLVideoElement
 type DetectionStore = ReturnType<typeof makeDetectionStore>
+
+/** Decode only the exact QueueUpdate accepted as a start acknowledgement. */
+export const decodeQueueUpdate = (
+  value: unknown,
+  requestedItems: ReadonlyArray<MediaItem>,
+): QueueUpdate | undefined => decodeQueueUpdateReply(value, requestedItems)
 
 /**
  * LIVE handle on main()'s closed-over state and helpers. Scalars are exposed as
@@ -50,37 +65,23 @@ export interface HandlerDeps {
   readonly document: Document
   readonly location: Location
   readonly rerender: () => void
-  // Badge live state + lifecycle.
-  readonly getBadge: () => BadgeState
-  readonly setBadge: (b: BadgeState) => void
-  readonly getBadgeMedia: () => HoverMediaElement | null
-  readonly getBadgeRequestId: () => string | null
-  readonly getBadgeRequestKey: () => string | null
-  readonly clearBadgeTimers: () => void
-  readonly resetBadge: () => void
-  readonly previewKeyFromMedia: (media: HoverMediaElement | null) => string | null
-  // Launcher live state.
-  readonly getLauncher: () => LauncherPhase
-  readonly setLauncher: (p: LauncherPhase) => void
-  readonly getLauncherBatchIds: () => ReadonlySet<string>
-  readonly clearLauncherRevert: () => void
-  // Quick-grab / rescan live state touched by ClearDetectedMediaRequest.
-  readonly clearDwell: () => void
-  readonly setCursorActive: (on: boolean) => void
-  readonly resetGrab: () => void
-  readonly clearRescanSpin: () => void
+  /** Download UI owns its own state, timers, and terminal-outcome correction. */
+  readonly onTransferOutcome: (requestId: string, outcome: 'complete' | 'failed') => boolean
   // Shared side-effecting helpers.
-  readonly sendTracked: (items: ReadonlyArray<MediaItem>) => Promise<boolean>
-  readonly recoverMissingVideos: () => void
+  readonly sendTracked: (items: ReadonlyArray<MediaItem>) => Promise<TrackedStart>
   readonly notifyContextLost: () => void
   readonly clearLog: (...args: unknown[]) => void
-  readonly clearScope: (tweetId: string, scope: ClearScope) => Promise<boolean>
-  /** Queue a not-mounted clear for the auto-scroll drain (the post has virtualized
-   *  out of the DOM; the overlay scrolls the list to surface it, then clears it). */
-  readonly queueDrain: (tweetId: string, scopes: ClearScope[], allLists: boolean) => void
+  /** One scope's exact irreversible-action result. It distinguishes a harmless
+   * preflight miss from a click whose result failed to verify. */
+  readonly clearScopeAttempt: (tweetId: string, scope: ClearScope) => Promise<ClearTweetState>
   /** Whether the "Saved" status is live on THIS page right now (setting on AND an
    *  in-scope timeline) — gates the late cross-device chip push. */
   readonly savedStatusActive: () => boolean
+}
+
+export interface OverlayMessageAuthority {
+  readonly extensionId: string
+  readonly popupUrl: string
 }
 
 type SendResponse = (r: unknown) => void
@@ -94,61 +95,6 @@ type MessageHandler = (
 ) => boolean | void
 
 // ── Cross-device "Saved" status sweep (B+C) ──────────────────────────────────
-
-/** CSS class of an injected chip — and the idempotency guard (one per article). */
-const SAVED_CHIP_CLASS = 'xdl-saved-chip'
-
-/** The pages where the "Saved" status is shown: the home timeline (For You /
- *  Following) and List timelines. Profiles, Likes, Bookmarks, search, and
- *  single-tweet pages are out of scope for v1. */
-export function isSavedStatusScope(pathname: string): boolean {
-  return pathname === '/home' || /^\/i\/lists\/\d+/.test(pathname)
-}
-
-/** The full gate for the sweep: the `showSavedStatus` setting is on AND the page is
- *  an in-scope timeline. The overlay passes this as the sweep's `inScope`. */
-export function savedStatusVisible(pathname: string, showSavedStatus: boolean): boolean {
-  return showSavedStatus && isSavedStatusScope(pathname)
-}
-
-/** Inject the "Saved ✓" chip into an article, once. Idempotent: a re-sweep over an
- *  already-marked article is a no-op (the chip itself is the marker). */
-function markArticleSaved(article: Element, doc: Document): void {
-  if (article.querySelector(`.${SAVED_CHIP_CLASS}`) !== null) return
-  // Give the chip a positioning context without disturbing X's own layout classes.
-  if (article instanceof HTMLElement && article.style.position === '') {
-    article.style.position = 'relative'
-  }
-  const chip = doc.createElement('div')
-  chip.className = SAVED_CHIP_CLASS
-  chip.textContent = 'Saved ✓'
-  chip.setAttribute('aria-label', 'Already downloaded')
-  article.appendChild(chip)
-}
-
-/** Sweep the visible timeline: enumerate posts (de-duped by tweetId), ask the
- *  background which are already downloaded cross-device, and chip each saved one.
- *  Fail-safe by construction — a chip appears ONLY on a positive reply, so missing
- *  data or a dropped request never marks a post. */
-export async function sweepSavedStatus(deps: {
-  readonly document: Document
-  readonly inScope: () => boolean
-  readonly requestSavedStatus: (tweetIds: string[]) => Promise<string[]>
-}): Promise<void> {
-  if (!deps.inScope()) return
-  const byTweet = new Map<string, Element>()
-  for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
-    const tweetId = tweetIdOfArticle(article)
-    if (Option.isNone(tweetId) || byTweet.has(tweetId.value)) continue
-    byTweet.set(tweetId.value, article)
-  }
-  if (byTweet.size === 0) return
-  const saved = await deps.requestSavedStatus([...byTweet.keys()])
-  for (const tweetId of saved) {
-    const article = byTweet.get(tweetId)
-    if (article !== undefined) markArticleSaved(article, deps.document)
-  }
-}
 
 /** LATE cross-device hits pushed by the background (`SavedStatusUpdate`): the sweep's
  *  instant reply carries only the locally-known subset; once the Convex backstop
@@ -175,30 +121,7 @@ export const handleSavedStatusUpdate: MessageHandler = (message, deps) => {
 // this tab is the one whose entrance/batch owns the request. Fire-and-forget.
 export const handleTransferOutcome: MessageHandler = (message, deps) => {
   const m = message as { requestId: string; outcome: 'complete' | 'failed' }
-  const ok = m.outcome === 'complete'
-  const badge = deps.getBadge()
-  const badgeMedia = deps.getBadgeMedia()
-  if (
-    m.requestId === deps.getBadgeRequestId() &&
-    badge.key === deps.getBadgeRequestKey() &&
-    badgeMedia?.isConnected === true &&
-    deps.previewKeyFromMedia(badgeMedia) === badge.key
-  ) {
-    const nextBadge = resolveOutcome(badge, ok)
-    if (nextBadge !== badge) {
-      deps.clearBadgeTimers()
-      deps.setBadge(nextBadge)
-      deps.rerender()
-    }
-  }
-  if (deps.getLauncherBatchIds().has(m.requestId)) {
-    const launcher = deps.getLauncher()
-    const nextLauncher = resolveOutcomeAll(launcher, ok)
-    if (nextLauncher !== launcher) {
-      deps.setLauncher(nextLauncher)
-      deps.rerender()
-    }
-  }
+  deps.onTransferOutcome(m.requestId, m.outcome)
   return false // fire-and-forget: no reply; do not keep the channel open
 }
 
@@ -216,109 +139,61 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
   if (fresh?.postId !== req.tweetId) fresh = undefined
   if (fresh === undefined && req.index !== undefined && req.type !== undefined) {
     const domItems = deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname)
-    if (domItems.length > 0) deps.store.addDetected(domItems)
+    if (domItems.length > 0) deps.store.reconcileDetected(domItems)
     fresh = findFreshMediaItem(
       { id: req.itemId, postId: req.tweetId, index: req.index, type: req.type },
       [...deps.store.values(), ...domItems],
     )
   }
-  sendResponse({ _tag: 'RefreshMediaUrlResponse', ...(fresh ? { url: fresh.url } : {}) })
-  return true
-}
-
-/** Click the clear control on every mounted post that is a clearable member of
- *  `scope`, paced one click at a time so X registers each. Returns how many were
- *  clicked. Shared by the one-shot visible clear and the whole-list scroll sweep. */
-export async function clearMountedForScope(
-  document: Document,
-  scope: MembershipScope,
-  paceMs: number,
-): Promise<number> {
-  let cleared = 0
-  // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
-  for (const article of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
-    const ctrl = clearControl(article, scope)
-    if (ctrl === null) continue
-    const target = (ctrl.closest('button,[role="button"]') as HTMLElement | null) ?? ctrl
-    target.click()
-    cleared++
-    await new Promise((r) => setTimeout(r, paceMs))
-  }
-  // oxlint-enable no-await-in-loop
-  return cleared
-}
-
-// Manual "Clear this page now" (popup button): un-bookmark / un-like EVERY
-// currently-mounted post for the requested scopes — a one-shot Drain of the
-// visible worklist, independent of downloads. Same click path proven to work.
-export const handleClearVisible: MessageHandler = (_message, deps, sendResponse) => {
-  // X-only: pageScope/TWEET_ARTICLE_SEL are X-specific DOM selectors that happen
-  // to match nothing off-X — gate explicitly rather than rely on that accident.
-  if (deps.adapter.platform !== 'x') {
-    sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
-    return
-  }
-  // List-scoped: only ever clear the list you're ON — Likes page un-likes,
-  // Bookmarks page un-bookmarks. Never both at once.
-  const scope = pageScope(deps.location.pathname)
-  if (import.meta.env.DEV)
-    deps.clearLog(
-      'clear-visible request · page scope =',
-      Option.getOrElse(scope, () => '(not a Likes/Bookmarks page)'),
-    )
-  void (async () => {
-    if (Option.isNone(scope)) {
-      sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0 })
-      return
-    }
-    const cleared = await clearMountedForScope(deps.document, scope.value, 350)
-    if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
-    sendResponse({ _tag: 'ClearVisibleResponse', cleared })
-  })()
-  return true
-}
-
-// "Clear entire list" (popup): auto-scroll the whole Likes/Bookmarks list and click
-// every post's clear control as it mounts — a list-scoped, download-free bulk clear.
-// The bounded scroll loop lives in core/clear/list-clear; here we wire the live
-// window/document/timer ports + the shared per-pass clear.
-export const handleClearWholeList: MessageHandler = (_message, deps, sendResponse) => {
-  // X-only: the auto-scroll drain clicks X's own bookmark/like controls.
-  if (deps.adapter.platform !== 'x') {
-    sendResponse({ _tag: 'ClearWholeListResponse', cleared: 0, reason: 'not-x' })
-    return true
-  }
-  const scope = pageScope(deps.location.pathname)
-  if (Option.isNone(scope)) {
-    sendResponse({ _tag: 'ClearWholeListResponse', cleared: 0, reason: 'not-list-page' })
-    return true
-  }
-  const view = deps.document.defaultView ?? window
-  const listClear = makeListClear({
-    scroll: {
-      position: () => view.scrollY,
-      to: (y) => view.scrollTo(0, y),
-      by: (dy) => view.scrollBy(0, dy),
-      viewport: () => view.innerHeight,
-    },
-    clock: {
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      after: (ms, fn) => {
-        const h = setTimeout(fn, ms)
-        return () => clearTimeout(h)
-      },
-    },
-    path: () => deps.location.pathname,
-    clearVisibleForPage: () => clearMountedForScope(deps.document, scope.value, 350),
-    report: (stage, detail) => {
-      if (import.meta.env.DEV) deps.clearLog(stage, detail)
-    },
+  sendResponse({
+    _tag: 'RefreshMediaUrlResponse',
+    ...(fresh ? { url: fresh.url } : {}),
   })
-  void (async () => {
-    const result = await listClear.run()
-    sendResponse({ _tag: 'ClearWholeListResponse', ...result })
-  })()
   return true
+}
+
+const isSweepEnqueueUnavailable = (reply: unknown): boolean =>
+  typeof reply === 'object' &&
+  reply !== null &&
+  !Array.isArray(reply) &&
+  Object.keys(reply).length === 1 &&
+  (reply as { readonly _tag?: unknown })._tag === 'SweepEnqueueUnavailable'
+
+type SweepBatchOutcome =
+  | {
+      readonly _tag: 'accepted'
+      readonly queued: number
+      readonly skipped: number
+    }
+  | { readonly _tag: 'context' }
+  | { readonly _tag: 'background' }
+
+const sendSweepBatch = async (
+  deps: HandlerDeps,
+  scope: MembershipScope,
+  posts: ReadonlyArray<SweepBatchPost>,
+): Promise<SweepBatchOutcome> => {
+  const out = expectReply(
+    await safeSend(() =>
+      browser.runtime.sendMessage({
+        _tag: 'SweepEnqueueRequest',
+        scope,
+        posts,
+      }),
+    ),
+  )
+  if (out.status === 'context-invalidated') {
+    deps.notifyContextLost()
+    return { _tag: 'context' }
+  }
+  if (out.status !== 'ok' || isSweepEnqueueUnavailable(out.reply)) return { _tag: 'background' }
+  const reply = decodeSweepEnqueueResponse(out.reply, posts.length)
+  if (reply === undefined) return { _tag: 'background' }
+  return {
+    _tag: 'accepted',
+    queued: reply.queued,
+    skipped: reply.skipped,
+  }
 }
 
 // "Drain this page" (popup): hand every detected item to the download queue;
@@ -333,8 +208,36 @@ export const handleDrainPage: MessageHandler = (_message, deps, sendResponse) =>
       'items · scope',
       Option.getOrNull(pageScope(deps.location.pathname)),
     )
-  void deps.sendTracked(items)
-  sendResponse({ _tag: 'DrainPageResponse', count: items.length })
+  void (async () => {
+    try {
+      const started = await deps.sendTracked(items)
+      if (started._tag === 'started') {
+        sendResponse({
+          _tag: 'DrainPageResponse',
+          ok: true,
+          count: items.length,
+        })
+        return
+      }
+      sendResponse({
+        _tag: 'DrainPageResponse',
+        ok: false,
+        reason: started._tag === 'context' ? 'context' : 'background',
+      })
+    } catch {
+      sendResponse({
+        _tag: 'DrainPageResponse',
+        ok: false,
+        reason: 'background',
+      })
+    }
+  })().catch(() =>
+    sendResponse({
+      _tag: 'DrainPageResponse',
+      ok: false,
+      reason: 'background',
+    }),
+  )
   return true
 }
 
@@ -363,7 +266,7 @@ export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) =>
     })
     return true
   }
-  const posts: { tweetId: string; items: MediaItem[] }[] = []
+  const posts: SweepBatchPost[] = []
   const seen = new Set<string>()
   for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
     if (!isMember(article, scope.value)) continue
@@ -376,150 +279,211 @@ export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) =>
   }
   if (import.meta.env.DEV)
     deps.clearLog('sweep · handing', posts.length, 'posts to background on', scope.value)
+  const partitioned = partitionSweepPosts(posts)
+  if (partitioned._tag === 'failure') {
+    sendResponse({
+      _tag: 'SweepPageResponse',
+      ok: false,
+      queued: 0,
+      skipped: 0,
+      reason: 'local-invalid',
+    })
+    return true
+  }
+  if (partitioned.batches.length === 0) {
+    sendResponse({
+      _tag: 'SweepPageResponse',
+      ok: true,
+      queued: 0,
+      skipped: 0,
+    })
+    return true
+  }
   void (async () => {
-    const out = await safeSend(() =>
-      browser.runtime.sendMessage({ _tag: 'SweepEnqueueRequest', scope: scope.value, posts }),
-    )
-    if (out.status === 'context-invalidated') {
-      deps.notifyContextLost()
+    let queued = 0
+    let skipped = 0
+    try {
+      // oxlint-disable no-await-in-loop -- ordered commits preserve the visible worklist.
+      for (const batch of partitioned.batches) {
+        const outcome = await sendSweepBatch(deps, scope.value, batch)
+        if (outcome._tag === 'accepted') {
+          queued += outcome.queued
+          skipped += outcome.skipped
+          continue
+        }
+        sendResponse({
+          _tag: 'SweepPageResponse',
+          ok: false,
+          queued,
+          skipped,
+          reason: outcome._tag,
+        })
+        return
+      }
+      // oxlint-enable no-await-in-loop
+      sendResponse({ _tag: 'SweepPageResponse', ok: true, queued, skipped })
+    } catch {
       sendResponse({
         _tag: 'SweepPageResponse',
         ok: false,
-        queued: 0,
-        skipped: 0,
-        reason: 'context',
+        queued,
+        skipped,
+        reason: 'failed',
       })
-      return
     }
-    const r =
-      out.status === 'ok'
-        ? (out.reply as { queued?: number; skipped?: number } | undefined)
-        : undefined
+  })().catch(() =>
     sendResponse({
       _tag: 'SweepPageResponse',
-      ok: out.status === 'ok',
-      queued: r?.queued ?? 0,
-      skipped: r?.skipped ?? 0,
-    })
-  })()
+      ok: false,
+      queued: 0,
+      skipped: 0,
+      reason: 'failed',
+    }),
+  )
   return true
-}
-
-// Clear-on-complete (worklist): the tweet is Truly Complete — un-bookmark /
-// un-like it by clicking X's own control, then VERIFY the testid flipped
-// before reporting ok. id-match guard + membership check defend against
-// virtualization clicking the wrong post (spec §4.4).
-export type ClearResult = { scope: ClearScope; ok: boolean; noop?: boolean }
-
-/**
- * Clear one MOUNTED tweet. Which scope(s) actually click is `shouldClickScope`'s
- * call: page-scoped by default (only the current page's list / "Not interested" on
- * For You), or membership-driven when "Clear from every list" (allLists) is on. The
- * scope that removes the post from the CURRENT view (page's own list / NI) DETACHES
- * the article, so it runs LAST — cross-list clicks must act on a still-mounted
- * article. The live article is re-resolved EACH iteration (a prior scope's clear can
- * re-render the action bar in place; a stale reference could false-negative a real
- * membership). Shared by the live handler and the auto-scroll drain.
- */
-export async function clearMountedTweet(
-  deps: Pick<HandlerDeps, 'document' | 'location' | 'clearScope' | 'clearLog'>,
-  tweetId: string,
-  scopes: ReadonlyArray<ClearScope>,
-  allLists: boolean,
-): Promise<ClearResult[]> {
-  const onScope = clearableScope(deps.location.pathname, deps.document)
-  const ordered = [...scopes.filter((s) => s !== onScope), ...scopes.filter((s) => s === onScope)]
-  const results: ClearResult[] = []
-  // oxlint-disable no-await-in-loop -- pace clicks one scope at a time
-  for (const scope of ordered) {
-    const live = findArticle(deps.document, tweetId)
-    const member =
-      scope === 'notInterested' || Option.isNone(live) ? false : isMember(live.value, scope)
-    if (shouldClickScope({ scope, onScope, member, allLists })) {
-      results.push({ scope, ok: await deps.clearScope(tweetId, scope) })
-    } else {
-      if (import.meta.env.DEV)
-        deps.clearLog(
-          scope,
-          '→ skipped',
-          allLists ? '(not a member / off-feed)' : '(not this page)',
-        )
-      results.push({ scope, ok: true, noop: true })
-    }
-  }
-  // oxlint-enable no-await-in-loop
-  return results
 }
 
 export const handleClearTweet: MessageHandler = (message, deps, sendResponse) => {
-  // X-only: findArticle/clearMountedTweet drive X's bookmark/like/notInterested
-  // DOM controls — nothing to click on an Instagram/Threads tab. Keep the channel
-  // open (return true) and reply with empty results, same shape as the "queued
-  // for scroll-drain" no-op below.
+  const req = message as {
+    tweetId: string
+    scopes: ClearScope[]
+    allLists: boolean
+  }
+  // X-only: nothing destructive can run on another adapter. Return one exact,
+  // retryable result per requested scope; never fall through to another tab here.
   if (deps.adapter.platform !== 'x') {
-    sendResponse({ _tag: 'ClearTweetResponse', results: [] })
+    sendResponse({
+      _tag: 'ClearTweetResponse',
+      results: req.scopes.map((scope) => ({ scope, state: 'not-actionable' })),
+    })
     return true
   }
-  const req = message as { tweetId: string; scopes: ClearScope[]; allLists?: boolean }
-  const allLists = req.allLists === true
+  const allLists = req.allLists
   if (import.meta.env.DEV)
     deps.clearLog('request', req.tweetId, req.scopes, allLists ? '· all-lists' : '')
   void (async () => {
-    const article = findArticle(deps.document, req.tweetId)
-    if (Option.isNone(article)) {
-      // Not mounted: X virtualizes the timeline (~30 articles in the DOM at once), so
-      // a post downloaded seconds ago has usually scrolled out by the time its clear
-      // fires. Queue it for the auto-scroll drain (scroll the list to surface the
-      // post, then clear it) instead of dropping it. Still report empty results so the
-      // background's in-memory ledger settles — the drain owns the retry now.
-      if (import.meta.env.DEV) {
-        const n = deps.document.querySelectorAll('article[data-testid="tweet"]').length
-        deps.clearLog('not mounted → queued for scroll-drain.', n, 'articles on page')
+    const results: Array<{ scope: ClearScope; state: ClearTweetState }> = []
+    const withFallback = (
+      fallback: ClearTweetState,
+    ): Array<{ scope: ClearScope; state: ClearTweetState }> =>
+      req.scopes.map(
+        (scope) =>
+          results.find((result) => result.scope === scope) ?? {
+            scope,
+            state: fallback,
+          },
+      )
+    try {
+      const article = findArticle(deps.document, req.tweetId)
+      if (Option.isNone(article)) {
+        sendResponse({
+          _tag: 'ClearTweetResponse',
+          results: req.scopes.map((scope) => ({
+            scope,
+            state: 'preflight-failed',
+          })),
+        })
+        return
       }
-      deps.queueDrain(req.tweetId, req.scopes, allLists)
-      sendResponse({ _tag: 'ClearTweetResponse', results: [] })
-      return
+      const onScope = clearableScope(deps.location.pathname, deps.document)
+      const ordered = [
+        ...req.scopes.filter((scope) => scope !== onScope),
+        ...req.scopes.filter((scope) => scope === onScope),
+      ]
+      // oxlint-disable no-await-in-loop -- each later action rechecks the DOM after a prior click
+      for (const scope of ordered) {
+        const live = findArticle(deps.document, req.tweetId)
+        if (Option.isNone(live)) {
+          results.push({ scope, state: 'preflight-failed' })
+          continue
+        }
+        const member = scope === 'notInterested' ? false : isMember(live.value, scope)
+        if (!shouldClickScope({ scope, onScope, member, allLists })) {
+          results.push({
+            scope,
+            state:
+              scope !== 'notInterested' && alreadyCleared(live.value, scope)
+                ? 'already-clear'
+                : 'not-actionable',
+          })
+          continue
+        }
+        let state: ClearTweetState
+        try {
+          state = await deps.clearScopeAttempt(req.tweetId, scope)
+        } catch {
+          // The injected attempt owns the click boundary. A rejected call cannot
+          // prove it failed before mutation, so automatic retry is unsafe.
+          state = 'uncertain'
+        }
+        results.push({
+          scope,
+          state,
+        })
+      }
+      // oxlint-enable no-await-in-loop
+      sendResponse({ _tag: 'ClearTweetResponse', results })
+    } catch {
+      sendResponse({
+        _tag: 'ClearTweetResponse',
+        results: withFallback('preflight-failed'),
+      })
     }
-    const results = await clearMountedTweet(deps, req.tweetId, req.scopes, allLists)
-    sendResponse({ _tag: 'ClearTweetResponse', results })
-  })()
+  })().catch(() =>
+    sendResponse({
+      _tag: 'ClearTweetResponse',
+      results: req.scopes.map((scope) => ({
+        scope,
+        state: 'uncertain',
+      })),
+    }),
+  )
   return true
 }
 
-// Popup "Clear detected media": drop every detected pick + disarm all
-// affordances, optionally rescanning the visible page in place.
-//
-// Deliberately NOT platform-gated (unlike its four clear-family siblings above):
-// every line here is adapter-agnostic UI-state reset (store.clear(), dwell/cursor/
-// grab/badge/launcher) with no X-specific DOM read. The one branch that touches the
-// page, `rescanVisible`, calls `deps.adapter.detectRenderedMedia` — already correctly
-// dispatched per-platform (every registered adapter implements it; Instagram/Threads
-// currently return `[]`, a separate and intentional TODO, not a gating concern here).
-// Gating this handler would silently break "Clear detected media" for Instagram/
-// Threads users, who have nothing X-specific to protect against in the first place.
-//
-// TODO: currently unreachable from the UI — its only sender was dropped by the
-// in-flight popup rewrite; kept wired pending that rewrite settling.
-export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResponse) => {
-  const cleared = deps.store.count
-  deps.store.clear()
-  deps.clearDwell()
-  deps.setCursorActive(false)
-  deps.resetGrab()
-  deps.resetBadge()
-  deps.clearLauncherRevert()
-  deps.clearRescanSpin()
-  deps.setLauncher('idle')
-  let rescanned = 0
-  const req = message as { _tag: string; rescanVisible?: boolean }
-  if (req.rescanVisible) {
-    rescanned = deps.store.addDetected(
-      deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname),
-    ).length
-    deps.recoverMissingVideos()
+/** Locate is read-only: it must never call clearScopeAttempt or queue deferred
+ * work. It answers exactly once for every requested scope on a mounted tweet. */
+export const handleLocateClearTweet: MessageHandler = (message, deps, sendResponse) => {
+  const req = message as {
+    tweetId: string
+    scopes: ClearScope[]
+    allLists: boolean
   }
-  deps.rerender()
-  sendResponse({ _tag: 'ClearDetectedMediaResponse', cleared, rescanned })
+  if (deps.adapter.platform !== 'x') {
+    sendResponse({ _tag: 'LocateClearTweetResponse', mounted: false })
+    return true
+  }
+  const article = findArticle(deps.document, req.tweetId)
+  if (Option.isNone(article)) {
+    sendResponse({ _tag: 'LocateClearTweetResponse', mounted: false })
+    return true
+  }
+  const onScope = clearableScope(deps.location.pathname, deps.document)
+  const allLists = req.allLists
+  const results = req.scopes.map((scope) => {
+    const member = scope === 'notInterested' ? false : isMember(article.value, scope)
+    if (shouldClickScope({ scope, onScope, member, allLists })) {
+      if (scope === 'notInterested')
+        return {
+          scope,
+          state: caretControl(article.value) === null ? 'unknown' : 'actionable',
+        }
+      if (member) return { scope, state: 'actionable' }
+      return {
+        scope,
+        state: alreadyCleared(article.value, scope) ? 'already-clear' : 'unknown',
+      }
+    }
+    return {
+      scope,
+      state:
+        scope !== 'notInterested' && alreadyCleared(article.value, scope)
+          ? 'already-clear'
+          : 'not-applicable',
+    }
+  })
+  sendResponse({ _tag: 'LocateClearTweetResponse', mounted: true, results })
+  return true
 }
 
 /** Maps each runtime-message `_tag` to its handler. The router in index.tsx
@@ -529,50 +493,91 @@ export const messageHandlers: Record<string, MessageHandler> = {
   TransferOutcome: handleTransferOutcome,
   SavedStatusUpdate: handleSavedStatusUpdate,
   RefreshMediaUrlRequest: handleRefreshMediaUrl,
-  ClearVisibleRequest: handleClearVisible,
-  ClearWholeListRequest: handleClearWholeList,
   DrainPageRequest: handleDrainPage,
   SweepPageRequest: handleSweepPage,
+  LocateClearTweetRequest: handleLocateClearTweet,
   ClearTweetRequest: handleClearTweet,
-  ClearDetectedMediaRequest: handleClearDetectedMedia,
 }
-
-/** The overlay's TRUE inbound set, decode-gated before any dispatch: the six
- *  tab-targeted (`browser.tabs.sendMessage`) tags — spread from the SAME
- *  `TAB_MESSAGE_MEMBERS` array `TabMessage` itself is built from, so the two
- *  unions can never drift — plus the three broadcast `Message`-union tags
- *  `messageHandlers` above also answers (`TransferOutcome`, `SavedStatusUpdate`,
- *  `ClearDetectedMediaRequest`) — NOT the full `Message` union, most of which
- *  the overlay never receives. */
-const OverlayInboundMessage = Schema.Union([
-  ...TAB_MESSAGE_MEMBERS,
-  TransferOutcome,
-  SavedStatusUpdate,
-  ClearDetectedMediaRequest,
-])
 
 /** The overlay's single `runtime.onMessage` entry point: decode-gate, then table
  *  dispatch. A message whose tag/shape falls outside the inventoried set above is
  *  DROPPED before it ever reaches a handler — the same "no entry" no-op the table
  *  already gives an unmapped tag, so a forged or garbled message degrades exactly
  *  like an unknown one, never a thrown decode error. */
-export const dispatchOverlayMessage: MessageHandler = (message, deps, sendResponse) => {
-  const decoded = Schema.decodeUnknownResult(OverlayInboundMessage)(message)
-  if (Result.isFailure(decoded)) {
+const POPUP_ACTION_TAGS = new Set(['DrainPageRequest', 'SweepPageRequest'])
+const WORKER_ONLY_TAGS = new Set([
+  'RefreshMediaUrlRequest',
+  'LocateClearTweetRequest',
+  'ClearTweetRequest',
+  'TransferOutcome',
+  'SavedStatusUpdate',
+])
+
+export const isPopupActionSender = (
+  sender: MessageSenderLike | undefined,
+  authority: OverlayMessageAuthority,
+): boolean =>
+  sender?.id === authority.extensionId &&
+  sender.tab === undefined &&
+  sender.url === authority.popupUrl
+
+/** Worker-only messages cannot be forged by popup, options, or another tab. */
+export const isWorkerMessageSender = (
+  sender: MessageSenderLike | undefined,
+  authority: OverlayMessageAuthority,
+): boolean => isFromExtensionWorker(sender, authority.extensionId)
+
+const unauthorizedReply = (tag: string): unknown => {
+  switch (tag) {
+    case 'DrainPageRequest':
+      return { _tag: 'DrainPageResponse', ok: false, reason: 'unauthorized' }
+    case 'SweepPageRequest':
+      return {
+        _tag: 'SweepPageResponse',
+        ok: false,
+        queued: 0,
+        skipped: 0,
+        reason: 'unauthorized',
+      }
+  }
+}
+
+export const dispatchOverlayMessage = (
+  message: unknown,
+  deps: HandlerDeps,
+  sendResponse: SendResponse,
+  sender: MessageSenderLike | undefined,
+  authority: OverlayMessageAuthority,
+): boolean | void => {
+  const rawTag = readOverlayInboundTag(message)
+  // Dedicated content clients own these worker broadcasts through their own
+  // listeners. They are valid tab traffic, not failed overlay messages.
+  if (
+    isWorkerMessageSender(sender, authority) &&
+    ((rawTag === 'SettingsChanged' && decodeSettingsChanged(message) !== undefined) ||
+      (rawTag === 'CaptureEpochChanged' && decodeCaptureEpochChanged(message) !== undefined))
+  )
+    return
+  const decoded = decodeOverlayInboundMessage(message)
+  if (decoded === undefined) {
     // Warn UNCONDITIONALLY (not DEV-gated), mirroring background.ts's decode
     // gate: a silently-dropped message is exactly the signature two shipped
     // incidents had — diagnosed only live in a browser console.
-    const rawTag = (message as { _tag?: unknown } | null)?._tag
     if (typeof rawTag === 'string')
       console.warn(
         `[XMD] message ${rawTag} FAILED overlay schema decode (dropped):`,
-        decoded.failure,
+        'invalid payload',
       )
     // `undefined` ≡ `false` to the WebExtension onMessage API (channel not kept
     // open) — the same drop background.ts spells as an explicit `return false`.
     return
   }
-  const handler = messageHandlers[decoded.success._tag]
+  if (POPUP_ACTION_TAGS.has(decoded._tag) && !isPopupActionSender(sender, authority)) {
+    sendResponse(unauthorizedReply(decoded._tag))
+    return true
+  }
+  if (WORKER_ONLY_TAGS.has(decoded._tag) && !isWorkerMessageSender(sender, authority)) return
+  const handler = messageHandlers[decoded._tag]
   if (handler === undefined) return
-  return handler(decoded.success, deps, sendResponse)
+  return handler(decoded, deps, sendResponse)
 }

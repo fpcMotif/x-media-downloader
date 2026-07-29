@@ -1,5 +1,6 @@
 import { renderFilename } from './filename'
 import type { MediaItem } from '../schema'
+import { mediaRequestId, sidecarRequestId } from './request-identity'
 
 /** One concrete download to hand to `chrome.downloads.download`. */
 export interface PlannedDownload {
@@ -61,12 +62,13 @@ export function planDownloads(opts: {
   readonly ctx?: SidecarContext
 }): ReadonlyArray<PlannedDownload> {
   const filename = renderFilename(opts.template, opts.item, opts.date)
-  const media: PlannedDownload = { id: opts.item.id, url: opts.item.url, filename }
+  const requestId = mediaRequestId(opts.item)
+  const media: PlannedDownload = { id: requestId, url: opts.item.url, filename }
   if (!opts.sidecar) return [media]
   return [
     media,
     {
-      id: `${opts.item.id}.json`,
+      id: sidecarRequestId(opts.item),
       url: sidecarDataUrl(buildSidecar(opts.item, opts.ctx)),
       filename: sidecarFilename(filename),
     },

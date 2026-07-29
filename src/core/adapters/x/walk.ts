@@ -1,7 +1,13 @@
 import type { RawMedia } from '../../resolver'
+import { normalizeRawMediaList } from './raw-media'
 
 type Obj = Record<string, unknown>
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
+
+/** Gas limits for one hostile Raw Capture traversal. Exhaustion drops the whole capture. */
+export const MAX_TRAVERSAL_NODES = 10_000
+export const MAX_TRAVERSAL_DEPTH = 128
+export const MAX_TRAVERSAL_OUTPUTS = 1_000
 
 /** The author of a tweet node, resolved from its `core.user_results.result`. */
 export type Author = { handle: string; name?: string; userId?: string }
@@ -31,34 +37,49 @@ const isUserResult = (n: Obj): boolean => {
  * `name`, and `rest_id` from the SAME `core.user_results.result` subtree so a
  * quoted tweet's name/userId can never leak into the outer record.
  */
-export function findAuthor(node: unknown): Author {
+const findAuthorWithinGas = (node: unknown): Author | undefined => {
   let found: Author | undefined
-  const scan = (n: unknown): void => {
-    if (found !== undefined) return
-    if (Array.isArray(n)) {
-      for (const v of n) scan(v)
-      return
-    }
-    if (!isObj(n)) return
-    if (isUserResult(n)) {
-      const legacy = n['legacy'] as Obj
-      const name = legacy['name']
-      const userId = n['rest_id']
-      found = {
-        handle: legacy['screen_name'] as string,
-        ...(typeof name === 'string' ? { name } : {}),
-        ...(typeof userId === 'string' ? { userId } : {}),
+  const stack: Array<{ readonly node: unknown; readonly depth: number }> = [{ node, depth: 0 }]
+  const visited = new WeakSet<Obj>()
+  let nodes = 0
+  try {
+    while (stack.length > 0 && found === undefined) {
+      const current = stack.pop()!
+      if (current.depth > MAX_TRAVERSAL_DEPTH || ++nodes > MAX_TRAVERSAL_NODES) return undefined
+      if (Array.isArray(current.node)) {
+        if (current.node.length > MAX_TRAVERSAL_NODES) return undefined
+        for (let index = current.node.length - 1; index >= 0; index -= 1)
+          stack.push({ node: current.node[index], depth: current.depth + 1 })
+        continue
       }
-      return
+      if (!isObj(current.node) || visited.has(current.node)) continue
+      visited.add(current.node)
+      if (isUserResult(current.node)) {
+        const legacy = current.node['legacy'] as Obj
+        const name = legacy['name']
+        const userId = current.node['rest_id']
+        found = {
+          handle: legacy['screen_name'] as string,
+          ...(typeof name === 'string' ? { name } : {}),
+          ...(typeof userId === 'string' ? { userId } : {}),
+        }
+        continue
+      }
+      const entries = Object.entries(current.node)
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, value] = entries[index]!
+        if (!NESTED_TWEET_KEYS.has(key)) stack.push({ node: value, depth: current.depth + 1 })
+      }
     }
-    for (const [key, v] of Object.entries(n)) {
-      if (NESTED_TWEET_KEYS.has(key)) continue
-      scan(v)
-      if (found !== undefined) return
-    }
+  } catch {
+    return undefined
   }
-  scan(node)
   return found ?? { handle: '' }
+}
+
+/** Reads an author for standalone callers; exhausted hostile input has no author. */
+export function findAuthor(node: unknown): Author {
+  return findAuthorWithinGas(node) ?? { handle: '' }
 }
 
 /** A tweet result node's own `legacy` object, or `null` when `n` is not a tweet
@@ -75,7 +96,7 @@ const tweetIdOf = (n: Obj, legacy: Obj): string => String(n['rest_id'] ?? legacy
 const mediaOf = (legacy: Obj): RawMedia[] => {
   const ee = legacy['extended_entities']
   const media = isObj(ee) ? ee['media'] : undefined
-  return Array.isArray(media) ? (media as RawMedia[]) : []
+  return normalizeRawMediaList(media)
 }
 
 /**
@@ -94,30 +115,56 @@ export function forEachTweetNode(
     author: Author
     mediaRaw: RawMedia[]
   }) => void,
-): void {
-  const walk = (node: unknown): void => {
-    if (Array.isArray(node)) {
-      for (const v of node) walk(v)
-      return
+): boolean {
+  const stack: Array<{ readonly node: unknown; readonly depth: number }> = [
+    { node: json, depth: 0 },
+  ]
+  const visited = new WeakSet<Obj>()
+  const results: Array<{
+    readonly node: Obj
+    readonly tweetId: string
+    readonly handle: string
+    readonly author: Author
+    readonly mediaRaw: RawMedia[]
+  }> = []
+  let nodes = 0
+  try {
+    while (stack.length > 0) {
+      const current = stack.pop()!
+      if (current.depth > MAX_TRAVERSAL_DEPTH || ++nodes > MAX_TRAVERSAL_NODES) return false
+      if (Array.isArray(current.node)) {
+        if (current.node.length > MAX_TRAVERSAL_NODES) return false
+        for (let index = current.node.length - 1; index >= 0; index -= 1)
+          stack.push({ node: current.node[index], depth: current.depth + 1 })
+        continue
+      }
+      if (!isObj(current.node) || visited.has(current.node)) continue
+      visited.add(current.node)
+      if (current.node['__typename'] === 'TweetTombstone') continue
+      if (current.node['__typename'] === 'TweetWithVisibilityResults') {
+        stack.push({ node: current.node['tweet'], depth: current.depth + 1 })
+        continue
+      }
+      const legacy = tweetLegacy(current.node)
+      if (legacy) {
+        if (results.length >= MAX_TRAVERSAL_OUTPUTS) return false
+        const author = findAuthorWithinGas(current.node)
+        if (author === undefined) return false
+        results.push({
+          node: current.node,
+          tweetId: tweetIdOf(current.node, legacy),
+          handle: author.handle,
+          author,
+          mediaRaw: mediaOf(legacy),
+        })
+      }
+      const values = Object.values(current.node)
+      for (let index = values.length - 1; index >= 0; index -= 1)
+        stack.push({ node: values[index], depth: current.depth + 1 })
     }
-    if (!isObj(node)) return
-    if (node['__typename'] === 'TweetTombstone') return
-    if (node['__typename'] === 'TweetWithVisibilityResults') {
-      walk(node['tweet'])
-      return
-    }
-    const legacy = tweetLegacy(node)
-    if (legacy) {
-      const author = findAuthor(node)
-      visit({
-        node,
-        tweetId: tweetIdOf(node, legacy),
-        handle: author.handle,
-        author,
-        mediaRaw: mediaOf(legacy),
-      })
-    }
-    for (const v of Object.values(node)) walk(v)
+  } catch {
+    return false
   }
-  walk(json)
+  for (const result of results) visit(result)
+  return true
 }

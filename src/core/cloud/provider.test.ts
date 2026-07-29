@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PROVIDERS, revokeViaRecipe } from './provider'
 import { DROPBOX_HOST_PATTERNS, DROPBOX_OAUTH, GDRIVE_HOST_PATTERNS, GDRIVE_OAUTH } from './types'
+
+const statusOnlyResponse = (cancel: () => Promise<void>): Response =>
+  ({ body: { cancel } }) as unknown as Response
 
 describe('PROVIDERS registry', () => {
   it('describes Google Drive as a record (oauth, host patterns, label, fields)', () => {
@@ -28,9 +31,10 @@ describe('PROVIDERS registry', () => {
 describe('revokeViaRecipe', () => {
   it('revokes the refresh token at the Google endpoint via a form body (gdrive)', async () => {
     const calls: { url: string; body: string }[] = []
+    const cancel = vi.fn<() => Promise<void>>(async () => {})
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       calls.push({ url: String(url), body: String(init?.body) })
-      return new Response('', { status: 200 })
+      return statusOnlyResponse(cancel)
     }) as unknown as typeof fetch
     await revokeViaRecipe(
       PROVIDERS.gdrive.revoke,
@@ -40,15 +44,19 @@ describe('revokeViaRecipe', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]!.url).toBe('https://oauth2.googleapis.com/revoke')
     expect(new URLSearchParams(calls[0]!.body).get('token')).toBe('RT')
+    expect(cancel).toHaveBeenCalledOnce()
   })
 
-  it('revokes via the access token in an auth header at the Dropbox endpoint', async () => {
+  it('revokes via Dropbox and never lets discard failure block local cleanup', async () => {
     let url = ''
     let auth = ''
+    const cancel = vi.fn<() => Promise<void>>(async () => {
+      throw new Error('cancel failed')
+    })
     const fetchImpl = (async (u: string, init?: RequestInit) => {
       url = String(u)
       auth = ((init?.headers ?? {}) as Record<string, string>)['authorization'] ?? ''
-      return new Response('', { status: 200 })
+      return statusOnlyResponse(cancel)
     }) as unknown as typeof fetch
     await revokeViaRecipe(
       PROVIDERS.dropbox.revoke,
@@ -57,6 +65,7 @@ describe('revokeViaRecipe', () => {
     )
     expect(url).toBe('https://api.dropboxapi.com/2/auth/token/revoke')
     expect(auth).toBe('Bearer AT')
+    expect(cancel).toHaveBeenCalledOnce()
   })
 
   it('no-ops when the recipe credential is empty', async () => {

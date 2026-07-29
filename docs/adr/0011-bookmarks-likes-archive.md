@@ -13,7 +13,7 @@ tensions with the existing design:
 1. Removing a bookmark/like is a **mutation** — ADR-0001's passive capture
    issues no requests, and this project never uses the official API.
 2. "Never re-download what a previous run saved" needs memory across browser
-   restarts — ADR-0005 decided *no persistent download history in v1*.
+   restarts — ADR-0005 decided _no persistent download history in v1_.
 3. "Save job done" must be honest: removal is destructive, so it has to gate on
    the same signal the rest of the UI treats as success.
 
@@ -43,18 +43,15 @@ tensions with the existing design:
   in-flight request de-duplication continues to guard within a session. This
   deliberately **amends ADR-0005** for this feature: the index stores ids and
   timestamps only — no captured content — so the privacy posture holds.
-- **"Done" means started.** A tweet is `ok` when every one of its downloads
-  started (the same bar as `QueueUpdate` and the Quick Grab badge). Removal and
-  index marking gate on that; the history record itself preserves the permalink
-  for recovery if a started transfer later fails.
+- **Historical decision — "Done" meant started.** This was the 2026-06 rule.
+  It is superseded below; the history record still preserves the permalink.
 
 ## Consequences
 
 - Re-running Archive after an interruption downloads nothing twice and finishes
   any removals the previous run could not reach — the job is safely repeatable.
-- A removed bookmark whose download later fails mid-transfer loses its place in
-  the queue but not its identity: the `.tweet.json` record carries the
-  permalink, text, and links. Removal stays opt-in for exactly this reason.
+- The historical start-time rule could remove a bookmark before its bytes landed.
+  The later amendment closes that gap.
 - DOM-click removal depends on X's `data-testid` attributes (`removeBookmark`,
   `unlike`) — the same stability class the overlay already accepts for
   `article[data-testid="tweet"]`.
@@ -67,6 +64,13 @@ tensions with the existing design:
 - **Archive index in `storage.session`** — idempotency would not survive a
   browser restart, which is precisely when a half-drained bookmark queue gets
   re-run. Rejected.
-- **Gating removal on terminal download states** — requires correlating
-  `downloads.onChanged` completions per tweet across SW recycles; complexity
-  not justified while the whole pipeline treats "started" as success.
+- **Historical alternative — gating removal on terminal states** — was deferred
+  before durable correlation existed.
+
+## Amendment (2026-07-22) — verified browser completion
+
+Clear-after-download now requires terminal browser evidence, its Chrome
+`downloadId`, and the later Settle probe proving the file still exists. The
+durable Registry records terminal evidence; Clear remains blocked until Settle.
+aria2 media is observed through `tellStatus`, but has no Chrome download id and
+is never eligible for Clear.

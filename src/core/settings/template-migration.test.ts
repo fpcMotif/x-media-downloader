@@ -1,12 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { Effect } from 'effect'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
 import { LEGACY_DEFAULT_TEMPLATES, normalizeFilenameTemplate } from './template-migration'
 import { CURRENT_DEFAULT_TEMPLATE } from '../schema'
-import { SettingsService, SettingsServiceLive } from './index'
-
-const run = <A, E>(eff: Effect.Effect<A, E, SettingsService>) =>
-  Effect.runPromise(Effect.provide(eff, SettingsServiceLive))
+import { getSettings } from './index'
 
 describe('LEGACY_DEFAULT_TEMPLATES', () => {
   it('lists exactly the two historical defaults, oldest first', () => {
@@ -58,30 +54,30 @@ describe('normalizeFilenameTemplate', () => {
   })
 })
 
-describe('decode seam migration (SettingsService.get)', () => {
+describe('Settings persistence projection migration', () => {
   it('migrates a stored legacy {handle} template to {platform} on load', async () => {
     await fakeBrowser.storage.local.set({
       settings: { filenameTemplate: '{handle}/{tweetId}_{index}.{ext}' },
     })
-    const s = await run(Effect.flatMap(SettingsService, (svc) => svc.get))
+    const s = await getSettings()
     expect(s.filenameTemplate).toBe(CURRENT_DEFAULT_TEMPLATE)
   })
 
   it('leaves a stored custom template untouched through the service', async () => {
     const custom = 'archive/{author}/{postId}-{index}.{ext}'
     await fakeBrowser.storage.local.set({ settings: { filenameTemplate: custom } })
-    const s = await run(Effect.flatMap(SettingsService, (svc) => svc.get))
+    const s = await getSettings()
     expect(s.filenameTemplate).toBe(custom)
   })
 
-  it('heals the stored value itself on the next set() (write-back)', async () => {
+  it('does not mutate the stored legacy value while reading', async () => {
     await fakeBrowser.storage.local.set({
       settings: { filenameTemplate: '{handle}/{tweetId}_{index}.{ext}' },
     })
-    await run(Effect.flatMap(SettingsService, (svc) => svc.set({ downloadConcurrency: 4 })))
+    await getSettings()
     const raw = (await fakeBrowser.storage.local.get('settings')) as {
       settings?: { filenameTemplate?: string }
     }
-    expect(raw.settings?.filenameTemplate).toBe(CURRENT_DEFAULT_TEMPLATE)
+    expect(raw.settings?.filenameTemplate).toBe('{handle}/{tweetId}_{index}.{ext}')
   })
 })

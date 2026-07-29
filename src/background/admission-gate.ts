@@ -7,6 +7,7 @@ import {
 } from '../core/download/admission'
 import type { SizeProbePort } from '../core/download/size-probe'
 import type { SavedIndex, QueryConvex } from '../core/sync/saved-index'
+import { mediaRequestId } from '../core/download/request-identity'
 
 const MiB = 1024 * 1024
 
@@ -43,14 +44,14 @@ export function makeAdmissionGate(deps: {
       dailyMaxCount: settings.dailyMaxCount,
     }
 
-    const savedMediaIds = filter.preventDuplicateDownloads
-      ? new Set(
-          await deps.savedMediaIndex.resolve(
-            [...new Set(items.map((i) => i.id))],
-            deps.queryConvexMedia,
-          ),
-        )
-      : new Set<string>()
+    const savedRequestIds = new Set<string>()
+    if (filter.preventDuplicateDownloads) {
+      for (const requestId of await deps.savedMediaIndex.resolve(
+        [...new Set(items.map(mediaRequestId))],
+        deps.queryConvexMedia,
+      ))
+        savedRequestIds.add(requestId)
+    }
 
     const probeActive = filter.maxFileSizeBytes > 0 || filter.dailyMaxBytes > 0
     const running =
@@ -65,7 +66,7 @@ export function makeAdmissionGate(deps: {
     // sequentially), so nothing about the verdicts changes; only the wall-clock does.
     const sizeById = new Map<string, number | null>()
     if (probeActive) {
-      const targets = items.filter((i) => freeReason(i, filter, savedMediaIds) === null)
+      const targets = items.filter((i) => freeReason(i, filter, savedRequestIds) === null)
       let cursor = 0
       await Promise.all(
         Array.from({ length: Math.min(PROBE_CONCURRENCY, targets.length) }, async () => {
@@ -73,7 +74,7 @@ export function makeAdmissionGate(deps: {
           for (;;) {
             const target = targets[cursor++]
             if (target === undefined) return
-            sizeById.set(target.id, await deps.sizeProbe.probe(target.url))
+            sizeById.set(mediaRequestId(target), await deps.sizeProbe.probe(target.url))
           }
           // oxlint-enable no-await-in-loop
         }),
@@ -87,11 +88,12 @@ export function makeAdmissionGate(deps: {
       // The admission verdict itself is the pure `evaluateAdmission`, which re-runs
       // `freeReason` (cheap, pure, idempotent), so the free → size → budget decision
       // lives in exactly one place; the probe result is read from the parallel phase.
-      const free = freeReason(item, filter, savedMediaIds)
-      const sizeBytes = free === null && probeActive ? (sizeById.get(item.id) ?? null) : null
+      const free = freeReason(item, filter, savedRequestIds)
+      const sizeBytes =
+        free === null && probeActive ? (sizeById.get(mediaRequestId(item)) ?? null) : null
       const decision = evaluateAdmission(item, {
         settings: filter,
-        savedMediaIds,
+        savedRequestIds,
         sizeBytes,
         running,
       })

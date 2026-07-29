@@ -1,3 +1,5 @@
+import { MAX_MEDIA_DIMENSION, MAX_MEDIA_URL_LENGTH } from '../../schema/media'
+
 /**
  * Structural media-node walker shared by the (not-yet-built) Instagram and
  * Threads adapters — NOT by X. Both platforms' backends serialize a post's
@@ -30,8 +32,24 @@ export interface MetaMediaNode {
 type Obj = Record<string, unknown>
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
 
+/** A real post has few variants/carousel entries; larger hostile shapes are dropped. */
+export const MAX_MEDIA_NODES_PER_POST = 64
+const MAX_MEDIA_CANDIDATES_PER_NODE = 128
+
+const isDimension = (value: unknown): value is number | undefined =>
+  value === undefined ||
+  (typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_MEDIA_DIMENSION)
+
 const isCandidate = (v: unknown): v is MetaMediaCandidate =>
-  isObj(v) && typeof v['url'] === 'string'
+  isObj(v) &&
+  typeof v['url'] === 'string' &&
+  v['url'].length > 0 &&
+  v['url'].length <= MAX_MEDIA_URL_LENGTH &&
+  isDimension(v['width']) &&
+  isDimension(v['height'])
 
 /**
  * The largest candidate by width×height (undimensioned candidates rank as
@@ -49,8 +67,11 @@ export function pickLargestCandidate(
   return candidates.reduce((best, c) => (candidateArea(c) > candidateArea(best) ? c : best))
 }
 
-const candidatesOf = (v: unknown): MetaMediaCandidate[] =>
-  Array.isArray(v) ? v.filter(isCandidate) : []
+const candidatesOf = (v: unknown): MetaMediaCandidate[] | undefined => {
+  if (!Array.isArray(v)) return []
+  if (v.length > MAX_MEDIA_CANDIDATES_PER_NODE) return undefined
+  return v.filter(isCandidate)
+}
 
 /** Build a MetaMediaNode from a picked candidate — `width`/`height` are added
  *  only when present (exactOptionalPropertyTypes forbids an explicit
@@ -69,38 +90,48 @@ const nodeFromCandidate = (kind: 'photo' | 'video', c: MetaMediaCandidate): Meta
  * three shapes (or a malformed one), so a caller can pass anything without
  * a defensive check of its own.
  *
- * A `WeakSet` of already-descended objects guards the `carousel_media`
- * recursion against a circular reference (fails closed — returns `[]` for the
- * repeat visit — rather than a stack overflow; mirrors the identical guard on
- * `post-node.ts`'s `forEachPostNode`. Not reachable via the real JSON.parse
- * call path, but this function takes arbitrary `unknown`).
+ * An explicit stack plus output and candidate caps bounds hostile carousels.
+ * Repeated objects are skipped, so arbitrary caller input cannot recurse.
  */
-export function mediaNodesFromPost(node: unknown, visiting = new WeakSet<Obj>()): MetaMediaNode[] {
-  if (!isObj(node)) return []
-  if (visiting.has(node)) return []
-  visiting.add(node)
+export function mediaNodesFromPost(node: unknown): MetaMediaNode[] | undefined {
+  const visiting = new WeakSet<Obj>()
+  const stack: unknown[] = [node]
+  const output: MetaMediaNode[] = []
+  try {
+    while (stack.length > 0) {
+      const current = stack.pop()
+      if (!isObj(current)) continue
+      if (visiting.has(current)) continue
+      visiting.add(current)
+      const carousel = current['carousel_media']
+      if (Array.isArray(carousel) && carousel.length > 0) {
+        if (carousel.length > MAX_MEDIA_NODES_PER_POST) return undefined
+        for (let index = carousel.length - 1; index >= 0; index -= 1) stack.push(carousel[index])
+        continue
+      }
 
-  const carousel = node['carousel_media']
-  if (Array.isArray(carousel) && carousel.length > 0) {
-    return carousel.flatMap((child) => mediaNodesFromPost(child, visiting))
+      const videoVersions = candidatesOf(current['video_versions'])
+      if (videoVersions === undefined) return undefined
+      if (videoVersions.length > 0) {
+        const best = pickLargestCandidate(videoVersions)
+        /* v8 ignore next -- videoVersions.length > 0 guarantees pickLargestCandidate returns a value */
+        if (best) output.push(nodeFromCandidate('video', best))
+      } else {
+        const imageVersions2 = current['image_versions2']
+        const imageCandidates = candidatesOf(
+          isObj(imageVersions2) ? imageVersions2['candidates'] : undefined,
+        )
+        if (imageCandidates === undefined) return undefined
+        if (imageCandidates.length > 0) {
+          const best = pickLargestCandidate(imageCandidates)
+          /* v8 ignore next -- imageCandidates.length > 0 guarantees pickLargestCandidate returns a value */
+          if (best) output.push(nodeFromCandidate('photo', best))
+        }
+      }
+      if (output.length > MAX_MEDIA_NODES_PER_POST) return undefined
+    }
+  } catch {
+    return undefined
   }
-
-  const videoVersions = candidatesOf(node['video_versions'])
-  if (videoVersions.length > 0) {
-    const best = pickLargestCandidate(videoVersions)
-    /* v8 ignore next -- videoVersions.length > 0 guarantees pickLargestCandidate returns a value */
-    if (!best) return []
-    return [nodeFromCandidate('video', best)]
-  }
-
-  const imageVersions2 = node['image_versions2']
-  const imageCandidates = isObj(imageVersions2) ? candidatesOf(imageVersions2['candidates']) : []
-  if (imageCandidates.length > 0) {
-    const best = pickLargestCandidate(imageCandidates)
-    /* v8 ignore next -- imageCandidates.length > 0 guarantees pickLargestCandidate returns a value */
-    if (!best) return []
-    return [nodeFromCandidate('photo', best)]
-  }
-
-  return []
+  return output
 }

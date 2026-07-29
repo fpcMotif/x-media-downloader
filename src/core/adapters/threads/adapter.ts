@@ -7,9 +7,9 @@ import {
   extFromMetaImgUrl,
 } from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
-import { META_CDN_HOSTS } from '../meta-shared/cdn'
 import { postVideoKey, postVideoKeyByDomSlot } from '../detection-store'
 import type { MediaItem } from '../../schema'
+import { THREADS_DESCRIPTOR } from '../catalog'
 
 /** Threads' post-boundary selector — LIVE-VERIFIED 2026-07-05: zero
  *  <article>/[role=article] elements exist; the real per-post boundary is
@@ -100,16 +100,6 @@ function videoDomSlotAmongMountedSlides(wrapper: Element, track: Element): numbe
   return slot
 }
 
-/** Host-match patterns for Threads tabs — both the pre- and post-migration
- *  domains. Threads moved `threads.net` → `threads.com` in April 2025; both
- *  hosts serve the same backend behind the redirect (research-confirmed), so
- *  one adapter covers both — no per-domain branching. */
-export const THREADS_HOST_MATCH = ['*://www.threads.net/*', '*://www.threads.com/*'] as const
-
-/** Whether a URL is a www.threads.net / www.threads.com page. */
-export const isThreadsUrl = (url: string): boolean =>
-  /^https?:\/\/www\.threads\.(net|com)\//.test(url)
-
 /**
  * Whether a network response URL may carry Threads post/media data.
  *
@@ -168,11 +158,7 @@ function resolveMetaImageElement(img: HTMLImageElement): MediaItem | null {
  * parsing logic here at all.
  */
 export const threadsAdapter: PlatformAdapter = {
-  platform: 'threads',
-  hostMatch: THREADS_HOST_MATCH,
-  // Same Meta CDN family as Instagram — see meta-shared/cdn.ts's module doc.
-  cdnHosts: META_CDN_HOSTS,
-  matchesUrl: isThreadsUrl,
+  ...THREADS_DESCRIPTOR,
   // Second (`requestHeaders`) param accepted for interface conformance only,
   // unused today — a future revision may switch to header-based matching
   // (e.g. an `x-fb-friendly-name`/doc_id scheme) once a live session confirms

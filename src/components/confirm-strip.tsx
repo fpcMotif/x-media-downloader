@@ -37,7 +37,7 @@ export interface ConfirmStripProps {
   readonly kind: GuardKind
   /** Present only for the whole-list release gate — renders the typed-word
    *  `<Input>` and adds it to the confirm gate (§2.5). The word to match
-   *  against (case-insensitive, trimmed); pass `RELEASE_WORD.toLowerCase()`
+   *  against (case-insensitive, trimmed); pass the required literal in lowercase
    *  or similar from action-copy.ts. */
   readonly typedWord?: string
   readonly onConfirm: () => void

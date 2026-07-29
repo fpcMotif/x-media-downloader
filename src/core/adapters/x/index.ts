@@ -1,4 +1,3 @@
-import { TWEET_ARTICLE_SEL } from '../../clear/clearer'
 import { resolveTweetMedia, upgradePhotoUrl } from '../../resolver'
 import type { MediaItem } from '../../schema'
 import {
@@ -8,18 +7,12 @@ import {
   extFromImgUrl,
   videoPosterUrl,
   STATUS_LINK_SEL,
+  TWEET_ARTICLE_SEL,
   VIDEO_PLAYER_SEL,
 } from './dom'
 import { forEachTweetNode } from './walk'
 
 export { forEachTweetNode, findAuthor, NESTED_TWEET_KEYS, type Author } from './walk'
-
-/** Host-match patterns for X tabs — the single source of truth used by the
- *  manifest content-script globs and `browser.tabs.query`. */
-export const X_HOST_MATCH = ['*://x.com/*', '*://twitter.com/*'] as const
-
-/** Whether a URL is an x.com / twitter.com page. */
-export const isXUrl = (url: string): boolean => /https?:\/\/(x|twitter)\.com\//.test(url)
 
 /**
  * Extract MediaItems from a captured X GraphQL response by visiting every tweet

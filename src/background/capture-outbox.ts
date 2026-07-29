@@ -1,45 +1,73 @@
 /**
- * Opt-in Convex mirror for the local tweet harvest (spec §9). Best-effort and
- * fire-and-forget: the IndexedDB store (capture-db.ts) stays the source of truth,
- * so every control-plane error is swallowed. Parallels the `mirrorUploadJob` flow
- * in cloud-upload.ts and the metadata outbox in sync-outbox.ts — a durable
- * `captureOutboxItem` ledger, drained FIFO through one serialized chain to the
- * `captures:recordCaptures` mutation over the shared Convex HTTP port. The
- * settings source, ledger storage, Convex transport, and clock are injected so the
- * gate and drain are testable without IndexedDB, wxt storage, or the network.
+ * Durable, separately-consented Capture Mirror outbox. The local Capture
+ * Archive is authoritative; this module owns only accepted mirror work,
+ * retries, wake recovery, generation fencing, and the Convex mutation.
  */
+import { Effect } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import type { Settings } from '../core/schema'
 import { getSettings } from '../core/settings'
 import type { TweetRecord } from '../core/capture/record'
+import type { CaptureEpoch } from '../core/capture/epoch'
 import {
-  capLedger,
+  appendCaptureEvents,
   captureEventFromRecord,
-  claim,
-  decodeLedger,
-  enqueue,
-  readyJobs,
+  decodeCaptureOutboxResult,
+  emptyCaptureOutbox,
+  earliestCaptureAttempt,
+  markCaptureBatchDrained,
+  markCaptureBatchFailed,
+  purgeCaptureOutbox,
+  rebaseCaptureRetryDeadlines,
+  takeCaptureBatch,
+  type CaptureOutboxState,
   type SyncCaptureEvent,
 } from '../core/sync/captures'
-import { Effect } from 'effect'
 import { makeFetchServiceLive } from '../core/fetch-service'
 import { makeConvexHttpPort } from '../core/sync/convex'
 import { makeSerialQueue } from '../core/serial-queue'
-import { isSyncConfigured } from './sync-config'
+import { captureMirrorDestination } from './sync-config'
 import type { ConvexPort } from './convex-port'
+import {
+  defaultDurableWakePort,
+  DURABLE_SIDE_EFFECT_WATCHDOG_MS,
+  reconcileDurableWake,
+  type DurableWakePort,
+} from './durable-wake'
 
-/** Storage seam for the durable mirror ledger (`local:captureOutbox` by default). */
+export const CAPTURE_OUTBOX_ALARM = 'capture-outbox-drain'
+
 export interface LedgerStorage {
   get(): Promise<unknown>
   set(value: unknown): Promise<void>
 }
 
+/** Immutable consent and identity captured in the Archive's Settings turn. */
+export interface CaptureMirrorAdmission {
+  readonly _tag: 'CaptureMirrorAdmission'
+  /** Canonical deployment identity. Credentials stay in current Settings. */
+  readonly destination: string
+  readonly deviceId: string
+  readonly acceptedAt: number
+}
+
 export interface CaptureOutbox {
-  /** Mirror an accepted harvest batch to the Convex control plane. Gated strictly
-   *  on sync being configured AND `captureMirrorEnabled`; sends nothing otherwise.
-   *  Fire-and-forget — the `CaptureTweets` reply never blocks on, or fails because
-   *  of, the mirror. */
-  mirrorCaptures(records: ReadonlyArray<TweetRecord>): void
+  /** Read the durable erase epoch. Corruption stays unavailable. */
+  currentEpoch(): Promise<CaptureEpoch>
+  /**
+   * Commits accepted mirror events and reconciles their durable wake before
+   * resolving. Remote delivery is queued afterward.
+   */
+  enqueueAccepted(
+    records: ReadonlyArray<TweetRecord>,
+    admission: CaptureMirrorAdmission,
+  ): Promise<'accepted' | 'unavailable'>
+  /** Increment the durable erase generation and remove every pending event. */
+  purge(): Promise<CaptureEpoch>
+  resumeOnBoot(): void
+  resumeWhenEnabled(): void
+  onWake(): void
+  readonly captureAlarm: string
 }
 
 export function makeCaptureOutbox(
@@ -48,92 +76,172 @@ export function makeCaptureOutbox(
     ledger?: LedgerStorage
     connect?: (settings: Settings) => ConvexPort
     now?: () => number
+    generation?: () => string
+    wake?: DurableWakePort
+    reportError?: (error: unknown) => void
   } = {},
 ): CaptureOutbox {
   const readSettings = deps.getSettings ?? getSettings
   const ledger = deps.ledger ?? defaultLedger()
   const connect = deps.connect ?? defaultConnect
   const now = deps.now ?? (() => Date.now())
+  const generation = deps.generation ?? (() => crypto.randomUUID())
+  const wake = deps.wake ?? defaultDurableWakePort()
+  const reportError = deps.reportError ?? ((error: unknown) => console.error(error))
+  const queue = makeSerialQueue(reportError)
 
-  // Read-modify-writes are serialized through one chain: SW message handlers
-  // interleave, and a lost update could drop a drained event. Re-sent events are
-  // harmless — `captureId` makes the recordCaptures upsert idempotent server-side.
-  const queue = makeSerialQueue()
+  const readStrict = async (): Promise<CaptureOutboxState> => {
+    const decoded = decodeCaptureOutboxResult(await ledger.get())
+    if (decoded.status === 'corrupt') throw new Error('Capture Mirror outbox is corrupt')
+    return decoded.state
+  }
 
-  /** Drain ready capture events FIFO: send to `captures:recordCaptures` over the
-   *  shared port, then drop the drained events. Control-plane errors are swallowed
-   *  (best-effort; the local harvest remains authoritative) and stop the pass. */
-  const drain = async (settings: Settings): Promise<void> => {
-    const port = connect(settings)
-    // oxlint-disable no-await-in-loop -- FIFO: each batch depends on the previous outcome
-    for (;;) {
-      const at = now()
-      const decoded = decodeLedger(await ledger.get())
-      const batch = readyJobs(decoded, at)
-      if (batch.length === 0) return
+  const readRetryState = async (at = now()): Promise<CaptureOutboxState> => {
+    const state = await readStrict()
+    return rebaseCaptureRetryDeadlines(state, at, DURABLE_SIDE_EFFECT_WATCHDOG_MS)
+  }
+
+  const scheduleWake = async (strict = false): Promise<void> => {
+    const persisted = await readStrict()
+    const at = now()
+    const state = rebaseCaptureRetryDeadlines(persisted, at, DURABLE_SIDE_EFFECT_WATCHDOG_MS)
+    const settings = await readSettings()
+    const destination = captureMirrorDestination(settings)
+    const first = destination === undefined ? undefined : earliestCaptureAttempt(state, destination)
+    const when =
+      first === undefined ? undefined : first <= at ? at + DURABLE_SIDE_EFFECT_WATCHDOG_MS : first
+    if (state !== persisted && when !== undefined) {
+      // A shortened durable deadline must never outrun its alarm. If this MV3
+      // worker dies between writes, the earlier alarm already recovers it.
       try {
-        await port.mutation('captures:recordCaptures', {
-          captures: batch.map((e) => toWireCapture(e, settings.cloudDeviceId)),
-          secret: settings.convexSyncSecret,
-        })
-      } catch {
-        /* control-plane mirror is best-effort; the local IndexedDB harvest is the source of truth */
-        return
+        await wake.create(CAPTURE_OUTBOX_ALARM, when)
+        await ledger.set(state)
+      } catch (error) {
+        if (strict) throw error
+        reportError(error)
       }
-      let next = decodeLedger(await ledger.get())
-      for (const e of batch) next = claim(next, e.eventId, at)
-      await ledger.set(capLedger(next))
+      return
     }
-    // oxlint-enable no-await-in-loop
+    if (strict) {
+      if (when === undefined) await wake.clear(CAPTURE_OUTBOX_ALARM)
+      else await wake.create(CAPTURE_OUTBOX_ALARM, when)
+      return
+    }
+    await reconcileDurableWake(wake, CAPTURE_OUTBOX_ALARM, when, reportError)
+  }
+
+  const drain = async (): Promise<void> => {
+    try {
+      // oxlint-disable no-await-in-loop -- FIFO; each durable ack follows its mutation
+      for (;;) {
+        // Consent and destination are live. A long first mutation cannot
+        // authorize a later batch after disablement or destination rotation.
+        const settings = await readSettings()
+        const destination = captureMirrorDestination(settings)
+        if (destination === undefined) return
+        const at = now()
+        const state = await readRetryState(at)
+        const batch = takeCaptureBatch(state, destination, at)
+        if (batch.length === 0) return
+        const batchGeneration = state.generation
+        const eventIds = batch.map((item) => item.event.eventId)
+        try {
+          // No remote side effect starts without a confirmed post-crash wake.
+          await wake.create(CAPTURE_OUTBOX_ALARM, at + DURABLE_SIDE_EFFECT_WATCHDOG_MS)
+          // Wake I/O may suspend this MV3 worker. Revalidate consent and
+          // destination at the irreversible boundary; credentials stay fresh.
+          const freshSettings = await readSettings()
+          if (captureMirrorDestination(freshSettings) !== destination) return
+          const port = connect(freshSettings)
+          await port.mutation('captures:recordCaptures', {
+            captures: batch.map((item) => toWireCapture(item.event)),
+            secret: freshSettings.convexSyncSecret,
+          })
+        } catch {
+          const latest = await readStrict()
+          await ledger.set(
+            markCaptureBatchFailed(latest, batchGeneration, destination, eventIds, at),
+          )
+          return
+        }
+        const latest = await readStrict()
+        await ledger.set(markCaptureBatchDrained(latest, batchGeneration, destination, eventIds))
+      }
+      // oxlint-enable no-await-in-loop
+    } finally {
+      await scheduleWake()
+    }
+  }
+
+  const resumePending = async (): Promise<void> => {
+    await drain()
   }
 
   return {
-    mirrorCaptures(records) {
-      // Read settings and gate on the serialized chain (the contract takes no
-      // Settings arg) so the gate, enqueue, and drain are ordered against each other.
-      queue.push(async () => {
-        const settings = await readSettings()
-        if (
-          !isSyncConfigured(settings) ||
-          settings.cloudDeviceId === '' ||
-          !settings.captureMirrorEnabled ||
-          records.length === 0
+    async enqueueAccepted(records, admission) {
+      if (records.length === 0) return 'accepted'
+      const events = records.map((record) => captureEventFromRecord(record, admission.deviceId))
+      const result = await queue.run(async () => {
+        const current = await readStrict()
+        const appended = appendCaptureEvents(
+          current,
+          events,
+          admission.destination,
+          admission.acceptedAt,
         )
-          return
-        const at = now()
-        let decoded = decodeLedger(await ledger.get())
-        for (const record of records)
-          decoded = enqueue(decoded, captureEventFromRecord(record, settings.cloudDeviceId, at))
-        await ledger.set(decoded)
-        await drain(settings)
+        if (appended.status === 'full') return 'unavailable' as const
+        // A new durable row needs a future MV3 wake before it exists. This is
+        // strict: an alarm failure leaves the admitted snapshot uncommitted.
+        // If the ledger write then fails, this watchdog is merely spurious.
+        await wake.create(CAPTURE_OUTBOX_ALARM, now() + DURABLE_SIDE_EFFECT_WATCHDOG_MS)
+        await ledger.set(appended.state)
+        // Reconcile after persistence: it may shorten/rebase the watchdog or
+        // clear it if a later Settings turn withdrew this destination.
+        await scheduleWake(true)
+        return 'accepted' as const
       })
+      // Delivery or capacity recovery starts only after durable admission settles.
+      queue.push(resumePending)
+      return result
     },
+    currentEpoch: () => queue.run(async () => (await readStrict()).generation),
+    purge: () =>
+      queue.run(async () => {
+        const decoded = decodeCaptureOutboxResult(await ledger.get())
+        const current = decoded.status === 'available' ? decoded.state : emptyCaptureOutbox
+        // Explicit erase may discard corrupt raw state. A fresh opaque epoch
+        // cannot collide with work from a damaged or older generation.
+        const next = purgeCaptureOutbox(current, generation())
+        await ledger.set(next)
+        await scheduleWake()
+        return next.generation
+      }),
+    resumeOnBoot() {
+      queue.push(resumePending)
+    },
+    resumeWhenEnabled() {
+      queue.push(resumePending)
+    },
+    onWake() {
+      queue.push(resumePending)
+    },
+    captureAlarm: CAPTURE_OUTBOX_ALARM,
   }
 }
 
-/** The wire row `captures:recordCaptures` expects: the queued event re-keyed to
- *  `captureId` with `deviceId` folded in (the ledger event carries neither). */
 const toWireCapture = (
   event: SyncCaptureEvent,
-  deviceId: string,
-): Omit<SyncCaptureEvent, 'eventId'> & { captureId: string; deviceId: string } => {
-  const { eventId, ...rest } = event
-  return { captureId: eventId, deviceId, ...rest }
+): Omit<SyncCaptureEvent, 'eventId'> & { readonly captureId: string } => {
+  const { eventId, ...capture } = event
+  return { captureId: eventId, ...capture }
 }
 
-/** Default ledger: the durable `local:captureOutbox` key, capped on the reducer so
- *  a prolonged offline can't grow it without bound. */
 function defaultLedger(): LedgerStorage {
   const item = storage.defineItem<unknown>('local:captureOutbox', { fallback: null })
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
-/** Default transport: the shared Convex HTTP port over a bound fetch (an unbound
- *  fetch is rejected as an illegal invocation in the MV3 SW; see fetch.ts). */
 function defaultConnect(settings: Settings): ConvexPort {
-  // The shared Convex port is now Effect-returning (reads FetchService from R,
-  // ADR-0017). Keep this outbox's Promise seam by crossing the Effect boundary
-  // here at the airlock; the bound fetch is provided once per connect.
   const port = makeConvexHttpPort({ deploymentUrl: settings.convexUrl })
   const layer = makeFetchServiceLive(fetch)
   return {

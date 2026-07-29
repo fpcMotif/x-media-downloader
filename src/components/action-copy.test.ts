@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  RELEASE_WORD,
-  RELEASE_PAGE_CONFIRM_LABEL,
-  RELEASE_LIST_CONFIRM_LABEL,
   TURN_ON_RELEASE_LABEL,
-  releasePageConfirm,
-  releaseListConfirm,
-  releasedPageResult,
-  releasedListResult,
   turnOnReleaseConfirm,
   drainResult,
   sweepResult,
@@ -20,72 +13,23 @@ import {
   PAGE_UNREACHABLE,
   NO_ACTIVE_TAB,
   SWEEP_STALE_CONTEXT,
+  DOWNLOAD_START_FAILED,
+  INVALID_RESPONSE,
   isPersistentStatus,
 } from './action-copy'
 
-describe('RELEASE_WORD', () => {
-  it('is the exact typed-word gate literal', () => {
-    expect(RELEASE_WORD).toBe('RELEASE')
-  })
-})
-
 describe('confirm labels — never the bare word "Confirm" (design contract line 4)', () => {
-  it.each([
-    ['Release the list', RELEASE_LIST_CONFIRM_LABEL],
-    ['Release this page', RELEASE_PAGE_CONFIRM_LABEL],
-    ['Turn it on', TURN_ON_RELEASE_LABEL],
-  ])('restates the literal action: %s', (expected, actual) => {
-    expect(actual).toBe(expected)
-    expect(actual).not.toBe('Confirm')
+  it('restates the release-after-download action', () => {
+    expect(TURN_ON_RELEASE_LABEL).toBe('Turn it on')
+    expect(TURN_ON_RELEASE_LABEL).not.toBe('Confirm')
   })
 })
 
-describe('release cluster copy', () => {
-  it('releasePageConfirm matches §2.3 Row 1 armed sentence verbatim', () => {
-    expect(releasePageConfirm).toBe(
-      "Release every post on this page — un-like on Likes, un-bookmark on Bookmarks. This can't be undone.",
-    )
-  })
-
-  it('releaseListConfirm matches §2.3 Row 2 armed sentence verbatim', () => {
-    expect(releaseListConfirm).toBe(
-      "Release the whole list — scrolls the entire list and releases every post. This can affect hundreds of posts and can't be undone.",
-    )
-  })
-
+describe('release-after-download copy', () => {
   it('turnOnReleaseConfirm matches the toggle-ON gate sentence verbatim', () => {
     expect(turnOnReleaseConfirm).toBe(
       'Turn on release after download? Each saved post will also be removed from its list (un-like on Likes, un-bookmark on Bookmarks) once its media is verified saved.',
     )
-  })
-
-  it.each([
-    [0, 'Released 0 posts on this page.'],
-    [1, 'Released 1 post on this page.'],
-    [3, 'Released 3 posts on this page.'],
-  ])('releasedPageResult(%i) → %s', (n, expected) => {
-    expect(releasedPageResult(n)).toBe(expected)
-  })
-
-  it('releasedListResult: not-list reason', () => {
-    expect(releasedListResult({ reason: 'not-list-page' })).toBe(
-      'Open a Likes or Bookmarks list to release it.',
-    )
-  })
-
-  it('releasedListResult: null result treated as zero', () => {
-    expect(releasedListResult(null)).toBe('No posts to release on this list.')
-  })
-
-  it('releasedListResult: zero', () => {
-    expect(releasedListResult({ cleared: 0 })).toBe('No posts to release on this list.')
-  })
-
-  it.each([
-    [1, 'Released 1 post across the list.'],
-    [42, 'Released 42 posts across the list.'],
-  ])('releasedListResult: n=%i', (cleared, expected) => {
-    expect(releasedListResult({ cleared })).toBe(expected)
   })
 })
 
@@ -178,6 +122,8 @@ describe('isPersistentStatus (§2.6 cluster status lifecycle)', () => {
     expect(isPersistentStatus(PAGE_UNREACHABLE)).toBe(true)
     expect(isPersistentStatus(NO_ACTIVE_TAB)).toBe(true)
     expect(isPersistentStatus(SWEEP_STALE_CONTEXT)).toBe(true)
+    expect(isPersistentStatus(DOWNLOAD_START_FAILED)).toBe(true)
+    expect(isPersistentStatus(INVALID_RESPONSE)).toBe(true)
   })
 
   it('does not flag null or an ordinary result line', () => {

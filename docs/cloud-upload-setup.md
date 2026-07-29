@@ -44,7 +44,7 @@ Copy that exact URL. You'll register it with both providers below.
 Files land in a per-handle subfolder under a **"X Media Downloader"** folder in
 your Drive.
 
-> **Scope note.** This uses the full-Drive scope (a *sensitive* scope). For
+> **Scope note.** This uses the full-Drive scope (a _sensitive_ scope). For
 > personal use as a registered test user it works immediately. A **public**
 > Chrome Web Store release would require Google OAuth verification (and likely a
 > CASA security assessment). To avoid that, change `GDRIVE_OAUTH.scope` in
@@ -52,8 +52,8 @@ your Drive.
 > `https://www.googleapis.com/auth/drive.file` (non-sensitive, app-created files
 > only) — a one-line change.
 >
-> **Token note.** While the consent screen is in *Testing* status, Google refresh
-> tokens expire after **7 days** — publish the app to *Production* for long-lived
+> **Token note.** While the consent screen is in _Testing_ status, Google refresh
+> tokens expire after **7 days** — publish the app to _Production_ for long-lived
 > tokens, or just reconnect weekly.
 
 ---
@@ -72,7 +72,7 @@ your Drive.
 6. In the popup, paste it into **Dropbox → App key** and click **Connect**.
    Approve access.
 
-> **50-user cap.** A new Dropbox app is in *Development* and can link a limited
+> **50-user cap.** A new Dropbox app is in _Development_ and can link a limited
 > number of accounts until you apply for **Production** approval. Irrelevant for
 > personal use; a gate before a public release.
 
@@ -90,7 +90,7 @@ WXT_DROPBOX_APP_KEY=your_dropbox_app_key
 
 On first run the background fills any empty client-ID field from these (it never
 overrides a value you've already entered). You still click **Connect** to run the
-OAuth flow. Do **not** put any client *secret* here — none is used.
+OAuth flow. Do **not** put any client _secret_ here — none is used.
 
 ---
 
@@ -103,7 +103,7 @@ OAuth flow. Do **not** put any client *secret* here — none is used.
   256 KiB / 4 MiB-multiple chunks) so memory stays bounded for 500 MB videos.
 - Uploads are tracked in a durable local ledger with retry + exponential backoff;
   a link that 403/410s is honestly marked **skipped**, never a fake "saved".
-- If Cloud Sync (Convex) is also on, upload-job *status* is mirrored to Convex for
+- If Cloud Sync (Convex) is also on, upload-job _status_ is mirrored to Convex for
   cross-device visibility — **never the bytes**.
 - **Disconnect** clears that provider's stored tokens. Already-uploaded files are
   not removed.

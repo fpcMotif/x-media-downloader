@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { Effect, Exit, Layer, Option } from 'effect'
 import {
+  ARIA2_DECIMAL_MAX_DIGITS,
+  ARIA2_ERROR_CODE_MAX_LENGTH,
+  ARIA2_ERROR_MESSAGE_MAX_LENGTH,
+  MAX_ARIA2_RESPONSE_BYTES,
   buildAria2Options,
+  buildAria2GidOption,
   buildJsonRpcBody,
+  isAria2Gid,
   makeAria2Strategy,
   makeAria2RpcPort,
   aria2OriginPattern,
@@ -13,6 +19,14 @@ import { FetchService, FetchError } from '../fetch-service'
 import type { SaveRequest } from './strategy'
 
 const req: SaveRequest = { id: 't1', url: 'https://x/v.mp4', filename: 'alice/v.mp4' }
+const GID = '0123456789abcdef'
+const rpcSuccess = (result: unknown) => ({ jsonrpc: '2.0', id: 'xmd', result })
+const rpcError = (code: number, message: string) => ({
+  jsonrpc: '2.0',
+  id: 'xmd',
+  error: { code, message },
+})
+const jsonResponse = (body: unknown): Response => new Response(JSON.stringify(body))
 
 /** A FetchService stub that routes via `respond` (sync return or throw) and records calls. */
 const makeFetch = (respond: (url: string, init?: RequestInit) => Response) => {
@@ -43,6 +57,9 @@ const runAddUri = (
   options: Record<string, string> = {},
 ): Promise<string> => Effect.runPromise(port.addUri(urls, options).pipe(Effect.provide(layer)))
 
+const runTellStatus = (port: Aria2RpcPort, layer: Layer.Layer<FetchService>, gid = GID) =>
+  Effect.runPromise(port.tellStatus(gid).pipe(Effect.provide(layer)))
+
 describe('buildAria2Options', () => {
   it('includes dir, out, split + max-connection-per-server', () => {
     expect(buildAria2Options(req, { dir: '/downloads', split: 8 })).toEqual({
@@ -57,6 +74,18 @@ describe('buildAria2Options', () => {
     const opts = buildAria2Options(req, { dir: '', split: 4 })
     expect(opts.dir).toBeUndefined()
     expect(opts).toEqual({ out: 'alice/v.mp4', split: '4', 'max-connection-per-server': '4' })
+  })
+})
+
+describe('aria2 GID helpers', () => {
+  it('accepts exact, non-reserved 16-digit hexadecimal GIDs', () => {
+    expect(isAria2Gid(GID)).toBe(true)
+    expect(buildAria2GidOption('0123456789ABCDEF')).toEqual({ gid: GID })
+  })
+
+  it.each(['0000000000000000', '1234', 'g123456789abcdef'])('rejects invalid GIDs: %s', (gid) => {
+    expect(isAria2Gid(gid)).toBe(false)
+    expect(() => buildAria2GidOption(gid)).toThrow('aria2 gid')
   })
 })
 
@@ -101,6 +130,7 @@ describe('makeAria2Strategy', () => {
           captured = { urls, options }
           return 'gid123'
         }),
+      tellStatus: () => Effect.die(new Error('unexpected tellStatus')),
     }
     const handle = await Effect.runPromise(makeAria2Strategy(port, split8, noFetch).save(req))
     expect(handle).toEqual({ kind: 'aria2', gid: 'gid123' })
@@ -109,19 +139,37 @@ describe('makeAria2Strategy', () => {
   })
 
   it('save failure produces a Failure exit', async () => {
-    const port: Aria2RpcPort = { addUri: () => Effect.die(new Error('boom')) }
+    const port: Aria2RpcPort = {
+      addUri: () => Effect.die(new Error('boom')),
+      tellStatus: () => Effect.die(new Error('unexpected tellStatus')),
+    }
     const exit = await Effect.runPromiseExit(makeAria2Strategy(port, split8, noFetch).save(req))
+    expect(Exit.isFailure(exit)).toBe(true)
+  })
+
+  it('sends the reserved gid and rejects a different receipt', async () => {
+    const calls: Record<string, string>[] = []
+    const port: Aria2RpcPort = {
+      addUri: (_urls, options) =>
+        Effect.sync(() => {
+          calls.push(options)
+          return '0000000000000002'
+        }),
+      tellStatus: () => Effect.die(new Error('unexpected tellStatus')),
+    }
+    const exit = await Effect.runPromiseExit(
+      makeAria2Strategy(port, split8, noFetch, () => '0000000000000001').save(req),
+    )
+    expect(calls).toEqual([expect.objectContaining({ gid: '0000000000000001' })])
     expect(Exit.isFailure(exit)).toBe(true)
   })
 })
 
 describe('makeAria2RpcPort', () => {
   it('POSTs a JSON-RPC envelope and returns the gid', async () => {
-    const { layer, calls } = makeFetch(
-      () => ({ json: async () => ({ result: 'gidABC' }) }) as Response,
-    )
+    const { layer, calls } = makeFetch(() => jsonResponse(rpcSuccess(GID)))
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: 'S' })
-    expect(await runAddUri(port, layer, ['https://x/v.mp4'], { out: 'v.mp4' })).toBe('gidABC')
+    expect(await runAddUri(port, layer, ['https://x/v.mp4'], { out: 'v.mp4' })).toBe(GID)
     expect(calls[0]!.url).toBe('http://localhost:6800/jsonrpc')
     expect(calls[0]!.init?.method).toBe('POST')
     const body = JSON.parse(String(calls[0]!.init?.body))
@@ -130,29 +178,31 @@ describe('makeAria2RpcPort', () => {
   })
 
   it('fails when the JSON-RPC response carries an error', async () => {
-    const { layer } = makeFetch(
-      () => ({ json: async () => ({ error: { code: 1, message: 'unauthorized' } }) }) as Response,
-    )
+    const { layer } = makeFetch(() => jsonResponse(rpcError(1, 'unauthorized')))
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: '' })
     await expect(runAddUri(port, layer)).rejects.toThrow('unauthorized')
   })
 
-  it('fails (with the code) when an error carries no message', async () => {
-    const { layer } = makeFetch(() => ({ json: async () => ({ error: { code: 1 } }) }) as Response)
+  it('rejects an error without its required message', async () => {
+    const { layer } = makeFetch(() =>
+      jsonResponse({ jsonrpc: '2.0', id: 'xmd', error: { code: 1 } }),
+    )
     await expect(
       runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
-    ).rejects.toThrow('aria2 error 1')
+    ).rejects.toThrow('malformed')
   })
 
-  it('fails with a placeholder code when an error carries neither message nor code', async () => {
-    const { layer } = makeFetch(() => ({ json: async () => ({ error: {} }) }) as Response)
+  it('rejects an error without its required code', async () => {
+    const { layer } = makeFetch(() =>
+      jsonResponse({ jsonrpc: '2.0', id: 'xmd', error: { message: 'bad' } }),
+    )
     await expect(
       runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
-    ).rejects.toThrow('aria2 error ?')
+    ).rejects.toThrow('malformed')
   })
 
   it('fails on a malformed body with neither result nor error', async () => {
-    const { layer } = makeFetch(() => ({ json: async () => ({}) }) as Response)
+    const { layer } = makeFetch(() => jsonResponse({}))
     await expect(
       runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
     ).rejects.toThrow('malformed')
@@ -166,27 +216,18 @@ describe('makeAria2RpcPort', () => {
     await expect(runAddUri(port, layer, ['https://x/v.mp4'], {})).rejects.toThrow(/Failed to fetch/)
   })
 
-  it('maps a non-aria2 HTML 200 (json throws) to a malformed-response error', async () => {
-    const { layer } = makeFetch(
-      () =>
-        ({
-          ok: true,
-          status: 200,
-          json: async () => {
-            throw new SyntaxError('Unexpected token < in JSON at position 0')
-          },
-        }) as unknown as Response,
-    )
+  it('maps a non-aria2 HTML 200 to a malformed-response error', async () => {
+    const { layer } = makeFetch(() => new Response('<html>'))
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:8080/', secret: '' })
     await expect(runAddUri(port, layer, ['https://x/v.mp4'], {})).rejects.toThrow(/malformed/)
   })
 })
 
-const errorBody = (body: unknown) => makeFetch(() => new Response(JSON.stringify(body)))
+const errorBody = (body: unknown) => makeFetch(() => jsonResponse(body))
 
 describe('makeAria2RpcPort error mapping', () => {
   it('fails with Aria2RpcError + code on an error envelope', async () => {
-    const { layer } = errorBody({ error: { code: 1, message: 'bad uri' } })
+    const { layer } = errorBody(rpcError(1, 'bad uri'))
     await expect(
       runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
     ).rejects.toMatchObject({
@@ -197,7 +238,159 @@ describe('makeAria2RpcPort error mapping', () => {
   })
 
   it('fails with Aria2RpcError on a malformed response', async () => {
-    const { layer } = errorBody({ result: 42 })
+    const { layer } = errorBody(rpcSuccess(42))
+    await expect(
+      runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).rejects.toMatchObject({
+      _tag: 'Aria2RpcError',
+      message: 'aria2: malformed JSON-RPC response',
+    })
+  })
+
+  it.each([
+    ['missing protocol fields', { result: GID }],
+    ['wrong version', { ...rpcSuccess(GID), jsonrpc: '1.0' }],
+    ['wrong id', { ...rpcSuccess(GID), id: 'other' }],
+    ['an extra success key', { ...rpcSuccess(GID), extra: true }],
+    ['both result and error', { ...rpcSuccess(GID), error: { code: 1, message: 'bad' } }],
+    ['an extra error-envelope key', { ...rpcError(1, 'bad'), extra: true }],
+    [
+      'an extra error-object key',
+      { ...rpcError(1, 'bad'), error: { code: 1, message: 'bad', data: 'unused' } },
+    ],
+    ['an unsafe error code', rpcError(Number.MAX_SAFE_INTEGER + 1, 'bad')],
+    ['an empty error message', rpcError(1, '   ')],
+    ['an oversized error message', rpcError(1, 'x'.repeat(ARIA2_ERROR_MESSAGE_MAX_LENGTH + 1))],
+  ])('rejects %s', async (_description, body) => {
+    const { layer } = errorBody(body)
+    await expect(
+      runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).rejects.toMatchObject({
+      _tag: 'Aria2RpcError',
+      message: 'aria2: malformed JSON-RPC response',
+    })
+  })
+
+  it.each(['0000000000000000', '1234', 'g123456789abcdef'])(
+    'rejects invalid addUri GID %s',
+    async (gid) => {
+      const { layer } = errorBody(rpcSuccess(gid))
+      await expect(
+        runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+      ).rejects.toMatchObject({
+        _tag: 'Aria2RpcError',
+        message: 'aria2: malformed JSON-RPC response',
+      })
+    },
+  )
+})
+
+describe('makeAria2RpcPort tellStatus', () => {
+  const statusResult = (status: string, extra: Record<string, unknown> = {}) => ({
+    ...rpcSuccess({
+      gid: GID,
+      status,
+      completedLength: '42',
+      totalLength: '90071992547409931234567890',
+      ...extra,
+    }),
+  })
+
+  it.each([
+    ['active', {}],
+    ['waiting', {}],
+    ['paused', {}],
+    ['complete', { errorCode: '0' }],
+    ['error', { errorCode: '3', errorMessage: 'disk full' }],
+    ['removed', { errorCode: '1', errorMessage: 'removed' }],
+  ])('decodes %s without rounding decimal lengths', async (status, extra) => {
+    const { layer } = errorBody(statusResult(status, extra))
+    await expect(
+      runTellStatus(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).resolves.toEqual({
+      gid: GID,
+      status,
+      completedLength: '42',
+      totalLength: '90071992547409931234567890',
+      ...extra,
+    })
+  })
+
+  it('sends the token and only the six requested status keys', async () => {
+    const { layer, calls } = errorBody(statusResult('active'))
+    await runTellStatus(makeAria2RpcPort({ rpcUrl: 'http://x', secret: 'S' }), layer)
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      jsonrpc: '2.0',
+      id: 'xmd',
+      method: 'aria2.tellStatus',
+      params: [
+        'token:S',
+        GID,
+        ['gid', 'status', 'completedLength', 'totalLength', 'errorCode', 'errorMessage'],
+      ],
+    })
+  })
+
+  it('omits auth when no secret is configured', async () => {
+    const { layer, calls } = errorBody(statusResult('active'))
+    await runTellStatus(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer)
+    expect(JSON.parse(String(calls[0]!.init?.body)).params).toEqual([
+      GID,
+      ['gid', 'status', 'completedLength', 'totalLength', 'errorCode', 'errorMessage'],
+    ])
+  })
+
+  it.each([
+    ['a mismatched gid', statusResult('active', { gid: 'other' })],
+    ['an unknown status', statusResult('seeding')],
+    ['a leading-zero length', statusResult('active', { completedLength: '01' })],
+    ['a signed length', statusResult('active', { totalLength: '+1' })],
+    [
+      'an oversized decimal length',
+      statusResult('active', { totalLength: '1'.repeat(ARIA2_DECIMAL_MAX_DIGITS + 1) }),
+    ],
+    ['a numeric length', statusResult('active', { completedLength: 42 })],
+    [
+      'an unsafe numeric length',
+      statusResult('active', { totalLength: Number.MAX_SAFE_INTEGER + 1 }),
+    ],
+    ['error data for an active transfer', statusResult('active', { errorCode: '3' })],
+    ['a non-string error field', statusResult('error', { errorCode: 3 })],
+    [
+      'an oversized error code',
+      statusResult('error', { errorCode: '1'.repeat(ARIA2_ERROR_CODE_MAX_LENGTH + 1) }),
+    ],
+    [
+      'an oversized error message',
+      statusResult('error', { errorMessage: 'x'.repeat(ARIA2_ERROR_MESSAGE_MAX_LENGTH + 1) }),
+    ],
+    ['an unexpected result key', statusResult('complete', { files: [] })],
+  ])('rejects %s', async (_description, body) => {
+    const { layer } = errorBody(body)
+    await expect(
+      runTellStatus(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
+    ).rejects.toMatchObject({
+      _tag: 'Aria2RpcError',
+      message: 'aria2: malformed JSON-RPC response',
+    })
+  })
+
+  it('maps JSON-RPC and network errors to Aria2RpcError', async () => {
+    const rpc = errorBody(rpcError(1, 'unauthorized'))
+    await expect(
+      runTellStatus(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), rpc.layer),
+    ).rejects.toMatchObject({ _tag: 'Aria2RpcError', code: 1, message: 'unauthorized' })
+
+    const network = makeFetch(() => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(
+      runTellStatus(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), network.layer),
+    ).rejects.toThrow('Failed to fetch')
+  })
+
+  it('rejects an oversized JSON-RPC response before envelope decode', async () => {
+    const { layer } = makeFetch(() => new Response('x'.repeat(MAX_ARIA2_RESPONSE_BYTES + 1)))
     await expect(
       runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
     ).rejects.toMatchObject({
@@ -215,14 +408,12 @@ describe('real-world: aria2 end-to-end with a twimg video', () => {
   }
 
   it('hands the full CDN url (query intact) + nested out path to the daemon and yields the gid', async () => {
-    const { layer, calls } = makeFetch(
-      () => ({ json: async () => ({ result: 'GID9f3a' }) }) as Response,
-    )
+    const { layer, calls } = makeFetch(() => jsonResponse(rpcSuccess('AABBCCDDEEFF0011')))
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: 'sek' })
     const handle = await Effect.runPromise(
       makeAria2Strategy(port, { split: 16, dir: '/Users/alice/Downloads/x' }, layer).save(videoReq),
     )
-    expect(handle).toEqual({ kind: 'aria2', gid: 'GID9f3a' })
+    expect(handle).toEqual({ kind: 'aria2', gid: 'aabbccddeeff0011' })
     expect(calls[0]!.url).toBe('http://localhost:6800/jsonrpc')
     const body = JSON.parse(String(calls[0]!.init?.body))
     expect(body.params).toEqual([

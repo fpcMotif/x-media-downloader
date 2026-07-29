@@ -1,53 +1,54 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { Effect } from 'effect'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
-import {
-  SettingsService,
-  SettingsServiceLive,
-  getSettings,
-  setSettings,
-  watchSettings,
-} from './index'
-
-const run = <A, E>(eff: Effect.Effect<A, E, SettingsService>) =>
-  Effect.runPromise(Effect.provide(eff, SettingsServiceLive))
-
-const getViaService = Effect.gen(function* () {
-  const svc = yield* SettingsService
-  return yield* svc.get
-})
+import { getSettings, watchSettings } from './index'
 
 beforeEach(() => {
   fakeBrowser.reset()
 })
 
-describe('SettingsService', () => {
+describe('Settings projection', () => {
   it('returns defaults on first run', async () => {
-    const s = await run(getViaService)
+    const s = await getSettings()
     expect(s.downloadConcurrency).toBe(3)
-    expect(s.authFallbackEnabled).toBe(false)
     expect(s.downloadStrategy).toBe('direct')
   })
 
-  it('persists and reloads a changed setting', async () => {
-    const updated = await run(
-      Effect.gen(function* () {
-        const svc = yield* SettingsService
-        yield* svc.set({ filenameTemplate: '{tweetId}.{ext}' })
-        return yield* svc.get
-      }),
-    )
+  it('reloads a changed setting', async () => {
+    await fakeBrowser.storage.local.set({ settings: { filenameTemplate: '{tweetId}.{ext}' } })
+    const updated = await getSettings()
     expect(updated.filenameTemplate).toBe('{tweetId}.{ext}')
   })
 
   it('falls back to defaults when stored data is corrupt', async () => {
     await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 'not-a-number' } })
-    const s = await run(getViaService)
+    const s = await getSettings()
     expect(s.downloadConcurrency).toBe(3)
   })
 
+  it('projects recoverable Settings through safe authority choices', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: {
+        downloadConcurrency: 'not-a-number',
+        downloadStrategy: 'aria2',
+        cloudSyncEnabled: true,
+        cloudUploadEnabled: true,
+        captureMirrorEnabled: true,
+        clearOnSave: true,
+      },
+    })
+    const settings = await getSettings()
+
+    expect(settings).toMatchObject({
+      downloadStrategy: 'direct',
+      cloudSyncEnabled: false,
+      cloudUploadEnabled: false,
+      captureMirrorEnabled: false,
+      clearOnSave: false,
+    })
+  })
+
   it('defaults cloud sync off — local-only posture (ADR-0009)', async () => {
-    const s = await run(getViaService)
+    const s = await getSettings()
     expect(s.cloudSyncEnabled).toBe(false)
     expect(s.convexUrl).toBe('')
     expect(s.convexSyncSecret).toBe('')
@@ -56,17 +57,17 @@ describe('SettingsService', () => {
 
   it('recovers downloadBadgeEnabled to its default when the stored value is corrupt', async () => {
     await fakeBrowser.storage.local.set({ settings: { downloadBadgeEnabled: 'nope' } })
-    const s = await run(getViaService)
+    const s = await getSettings()
     expect(s.downloadBadgeEnabled).toBe(true)
   })
 
   it('defaults download history off — opt-in posture', async () => {
-    const s = await run(getViaService)
+    const s = await getSettings()
     expect(s.downloadHistoryEnabled).toBe(false)
   })
 
   it('defaults cross-list clearing off, per-scope clears on — page-scoped posture', async () => {
-    const s = await run(getViaService)
+    const s = await getSettings()
     // "Clear from every list" is the aggressive opt-in: a clear stays page-scoped
     // until the user turns it on. The per-scope un-bookmark/un-like default on so
     // they take effect the moment the (off-by-default) master clearOnSave is enabled.
@@ -76,20 +77,22 @@ describe('SettingsService', () => {
     expect(s.autoNotInterestedOnSave).toBe(true)
   })
 
-  it('getSettings promise wrapper reads through the live service', async () => {
-    await setSettings({ filenameTemplate: '{handle}/{tweetId}.{ext}' })
+  it('getSettings reads the current durable value', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: { filenameTemplate: '{handle}/{tweetId}.{ext}' },
+    })
     const s = await getSettings()
     expect(s.filenameTemplate).toBe('{handle}/{tweetId}.{ext}')
   })
 
   it('recovers downloadHistoryEnabled to its default when the stored value is corrupt', async () => {
     await fakeBrowser.storage.local.set({ settings: { downloadHistoryEnabled: 'nope' } })
-    const s = await run(getViaService)
+    const s = await getSettings()
     expect(s.downloadHistoryEnabled).toBe(false)
   })
 
   it('defaults the admission-gate filter keys off/zero — opt-in posture', async () => {
-    const s = await run(getViaService)
+    const s = await getSettings()
     expect(s.preventDuplicateDownloads).toBe(false)
     expect(s.skipTypes).toEqual([])
     expect(s.minWidth).toBe(0)
@@ -101,7 +104,7 @@ describe('SettingsService', () => {
 
   it('recovers preventDuplicateDownloads to its default when the stored value is corrupt', async () => {
     await fakeBrowser.storage.local.set({ settings: { preventDuplicateDownloads: 'nope' } })
-    const s = await run(getViaService)
+    const s = await getSettings()
     expect(s.preventDuplicateDownloads).toBe(false)
   })
 })
@@ -110,7 +113,7 @@ describe('watchSettings', () => {
   it('delivers downloadHistoryEnabled changes', async () => {
     const seen: boolean[] = []
     const unwatch = watchSettings((s) => seen.push(s.downloadHistoryEnabled))
-    await setSettings({ downloadHistoryEnabled: true })
+    await fakeBrowser.storage.local.set({ settings: { downloadHistoryEnabled: true } })
     expect(seen).toEqual([true])
     unwatch()
   })
@@ -118,10 +121,10 @@ describe('watchSettings', () => {
   it('delivers decoded settings on storage writes and stops after unwatch', async () => {
     const seen: boolean[] = []
     const unwatch = watchSettings((s) => seen.push(s.quickGrabEnabled))
-    await setSettings({ quickGrabEnabled: false })
+    await fakeBrowser.storage.local.set({ settings: { quickGrabEnabled: false } })
     expect(seen).toEqual([false])
     unwatch()
-    await setSettings({ quickGrabEnabled: true })
+    await fakeBrowser.storage.local.set({ settings: { quickGrabEnabled: true } })
     expect(seen).toEqual([false])
   })
 
@@ -134,7 +137,7 @@ describe('watchSettings', () => {
   })
 
   it('decodes a removed stored item back to defaults in the watch callback', async () => {
-    await setSettings({ filenameTemplate: '{tweetId}.{ext}' })
+    await fakeBrowser.storage.local.set({ settings: { filenameTemplate: '{tweetId}.{ext}' } })
     const seen: string[] = []
     const unwatch = watchSettings((s) => seen.push(s.filenameTemplate))
     // Removing the item fires the watch with the defineItem fallback ({}) → defaults.

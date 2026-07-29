@@ -13,7 +13,11 @@ export const DOWNLOAD_MODES = [
     label: 'Direct',
     hint: 'Chrome downloads the file directly — the safest default.',
   },
-  { value: 'fetched', label: 'Fetched', hint: 'Fetches and verifies each file before saving.' },
+  {
+    value: 'fetched',
+    label: 'Fetched',
+    hint: 'Checks the HTTP response type, then streams files up to 15 MiB before saving.',
+  },
   { value: 'aria2', label: 'aria2', hint: 'Hands the download to a local aria2 JSON-RPC engine.' },
 ] as const satisfies ReadonlyArray<{
   readonly value: Settings['downloadStrategy']

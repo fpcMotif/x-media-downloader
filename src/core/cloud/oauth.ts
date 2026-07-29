@@ -1,5 +1,10 @@
 import { Data, Effect } from 'effect'
 import { FetchService } from '../fetch-service'
+import { boundedDiagnosticText, MAX_DIAGNOSTIC_TEXT_LENGTH } from '../diagnostic-text'
+import { MAX_CLOUD_ACCOUNT_LENGTH, MAX_OAUTH_TOKEN_LENGTH } from '../schema/settings'
+import { controlRecord, controlSafeInteger, optionalControlString } from './control-json'
+import { readControlJson } from './http'
+import { cloudDeadline, cloudTime } from './time'
 import type { OAuthConfig, OAuthTokens } from './types'
 
 /**
@@ -18,6 +23,7 @@ export class OAuthError extends Data.TaggedError('OAuthError')<{
     | 'no-code'
     | 'no-token'
     | 'non-json'
+    | 'invalid-token-response'
     | 'token-endpoint'
     | 'no-offline-grant'
 }> {}
@@ -103,6 +109,51 @@ interface TokenResponse {
   readonly error_description?: string
 }
 
+const decodeTokenResponse = (value: unknown): TokenResponse => {
+  const record = controlRecord(value, 'token response')
+  const accessToken = optionalControlString(
+    record.access_token,
+    'token response access_token',
+    MAX_OAUTH_TOKEN_LENGTH,
+  )
+  const refreshToken = optionalControlString(
+    record.refresh_token,
+    'token response refresh_token',
+    MAX_OAUTH_TOKEN_LENGTH,
+  )
+  const accountId = optionalControlString(
+    record.account_id,
+    'token response account_id',
+    MAX_CLOUD_ACCOUNT_LENGTH,
+  )
+  const idToken = optionalControlString(
+    record.id_token,
+    'token response id_token',
+    MAX_OAUTH_TOKEN_LENGTH,
+  )
+  const error = optionalControlString(
+    record.error,
+    'token response error',
+    MAX_DIAGNOSTIC_TEXT_LENGTH,
+  )
+  const errorDescription = optionalControlString(
+    record.error_description,
+    'token response error_description',
+    MAX_DIAGNOSTIC_TEXT_LENGTH,
+  )
+  return {
+    ...(accessToken === undefined ? {} : { access_token: accessToken }),
+    ...(refreshToken === undefined ? {} : { refresh_token: refreshToken }),
+    ...(record.expires_in === undefined
+      ? {}
+      : { expires_in: controlSafeInteger(record.expires_in, 'token response expires_in') }),
+    ...(accountId === undefined ? {} : { account_id: accountId }),
+    ...(idToken === undefined ? {} : { id_token: idToken }),
+    ...(error === undefined ? {} : { error }),
+    ...(errorDescription === undefined ? {} : { error_description: errorDescription }),
+  }
+}
+
 /** Best-effort `email` claim from a Google id_token (JWT). Never throws. */
 function emailFromIdToken(idToken: string | undefined): string | undefined {
   if (idToken === undefined) return undefined
@@ -110,8 +161,8 @@ function emailFromIdToken(idToken: string | undefined): string | undefined {
     const payload = idToken.split('.')[1]
     if (payload === undefined) return undefined
     const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
-    const claims = JSON.parse(json) as { email?: string }
-    return typeof claims.email === 'string' ? claims.email : undefined
+    const claims = controlRecord(JSON.parse(json), 'id_token claims')
+    return optionalControlString(claims.email, 'id_token email', MAX_CLOUD_ACCOUNT_LENGTH)
   } catch {
     return undefined
   }
@@ -122,6 +173,26 @@ const requireAccessToken = (json: TokenResponse, ctx: string): Effect.Effect<str
   json.access_token === undefined || json.access_token === ''
     ? new OAuthError({ message: `${ctx} had no access_token`, context: 'no-token' })
     : Effect.succeed(json.access_token)
+
+const tokenExpiry = (
+  now: number,
+  expiresIn: number | undefined,
+): Effect.Effect<number, OAuthError> => {
+  const seconds = expiresIn ?? 3600
+  if (seconds > Math.floor(Number.MAX_SAFE_INTEGER / 1000))
+    return new OAuthError({
+      message: 'token response expires_in is out of range',
+      context: 'invalid-token-response',
+    })
+  try {
+    return Effect.succeed(cloudDeadline(cloudTime(now, 'token issue time'), seconds * 1000))
+  } catch {
+    return new OAuthError({
+      message: 'token response expiry is invalid',
+      context: 'invalid-token-response',
+    })
+  }
+}
 
 /** POST a token grant and validate the envelope (ADR-0017: reads `FetchService`). */
 const postToken = (
@@ -143,16 +214,21 @@ const postToken = (
         ),
       )
     const json = yield* Effect.tryPromise({
-      try: () => res.json() as Promise<TokenResponse>,
-      catch: () =>
+      try: async () => decodeTokenResponse(await readControlJson(res)),
+      catch: (error) =>
         new OAuthError({
-          message: `token endpoint returned non-JSON (HTTP ${res.status})`,
-          context: 'non-json',
+          message:
+            error instanceof SyntaxError
+              ? `token endpoint returned non-JSON (HTTP ${res.status})`
+              : `token endpoint returned invalid JSON (HTTP ${res.status})`,
+          context: error instanceof SyntaxError ? 'non-json' : 'invalid-token-response',
         }),
     })
     if (!res.ok || json.error !== undefined)
       return yield* new OAuthError({
-        message: json.error_description ?? json.error ?? `token endpoint HTTP ${res.status}`,
+        message: boundedDiagnosticText(
+          json.error_description ?? json.error ?? `token endpoint HTTP ${res.status}`,
+        ),
         context: 'token-endpoint',
       })
     return json
@@ -184,10 +260,11 @@ export function exchangeCode(input: {
         context: 'no-offline-grant',
       })
     const account = emailFromIdToken(json.id_token) ?? json.account_id
+    const expiresAt = yield* tokenExpiry(input.now, json.expires_in)
     return {
       accessToken,
       refreshToken: json.refresh_token,
-      expiresAt: input.now + (json.expires_in ?? 3600) * 1000,
+      expiresAt,
       ...(account !== undefined ? { account } : {}),
     }
   })
@@ -211,13 +288,20 @@ export function refreshAccessToken(input: {
       grant_type: 'refresh_token',
     })
     const accessToken = yield* requireAccessToken(json, 'refresh response')
-    return { accessToken, expiresAt: input.now + (json.expires_in ?? 3600) * 1000 }
+    const expiresAt = yield* tokenExpiry(input.now, json.expires_in)
+    return { accessToken, expiresAt }
   })
 }
 
 /** Whether a token expires within `skewMs` of `now` (refresh proactively). */
 export const isTokenExpired = (expiresAt: number, now: number, skewMs = 60_000): boolean =>
-  now >= expiresAt - skewMs
+  !Number.isSafeInteger(expiresAt) ||
+  expiresAt < 0 ||
+  !Number.isSafeInteger(now) ||
+  now < 0 ||
+  !Number.isSafeInteger(skewMs) ||
+  skewMs < 0 ||
+  now >= Math.max(0, expiresAt - skewMs)
 
 // Provider grant revocation on disconnect moved to the Cloud Provider record as a
 // data `RevokeRecipe` + `revokeViaRecipe` executor (core/cloud/provider.ts).

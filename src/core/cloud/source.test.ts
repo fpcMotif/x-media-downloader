@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Effect, Layer } from 'effect'
 import { parseSource, type ParsedSource } from './source'
 import { SourceFetch } from './source-fetch'
@@ -12,7 +12,7 @@ const input = (contentType = 'image/jpeg'): UploadInput => ({
 
 const sourceResponse = (
   bytes: Uint8Array<ArrayBuffer>,
-  opts: { status?: number; contentLength?: number | null; contentType?: string } = {},
+  opts: { status?: number; contentLength?: number | string | null; contentType?: string } = {},
 ): Response => {
   const headers: Record<string, string> = {}
   if (opts.contentType !== undefined) headers['content-type'] = opts.contentType
@@ -22,6 +22,24 @@ const sourceResponse = (
     status: opts.status ?? 200,
     headers,
   })
+}
+
+const liveResponse = (
+  status: number,
+  headers: HeadersInit = {},
+  cancelImpl: () => Promise<void> = async () => {},
+): { readonly response: Response; readonly cancel: ReturnType<typeof vi.fn> } => {
+  const cancel = vi.fn<() => Promise<void>>(cancelImpl)
+  const body = { cancel } as unknown as ReadableStream<Uint8Array>
+  return {
+    response: {
+      ok: status >= 200 && status < 300,
+      status,
+      body,
+      headers: new Headers(headers),
+    } as Response,
+    cancel,
+  }
 }
 
 const sourceLayer = (fetch: () => Effect.Effect<Response, FetchError>): Layer.Layer<SourceFetch> =>
@@ -65,12 +83,55 @@ describe('parseSource', () => {
     expect(out).toMatchObject({ ok: false, outcome: { kind: 'failure' } })
   })
 
+  it.each([
+    { status: 403, kind: 'sourceGone' },
+    { status: 404, kind: 'sourceGone' },
+    { status: 410, kind: 'sourceGone' },
+    { status: 500, kind: 'failure' },
+  ] as const)(
+    'cancels a live $status error body before returning $kind',
+    async ({ status, kind }) => {
+      const live = liveResponse(status)
+      const out = await run(
+        sourceLayer(() => Effect.succeed(live.response)),
+        input(),
+      )
+
+      expect(out).toMatchObject({ ok: false, outcome: { kind } })
+      expect(live.cancel).toHaveBeenCalledOnce()
+    },
+  )
+
   it('maps a declared zero-length source to an empty failure', async () => {
     const out = await run(
       sourceLayer(() => Effect.succeed(sourceResponse(new Uint8Array(0), { contentLength: 0 }))),
       input(),
     )
     expect(out).toMatchObject({ ok: false, outcome: { kind: 'failure', reason: 'empty source' } })
+  })
+
+  it('cancels actual bytes when Content-Length lies that the source is empty', async () => {
+    const live = liveResponse(200, { 'content-length': '0' })
+    const out = await run(
+      sourceLayer(() => Effect.succeed(live.response)),
+      input(),
+    )
+
+    expect(out).toMatchObject({ ok: false, outcome: { kind: 'failure', reason: 'empty source' } })
+    expect(live.cancel).toHaveBeenCalledOnce()
+  })
+
+  it('does not let body-cancel failure replace the source outcome', async () => {
+    const live = liveResponse(500, {}, async () => {
+      throw new Error('cancel failed')
+    })
+
+    await expect(
+      run(
+        sourceLayer(() => Effect.succeed(live.response)),
+        input(),
+      ),
+    ).resolves.toMatchObject({ ok: false, outcome: { kind: 'failure', reason: 'source HTTP 500' } })
   })
 
   it('returns body + parsed size + response content-type on a healthy source', async () => {
@@ -104,5 +165,38 @@ describe('parseSource', () => {
       input(),
     )
     expect(ok(out).size).toBeNull()
+  })
+
+  it.each(['-1', '1.5', '1e3', 'Infinity', '9007199254740992'])(
+    'treats hostile Content-Length %s as unknown',
+    async (contentLength) => {
+      const out = await run(
+        sourceLayer(() => Effect.succeed(sourceResponse(new Uint8Array(1), { contentLength }))),
+        input(),
+      )
+      expect(ok(out).size).toBeNull()
+    },
+  )
+
+  it('accepts only safe digit-only Content-Length values', async () => {
+    const padded = await run(
+      sourceLayer(() =>
+        Effect.succeed(sourceResponse(new Uint8Array(1), { contentLength: '0008' })),
+      ),
+      input(),
+    )
+    const maximum = await run(
+      sourceLayer(() =>
+        Effect.succeed(
+          sourceResponse(new Uint8Array(1), {
+            contentLength: String(Number.MAX_SAFE_INTEGER),
+          }),
+        ),
+      ),
+      input(),
+    )
+
+    expect(ok(padded).size).toBe(8)
+    expect(ok(maximum).size).toBe(Number.MAX_SAFE_INTEGER)
   })
 })

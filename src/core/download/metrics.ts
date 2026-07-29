@@ -177,6 +177,7 @@ export function snapshot(state: MetricsState, now: number): MetricsSnapshot {
     bps > 0 && bytesTotal > 0 && bytesTotal > bytesReceived
       ? (bytesTotal - bytesReceived) / bps
       : undefined
+  const elapsed = now - state.startedAt
   return {
     total: state.total,
     completed: state.completed,
@@ -187,7 +188,9 @@ export function snapshot(state: MetricsState, now: number): MetricsSnapshot {
     bytesReceived,
     bytesTotal,
     throughputBps: bps,
-    elapsedMs: now - state.startedAt,
+    elapsedMs: Number.isFinite(elapsed)
+      ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(elapsed)))
+      : 0,
     ...(eta !== undefined ? { etaSeconds: eta } : {}),
   }
 }

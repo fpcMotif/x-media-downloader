@@ -1,6 +1,20 @@
 import { describe, it, expect } from 'vitest'
 import { Option } from 'effect'
+import {
+  MAX_MEDIA_AUTHOR_LENGTH,
+  MAX_MEDIA_EXTENSION_LENGTH,
+  MAX_MEDIA_POST_ID_LENGTH,
+  MAX_MEDIA_URL_LENGTH,
+} from '../schema/media'
+import { MAX_MEDIA_ID_LENGTH, MAX_X_MEDIA_PER_SWEEP_POST } from '../wire/limits'
 import { upgradePhotoUrl, pickVideoVariant, resolveTweetMedia } from './index'
+
+const photoFromUrl = (url: string) =>
+  resolveTweetMedia({
+    tweetId: '1',
+    handle: 'alice',
+    media: [{ type: 'photo', media_url_https: url }],
+  })
 
 describe('upgradePhotoUrl', () => {
   it('upgrades name=small to name=orig', () => {
@@ -167,6 +181,56 @@ describe('resolveTweetMedia', () => {
     } as const
     const items = resolveTweetMedia({ tweetId: '1', handle: 'bob', media: [photo, photo] })
     expect(items).toHaveLength(1)
+  })
+
+  it('drops URL-derived ids and extensions outside the MediaItem contract', () => {
+    expect(
+      photoFromUrl(`https://pbs.twimg.com/media/${'i'.repeat(MAX_MEDIA_ID_LENGTH + 1)}.jpg`),
+    ).toEqual([])
+    expect(
+      photoFromUrl(
+        `https://pbs.twimg.com/media/photo.${'x'.repeat(MAX_MEDIA_EXTENSION_LENGTH + 1)}`,
+      ),
+    ).toEqual([])
+  })
+
+  it('drops oversize post metadata and preserves a bounded photo when upgrade would overflow', () => {
+    const rawPrefix = 'https://pbs.twimg.com/media/photo.jpg?padding='
+    const rawUrl = `${rawPrefix}${'x'.repeat(MAX_MEDIA_URL_LENGTH - rawPrefix.length)}`
+    expect(
+      resolveTweetMedia({
+        tweetId: 't'.repeat(MAX_MEDIA_POST_ID_LENGTH + 1),
+        handle: 'alice',
+        media: [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/media/photo.jpg' }],
+      }),
+    ).toEqual([])
+    expect(
+      resolveTweetMedia({
+        tweetId: '1',
+        handle: 'a'.repeat(MAX_MEDIA_AUTHOR_LENGTH + 1),
+        media: [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/media/photo.jpg' }],
+      }),
+    ).toEqual([])
+    expect(
+      resolveTweetMedia({
+        tweetId: '1',
+        handle: 'alice',
+        media: [{ type: 'photo', media_url_https: rawUrl }],
+      })[0],
+    ).toMatchObject({ url: rawUrl, previewUrl: rawUrl })
+  })
+
+  it('caps direct resolver output at X’s four-media post contract', () => {
+    const items = resolveTweetMedia({
+      tweetId: '1',
+      handle: 'alice',
+      media: Array.from({ length: MAX_X_MEDIA_PER_SWEEP_POST + 1 }, (_, index) => ({
+        type: 'photo' as const,
+        media_url_https: `https://pbs.twimg.com/media/${index}.jpg`,
+      })),
+    })
+    expect(items.map((item) => item.id)).toEqual(['0', '1', '2', '3'])
+    expect(items.map((item) => item.index)).toEqual([0, 1, 2, 3])
   })
 })
 

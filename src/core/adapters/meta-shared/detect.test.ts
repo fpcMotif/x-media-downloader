@@ -152,6 +152,26 @@ describe('detectMediaItems', () => {
     expect(detectMediaItems({ hello: 'world' }, 'instagram')).toEqual([])
   })
 
+  it('drops all derived media when one hostile post exhausts its media budget', () => {
+    const json = {
+      items: [
+        {
+          pk: 'safe',
+          code: 'SAFE',
+          user: { username: 'alice' },
+          image_versions2: { candidates: [{ url: 'https://cdn.example/safe.jpg' }] },
+        },
+        {
+          pk: 'hostile',
+          code: 'HOSTILE',
+          user: { username: 'mallory' },
+          carousel_media: Array.from({ length: 65 }, () => ({})),
+        },
+      ],
+    }
+    expect(detectMediaItems(json, 'instagram')).toEqual([])
+  })
+
   it('falls back to jpg/mp4 defaults and derives an id from a dot-less, query-less url', () => {
     const json = {
       code: 'A',

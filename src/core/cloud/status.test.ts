@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { classifyUploadError, describeUploadSummary } from './status'
 import type { UploadSummary } from './upload-job'
+import { MAX_DIAGNOSTIC_TEXT_LENGTH } from '../diagnostic-text'
 
 const summary = (over: Partial<UploadSummary> = {}): UploadSummary => ({
   pending: 0,
@@ -40,6 +41,12 @@ describe('classifyUploadError', () => {
 
   it('passes through an unrecognized reason verbatim', () => {
     expect(classifyUploadError('something weird happened')).toBe('something weird happened')
+  })
+
+  it('bounds an unrecognized provider reason before it reaches the popup', () => {
+    expect(classifyUploadError('x'.repeat(MAX_DIAGNOSTIC_TEXT_LENGTH + 1))).toHaveLength(
+      MAX_DIAGNOSTIC_TEXT_LENGTH,
+    )
   })
 
   it('prefers the auth class over the storage class when both could match', () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { pickLargestCandidate, mediaNodesFromPost } from './media-node'
+import { MAX_MEDIA_DIMENSION, MAX_MEDIA_URL_LENGTH } from '../../schema/media'
+import { MAX_MEDIA_NODES_PER_POST, pickLargestCandidate, mediaNodesFromPost } from './media-node'
 
 describe('pickLargestCandidate', () => {
   it('returns undefined for an empty array', () => {
@@ -123,8 +124,9 @@ describe('mediaNodesFromPost', () => {
     const node = { image_versions2: { candidates: [{ url: 'no-dims.jpg' }] } }
     const result = mediaNodesFromPost(node)
     expect(result).toEqual([{ kind: 'photo', url: 'no-dims.jpg' }])
-    expect('width' in result[0]!).toBe(false)
-    expect('height' in result[0]!).toBe(false)
+    const first = result?.[0]
+    expect('width' in first!).toBe(false)
+    expect('height' in first!).toBe(false)
   })
 
   it('filters out malformed candidate entries (missing url / non-object)', () => {
@@ -143,10 +145,49 @@ describe('mediaNodesFromPost', () => {
     ])
   })
 
+  it.each([
+    ['string width', { width: '100', height: 100 }],
+    ['NaN width', { width: Number.NaN, height: 100 }],
+    ['infinite height', { width: 100, height: Number.POSITIVE_INFINITY }],
+    ['negative width', { width: -1, height: 100 }],
+    ['fractional height', { width: 100, height: 1.5 }],
+    ['oversize width', { width: MAX_MEDIA_DIMENSION + 1, height: 100 }],
+  ])('rejects a candidate with %s', (_label, dimensions) => {
+    expect(
+      mediaNodesFromPost({
+        image_versions2: {
+          candidates: [{ url: 'https://cdn.example/malformed.jpg', ...dimensions }],
+        },
+      }),
+    ).toEqual([])
+  })
+
+  it('rejects an empty or overlong candidate URL', () => {
+    expect(
+      mediaNodesFromPost({
+        image_versions2: {
+          candidates: [
+            { url: '' },
+            { url: `https://cdn.example/${'x'.repeat(MAX_MEDIA_URL_LENGTH)}` },
+          ],
+        },
+      }),
+    ).toEqual([])
+  })
+
   it('fails closed (does not throw) on a circular carousel_media reference', () => {
     const node: Record<string, unknown> = { carousel_media: [] }
     ;(node['carousel_media'] as unknown[]).push(node)
     expect(() => mediaNodesFromPost(node)).not.toThrow()
     expect(mediaNodesFromPost(node)).toEqual([])
+  })
+
+  it('fails closed when a hostile carousel exceeds its output budget', () => {
+    const node = {
+      carousel_media: Array.from({ length: MAX_MEDIA_NODES_PER_POST + 1 }, () => ({
+        image_versions2: { candidates: [{ url: 'p.jpg' }] },
+      })),
+    }
+    expect(mediaNodesFromPost(node)).toBeUndefined()
   })
 })

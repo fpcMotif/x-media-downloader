@@ -1,4 +1,6 @@
 import type { DownloadRecord } from '../../core/history/record'
+import { decodeHistoryResponse } from '../../core/history/store'
+import { expectReply, safeSend } from '../../core/messaging'
 import { plural } from '@/components/capture-copy'
 
 /** Group download records by author handle, preserving newest-first order. */
@@ -48,10 +50,34 @@ export function historyEmptyLabel(enabled: boolean, count: number): string {
 export const confirmEraseHistoryCopy = (count: number): string =>
   `Erase all ${plural(count, 'download record')}? This cannot be undone. Files on disk are not touched.`
 
-/** Ask the background for the durable download history; never throws (returns [] on failure). */
-export async function fetchHistory(): Promise<ReadonlyArray<DownloadRecord>> {
-  return browser.runtime
-    .sendMessage({ _tag: 'HistoryRequest' })
-    .then((r) => (r as { records?: ReadonlyArray<DownloadRecord> } | null)?.records ?? [])
-    .catch(() => [])
+export type HistoryLoad =
+  | { readonly status: 'available'; readonly records: ReadonlyArray<DownloadRecord> }
+  | { readonly status: 'unavailable' }
+
+const unavailableHistory = (): HistoryLoad => ({ status: 'unavailable' })
+
+/** Ask the background for durable history. A missing or invalid reply is unavailable, never empty. */
+export async function fetchHistory(): Promise<HistoryLoad> {
+  const reply = expectReply(
+    await safeSend(() => browser.runtime.sendMessage({ _tag: 'HistoryRequest' })),
+  )
+  if (reply.status !== 'ok') return unavailableHistory()
+  const decoded = decodeHistoryResponse(reply.reply)
+  return decoded === undefined
+    ? unavailableHistory()
+    : { status: 'available', records: decoded.records }
+}
+
+/** Erase durable history; views change only after the background confirms it. */
+export async function requestHistoryErase(): Promise<boolean> {
+  const reply = expectReply(
+    await safeSend(() => browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' })),
+  )
+  return reply.status === 'ok' && isExactEraseHistoryReply(reply.reply)
+}
+
+const isExactEraseHistoryReply = (value: unknown): value is { readonly ok: true } => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const keys = Reflect.ownKeys(value)
+  return keys.length === 1 && keys[0] === 'ok' && (value as { readonly ok?: unknown }).ok === true
 }

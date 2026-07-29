@@ -7,7 +7,7 @@
 
 Today on Instagram and Threads, holding the Quick Grab modifier (default **Alt/Option**) and hovering one media item downloads **that one item** after a short dwell (`core/quickgrab.ts` + the overlay's dwell/ring machinery in `src/entrypoints/overlay.content/index.tsx`). There is a page-wide "Download all detected media" launcher pill, but no gesture to grab **just the post under the cursor** — a carousel of video + photos — in one action.
 
-This spec adds that gesture: while the Quick Grab modifier is held, **also holding Cmd (Meta)** turns the same hover-dwell into "grab every detected media item of the hovered post." It reuses the existing dwell + ring state machine wholesale; the only behavioral change is the *payload* the dwell fires and the *label* the ring shows.
+This spec adds that gesture: while the Quick Grab modifier is held, **also holding Cmd (Meta)** turns the same hover-dwell into "grab every detected media item of the hovered post." It reuses the existing dwell + ring state machine wholesale; the only behavioral change is the _payload_ the dwell fires and the _label_ the ring shows.
 
 Scoped to **Instagram and Threads only** (per the product decision). X is deliberately excluded — its per-item grab and page-wide launcher stay exactly as they are.
 
@@ -28,7 +28,7 @@ Scoped to **Instagram and Threads only** (per the product decision). X is delibe
 
 ### 1. Trigger & the augment modifier
 
-While Quick Grab is enabled and its base modifier is held, the overlay is already in grab mode (`grab.active`). The new behavior activates when, on an **Instagram or Threads** tab, the **augment modifier** is *also* held.
+While Quick Grab is enabled and its base modifier is held, the overlay is already in grab mode (`grab.active`). The new behavior activates when, on an **Instagram or Threads** tab, the **augment modifier** is _also_ held.
 
 - **Augment modifier** = `meta` (Cmd/⊞), unless the user has reconfigured the base modifier to `meta`, in which case it is `alt`. This guarantees base ≠ augment. A pure helper computes it: `allAugmentModifier(base: GrabModifier): GrabModifier`.
 - **Augment-held tracking** mirrors how the base modifier is already tracked (for the default base `alt` the augment is `meta`, so this is "is Cmd held"):
@@ -38,7 +38,7 @@ While Quick Grab is enabled and its base modifier is held, the overlay is alread
 - **Eligibility** is resolved once at content-script boot: `postGrabEligible = adapter.platform === 'instagram' || adapter.platform === 'threads'`.
 - **All-mode active** ⇔ `grab.active && augmentHeld && postGrabEligible`. A pure predicate expresses it: `postGrabActive(baseActive, flags, base, eligible)` using the existing `modifierHeld`.
 
-The augment does **not** change *arming* — the dwell still arms on the hovered media key exactly as today. It only changes what fires and how the ring is labeled. All-mode is read at fire-time from the live tracked flag.
+The augment does **not** change _arming_ — the dwell still arms on the hovered media key exactly as today. It only changes what fires and how the ring is labeled. All-mode is read at fire-time from the live tracked flag.
 
 ### 2. Payload at fire-time
 
@@ -62,45 +62,49 @@ This is a UX nicety, not a correctness requirement — the download admission ga
 
 Same grab ring anchored to the hovered media, with a distinct label set when `grabUi.all` is set:
 
-| phase | single label (today) | all-mode label |
-|---|---|---|
-| charging | `Grabbing` | `Grab all` |
-| queued | `Queued` | `N queued` |
-| saved | `Started` | `N started` |
-| noted | `Already queued` | `Already queued` |
-| failed | `Failed` | `Failed` |
+| phase    | single label (today) | all-mode label   |
+| -------- | -------------------- | ---------------- |
+| charging | `Grabbing`           | `Grab all`       |
+| queued   | `Queued`             | `N queued`       |
+| saved    | `Started`            | `N started`      |
+| noted    | `Already queued`     | `Already queued` |
+| failed   | `Failed`             | `Failed`         |
 
 `N` is the count of items sent (known at fire-time; the `charging` phase precedes the fire, so it shows the mode word rather than a count). `grabUi` gains two optional fields: `all: boolean` and `allCount?: number`. `quickGrabBadgeLabel(phase, all?)` is extended to take the optional all-mode descriptor. When the augment is pressed/released while a `charging` ring is up, the ring's `all` flag and label refresh live.
 
-**Deferred (not in this spec):** drawing the ring around the whole *post container* instead of the hovered media. It would need a per-adapter "post container rect" and is a pure polish; keeping the ring on the hovered media keeps this change focused.
+**Deferred (not in this spec):** drawing the ring around the whole _post container_ instead of the hovered media. It would need a per-adapter "post container rect" and is a pure polish; keeping the ring on the hovered media keeps this change focused.
 
 ### 5. Discoverability
 
 In the options General panel (`src/entrypoints/options/panels/general.tsx`), under the Quick Grab modifier control, add one line of helper text:
 
-> *Hold Cmd as well to grab the whole post (Instagram & Threads).*
+> _Hold Cmd as well to grab the whole post (Instagram & Threads)._
 
 No new setting/toggle — the augment rides on `quickGrabEnabled` being on (YAGNI; a dedicated toggle can come later if accidental triggers prove a problem).
 
 ## Module changes
 
 ### `src/core/quickgrab.ts` (pure — 100% coverage-gated)
+
 - `allAugmentModifier(base: GrabModifier): GrabModifier` — `base === 'meta' ? 'alt' : 'meta'`.
 - `postGrabActive(baseActive: boolean, flags: ModifierFlags, base: GrabModifier, eligible: boolean): boolean` — `baseActive && eligible && modifierHeld(flags, allAugmentModifier(base))`.
 - `markAllGrabbed(state: QuickGrabState, keys: Iterable<string>): QuickGrabState` — fold `markGrabbed` over `keys`, returning the same state object when nothing changed (idempotent).
 - `quickGrabBadgeLabel(phase, all?: { count: number })` — extended; all-mode variant per the table above.
 
 ### `src/core/adapters/detection-store.ts` (pure — 100% coverage-gated)
+
 - `keysForTweet(postId: string): string[]` added to `DetectionStore` — every by-key entry whose item's `postId === postId`.
 - `postGrabItems(item: MediaItem, postItems: readonly MediaItem[]): MediaItem[]` — id-de-duped `[item, ...postItems]`, hovered item first. (Free function exported from `detection-store.ts` alongside `keysForItem`; kept pure and unit-tested.)
 
 ### `src/entrypoints/overlay.content/index.tsx` (wiring — not coverage-gated)
+
 - `postGrabEligible` boot flag; `augmentHeld` tracked scalar; helpers to read all-mode via `postGrabActive`.
 - `mousemove` sets `augmentHeld = modifierHeld(e, allAugmentModifier(qgModifier))`; augment `keydown`/`keyup` set it and refresh the ring label; reset on `blur`/`releaseAll`/`locationchange`.
 - `fireGrab`: choose payload (single vs `postGrabItems`), set `grabUi.all`/`allCount`, and `markAllGrabbed(store.keysForTweet(postId))` in all-mode.
 - `armHover`/`grabUi` plumb the `all` flag for the charging label.
 
 ### `src/entrypoints/options/panels/general.tsx`
+
 - One `FieldDescription`/helper line under the Quick Grab modifier select.
 
 ## Testing

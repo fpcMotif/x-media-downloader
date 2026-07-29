@@ -1,4 +1,5 @@
 import type { UploadSummary } from './upload-job'
+import { boundedDiagnosticText } from '../diagnostic-text'
 
 /**
  * Make cloud-upload outcomes legible in the popup (mirrors `sync/status.ts`).
@@ -56,7 +57,7 @@ export function classifyUploadError(reason: string, status?: number): string {
   for (const [pattern, message] of UPLOAD_ERROR_RULES) {
     if (pattern.test(reason)) return message
   }
-  return reason
+  return boundedDiagnosticText(reason)
 }
 
 /** One-line summary of the ledger for the popup. */

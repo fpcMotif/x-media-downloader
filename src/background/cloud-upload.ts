@@ -1,58 +1,77 @@
 import { storage } from 'wxt/utils/storage'
 import { CLOUD_PROVIDERS, type Settings } from '../core/schema'
-import { setSettings } from '../core/settings'
+import type { SettingsOwnershipSnapshot } from '../core/settings'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { makeConvexHttpPort } from '../core/sync/convex'
 import { makeCloudServicesLive } from '../core/cloud/cloud-services'
-import { DriveUploader, DriveUploaderLive, type DriveArgs } from '../core/cloud/drive'
+import { DriveUploader, DriveUploaderLive } from '../core/cloud/drive'
 import { DropboxUploader, DropboxUploaderLive } from '../core/cloud/dropbox'
 import {
   guessMime,
   type CloudProviderId,
-  type OAuthConfig,
-  type OAuthTokens,
-  type UploadInput,
+  type RemoteAttempt,
   type UploadOutcome,
   type UploadTarget,
 } from '../core/cloud/types'
+import { exchangeCode, refreshAccessToken } from '../core/cloud/oauth'
 import {
-  buildAuthUrl,
-  computeCodeChallenge,
-  exchangeCode,
-  generateCodeVerifier,
-  isTokenExpired,
-  parseAuthRedirect,
-  randomState,
-  refreshAccessToken,
-} from '../core/cloud/oauth'
-import {
+  bindRemoteAttempt,
   capLedger,
   claim,
-  decodeLedger,
-  enqueue,
+  decodeLedgerStateResult,
+  enqueueBounded,
   isTerminal,
+  legacyConflict,
+  quarantineConflict,
+  rebaseUploadDeadlines,
   MAX_ATTEMPTS,
+  MAX_UPLOAD_JOBS,
   readyJobs,
   recordFailure,
+  recordRemoteProgress,
   recordSourceGone,
   recordSuccess,
   retry as retryUploadJob,
   summarize,
-  toWireUploadJob,
   type JobLedger,
-  type UploadJob,
+  type UploadLedgerState,
 } from '../core/cloud/upload-job'
-import { PROVIDERS, revokeViaRecipe } from '../core/cloud/provider'
+import {
+  beginProviderOwnershipTransition,
+  discardProviderOwnership,
+  ownershipTransitionFor,
+  reconcileProviderOwnership,
+  type ProviderOwnershipTransition,
+} from '../core/cloud/provider-ownership-transition'
+import { PROVIDERS } from '../core/cloud/provider'
 import { classifyUploadError, type CloudUploadStatus } from '../core/cloud/status'
 import { makeSerialQueue, type SerialQueue } from '../core/serial-queue'
-import { isSyncConfigured } from './sync-config'
+import {
+  makeCloudProviderSession,
+  providerCredentialsFor,
+  providerCredentialsPatch,
+  providerOwnerKey,
+  sameProviderCredentials,
+  type AuthFlowPort,
+  type ConnectOwnershipCommit,
+  type DisconnectOwnershipCommit,
+  type ProviderCredentialSnapshot,
+  type ProviderRuntime,
+} from './cloud-provider-session'
+import type { SettingsWriter } from './settings-writer'
+import { DURABLE_SIDE_EFFECT_WATCHDOG_MS } from './durable-wake'
+import { makeUploadJobMirror, type UploadJobMirrorTransport } from './upload-job-mirror'
+import { boundedDiagnosticText } from '../core/diagnostic-text'
+import { cloudDeadline } from '../core/cloud/time'
 
 /** A media item + its on-disk filename — the unit recordCloudUploads enqueues. */
-export interface UploadCandidate {
-  readonly item: {
-    readonly id: string
+export interface CloudUploadIntent {
+  /** Canonical global identity. */
+  readonly requestId: string
+  /** Raw pre-v2 identities for collision checks against quarantined rows. */
+  readonly legacyAliases: ReadonlyArray<string>
+  readonly source: {
     readonly url: string
-    readonly handle: string
     readonly ext: string
   }
   readonly filename: string
@@ -62,12 +81,15 @@ export interface UploadCandidate {
 export interface BackfillRecord {
   readonly requestId: string
   readonly filename: string
-  readonly media: { readonly url: string; readonly handle: string; readonly ext: string }
+  readonly media: {
+    readonly url: string
+    readonly handle: string
+    readonly ext: string
+  }
 }
 
 /** Durable UploadJob-ledger storage seam — the wxt `local:cloudUploadJobs` item in
- *  the SW, an in-memory box in tests. The stored payload is opaque (`decodeLedger`
- *  validates it on read), so this carries `unknown`. */
+ *  the SW, an in-memory box in tests. Strict decode validates its opaque payload. */
 export interface LedgerStore {
   get(): Promise<unknown>
   set(value: unknown): Promise<void>
@@ -78,32 +100,8 @@ export interface LedgerStore {
  *  the best-effort Convex mirror. Folding them behind one port keeps the single
  *  shared ManagedRuntime invariant (FetchService/SourceFetch/FolderCache) — and lets
  *  a test substitute a plain-async fake with no Effect/Layer ceremony. */
-export interface CloudRuntimePort {
-  uploadDrive(args: DriveArgs, input: UploadInput): Promise<UploadOutcome>
-  uploadDropbox(accessToken: string, input: UploadInput): Promise<UploadOutcome>
-  resolveDriveRoot(accessToken: string): Promise<string>
-  exchangeCode(input: {
-    readonly cfg: OAuthConfig
-    readonly clientId: string
-    readonly code: string
-    readonly codeVerifier: string
-    readonly redirectUri: string
-    readonly now: number
-  }): Promise<OAuthTokens>
-  refreshAccessToken(input: {
-    readonly cfg: OAuthConfig
-    readonly clientId: string
-    readonly refreshToken: string
-    readonly now: number
-  }): Promise<{ readonly accessToken: string; readonly expiresAt: number }>
-  /** Run the control-plane mirror mutation. The gate + the best-effort swallow stay
-   *  on the SHELL side (mirrorUploadJob), so a test injects a throwing mirror to
-   *  prove the drain survives. */
-  mirror(input: {
-    readonly deploymentUrl: string
-    readonly jobs: ReadonlyArray<ReturnType<typeof toWireUploadJob>>
-    readonly secret: string
-  }): Promise<unknown>
+export interface CloudRuntimePort extends ProviderRuntime, UploadJobMirrorTransport {
+  /** Provider I/O and control-plane transport share one SW-lifetime runtime. */
 }
 
 /** Durable wake-up alarm seam (one backoff alarm; the entrypoint owns the listener). */
@@ -121,18 +119,16 @@ export interface BadgePort {
 /** Interactive OAuth seam. `launchFlow` is genuinely browser-bound (the consent
  *  popup) and CANNOT be unit-tested end to end; a test fakes it to a canned redirect
  *  string (or undefined for cancel) to cover only the parse→exchange→persist tail. */
-export interface AuthFlowPort {
-  getRedirectUrl(): string
-  launchFlow(url: string): Promise<string | undefined>
-}
+export type { AuthFlowPort } from './cloud-provider-session'
 
 export interface CloudUpload {
   /** The serialized upload chain — boot resume + alarm wake push onto it. */
   readonly uploadQueue: SerialQueue
   /** Drain ready upload jobs FIFO (claim → upload → record → mirror). */
   readonly drainUploadJobs: () => Promise<void>
-  /** Enqueue one UploadJob per (media item × connected provider) at queue time. */
-  readonly recordCloudUploads: (settings: Settings, items: ReadonlyArray<UploadCandidate>) => void
+  /** Commit one UploadJob per (media item × connected provider) before the local
+   * launch. A failed commit is contained: the caller may still save locally. */
+  readonly recordCloudUploads: (items: ReadonlyArray<CloudUploadIntent>) => Promise<CloudAdmission>
   /** PKCE OAuth connect in the SW; persists tokens. Popup-facing result. */
   readonly runOAuthConnect: (
     provider: CloudProviderId,
@@ -145,20 +141,35 @@ export interface CloudUpload {
   /** Re-arm dead/failed jobs and drain. */
   readonly retryDeadUploads: () => Promise<{ ok: boolean }>
   /** Enqueue cloud uploads for already-downloaded media from history. */
-  readonly backfillCloudUploads: () => Promise<{ ok: boolean; queued: number; detail: string }>
-  /** Compact a historically-grown ledger once and resume pending uploads on boot. */
-  readonly resumeOnBoot: () => void
-  /** Clear the upload-failure toolbar badge (Cloud upload switched off). */
-  readonly clearUploadBadge: () => void
+  readonly backfillCloudUploads: () => Promise<{
+    ok: boolean
+    queued: number
+    detail: string
+  }>
+  /** Recover ownership intent, compact, then resume or pause before boot opens. */
+  readonly resumeOnBoot: () => Promise<void>
+  /** Resume durable retries after Cloud upload is turned back on. */
+  readonly resumeWhenEnabled: () => void
+  /** Stop retry wakes while Cloud upload is off. Durable jobs stay intact. */
+  readonly pauseWhenDisabled: () => Promise<void>
   /** The durable wake-up alarm name (the entrypoint registers the onAlarm listener). */
   readonly uploadAlarm: string
 }
+
+/** A durable cloud-admission decision. `unavailable` means the local save may
+ * proceed, but this request has no cloud replay record. */
+export type CloudAdmission =
+  | { readonly tag: 'not-requested' }
+  | { readonly tag: 'committed' }
+  | { readonly tag: 'unavailable'; readonly reason: string }
 
 export interface CloudUploadDeps {
   /** Build the queue's error observer (traces through the background's chain). */
   readonly queueError: (label: string) => (err: unknown) => void
   /** Read the current settings blob. */
   readonly getSettings: () => Promise<Settings>
+  /** Recovery-required projections cannot authorize ownership cleanup. */
+  readonly getSettingsOwnership: () => Promise<SettingsOwnershipSnapshot>
   /** The fetch the provider/Convex ports use (bound for the MV3 SW; see fetch.ts).
    *  Only consumed to build the default cloud runtime; ignored when `runtime` is injected. */
   readonly fetchImpl: typeof fetch
@@ -176,15 +187,16 @@ export interface CloudUploadDeps {
   readonly badge?: BadgePort
   /** The interactive OAuth flow (default: `browser.identity`). */
   readonly authFlow?: AuthFlowPort
-  /** The settings writer (default: the core `setSettings`). Always re-serialized
-   *  through the SW-side settingsQueue inside, so ADR-0005 single-writer holds. */
-  readonly setSettings?: (patch: Partial<Settings>) => Promise<Settings>
+  /** The background's sole Settings mutation seam. */
+  readonly settingsWriter: SettingsWriter
   /** The clock (default: `Date.now`). Injected so backoff/expiry assertions are deterministic. */
   readonly now?: () => number
   /** Jobs drained per pass before yielding to a fresh serialized task (default
    *  {@link MAX_DRAIN_JOBS_PER_PASS}). Injected only so the re-kick is testable without
    *  seeding a thousand jobs. */
   readonly maxDrainPerPass?: number
+  /** Production uses {@link MAX_UPLOAD_JOBS}; tests lower it to exercise admission. */
+  readonly maxUploadJobs?: number
 }
 
 const UPLOAD_ALARM = 'cloud-upload-drain'
@@ -193,25 +205,14 @@ const UPLOAD_ALARM = 'cloud-upload-drain'
 // serialized task (the `if (!ranOut)` re-kick below) — bounds one drain so a
 // large ledger can't monopolize the SW.
 const MAX_DRAIN_JOBS_PER_PASS = 1000
-
-// Single source of truth for the provider enumeration (schema/index.ts).
-const ALL_PROVIDERS: ReadonlyArray<CloudProviderId> = CLOUD_PROVIDERS
-
-// The per-provider Settings-field layout lives on the Cloud Provider record
-// (`provider.fields`); token reads/writes, connect, and disconnect read it from
-// there instead of forking on the provider.
-
-interface ProviderTokens {
-  readonly clientId: string
-  readonly accessToken: string
-  readonly refreshToken: string
-  readonly expiry: number
-  readonly account: string
-}
+const CORRUPT_LEDGER_ERROR =
+  'Cloud upload data is corrupt. Uploads are paused to preserve it; local downloads still work.'
 
 /** The live UploadJob-ledger store: the durable `local:cloudUploadJobs` wxt item. */
 const defaultLedgerStore = (): LedgerStore => {
-  const item = storage.defineItem<unknown>('local:cloudUploadJobs', { fallback: null })
+  const item = storage.defineItem<unknown>('local:cloudUploadJobs', {
+    fallback: null,
+  })
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
@@ -226,10 +227,33 @@ const defaultRuntimePort = (fetchImpl: typeof fetch): CloudRuntimePort => {
     ),
   )
   return {
-    uploadDrive: (args, input) =>
-      runtime.runPromise(Effect.flatMap(DriveUploader, (u) => u.upload(args, input))),
-    uploadDropbox: (accessToken, input) =>
-      runtime.runPromise(Effect.flatMap(DropboxUploader, (u) => u.upload({ accessToken }, input))),
+    prepareBlobAttempt: ({ provider, jobId, ownerKey, accessToken }) =>
+      provider === 'gdrive'
+        ? runtime
+            .runPromise(Effect.flatMap(DriveUploader, (u) => u.generateFileId(accessToken)))
+            .then((fileId) => ({ kind: 'gdrive' as const, ownerKey, fileId }))
+        : runtime.runPromise(
+            Effect.flatMap(DropboxUploader, (u) =>
+              Effect.promise(() => u.prepare(jobId, ownerKey)),
+            ),
+          ),
+    advanceBlobAttempt: ({ provider, accessToken, rootFolderId, upload, attempt }) => {
+      if (provider === 'gdrive') {
+        if (attempt.kind !== 'gdrive' || rootFolderId === undefined)
+          return Promise.resolve({
+            kind: 'failure' as const,
+            reason: 'Google Drive upload attempt is invalid.',
+          })
+        return runtime.runPromise(
+          Effect.flatMap(DriveUploader, (u) =>
+            u.advance({ accessToken, rootFolderId }, upload, attempt.fileId),
+          ),
+        )
+      }
+      return runtime.runPromise(
+        Effect.flatMap(DropboxUploader, (u) => u.advance({ accessToken }, upload, attempt)),
+      )
+    },
     resolveDriveRoot: (accessToken) =>
       runtime.runPromise(Effect.flatMap(DriveUploader, (u) => u.ensureRoot(accessToken))),
     exchangeCode: (input) => runtime.runPromise(exchangeCode(input)),
@@ -283,159 +307,520 @@ const cloudTargetFor = (m: { readonly ext: string }, filename: string): UploadTa
   }
 }
 
-const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
-  const f = PROVIDERS[p].fields
-  return {
-    clientId: s[f.clientId] as string,
-    accessToken: s[f.accessToken] as string,
-    refreshToken: s[f.refreshToken] as string,
-    expiry: s[f.expiry] as number,
-    account: s[f.account] as string,
-  }
-}
+const disconnectedCredentials = (
+  before: ProviderCredentialSnapshot,
+): ProviderCredentialSnapshot => ({
+  ...before,
+  accessToken: '',
+  refreshToken: '',
+  expiry: 0,
+  account: '',
+  ...(before.folderId === undefined ? {} : { folderId: '' }),
+})
+
+const ownershipRecoveryError = (provider: CloudProviderId): string =>
+  `${PROVIDERS[provider].label} connection needs recovery. Reconnect or disconnect to discard its ambiguous queued uploads.`
 
 export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const { getSettings, fetchImpl } = deps
   // Resolve each side-effect seam to its live binding unless a test injected one.
   // Internal names avoid colliding with the `ledger`/`now` locals in the drain loop.
   const nowFn = deps.now ?? (() => Date.now())
-  const writeSettingsImpl = deps.setSettings ?? setSettings
   const store = deps.ledger ?? defaultLedgerStore()
   const rt = deps.runtime ?? defaultRuntimePort(fetchImpl)
   const alarms = deps.alarms ?? defaultAlarmPort()
   const badge = deps.badge ?? defaultBadgePort()
   const authFlow = deps.authFlow ?? defaultAuthFlowPort()
   const maxDrainPerPass = deps.maxDrainPerPass ?? MAX_DRAIN_JOBS_PER_PASS
+  const maxUploadJobs = deps.maxUploadJobs ?? MAX_UPLOAD_JOBS
 
   // Durable local UploadJob ledger (the source of truth) — drained FIFO through a
   // serialized chain like the metadata outbox. Bytes go extension → provider
   // (Drive/Dropbox) directly; nothing here transits Convex.
-  const uploadQueue = makeSerialQueue(deps.queueError('upload'))
+  const reportUploadError = deps.queueError('upload')
+  const reportUploadDiagnostic = (error: unknown): void => {
+    try {
+      reportUploadError(error)
+    } catch {
+      /* diagnostics cannot break durable upload work */
+    }
+  }
+  const uploadQueue = makeSerialQueue(reportUploadError)
   // Last non-skip failure, for the popup's status line (diagnostic; resets on recycle).
   let lastUploadError: string | null = null
-
-  const isProviderConnected = (s: Settings, p: CloudProviderId): boolean => {
-    const t = providerTokens(s, p)
-    return t.clientId !== '' && t.refreshToken !== ''
+  const setLastUploadError = (reason: string): void => {
+    lastUploadError = boundedDiagnosticText(reason)
   }
-  const connectedProviders = (s: Settings): CloudProviderId[] =>
-    ALL_PROVIDERS.filter((p) => isProviderConnected(s, p))
+  const clearOwnershipRecoveryError = (provider: CloudProviderId): void => {
+    if (lastUploadError === ownershipRecoveryError(provider)) lastUploadError = null
+  }
+  const readLedgerState = async (): Promise<{
+    state: UploadLedgerState
+    migrationNeeded: boolean
+  }> => {
+    const decoded = decodeLedgerStateResult(await store.get())
+    if (decoded.ok) {
+      if (decoded.state.quarantine.length > 0 && lastUploadError === null)
+        setLastUploadError(
+          'An older in-flight cloud upload has an unknown remote result. It is quarantined, not retried.',
+        )
+      return { state: decoded.state, migrationNeeded: decoded.migrationNeeded }
+    }
+    setLastUploadError(CORRUPT_LEDGER_ERROR)
+    throw new Error(CORRUPT_LEDGER_ERROR)
+  }
+  const writeLedger = async (state: UploadLedgerState, ledger: JobLedger): Promise<void> =>
+    store.set({ ...state, jobs: ledger })
+  const persistRebasedUploadDeadlines = async (
+    state: UploadLedgerState,
+  ): Promise<UploadLedgerState> => {
+    const rebased = rebaseUploadDeadlines(state.jobs, nowFn())
+    if (!rebased.changed) return state
+    // A fresh worker can move a retry deadline earlier. The old alarm may have
+    // been consumed, so establish a conservative recovery wake before that
+    // shortened durable state exists.
+    await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+    const next = { ...state, jobs: rebased.ledger }
+    await store.set(next)
+    return next
+  }
+  const readLedger = async (): Promise<JobLedger> => {
+    const { state } = await readLedgerState()
+    return state.jobs
+  }
+  const reportCapacity = (rejected: number): void => {
+    if (rejected === 0) return
+    setLastUploadError(
+      `Cloud upload queue is full (${maxUploadJobs} jobs). ${rejected} new upload${rejected === 1 ? '' : 's'} stayed local.`,
+    )
+    reportUploadDiagnostic(new Error(lastUploadError ?? 'Cloud upload queue is full.'))
+  }
+  const providers = makeCloudProviderSession({
+    getSettings,
+    settingsWriter: deps.settingsWriter,
+    runtime: rt,
+    authFlow,
+    fetchImpl,
+    now: nowFn,
+  })
+  const mirror = makeUploadJobMirror({
+    getSettings,
+    now: nowFn,
+    transport: rt,
+  })
 
-  // Serialize ALL SW-side cloud settings writes (token refresh / connect /
-  // disconnect / folder-id) on one chain so they can't lost-update each other's
-  // fields during a concurrent drain (the popup no longer writes token/clientId
-  // fields — those flow through messages — so this closes the SW-side races).
-  const settingsQueue = makeSerialQueue(deps.queueError('cloudSettings'))
-  const writeCloudSettings = (patch: Partial<Settings>): Promise<Settings> =>
-    settingsQueue.run(() => writeSettingsImpl(patch))
-
-  const persistAccessToken = (
-    p: CloudProviderId,
-    accessToken: string,
-    expiresAt: number,
-  ): Promise<Settings> => {
-    const f = PROVIDERS[p].fields
-    return writeCloudSettings({ [f.accessToken]: accessToken, [f.expiry]: expiresAt })
+  const recoverOwnershipTransitions = async (
+    existing?: Awaited<ReturnType<typeof readLedgerState>>,
+    options: { readonly skipPending?: boolean } = {},
+  ): Promise<UploadLedgerState> => {
+    const decoded = existing ?? (await readLedgerState())
+    let state = decoded.state
+    let changed = decoded.migrationNeeded
+    if (state.ownershipTransitions.length === 0) {
+      if (changed) {
+        // A codec migration does not invent rows, but it can re-project an
+        // existing runnable row. Protect that durable rewrite just like any
+        // other replay-enabling state change; empty normalization needs no wake.
+        if (
+          (await getSettings()).cloudUploadEnabled &&
+          state.jobs.some((job) => !isTerminal(job) && job.attempts < MAX_ATTEMPTS)
+        )
+          await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+        await store.set(state)
+      }
+      return state
+    }
+    try {
+      await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+    } catch (error) {
+      reportUploadDiagnostic(error)
+      // A consumed alarm cannot be treated as recovery proof. Leave the journal
+      // byte-for-byte intact until a future invocation can establish its wake.
+      throw error
+    }
+    const ownership = await deps.getSettingsOwnership()
+    if (ownership.availability === 'recovery-required') {
+      if (changed) await store.set(state)
+      return state
+    }
+    const settings = ownership.runtime
+    const ownerKeys = await Promise.all(
+      state.ownershipTransitions
+        .filter((transition) => !options.skipPending || !providers.isPending(transition.provider))
+        .map(async (transition) => ({
+          provider: transition.provider,
+          ownerKey: await providerOwnerKey(providerCredentialsFor(settings, transition.provider)),
+        })),
+    )
+    for (const { provider, ownerKey } of ownerKeys) {
+      const reconciled = reconcileProviderOwnership(state, provider, ownerKey)
+      if (reconciled.outcome === 'blocked') setLastUploadError(ownershipRecoveryError(provider))
+      state = reconciled.state
+      changed ||= reconciled.changed
+    }
+    if (changed) await store.set(state)
+    return state
   }
 
-  /** A fresh access token for the provider; refresh + persist if near expiry. */
-  const ensureAccessToken = async (
-    s: Settings,
-    p: CloudProviderId,
-    nowMs: number,
-  ): Promise<string> => {
-    const t = providerTokens(s, p)
-    if (t.accessToken !== '' && !isTokenExpired(t.expiry, nowMs)) return t.accessToken
-    const refreshed = await rt.refreshAccessToken({
-      cfg: PROVIDERS[p].oauth,
-      clientId: t.clientId,
-      refreshToken: t.refreshToken,
-      now: nowMs,
+  const commitOwnershipReplacement = async (
+    input: ConnectOwnershipCommit | DisconnectOwnershipCommit,
+  ): Promise<boolean> => {
+    // Capture the owner outside the upload queue. Slow storage cannot stop a
+    // newer intent. The queued turn rejects any owner drift before journaling.
+    const expectedOwnership = await deps.getSettingsOwnership()
+    if (expectedOwnership.availability === 'recovery-required')
+      throw new Error('Settings recovery is required before changing cloud connections.')
+    const expectedBefore = providerCredentialsFor(expectedOwnership.runtime, input.provider)
+    const prepared = await uploadQueue.run(async () => {
+      let state = await recoverOwnershipTransitions()
+      if (providers.generation(input.provider) !== input.generation) return false
+
+      const currentOwnership = await deps.getSettingsOwnership()
+      if (currentOwnership.availability === 'recovery-required')
+        throw new Error('Settings recovery is required before changing cloud connections.')
+      const before = providerCredentialsFor(currentOwnership.runtime, input.provider)
+      if (!sameProviderCredentials(before, expectedBefore)) return false
+      if (providers.generation(input.provider) !== input.generation) return false
+      const after = input.kind === 'connect' ? input.after : disconnectedCredentials(before)
+      if (after.provider !== input.provider)
+        throw new Error('Cloud ownership replacement has the wrong provider.')
+      const beforeOwnerKey = await providerOwnerKey(before)
+      const afterOwnerKey = await providerOwnerKey(after)
+      if (input.kind === 'connect' && afterOwnerKey === null)
+        throw new Error(`${PROVIDERS[input.provider].label} returned incomplete credentials.`)
+
+      const recoveredByDiscard = ownershipTransitionFor(state, input.provider) !== undefined
+      if (recoveredByDiscard) state = discardProviderOwnership(state, input.provider)
+      if (input.kind === 'connect' && beforeOwnerKey === afterOwnerKey) {
+        if (recoveredByDiscard) await store.set(state)
+        return { before, after, transition: undefined, recoveredByDiscard }
+      }
+
+      const transition: ProviderOwnershipTransition = {
+        transitionId: crypto.randomUUID(),
+        provider: input.provider,
+        kind: input.kind,
+        beforeOwnerKey,
+        afterOwnerKey,
+      }
+      const begun = beginProviderOwnershipTransition(state, transition)
+      if (!begun.begun)
+        throw new Error(`${PROVIDERS[input.provider].label} connection needs recovery.`)
+      state = begun.state
+      // A journal without a future wake can strand after either following write.
+      // Arm recovery first; a spurious wake after a failed journal write is safe.
+      await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+      await store.set(state)
+      return { before, after, transition, recoveredByDiscard }
     })
-    await persistAccessToken(p, refreshed.accessToken, refreshed.expiresAt)
-    return refreshed.accessToken
-  }
+    if (prepared === false) return false
 
-  /** Enqueue one UploadJob per (media item × connected provider) at queue time, in
-   *  parallel with the local download. Gated, idempotent, fire-and-forget. */
-  const recordCloudUploads = (settings: Settings, items: ReadonlyArray<UploadCandidate>): void => {
-    if (!settings.cloudUploadEnabled || items.length === 0) return
-    const providers = connectedProviders(settings)
-    if (providers.length === 0) return
-    const now = nowFn()
-    uploadQueue.push(async () => {
-      let ledger = decodeLedger(await store.get())
-      for (const { item, filename } of items) {
-        const target = cloudTargetFor(item, filename)
-        for (const p of providers) {
-          ledger = enqueue(ledger, { mediaId: item.id, provider: p, url: item.url, target }, now)
+    if (input.kind === 'disconnect' && providers.generation(input.provider) === input.generation)
+      await input.revoke(prepared.before)
+
+    return await uploadQueue.run(async () => {
+      if (prepared.transition !== undefined) {
+        const activeState = await readLedgerState()
+        const active = ownershipTransitionFor(activeState.state, input.provider)
+        if (active?.transitionId !== prepared.transition.transitionId) return false
+      }
+      let writeError: unknown
+      const ownershipBeforeWrite = await deps.getSettingsOwnership()
+      if (
+        providers.generation(input.provider) === input.generation &&
+        ownershipBeforeWrite.availability === 'available'
+      ) {
+        try {
+          await deps.settingsWriter.updateWhen(
+            (current) =>
+              providers.generation(input.provider) === input.generation &&
+              (input.kind === 'disconnect' || current.cloudUploadEnabled) &&
+              sameProviderCredentials(
+                providerCredentialsFor(current, input.provider),
+                prepared.before,
+              ),
+            providerCredentialsPatch(prepared.after),
+          )
+        } catch (error) {
+          writeError = error
         }
       }
-      await store.set(ledger)
-      await drainUploadJobs()
+
+      const afterWrite = await readLedgerState()
+      const currentOwnership = await deps.getSettingsOwnership()
+      if (currentOwnership.availability === 'recovery-required') {
+        if (writeError !== undefined) throw writeError
+        throw new Error('Settings recovery is required before changing cloud connections.')
+      }
+      const currentOwnerKey = await providerOwnerKey(
+        providerCredentialsFor(currentOwnership.runtime, input.provider),
+      )
+      if (prepared.transition === undefined) {
+        const current = providerCredentialsFor(currentOwnership.runtime, input.provider)
+        if (sameProviderCredentials(current, prepared.after)) {
+          if (prepared.recoveredByDiscard) clearOwnershipRecoveryError(input.provider)
+          return true
+        }
+        if (sameProviderCredentials(current, prepared.before)) {
+          if (writeError !== undefined) throw writeError
+          return false
+        }
+        throw new Error(`${PROVIDERS[input.provider].label} connection needs recovery.`)
+      }
+      const reconciled = reconcileProviderOwnership(
+        afterWrite.state,
+        input.provider,
+        currentOwnerKey,
+      )
+      if (reconciled.changed || afterWrite.migrationNeeded) await store.set(reconciled.state)
+      if (reconciled.outcome === 'committed' || reconciled.outcome === 'retained') {
+        if (prepared.recoveredByDiscard) clearOwnershipRecoveryError(input.provider)
+        return true
+      }
+      if (reconciled.outcome === 'aborted') {
+        if (writeError !== undefined) throw writeError
+        return false
+      }
+      throw new Error(`${PROVIDERS[input.provider].label} connection needs recovery.`)
     })
   }
 
-  /** Dispatch one job to its provider uploader on the cloud runtime. Drive resolves
-   *  (and persists) its app root folder once; Dropbox needs only the access token. */
-  const dispatchToProvider = async (
-    job: UploadJob,
-    accessToken: string,
-    settings: Settings,
-  ): Promise<UploadOutcome> => {
-    const input: UploadInput = { url: job.url, target: job.target }
-    if (job.provider === 'gdrive') {
-      let rootId = settings.gdriveFolderId
-      if (rootId === '') {
-        rootId = await rt.resolveDriveRoot(accessToken)
-        await writeCloudSettings({ gdriveFolderId: rootId })
-      }
-      return rt.uploadDrive({ accessToken, rootFolderId: rootId }, input)
-    }
-    return rt.uploadDropbox(accessToken, input)
-  }
-
-  /** Best-effort mirror of a job's state to the Convex control plane (ADR-0013).
-   *  Gated on Cloud Sync config; the local ledger remains authoritative. */
-  const mirrorUploadJob = async (settings: Settings, job: UploadJob): Promise<void> => {
-    if (!isSyncConfigured(settings) || settings.cloudDeviceId === '') return
+  /** Commit cloud intent before local launch. Network work is detached only after
+   * the ledger write and its replay alarm are durable. */
+  const recordCloudUploads = async (
+    items: ReadonlyArray<CloudUploadIntent>,
+  ): Promise<CloudAdmission> => {
+    if (items.length === 0) return { tag: 'not-requested' }
     try {
-      await rt.mirror({
-        deploymentUrl: settings.convexUrl,
-        jobs: [toWireUploadJob(job, settings.cloudDeviceId, nowFn())],
-        secret: settings.convexSyncSecret,
+      return await uploadQueue.run(async (): Promise<CloudAdmission> => {
+        const current = await getSettings()
+        if (!current.cloudUploadEnabled) return { tag: 'not-requested' }
+        const decoded = await readLedgerState()
+        const blocked = new Set(
+          decoded.state.ownershipTransitions.map((transition) => transition.provider),
+        )
+        const owned = providers.owners(current).filter((owner) => !blocked.has(owner.provider))
+        if (owned.length === 0) {
+          const pending = CLOUD_PROVIDERS.some(
+            (provider) => providers.isPending(provider) || blocked.has(provider),
+          )
+          return pending
+            ? {
+                tag: 'unavailable',
+                reason: 'Cloud connection change is pending.',
+              }
+            : { tag: 'not-requested' }
+        }
+        const latest = await getSettings()
+        if (
+          !latest.cloudUploadEnabled ||
+          !owned.every((owner) => providers.stillOwns(latest, owner))
+        )
+          return { tag: 'not-requested' }
+        const state = decoded.state
+        let ledger = state.jobs
+        let changed = false
+        let rejected = 0
+        const conflictingLegacy = items
+          .flatMap((candidate) =>
+            owned.flatMap((owner) =>
+              candidate.legacyAliases.map((alias) =>
+                legacyConflict(state, [alias], owner.provider),
+              ),
+            ),
+          )
+          .find((legacy) => legacy !== undefined)
+        if (conflictingLegacy !== undefined) {
+          if (decoded.migrationNeeded) await writeLedger(state, ledger)
+          throw new Error(`legacy upload ${conflictingLegacy.jobId} has ambiguous request identity`)
+        }
+        const conflictingQuarantine = items
+          .flatMap((candidate) =>
+            owned.map((owner) => quarantineConflict(state, candidate.requestId, owner.provider)),
+          )
+          .find((candidate) => candidate !== undefined)
+        if (conflictingQuarantine !== undefined) {
+          if (decoded.migrationNeeded) await writeLedger(state, ledger)
+          throw new Error(
+            `upload ${conflictingQuarantine.jobId} has an ambiguous pre-v4 provider result`,
+          )
+        }
+        const now = nowFn()
+        for (const intent of items) {
+          const target = cloudTargetFor(intent.source, intent.filename)
+          for (const { provider } of owned) {
+            const admission = enqueueBounded(
+              ledger,
+              {
+                requestId: intent.requestId,
+                provider,
+                url: intent.source.url,
+                target,
+              },
+              now,
+              Math.max(0, maxUploadJobs - state.legacy.length - state.quarantine.length),
+            )
+            if (!admission.admitted) rejected += 1
+            changed ||= admission.ledger !== ledger
+            ledger = admission.ledger
+          }
+        }
+        if (changed || decoded.migrationNeeded) {
+          const committed = await commitLedgerAppend(state, ledger, async () => {
+            const latestSettings = await getSettings()
+            return (
+              latestSettings.cloudUploadEnabled &&
+              owned.every((owner) => providers.stillOwns(latestSettings, owner))
+            )
+          })
+          if (!committed) return { tag: 'not-requested' }
+        }
+        reportCapacity(rejected)
+        // The durable alarm and ledger now own replay. Do not make local launch
+        // wait on provider I/O.
+        uploadQueue.push(() => drainUploadJobs())
+        return { tag: 'committed' }
       })
-    } catch {
-      /* control-plane mirror is best-effort; the local ledger is the source of truth */
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      setLastUploadError(`Cloud upload was not queued: ${reason}`)
+      return { tag: 'unavailable', reason }
     }
   }
 
-  /** Arm a durable wake-up at the soonest backoff deadline so failed jobs retry
-   *  autonomously even after the SW suspends (setTimeout would not survive). */
+  /** Arm the soonest future retry. Ready work uses one bounded watchdog instead
+   *  of a due-now alarm that can be consumed before provider I/O settles. */
   const scheduleUploadWake = async (): Promise<void> => {
-    const ledger = decodeLedger(await store.get())
+    const state = await persistRebasedUploadDeadlines((await readLedgerState()).state)
+    const blocked = new Set(state.ownershipTransitions.map((transition) => transition.provider))
+    const ledger = state.jobs.filter(
+      (job) => !providers.isPending(job.provider) && !blocked.has(job.provider),
+    )
     const now = nowFn()
-    const due = ledger
-      .filter((j) => !isTerminal(j) && j.attempts < MAX_ATTEMPTS)
-      .map((j) => j.nextAttemptAt)
-      .filter((t) => t > now)
+    if (
+      state.ownershipTransitions.length === 0 &&
+      ledger.every((job) => isTerminal(job) || job.attempts >= MAX_ATTEMPTS)
+    ) {
+      await alarms.clear(UPLOAD_ALARM)
+      return
+    }
+    const due = [
+      ...(state.ownershipTransitions.length === 0
+        ? []
+        : [cloudDeadline(now, DURABLE_SIDE_EFFECT_WATCHDOG_MS)]),
+      ...ledger
+        .filter((j) => !isTerminal(j) && j.attempts < MAX_ATTEMPTS)
+        .map((j) =>
+          j.nextAttemptAt <= now
+            ? cloudDeadline(now, DURABLE_SIDE_EFFECT_WATCHDOG_MS)
+            : j.nextAttemptAt,
+        ),
+    ]
     if (due.length > 0) await alarms.create(UPLOAD_ALARM, Math.min(...due))
     else await alarms.clear(UPLOAD_ALARM)
   }
+
+  /** A newly durable row must never be the only recovery record. Arm a bounded
+   * watchdog first; a spurious alarm after a failed write only performs a safe
+   * empty drain. The exact ledger deadline replaces it after the commit. */
+  const commitLedgerAppend = async (
+    state: UploadLedgerState,
+    ledger: JobLedger,
+    stillAdmitted: () => Promise<boolean>,
+  ): Promise<boolean> => {
+    await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+    // Alarm I/O yields. Cloud Settings owns consent and provider identity, so a
+    // later OFF/reconnect withdraws this admission before its durable append.
+    if (!(await stillAdmitted())) return false
+    await writeLedger(state, ledger)
+    try {
+      await scheduleUploadWake()
+    } catch (error) {
+      // The pre-commit watchdog remains durable. Keep the append; boot recovers it.
+      reportUploadDiagnostic(error)
+    }
+    return true
+  }
+
+  const clearDisabledProjection = async (): Promise<void> => {
+    try {
+      const state = (await readLedgerState()).state
+      if (state.ownershipTransitions.length > 0)
+        await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+      else await alarms.clear(UPLOAD_ALARM)
+    } catch (error) {
+      reportUploadDiagnostic(error)
+    }
+    try {
+      await badge.set('')
+    } catch {
+      /* the action API may be unavailable in some contexts */
+    }
+  }
+
+  /** One serialized opt-out owner. It removes retry work, never ledger work. */
+  const pauseWhenDisabled = (): Promise<void> =>
+    uploadQueue.run(async () => {
+      if (!(await getSettings()).cloudUploadEnabled) await clearDisabledProjection()
+    })
 
   /** Drain ready upload jobs FIFO: claim (persist the lease) → upload → record the
    *  outcome → persist (capped) → mirror. Each job has independent backoff, so one
    *  failure never stops the others. On guard exhaustion it re-kicks itself; on a
    *  natural drain it arms a backoff alarm so retries fire without a new download. */
   const drainUploadJobs = async (): Promise<void> => {
-    let settings = await getSettings()
-    if (!settings.cloudUploadEnabled) return
+    await recoverOwnershipTransitions(undefined, { skipPending: true })
     let ranOut = false
     // oxlint-disable no-await-in-loop -- FIFO: each job is processed sequentially
-    for (let guard = 0; guard < maxDrainPerPass; guard += 1) {
-      const now = nowFn()
-      const ledger = decodeLedger(await store.get())
-      const job = readyJobs(ledger, now)[0]
+    jobLoop: for (let guard = 0; guard < maxDrainPerPass; guard += 1) {
+      let settings = await getSettings()
+      if (!settings.cloudUploadEnabled) {
+        await clearDisabledProjection()
+        return
+      }
+      let now = nowFn()
+      let decodedBefore = await readLedgerState()
+      let rebasedState = await persistRebasedUploadDeadlines(decodedBefore.state)
+      let before = { ...decodedBefore, state: rebasedState }
+      let ledger = before.state.jobs
+      let durablePending = new Set(
+        before.state.ownershipTransitions.map((transition) => transition.provider),
+      )
+      let job = readyJobs(ledger, now).find(
+        (candidate) =>
+          !providers.isPending(candidate.provider) && !durablePending.has(candidate.provider),
+      )
+      if (job === undefined) {
+        ranOut = true
+        break
+      }
+
+      // An alarm event is consumed before its listener runs. Replace it before
+      // any durable claim, then rebuild every authorization input after alarm
+      // I/O yields. If that arm fails, no lease or provider effect is allowed.
+      try {
+        await alarms.create(UPLOAD_ALARM, cloudDeadline(now, DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+      } catch (error) {
+        reportUploadDiagnostic(error)
+        return
+      }
+      settings = await getSettings()
+      if (!settings.cloudUploadEnabled) {
+        await clearDisabledProjection()
+        return
+      }
+      now = nowFn()
+      decodedBefore = await readLedgerState()
+      rebasedState = await persistRebasedUploadDeadlines(decodedBefore.state)
+      before = { ...decodedBefore, state: rebasedState }
+      ledger = before.state.jobs
+      durablePending = new Set(
+        before.state.ownershipTransitions.map((transition) => transition.provider),
+      )
+      job = readyJobs(ledger, now).find(
+        (candidate) =>
+          !providers.isPending(candidate.provider) && !durablePending.has(candidate.provider),
+      )
       if (job === undefined) {
         ranOut = true
         break
@@ -443,50 +828,127 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
       // Provider disconnected mid-flight: fail the job so it backs off → dies,
       // rather than spinning forever as perpetually-ready.
-      if (!isProviderConnected(settings, job.provider)) {
+      const owner = providers
+        .owners(settings)
+        .find((candidate) => candidate.provider === job.provider)
+      if (owner === undefined) {
         const c = claim(ledger, job.jobId, now)
         const failed = c.claimed
           ? recordFailure(c.ledger, job.jobId, c.token!, now, `${job.provider} disconnected`).ledger
           : c.ledger
-        await store.set(capLedger(failed))
-        lastUploadError = `${PROVIDERS[job.provider].label} is not connected.`
+        await writeLedger(before.state, capLedger(failed))
+        setLastUploadError(`${PROVIDERS[job.provider].label} is not connected.`)
         continue
       }
 
       const c = claim(ledger, job.jobId, now)
       if (!c.claimed) {
-        await store.set(capLedger(c.ledger)) // 'exhausted' → dead persisted
+        await writeLedger(before.state, capLedger(c.ledger)) // 'exhausted' → dead persisted
         continue
       }
-      await store.set(c.ledger) // persist 'uploading' + lease BEFORE the slow upload
-      const token = c.token!
-
-      let outcome: UploadOutcome
+      await writeLedger(before.state, c.ledger) // persist 'uploading' + lease BEFORE the slow upload
       try {
-        const accessToken = await ensureAccessToken(settings, job.provider, now)
-        settings = await getSettings() // re-read after a possible token write
-        outcome = await dispatchToProvider(job, accessToken, settings)
-      } catch (err) {
-        outcome = { kind: 'failure', reason: err instanceof Error ? err.message : String(err) }
+        await scheduleUploadWake()
+      } catch (error) {
+        // The persisted lease still fences replay. Report a missing accelerator,
+        // but do not relabel the durable claim or block its provider attempt.
+        reportUploadDiagnostic(error)
+      }
+      const token = c.token!
+      let liveJob = c.ledger.find((candidate) => candidate.jobId === job.jobId)!
+
+      if (liveJob.remoteAttempt === undefined) {
+        let prepared: RemoteAttempt
+        try {
+          prepared = await providers.prepareAttempt(liveJob, owner)
+        } catch (error) {
+          const failedState = await readLedgerState()
+          if (!providers.stillOwns(await getSettings(), owner)) continue
+          const reason = boundedDiagnosticText(
+            error instanceof Error ? error.message : String(error),
+          )
+          const failed = recordFailure(failedState.state.jobs, job.jobId, token, nowFn(), reason)
+          if (!failed.changed) continue
+          setLastUploadError(classifyUploadError(reason))
+          await writeLedger(failedState.state, capLedger(failed.ledger))
+          const settled = failed.ledger.find((candidate) => candidate.jobId === job.jobId)
+          if (settled !== undefined) await mirror.record(settled)
+          continue
+        }
+        const preparedState = await readLedgerState()
+        if (!providers.stillOwns(await getSettings(), owner)) continue
+        const bound = bindRemoteAttempt(preparedState.state.jobs, job.jobId, token, prepared)
+        if (!bound.changed) continue
+        await writeLedger(preparedState.state, bound.ledger)
+        liveJob = bound.ledger.find((candidate) => candidate.jobId === job.jobId)!
       }
 
-      const after = decodeLedger(await store.get())
-      const tnow = nowFn()
-      let next: JobLedger
-      if (outcome.kind === 'success') {
-        next = recordSuccess(after, job.jobId, token, tnow, {
-          bytes: outcome.bytes,
-          ...(outcome.remoteId !== undefined ? { remoteId: outcome.remoteId } : {}),
-        }).ledger
-      } else if (outcome.kind === 'sourceGone') {
-        next = recordSourceGone(after, job.jobId, token, outcome.reason).ledger
-      } else {
-        next = recordFailure(after, job.jobId, token, tnow, outcome.reason).ledger
-        lastUploadError = classifyUploadError(outcome.reason, outcome.status)
+      let outcome: UploadOutcome | undefined
+      // Dropbox has one durable progress cut (stage proof before move). Drive has none.
+      for (let step = 0; step < 2; step += 1) {
+        let advanced
+        try {
+          advanced = await providers.advanceAttempt(liveJob, owner)
+        } catch (error) {
+          advanced = {
+            kind: 'failure' as const,
+            reason: boundedDiagnosticText(error instanceof Error ? error.message : String(error)),
+          }
+        }
+        const advancedState = await readLedgerState()
+        if (!providers.stillOwns(await getSettings(), owner)) continue jobLoop
+        if (advanced.kind !== 'progress') {
+          outcome = advanced
+          break
+        }
+        const progressed = recordRemoteProgress(
+          advancedState.state.jobs,
+          job.jobId,
+          token,
+          advanced.attempt,
+        )
+        if (!progressed.changed) continue jobLoop
+        await writeLedger(advancedState.state, progressed.ledger)
+        liveJob = progressed.ledger.find((candidate) => candidate.jobId === job.jobId)!
       }
-      const settled = next.find((j) => j.jobId === job.jobId)
-      await store.set(capLedger(next))
-      if (settled !== undefined) await mirrorUploadJob(settings, settled)
+      if (outcome === undefined)
+        outcome = {
+          kind: 'failure',
+          reason: 'Cloud provider attempt made no terminal progress.',
+        }
+
+      const afterState = await readLedgerState()
+      if (!providers.stillOwns(await getSettings(), owner)) continue
+      const tnow = nowFn()
+      let settledTransition
+      if (outcome.kind === 'success') {
+        settledTransition = recordSuccess(afterState.state.jobs, job.jobId, token, tnow, {
+          bytes: outcome.bytes,
+          remotePath: outcome.remotePath,
+          ...(outcome.remoteId !== undefined ? { remoteId: outcome.remoteId } : {}),
+        })
+      } else if (outcome.kind === 'sourceGone') {
+        settledTransition = recordSourceGone(
+          afterState.state.jobs,
+          job.jobId,
+          token,
+          outcome.reason,
+        )
+      } else {
+        if (outcome.status === 401) await providers.invalidateAccessToken(owner)
+        settledTransition = recordFailure(
+          afterState.state.jobs,
+          job.jobId,
+          token,
+          tnow,
+          outcome.reason,
+        )
+        setLastUploadError(classifyUploadError(outcome.reason, outcome.status))
+      }
+      if (!settledTransition.changed) continue
+      await writeLedger(afterState.state, capLedger(settledTransition.ledger))
+      const settled = settledTransition.ledger.find((candidate) => candidate.jobId === job.jobId)
+      if (settled !== undefined) await mirror.record(settled)
     }
     // oxlint-enable no-await-in-loop
 
@@ -501,95 +963,100 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     await refreshUploadBadge()
   }
 
+  const resumeAfterOwnershipIntent = (): void => {
+    uploadQueue.push(async () => {
+      await recoverOwnershipTransitions()
+      if ((await getSettings()).cloudUploadEnabled) await drainUploadJobs()
+      else await clearDisabledProjection()
+    })
+  }
+
   /** Run the PKCE OAuth flow for a provider in the SW (survives the popup closing),
-   *  then persist the tokens. Returns a popup-facing result. */
+   *  then replace its durable ownership and tokens. Returns a popup-facing result. */
   const runOAuthConnect = async (
     provider: CloudProviderId,
     clientIdArg: string,
   ): Promise<{ ok: boolean; detail: string; account?: string }> => {
-    const settings = await getSettings()
-    // The popup sends the typed client ID with the request (it never writes the
-    // settings blob itself — single-writer, ADR-0005); fall back to a stored one.
-    const clientId = clientIdArg !== '' ? clientIdArg : providerTokens(settings, provider).clientId
-    if (clientId === '')
-      return { ok: false, detail: `Enter the ${PROVIDERS[provider].label} client ID first.` }
-    try {
-      const cfg = PROVIDERS[provider].oauth
-      const redirectUri = authFlow.getRedirectUrl()
-      const verifier = generateCodeVerifier()
-      const challenge = await computeCodeChallenge(verifier)
-      const state = randomState()
-      const authUrl = buildAuthUrl(cfg, { clientId, redirectUri, codeChallenge: challenge, state })
-      const redirect = await authFlow.launchFlow(authUrl)
-      if (redirect === undefined || redirect === '')
-        return { ok: false, detail: 'Authorization was cancelled.' }
-      const { code } = parseAuthRedirect(redirect, state)
-      const tokens = await rt.exchangeCode({
-        cfg,
-        clientId,
-        code,
-        codeVerifier: verifier,
-        redirectUri,
-        now: nowFn(),
-      })
-      const f = PROVIDERS[provider].fields
-      await writeCloudSettings({
-        [f.clientId]: clientId,
-        [f.accessToken]: tokens.accessToken,
-        [f.refreshToken]: tokens.refreshToken,
-        [f.expiry]: tokens.expiresAt,
-        [f.account]: tokens.account ?? '',
-      })
-      return {
-        ok: true,
-        detail: `Connected ${PROVIDERS[provider].label}.`,
-        ...(tokens.account !== undefined ? { account: tokens.account } : {}),
-      }
-    } catch (err) {
+    const ownership = await deps.getSettingsOwnership()
+    if (ownership.availability === 'recovery-required')
       return {
         ok: false,
-        detail: classifyUploadError(err instanceof Error ? err.message : String(err)),
+        detail: 'Repair or reset Settings before changing cloud connections.',
       }
+    const settings = ownership.runtime
+    // The popup sends the typed client ID with the request (it never writes the
+    // settings blob itself — single-writer, ADR-0005); fall back to a stored one.
+    const clientId =
+      clientIdArg !== '' ? clientIdArg : settings[PROVIDERS[provider].fields.clientId]
+    if (clientId === '')
+      return {
+        ok: false,
+        detail: `Enter the ${PROVIDERS[provider].label} client ID first.`,
+      }
+    try {
+      await readLedger()
+    } catch {
+      return { ok: false, detail: lastUploadError ?? CORRUPT_LEDGER_ERROR }
     }
+    const result = await providers.connect(provider, clientId, commitOwnershipReplacement)
+    resumeAfterOwnershipIntent()
+    return result.ok ? result : { ...result, detail: classifyUploadError(result.detail) }
   }
 
   const disconnectProvider = async (provider: CloudProviderId): Promise<{ ok: boolean }> => {
-    // Best-effort revoke the grant at the provider BEFORE clearing local tokens, so
-    // disconnect actually withdraws access (not just a local wipe). Never blocks.
-    const t = providerTokens(await getSettings(), provider)
-    await revokeViaRecipe(
-      PROVIDERS[provider].revoke,
-      { accessToken: t.accessToken, refreshToken: t.refreshToken },
-      fetchImpl,
-    )
-    const f = PROVIDERS[provider].fields
-    // gdrive-ONLY: clearing folderId forces a fresh root-folder resolution on the
-    // next connect. Dropbox has no such field, so `f.folderId` is undefined for it
-    // and the spread contributes nothing — Dropbox must NOT clear folderId.
-    await writeCloudSettings({
-      [f.accessToken]: '',
-      [f.refreshToken]: '',
-      [f.expiry]: 0,
-      [f.account]: '',
-      ...('folderId' in f ? { [f.folderId]: '' } : {}),
-    })
-    return { ok: true }
+    try {
+      return await providers.disconnect(provider, commitOwnershipReplacement)
+    } catch (error) {
+      reportUploadDiagnostic(error)
+      return { ok: false }
+    } finally {
+      resumeAfterOwnershipIntent()
+    }
   }
 
   const cloudUploadStatus = async (): Promise<CloudUploadStatus> => {
-    const ledger = decodeLedger(await store.get())
-    return { summary: summarize(ledger), lastError: lastUploadError }
+    try {
+      return {
+        summary: summarize(await readLedger()),
+        lastError: lastUploadError,
+      }
+    } catch {
+      return { summary: summarize([]), lastError: lastUploadError }
+    }
   }
 
   const retryDeadUploads = async (): Promise<{ ok: boolean }> => {
     uploadQueue.push(async () => {
-      let ledger = decodeLedger(await store.get())
-      const now = nowFn()
-      for (const j of ledger) {
-        if (j.status === 'dead' || j.status === 'failed')
-          ledger = retryUploadJob(ledger, j.jobId, now).ledger
+      const retryable = (jobs: JobLedger): JobLedger => {
+        let next = jobs
+        const now = nowFn()
+        for (const job of next) {
+          if (job.status === 'dead' || job.status === 'failed')
+            next = retryUploadJob(next, job.jobId, now).ledger
+        }
+        return next
       }
-      await store.set(ledger)
+      let state = await readLedgerState()
+      let ledger = retryable(state.state.jobs)
+      if (ledger === state.state.jobs) return
+      try {
+        await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+      } catch (error) {
+        reportUploadDiagnostic(error)
+        return
+      }
+      // Alarm I/O yields. Do not revive rows after a later opt-out; rebuild the
+      // retry from durable truth so a concurrent recovery cannot be clobbered.
+      if (!(await getSettings()).cloudUploadEnabled) return
+      state = await readLedgerState()
+      ledger = retryable(state.state.jobs)
+      if (ledger === state.state.jobs) return
+      await writeLedger(state.state, ledger)
+      try {
+        await scheduleUploadWake()
+      } catch (error) {
+        reportUploadDiagnostic(error)
+      }
       await drainUploadJobs()
     })
     return { ok: true }
@@ -598,10 +1065,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   /** Reflect permanently-failed (dead) uploads on the toolbar badge so the user
    *  notices without opening the popup — restrained, no notifications permission. */
   const refreshUploadBadge = async (): Promise<void> => {
-    const dead = decodeLedger(await store.get()).reduce(
-      (n, j) => (j.status === 'dead' ? n + 1 : n),
-      0,
-    )
+    const dead = (await readLedger()).reduce((n, j) => (j.status === 'dead' ? n + 1 : n), 0)
     try {
       await badge.set(dead > 0 ? String(dead) : '')
       if (dead > 0) await badge.setColor('#dc2626')
@@ -621,9 +1085,15 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     const settings = await getSettings()
     if (!settings.cloudUploadEnabled)
       return { ok: false, queued: 0, detail: 'Turn on Cloud upload first.' }
-    const providers = connectedProviders(settings)
-    if (providers.length === 0)
-      return { ok: false, queued: 0, detail: 'Connect Google Drive or Dropbox first.' }
+    const owners = providers.owners(settings)
+    if (owners.length === 0)
+      return {
+        ok: false,
+        queued: 0,
+        detail: CLOUD_PROVIDERS.some((provider) => providers.isPending(provider))
+          ? 'Cloud connection change is pending.'
+          : 'Connect Google Drive or Dropbox first.',
+      }
     const records = (await deps.getBackfillRecords()).filter((r) => r.media.url !== '')
     if (records.length === 0)
       return {
@@ -631,49 +1101,152 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
         queued: 0,
         detail: 'No past downloads on record — turn on Download history to capture them.',
       }
-    // Enqueue on the serial chain and await just that step; the queue already
-    // orders the work, so no hand-rolled Promise is needed. `.catch(() => 0)`
-    // preserves never-reject behavior (an enqueue failure is surfaced via the
-    // queue's onError observer), so the reply still lands.
-    const queued = await uploadQueue
+    // Enqueue on the serial chain and await just that step. Failures become a
+    // popup result; the queue observer still traces them.
+    const admission = await uploadQueue
       .run(async () => {
-        let ledger = decodeLedger(await store.get())
-        const before = ledger.length
+        const current = await getSettings()
+        if (!current.cloudUploadEnabled)
+          return {
+            queued: 0,
+            rejected: 0,
+            changed: false,
+            ownershipChanged: true,
+          }
+        const decoded = await readLedgerState()
+        const durablePending = new Set(
+          decoded.state.ownershipTransitions.map((transition) => transition.provider),
+        )
+        const owned = owners.filter(
+          (owner) => providers.stillOwns(current, owner) && !durablePending.has(owner.provider),
+        )
+        if (owned.length === 0)
+          return {
+            queued: 0,
+            rejected: 0,
+            changed: false,
+            ownershipChanged: true,
+          }
+        const state = decoded.state
+        if (state.legacy.length > 0 || state.quarantine.length > 0) {
+          if (decoded.migrationNeeded) await writeLedger(state, state.jobs)
+          return {
+            queued: 0,
+            rejected: 0,
+            changed: false,
+            ownershipChanged: false,
+            legacyBlocked: true,
+          }
+        }
+        let ledger = state.jobs
+        let changed = false
+        let queued = 0
+        let rejected = 0
         const now = nowFn()
         for (const r of records) {
           const target = cloudTargetFor(r.media, r.filename)
-          for (const p of providers) {
-            ledger = enqueue(
+          for (const { provider } of owned) {
+            const result = enqueueBounded(
               ledger,
-              { mediaId: r.requestId, provider: p, url: r.media.url, target },
+              {
+                requestId: r.requestId,
+                provider,
+                url: r.media.url,
+                target,
+              },
               now,
+              Math.max(0, maxUploadJobs - state.legacy.length - state.quarantine.length),
             )
+            if (result.admitted && result.added) queued += 1
+            if (!result.admitted) rejected += 1
+            changed ||= result.ledger !== ledger
+            ledger = result.ledger
           }
         }
-        await store.set(ledger)
-        return ledger.length - before
+        if (changed || decoded.migrationNeeded) {
+          const committed = await commitLedgerAppend(state, ledger, async () => {
+            const latest = await getSettings()
+            return (
+              latest.cloudUploadEnabled &&
+              owned.every((owner) => providers.stillOwns(latest, owner))
+            )
+          })
+          if (!committed)
+            return {
+              queued: 0,
+              rejected: 0,
+              changed: false,
+              ownershipChanged: true,
+            }
+        }
+        reportCapacity(rejected)
+        return { queued, rejected, changed, ownershipChanged: false }
       })
-      .catch(() => 0)
-    uploadQueue.push(() => drainUploadJobs()) // drain in the background; don't block the reply
+      .catch(() => null)
+    if (admission === null)
+      return {
+        ok: false,
+        queued: 0,
+        detail: lastUploadError ?? 'Cloud uploads could not be queued.',
+      }
+    if (admission.ownershipChanged)
+      return {
+        ok: false,
+        queued: 0,
+        detail: 'Cloud connection changed. Nothing was queued.',
+      }
+    if (admission.legacyBlocked)
+      return {
+        ok: false,
+        queued: 0,
+        detail: 'Legacy cloud uploads need review before backfill can prove no duplicate.',
+      }
+    if (admission.changed) uploadQueue.push(() => drainUploadJobs())
+    if (admission.rejected > 0)
+      return {
+        ok: admission.queued > 0,
+        queued: admission.queued,
+        detail:
+          admission.queued > 0
+            ? `Queued ${admission.queued} upload${admission.queued === 1 ? '' : 's'}; ${admission.rejected} stayed local because the cloud queue is full.`
+            : `Cloud upload queue is full (${maxUploadJobs} jobs). Nothing was queued.`,
+      }
     return {
       ok: true,
-      queued,
+      queued: admission.queued,
       detail:
-        queued > 0
-          ? `Queued ${queued} upload${queued === 1 ? '' : 's'} from past downloads.`
+        admission.queued > 0
+          ? `Queued ${admission.queued} upload${admission.queued === 1 ? '' : 's'} from past downloads.`
           : 'Past downloads are already uploaded or queued.',
     }
   }
 
-  const resumeOnBoot = (): void => {
-    uploadQueue.push(async () => {
-      await store.set(capLedger(decodeLedger(await store.get())))
-      await drainUploadJobs()
+  const resumeOnBoot = (): Promise<void> =>
+    uploadQueue.run(async () => {
+      const state = await persistRebasedUploadDeadlines(await recoverOwnershipTransitions())
+      const needsWake =
+        state.ownershipTransitions.length > 0 ||
+        state.jobs.some((job) => !isTerminal(job) && job.attempts < MAX_ATTEMPTS)
+      if (needsWake)
+        await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+      await writeLedger(state, capLedger(state.jobs))
+      if ((await getSettings()).cloudUploadEnabled) await drainUploadJobs()
+      else await clearDisabledProjection()
     })
-  }
 
-  const clearUploadBadge = (): void => {
-    void badge.set('').catch(() => {})
+  const resumeWhenEnabled = (): void => {
+    uploadQueue.push(async () => {
+      // The preceding disabled projection may have cleared the only alarm.
+      // Re-establish a conservative wake before recovery or a fresh drain.
+      try {
+        await alarms.create(UPLOAD_ALARM, cloudDeadline(nowFn(), DURABLE_SIDE_EFFECT_WATCHDOG_MS))
+      } catch (error) {
+        reportUploadDiagnostic(error)
+        return
+      }
+      await recoverOwnershipTransitions()
+      if ((await getSettings()).cloudUploadEnabled) await drainUploadJobs()
+    })
   }
 
   return {
@@ -686,7 +1259,8 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     retryDeadUploads,
     backfillCloudUploads,
     resumeOnBoot,
-    clearUploadBadge,
+    resumeWhenEnabled,
+    pauseWhenDisabled,
     uploadAlarm: UPLOAD_ALARM,
   }
 }

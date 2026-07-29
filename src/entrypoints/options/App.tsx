@@ -1,7 +1,7 @@
 import type { ComponentType } from 'preact'
-import { useEffect, useState } from 'preact/hooks'
-import { getSettings, setSettings } from '@/core/settings'
-import type { Settings } from '@/core/schema'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import { useSettingsEditor } from '@/components/use-settings-editor'
+import { confirmSettingsRecovery, inspectSettingsRecovery } from '@/core/settings/recovery-client'
 import { cn } from '@/lib/utils'
 import { CheckIcon } from '@/components/icons'
 import { Badge } from '@/components/ui/badge'
@@ -13,6 +13,13 @@ import { SyncPanel } from './panels/sync'
 import { HistoryPanel } from './panels/history'
 import { AboutPanel } from './panels/about'
 import { ArchivePanel } from './panels/archive'
+import { RecoveryPanel } from './panels/recovery'
+import {
+  OptionsSettingsRecoveryContext,
+  beginSettingsRecovery,
+  initialSettingsRecoveryState,
+  settleSettingsRecovery,
+} from './settings-recovery-context'
 
 // Which sidebar cluster a section renders in. 'utility' sections (About) skip
 // both nav lists — they're rendered by hand in the sidebar's bottom corner.
@@ -37,6 +44,7 @@ const SECTIONS = [
   { id: 'sync', label: 'Sync', group: 'settings', Panel: SyncPanel },
   { id: 'archive', label: 'Archive', group: 'library', Panel: ArchivePanel },
   { id: 'history', label: 'History', group: 'library', Panel: HistoryPanel },
+  { id: 'recovery', label: 'Recovery', group: 'library', Panel: RecoveryPanel },
   { id: 'about', label: 'About', group: 'utility', Panel: AboutPanel },
 ] as const satisfies ReadonlyArray<Section>
 
@@ -59,12 +67,50 @@ const HASH_ALIASES: Record<string, SectionId> = {
 }
 
 export function App() {
-  const [settings, setSettingsState] = useState<Settings | null>(null)
   const [section, setSection] = useState<SectionId>('saving')
-  const [saved, setSaved] = useState(false)
+  const [settingsRecovery, setSettingsRecovery] = useState(initialSettingsRecoveryState)
+  const recoveryMounted = useRef(true)
+  const recoveryEpoch = useRef(0)
+  const editor = useSettingsEditor({
+    successMs: 1400,
+  })
+  const { load, notice: saveNotice, reload: reloadEditor } = editor
+  const settings = load.settings
+
+  const refreshSettingsRecovery = useCallback(async (): Promise<void> => {
+    if (!recoveryMounted.current) return
+    const epoch = ++recoveryEpoch.current
+    setSettingsRecovery(beginSettingsRecovery)
+    const response = await inspectSettingsRecovery()
+    if (recoveryMounted.current && recoveryEpoch.current === epoch)
+      setSettingsRecovery((state) => settleSettingsRecovery(state, response))
+  }, [])
+
+  const recoverSettings = useCallback(
+    async (action: 'repair' | 'reset', fingerprint: string): Promise<void> => {
+      if (!recoveryMounted.current) return
+      const epoch = ++recoveryEpoch.current
+      setSettingsRecovery(beginSettingsRecovery)
+      const response = await confirmSettingsRecovery(action, fingerprint)
+      if (!recoveryMounted.current || recoveryEpoch.current !== epoch) return
+      setSettingsRecovery((state) => settleSettingsRecovery(state, response))
+      if (response._tag === 'SettingsRecoveryStatus' && response.kind === 'healthy')
+        await reloadEditor()
+    },
+    [reloadEditor],
+  )
+
+  const update: PanelProps['update'] = async (patch) => {
+    await editor.update(patch)
+    await refreshSettingsRecovery()
+  }
+
+  const reload = async (): Promise<void> => {
+    await editor.reload()
+    await refreshSettingsRecovery()
+  }
 
   useEffect(() => {
-    void getSettings().then(setSettingsState)
     const handleHash = () => {
       const hash = location.hash.replace(/^#/, '')
       const target = HASH_ALIASES[hash] ?? hash
@@ -75,6 +121,14 @@ export function App() {
     return () => window.removeEventListener('hashchange', handleHash)
   }, [])
 
+  useEffect(() => {
+    recoveryMounted.current = true
+    void refreshSettingsRecovery()
+    return () => {
+      recoveryMounted.current = false
+    }
+  }, [refreshSettingsRecovery])
+
   // Sidebar clicks are tab switches, not navigation — replaceState keeps the
   // hash in sync (so reload/copy-link still lands on the right panel) without
   // spamming browser history; five sidebar clicks shouldn't take five presses
@@ -84,41 +138,94 @@ export function App() {
     history.replaceState(null, '', `#${id}`)
   }
 
-  const update = async (patch: Partial<Settings>): Promise<void> => {
-    setSettingsState(await setSettings(patch))
-    setSaved(true)
-    setTimeout(() => setSaved(false), 1400)
-  }
-  const reload = async (): Promise<void> => {
-    setSettingsState(await getSettings())
-  }
-
   const active: Section = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
   const ActivePanel = active.Panel
 
+  const recoveryKind =
+    settingsRecovery.status?.kind === 'recoverable' || settingsRecovery.status?.kind === 'blocked'
+      ? settingsRecovery.status.kind
+      : null
+  const recoveryController = useMemo(
+    () => ({
+      state: settingsRecovery,
+      refresh: refreshSettingsRecovery,
+      recover: recoverSettings,
+    }),
+    [settingsRecovery, refreshSettingsRecovery, recoverSettings],
+  )
+
   return (
-    <div className="xmd-options-root flex min-h-screen w-full bg-background text-foreground">
-      <SettingsSidebar sections={SECTIONS} active={section} onSelect={select} />
+    <OptionsSettingsRecoveryContext.Provider value={recoveryController}>
+      <div className="xmd-options-root flex min-h-screen w-full bg-background text-foreground">
+        <SettingsSidebar sections={SECTIONS} active={section} onSelect={select} />
 
-      <main className="min-w-0 flex-1">
-        <div className="mx-auto flex max-w-2xl flex-col gap-8 px-10 py-12">
-          {settings ? <ActivePanel settings={settings} update={update} reload={reload} /> : null}
+        <main className="min-w-0 flex-1">
+          <div className="mx-auto flex max-w-2xl flex-col gap-8 px-10 py-12">
+            {recoveryKind !== null && (
+              <section
+                aria-label="Settings recovery required"
+                className="flex items-start justify-between gap-4 border border-destructive/30 bg-destructive/6 p-4"
+              >
+                <div className="grid gap-1">
+                  <p className="text-sm font-semibold">
+                    {recoveryKind === 'recoverable'
+                      ? 'Settings repair required'
+                      : 'Settings reset required'}
+                  </p>
+                  <p className="text-[13px] leading-snug text-muted-foreground">
+                    Safe Direct mode is active. Cloud upload, Cloud Sync, Clear, and Capture Mirror
+                    are paused.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-sm text-[13px] font-medium text-destructive outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50"
+                  onClick={() => select('recovery')}
+                >
+                  Open Recovery
+                </button>
+              </section>
+            )}
+            {settings !== null ? (
+              <ActivePanel settings={settings} update={update} reload={reload} />
+            ) : load.status === 'unavailable' ? (
+              <section className="grid gap-3" aria-label="Settings unavailable">
+                <p className="text-sm text-muted-foreground">Settings are unavailable.</p>
+                <button
+                  type="button"
+                  className="self-start rounded-sm text-sm font-medium text-primary outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50"
+                  onClick={() => void reload()}
+                >
+                  Retry
+                </button>
+              </section>
+            ) : (
+              <p className="text-sm text-muted-foreground">Loading settings…</p>
+            )}
+          </div>
+        </main>
+
+        <div
+          aria-live="polite"
+          className={cn(
+            'pointer-events-none fixed right-5 bottom-5 transition-[opacity,transform] ease-[var(--xmd-ease)]',
+            saveNotice !== 'idle'
+              ? 'translate-y-0 opacity-100 duration-200'
+              : 'translate-y-1 opacity-0 duration-150',
+          )}
+        >
+          <span
+            className={cn(
+              'flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-3 py-1.5 text-[13px] font-medium',
+              saveNotice === 'saved' ? 'text-success' : 'text-destructive',
+            )}
+          >
+            {saveNotice === 'saved' ? <CheckIcon className="size-3.5" /> : null}
+            {saveNotice === 'saved' ? 'All changes saved' : 'Save failed'}
+          </span>
         </div>
-      </main>
-
-      <div
-        aria-live="polite"
-        className={cn(
-          'pointer-events-none fixed right-5 bottom-5 transition-[opacity,transform] ease-[var(--xmd-ease)]',
-          saved ? 'translate-y-0 opacity-100 duration-200' : 'translate-y-1 opacity-0 duration-150',
-        )}
-      >
-        <span className="flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-3 py-1.5 text-[13px] font-medium text-success">
-          <CheckIcon className="size-3.5" />
-          All changes saved
-        </span>
       </div>
-    </div>
+    </OptionsSettingsRecoveryContext.Provider>
   )
 }
 

@@ -18,6 +18,17 @@ export interface ChunkInfo {
   readonly isLast: boolean
 }
 
+/** A body crossed a byte limit before it could be consumed safely. */
+export class BodyTooLargeError extends RangeError {
+  readonly limit: number
+
+  constructor(limit: number) {
+    super(`body exceeds ${limit}-byte limit`)
+    this.name = 'BodyTooLargeError'
+    this.limit = limit
+  }
+}
+
 /** Always copies into a fresh ArrayBuffer-backed array — keeps chunks usable as a
  *  fetch `BodyInit` regardless of the source view's backing buffer. */
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -27,11 +38,50 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
   return out
 }
 
+function assertByteLimit(value: number, minimum: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < minimum)
+    throw new RangeError(`${label} must be a safe integer >= ${minimum}`)
+}
+
+async function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reason: unknown,
+): Promise<void> {
+  try {
+    await reader.cancel(reason)
+  } catch {
+    // Cleanup must never replace the read/sink failure that caused it.
+  }
+}
+
+/** Cancel an owned stream without letting cleanup failure mask the primary result. */
+export async function cancelStream(
+  body: ReadableStream<Uint8Array>,
+  reason?: unknown,
+): Promise<void> {
+  try {
+    await body.cancel(reason)
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function joinParts(parts: ReadonlyArray<Uint8Array>, total: number): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const part of parts) {
+    out.set(part, at)
+    at += part.length
+  }
+  return out
+}
+
 export async function streamInChunks(
   body: ReadableStream<Uint8Array>,
   chunkBytes: number,
   onChunk: (chunk: Uint8Array<ArrayBuffer>, info: ChunkInfo) => Promise<void>,
 ): Promise<number> {
+  assertByteLimit(chunkBytes, 1, 'chunkBytes')
   const size = chunkBytes
   const reader = body.getReader()
   let buffer: Uint8Array<ArrayBuffer> = new Uint8Array(0)
@@ -60,26 +110,34 @@ export async function streamInChunks(
       }
       if (done) break
     }
+
+    // Drain: the held full chunk (if any) precedes the remainder; the very last
+    // emit carries isLast. remainder.length < size (possibly 0).
+    if (buffer.length > 0) {
+      if (held !== null) await emit(held, false)
+      await emit(buffer, true)
+    } else if (held !== null) {
+      await emit(held, true)
+    } else {
+      await emit(new Uint8Array(0), true)
+    }
+    return total
+  } catch (error) {
+    await cancelReader(reader, error)
+    throw error
   } finally {
     reader.releaseLock()
   }
-
-  // Drain: the held full chunk (if any) precedes the remainder; the very last
-  // emit carries isLast. remainder.length < size (possibly 0).
-  if (buffer.length > 0) {
-    if (held !== null) await emit(held, false)
-    await emit(buffer, true)
-  } else if (held !== null) {
-    await emit(held, true)
-  } else {
-    await emit(new Uint8Array(0), true)
-  }
-  return total
 }
 
 /** Read an entire stream into one buffer — only for media already known small
- *  (≤ SIMPLE_MAX_BYTES). Returns the concatenated bytes. */
-export async function readAll(body: ReadableStream<Uint8Array>): Promise<Uint8Array<ArrayBuffer>> {
+ *  (≤ `maxBytes`). The actual bytes are authoritative: a lying Content-Length
+ *  cannot make this allocate past the bound. */
+export async function readAll(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<Uint8Array<ArrayBuffer>> {
+  assertByteLimit(maxBytes, 0, 'maxBytes')
   const reader = body.getReader()
   const parts: Uint8Array[] = []
   let total = 0
@@ -88,19 +146,57 @@ export async function readAll(body: ReadableStream<Uint8Array>): Promise<Uint8Ar
       // oxlint-disable-next-line no-await-in-loop -- sequential by nature
       const { value, done } = await reader.read()
       if (value !== undefined && value.length > 0) {
-        parts.push(value)
+        if (value.length > maxBytes - total) throw new BodyTooLargeError(maxBytes)
+        parts.push(value.slice())
         total += value.length
       }
       if (done) break
     }
+    return joinParts(parts, total)
+  } catch (error) {
+    await cancelReader(reader, error)
+    throw error
   } finally {
     reader.releaseLock()
   }
-  const out = new Uint8Array(total)
-  let at = 0
-  for (const p of parts) {
-    out.set(p, at)
-    at += p.length
+}
+
+/**
+ * Read at most `maxBytes`, canceling any remainder. Used only for diagnostic
+ * text where a prefix is enough.
+ */
+export async function readPrefix(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<Uint8Array<ArrayBuffer>> {
+  assertByteLimit(maxBytes, 0, 'maxBytes')
+  const reader = body.getReader()
+  const parts: Uint8Array[] = []
+  let total = 0
+  let truncated = false
+  try {
+    for (;;) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential by nature
+      const { value, done } = await reader.read()
+      if (value !== undefined && value.length > 0) {
+        const remaining = maxBytes - total
+        if (value.length > remaining) {
+          if (remaining > 0) parts.push(value.slice(0, remaining))
+          total = maxBytes
+          truncated = true
+          break
+        }
+        parts.push(value.slice())
+        total += value.length
+      }
+      if (done) break
+    }
+    if (truncated) await cancelReader(reader, new BodyTooLargeError(maxBytes))
+    return joinParts(parts, total)
+  } catch (error) {
+    await cancelReader(reader, error)
+    throw error
+  } finally {
+    reader.releaseLock()
   }
-  return out
 }

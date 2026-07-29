@@ -1,6 +1,7 @@
 import { Effect } from 'effect'
 import { SourceFetch } from './source-fetch'
 import type { UploadInput, UploadOutcome } from './types'
+import { cancelStream } from './chunk'
 
 /** twimg link-rot statuses: the source is gone, not a fault to retry. */
 const sourceGone = (status: number): boolean => status === 403 || status === 404 || status === 410
@@ -17,7 +18,10 @@ export type ParsedSource =
       readonly size: number | null
       readonly contentType: string
     }
-  | { readonly ok: false; readonly outcome: UploadOutcome }
+  | {
+      readonly ok: false
+      readonly outcome: Exclude<UploadOutcome, { readonly kind: 'success' }>
+    }
 
 /**
  * Fetch the twimg source through the SSRF guard (`SourceFetch`) and validate it
@@ -31,7 +35,9 @@ export const parseSource = (input: UploadInput): Effect.Effect<ParsedSource, nev
   Effect.gen(function* () {
     const source = yield* SourceFetch
     const response = yield* source.fetch(input.url)
-    if (!response.ok || response.body === null) {
+    const body = response.body
+    if (!response.ok || body === null) {
+      if (body !== null) yield* Effect.promise(() => cancelStream(body))
       const reason = `source HTTP ${response.status}`
       return {
         ok: false,
@@ -43,13 +49,16 @@ export const parseSource = (input: UploadInput): Effect.Effect<ParsedSource, nev
     const contentType =
       response.headers.get('content-type')?.split(';', 1)[0]?.trim() || input.target.contentType
     const lenHeader = response.headers.get('content-length')
-    const size = lenHeader !== null && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null
-    if (size === 0)
+    const parsedSize = lenHeader !== null && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null
+    const size = parsedSize !== null && Number.isSafeInteger(parsedSize) ? parsedSize : null
+    if (size === 0) {
+      yield* Effect.promise(() => cancelStream(body))
       return {
         ok: false,
         outcome: { kind: 'failure', reason: 'empty source' },
       } satisfies ParsedSource
-    return { ok: true, body: response.body, size, contentType } satisfies ParsedSource
+    }
+    return { ok: true, body, size, contentType } satisfies ParsedSource
   }).pipe(
     Effect.catchTag('FetchError', (e) =>
       Effect.succeed<ParsedSource>({

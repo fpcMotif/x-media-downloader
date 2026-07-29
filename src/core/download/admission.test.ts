@@ -63,7 +63,7 @@ describe('freeReason', () => {
     expect(freeReason(item, { ...allOff, minWidth: 1200, minHeight: 800 }, new Set())).toBeNull()
   })
 
-  it("returns 'duplicate' when savedMediaIds contains the item's id", () => {
+  it("returns 'duplicate' when savedRequestIds contains the item's global id", () => {
     expect(freeReason(item, { ...allOff, preventDuplicateDownloads: true }, new Set(['m1']))).toBe(
       'duplicate',
     )
@@ -184,7 +184,7 @@ describe('budgetReason', () => {
 describe('evaluateAdmission', () => {
   const ctx = (over: Partial<AdmissionContext> = {}): AdmissionContext => ({
     settings: allOff,
-    savedMediaIds: new Set(),
+    savedRequestIds: new Set(),
     sizeBytes: null,
     running: { bytes: 0, count: 0 },
     ...over,
@@ -199,7 +199,7 @@ describe('evaluateAdmission', () => {
       item,
       ctx({
         settings: { ...allOff, preventDuplicateDownloads: true, maxFileSizeBytes: 1 },
-        savedMediaIds: new Set(['m1']),
+        savedRequestIds: new Set(['m1']),
         sizeBytes: 5_000_000,
       }),
     )

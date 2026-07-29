@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FieldDescription } from '@/components/ui/field'
@@ -8,15 +8,18 @@ import {
   fetchCaptureSummary,
   runCaptureExport,
   type CaptureExportKind,
-  type CaptureSummary,
+  type CaptureSummaryResult,
 } from '@/components/capture-export'
+import { requestCaptureErase } from '@/core/capture/client'
 import {
   plural,
   fmtDay,
   confirmEraseArchiveCopy,
   erasedArchiveCopy,
+  eraseArchiveFailedCopy,
 } from '@/components/capture-copy'
 import { ConfirmStrip } from '@/components/confirm-strip'
+import { useAsyncAuthority } from '@/components/use-async-authority'
 
 // The archive browser loads the newest ARCHIVE_FETCH_LIMIT conversations in one
 // message and pages through them client-side — no per-click round-trips. Archives
@@ -34,33 +37,78 @@ const LINK_FOCUS = 'rounded-sm outline-none focus-visible:ring-3 focus-visible:r
 // Takes no PanelProps — the archive is a pure data browser, not a setting; it
 // only talks to the extension worker for its own summary/export/erase messages.
 export function ArchivePanel() {
-  const [summary, setSummary] = useState<CaptureSummary | null>(null)
+  const [summaryResult, setSummary] = useState<CaptureSummaryResult | null>(null)
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [visible, setVisible] = useState(PAGE_SIZE)
+  const [erasing, setErasing] = useState(false)
+  const erasePending = useRef(false)
+  const statusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const refreshAuthority = useAsyncAuthority()
+  const statusAuthority = useAsyncAuthority()
 
-  const refreshSummary = (): void => void fetchCaptureSummary(ARCHIVE_FETCH_LIMIT).then(setSummary)
-  useEffect(refreshSummary, [])
+  useEffect(() => {
+    return () => {
+      if (statusTimer.current !== undefined) clearTimeout(statusTimer.current)
+    }
+  }, [])
 
-  const flashStatus = (msg: string): void => {
+  const refreshSummary = useCallback((): void => {
+    const generation = refreshAuthority.begin()
+    setSummary(null)
+    void fetchCaptureSummary(ARCHIVE_FETCH_LIMIT).then((result) => {
+      if (refreshAuthority.isCurrent(generation)) setSummary(result)
+      return undefined
+    })
+  }, [refreshAuthority])
+  useEffect(() => {
+    refreshSummary()
+  }, [refreshSummary])
+
+  const flashStatus = (epoch: number, msg: string): void => {
+    if (!statusAuthority.isCurrent(epoch)) return
+    if (statusTimer.current !== undefined) clearTimeout(statusTimer.current)
     setStatusMsg(msg)
-    setTimeout(() => setStatusMsg(null), 5000)
+    statusTimer.current = setTimeout(() => {
+      if (!statusAuthority.isCurrent(epoch)) return
+      statusTimer.current = undefined
+      setStatusMsg(null)
+    }, 5000)
   }
 
   const doExport = async (kind: CaptureExportKind, conversationId?: string): Promise<void> => {
+    const epoch = statusAuthority.begin()
     const outcome = await runCaptureExport(kind, conversationId)
-    flashStatus(outcome.detail)
+    flashStatus(epoch, outcome.detail)
   }
 
   const eraseArchive = async (): Promise<void> => {
-    const tweets = summary?.tweets ?? 0
-    await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
-    setSummary({ tweets: 0, conversations: 0, recent: [] })
-    setQuery('')
-    setVisible(PAGE_SIZE)
-    flashStatus(erasedArchiveCopy(tweets))
+    if (erasePending.current) return
+    erasePending.current = true
+    const epoch = statusAuthority.begin()
+    setErasing(true)
+    try {
+      const outcome = await requestCaptureErase((request) => browser.runtime.sendMessage(request))
+      if (!statusAuthority.isMounted()) return
+      if (outcome.ok) {
+        // A pre-erase refresh can resolve after this acknowledgement. Its snapshot
+        // must never resurrect data the background has already removed.
+        refreshAuthority.invalidate()
+        setSummary({ status: 'available', summary: { tweets: 0, conversations: 0, recent: [] } })
+        setQuery('')
+        setVisible(PAGE_SIZE)
+        flashStatus(epoch, erasedArchiveCopy(outcome.cleared))
+      } else {
+        flashStatus(epoch, eraseArchiveFailedCopy())
+      }
+    } finally {
+      erasePending.current = false
+      if (statusAuthority.isMounted()) setErasing(false)
+    }
   }
 
+  const summary = summaryResult?.status === 'available' ? summaryResult.summary : null
+  const available = summary !== null
   const loaded = summary?.recent ?? []
   const conversations = summary?.conversations ?? 0
 
@@ -100,6 +148,7 @@ export function ArchivePanel() {
             aria-label="Search handles and text"
             placeholder="Search handles and text…"
             value={query}
+            disabled={!available}
             onInput={(e: Event) => {
               setQuery((e.target as HTMLInputElement).value)
               setVisible(PAGE_SIZE)
@@ -107,12 +156,16 @@ export function ArchivePanel() {
             className="min-w-[12rem] flex-1"
           />
           <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-            {plural(summary?.tweets ?? 0, 'tweet')} · {plural(conversations, 'conversation')}
+            {available
+              ? `${plural(summary.tweets, 'tweet')} · ${plural(conversations, 'conversation')}`
+              : '—'}
           </span>
         </div>
 
-        {summary === null ? (
-          <FieldDescription>Loading…</FieldDescription>
+        {summaryResult === null ? (
+          <FieldDescription>Loading archive…</FieldDescription>
+        ) : !available ? (
+          <FieldDescription>Archive unavailable. Refresh to try again.</FieldDescription>
         ) : shown.length > 0 ? (
           <ol className="grid gap-0 divide-y divide-border" aria-label="Captured conversations">
             {shown.map((c) => (
@@ -186,6 +239,7 @@ export function ArchivePanel() {
           <button
             type="button"
             className={`self-start text-[13px] text-primary hover:underline ${LINK_FOCUS}`}
+            disabled={!available}
             onClick={() => void doExport('jsonl')}
           >
             Export all · JSONL
@@ -202,10 +256,11 @@ export function ArchivePanel() {
             <button
               type="button"
               className={`flex items-center gap-1.5 text-[13px] text-destructive hover:underline ${LINK_FOCUS}`}
-              onClick={arm}
+              disabled={!available || erasing}
+              onClick={!available || erasing ? undefined : arm}
             >
               <EraserIcon className="size-3.5" />
-              Erase archive…
+              {erasing ? 'Erasing archive…' : 'Erase archive…'}
             </button>
           )}
         </ConfirmStrip>

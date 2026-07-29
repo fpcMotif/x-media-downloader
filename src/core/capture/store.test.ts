@@ -72,10 +72,14 @@ describe('decodeRecords', () => {
     expect(decodeRecords(records)).toEqual(records)
   })
 
-  it('returns [] on corrupt input', () => {
+  it('returns [] on corrupt non-array input', () => {
     expect(decodeRecords({ not: 'an array' })).toEqual([])
-    expect(decodeRecords([{ tweetId: 1 }])).toEqual([])
     expect(decodeRecords(null)).toEqual([])
+  })
+
+  it('keeps valid rows when a persisted neighbour is corrupt', () => {
+    const record = make({ tweetId: '1', source: 'timeline', capturedAt: 1 })
+    expect(decodeRecords([record, { tweetId: 2 }, record])).toEqual([record, record])
   })
 })
 
@@ -195,6 +199,16 @@ describe('streaming summary (fold/finish — the popup path that never loads the
     const acc = records.reduce(foldCaptureSummary, emptyCaptureSummary())
     expect(finishCaptureSummary(acc, 1).recent).toEqual(recentConversations(records, 1))
     expect(finishCaptureSummary(acc, 1).recent).toHaveLength(1)
+  })
+
+  it('truncates each summary preview without changing the stored record', () => {
+    const text = 'x'.repeat(257)
+    const acc = [make({ tweetId: '1', text, source: 'timeline', capturedAt: 1 })].reduce(
+      foldCaptureSummary,
+      emptyCaptureSummary(),
+    )
+
+    expect(finishCaptureSummary(acc, 1).recent[0]?.rootText).toBe('x'.repeat(256))
   })
 
   it('a late-arriving root record still overwrites the thread title, like the batch path', () => {

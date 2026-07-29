@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Effect, Layer, ManagedRuntime } from 'effect'
-import { DropboxUploader, DropboxUploaderLive } from './dropbox'
+import { dropboxStagePath, DropboxUploader, DropboxUploaderLive } from './dropbox'
 import { FetchService } from '../fetch-service'
 import { SourceFetch } from './source-fetch'
-import type { UploadInput } from './types'
+import { idempotencyKeyFor } from './upload-job'
+import type { RemoteAttempt, UploadInput } from './types'
 
 const sourceResponse = (
   bytes: Uint8Array<ArrayBuffer>,
@@ -35,34 +36,51 @@ const sourceStub = (make: () => Response): Layer.Layer<SourceFetch> =>
 
 type Route = (endpoint: string, init?: RequestInit, body?: Uint8Array) => Response
 
+const statusOnlyResponse = (status: number, cancel: () => Promise<void>): Response =>
+  ({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers(),
+    body: { cancel },
+  }) as unknown as Response
+
 const sessionStarted = (): Response =>
   new Response(JSON.stringify({ session_id: 's' }), { status: 200 })
 
+const HASH = 'a'.repeat(64)
+const OWNER_KEY = 'b'.repeat(64)
+const metadata = (id: string, size: number, path: string) => ({
+  '.tag': 'file',
+  id,
+  rev: `rev-${id}`,
+  content_hash: HASH,
+  size,
+  path_display: path,
+  path_lower: path.toLowerCase(),
+})
+
 /** The standard Dropbox content router (single upload + session start/append/finish). */
-const dropboxRoute: Route = (endpoint, _init, body) => {
+const dropboxRoute: Route = (endpoint, init, body) => {
+  const argRaw = ((init?.headers ?? {}) as Record<string, string>)['dropbox-api-arg'] ?? '{}'
+  const arg = JSON.parse(argRaw) as {
+    path?: string
+    commit?: { path?: string }
+  }
+  const path = arg.path ?? arg.commit?.path ?? '/missing'
   if (endpoint === 'files/upload')
-    return new Response(
-      JSON.stringify({
-        id: 'id:simple',
-        size: body?.byteLength ?? 0,
-        path_display: '/alice/t1_0.mp4',
-      }),
-      { status: 200 },
-    )
+    return new Response(JSON.stringify(metadata('id:simple', body?.byteLength ?? 0, path)), {
+      status: 200,
+    })
   if (endpoint === 'files/upload_session/start')
     return new Response(JSON.stringify({ session_id: 'sess-1' }), { status: 200 })
   if (endpoint === 'files/upload_session/append_v2') return new Response('', { status: 200 })
   if (endpoint === 'files/upload_session/finish')
-    return new Response(
-      JSON.stringify({ id: 'id:session', size: 999, path_display: '/alice/big.mp4' }),
-      { status: 200 },
-    )
+    return new Response(JSON.stringify(metadata('id:session', 999, path)), { status: 200 })
   return new Response('unexpected', { status: 500 })
 }
 
 // Per-scenario routers (module scope: they capture no test state).
-const routeMetaX: Route = () =>
-  new Response(JSON.stringify({ id: 'x', size: 1, path_display: '/p' }), { status: 200 })
+const routeMetaX: Route = (endpoint, init) => dropboxRoute(endpoint, init, new Uint8Array(1))
 const routeEmptyMeta: Route = () => new Response(JSON.stringify({}), { status: 200 })
 const routeSimple401: Route = () => new Response('denied', { status: 401 })
 const routeSessionStart500: Route = (endpoint) =>
@@ -102,9 +120,31 @@ interface Call {
   readonly bodyLen: number
 }
 
-const harness = (route: Route, src: Layer.Layer<SourceFetch>) => {
+const harness = (
+  route: Route,
+  src: Layer.Layer<SourceFetch>,
+  options: { readonly controlRoute?: Route } = {},
+) => {
   const calls: Call[] = []
+  const controlCalls: string[] = []
   const record = (url: string, init?: RequestInit): Response => {
+    if (url.startsWith('https://api.dropboxapi.com/2/')) {
+      const endpoint = url.replace('https://api.dropboxapi.com/2/', '')
+      controlCalls.push(endpoint)
+      if (options.controlRoute !== undefined)
+        return options.controlRoute(endpoint, init, init?.body as Uint8Array | undefined)
+      if (endpoint === 'files/get_metadata')
+        return new Response(
+          JSON.stringify({
+            error_summary: 'path/not_found/...',
+            error: { '.tag': 'path', path: { '.tag': 'not_found' } },
+          }),
+          { status: 409 },
+        )
+      if (endpoint === 'files/create_folder_v2')
+        return new Response(JSON.stringify({ metadata: { '.tag': 'folder' } }), { status: 200 })
+      return new Response('unexpected control call', { status: 500 })
+    }
     const endpoint = url.replace('https://content.dropboxapi.com/2/', '')
     const argRaw = ((init?.headers ?? {}) as Record<string, string>)['dropbox-api-arg'] ?? '{}'
     const body = init?.body as Uint8Array | undefined
@@ -120,12 +160,21 @@ const harness = (route: Route, src: Layer.Layer<SourceFetch>) => {
   const rt = ManagedRuntime.make(app)
   return {
     calls,
-    upload: (i: UploadInput, accessToken = 'AT') =>
-      rt.runPromise(Effect.flatMap(DropboxUploader, (u) => u.upload({ accessToken }, i))),
+    controlCalls,
+    upload: async (i: UploadInput, accessToken = 'AT', jobId = 'job-1') => {
+      const attempt = await rt.runPromise(
+        Effect.flatMap(DropboxUploader, (u) => Effect.promise(() => u.prepare(jobId, OWNER_KEY))),
+      )
+      return await rt.runPromise(
+        Effect.flatMap(DropboxUploader, (u) => u.advance({ accessToken }, i, attempt)),
+      )
+    },
+    advance: (attempt: RemoteAttempt, i: UploadInput = input(), accessToken = 'AT') =>
+      rt.runPromise(Effect.flatMap(DropboxUploader, (u) => u.advance({ accessToken }, i, attempt))),
   }
 }
 
-describe('DropboxUploader.upload', () => {
+describe('DropboxUploader.advance — staging', () => {
   it('maps a 410 source to sourceGone', async () => {
     const h = harness(
       dropboxRoute,
@@ -141,46 +190,97 @@ describe('DropboxUploader.upload', () => {
     )
     const out = await h.upload(input())
     expect(out).toMatchObject({
-      kind: 'success',
-      remoteId: 'id:simple',
-      remotePath: '/alice/t1_0.mp4',
+      kind: 'progress',
+      attempt: { kind: 'dropbox', phase: 'staged', fileId: 'id:simple' },
     })
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0]!.endpoint).toBe('files/upload')
-    expect((h.calls[0]!.arg as { path: string; mode: string }).path).toBe('/alice/t1_0.mp4')
+    expect((h.calls[0]!.arg as { path: string; mode: string }).path).toBe(
+      await dropboxStagePath('job-1'),
+    )
     expect((h.calls[0]!.arg as { mode: string }).mode).toBe('add')
+    expect((h.calls[0]!.arg as { autorename: boolean }).autorename).toBe(false)
+    expect((h.calls[0]!.arg as { strict_conflict: boolean }).strict_conflict).toBe(false)
   })
 
-  it('large/unknown media → session start → append(s) → finish in order', async () => {
+  it('large/unknown media discards every status-only append response', async () => {
+    const cancel = vi.fn<() => Promise<void>>(async () => {})
+    const route: Route = (endpoint, init, body) =>
+      endpoint === 'files/upload_session/append_v2'
+        ? statusOnlyResponse(200, cancel)
+        : dropboxRoute(endpoint, init, body)
     const h = harness(
-      dropboxRoute,
+      route,
       sourceStub(() =>
         sourceResponse(new Uint8Array(20 * 1024 * 1024).fill(3), { contentLength: null }),
       ),
     )
     const out = await h.upload(input('alice/big.mp4'))
-    expect(out).toMatchObject({ kind: 'success', remoteId: 'id:session' })
+    expect(out).toMatchObject({
+      kind: 'progress',
+      attempt: { phase: 'staged', fileId: 'id:session' },
+    })
     const endpoints = h.calls.map((c) => c.endpoint)
     expect(endpoints[0]).toBe('files/upload_session/start')
     expect(endpoints.at(-1)).toBe('files/upload_session/finish')
     expect(
       endpoints.filter((e) => e === 'files/upload_session/append_v2').length,
     ).toBeGreaterThanOrEqual(1)
+    expect(cancel).toHaveBeenCalledTimes(
+      endpoints.filter((e) => e === 'files/upload_session/append_v2').length,
+    )
     const finish = h.calls.at(-1)!
     expect((finish.arg as { cursor: { offset: number } }).cursor.offset).toBe(
       20 * 1024 * 1024 - finish.bodyLen,
     )
   })
 
-  it('escapes non-ASCII path chars in the Dropbox-API-Arg header', async () => {
+  it('derives an ASCII, collision-resistant stage path from the full job id', async () => {
+    const first = await dropboxStagePath('日本/job:1')
+    const second = await dropboxStagePath('日本/job:2')
+    expect(first).not.toBe(second)
+    expect([...first].every((ch) => ch.charCodeAt(0) <= 127)).toBe(true)
+    expect(first).toMatch(/^\/\.xmd-stage\/v2\/[A-Za-z0-9_-]{43}$/u)
+  })
+
+  it('stages a maximum Unicode job id inside Dropbox limits and accepts its own proof', async () => {
+    const jobId = idempotencyKeyFor('😀'.repeat(270), 'dropbox')
+    const stagePath = await dropboxStagePath(jobId)
     const h = harness(
-      routeMetaX,
-      sourceStub(() => sourceResponse(new Uint8Array(8))),
+      dropboxRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
     )
-    await h.upload(input('日本/t1.mp4'))
-    const header = h.calls[0]!.argRaw
-    expect([...header].every((ch) => ch.charCodeAt(0) <= 127)).toBe(true) // pure ASCII
-    expect(header).toContain('\\u')
+
+    expect(stagePath).toHaveLength('/.xmd-stage/v2/'.length + 43)
+    expect(await h.upload(input(), 'AT', jobId)).toMatchObject({
+      kind: 'progress',
+      attempt: { stagePath },
+    })
+  })
+
+  it('rebinds an uploaded stage after a crash without fetching or uploading bytes again', async () => {
+    const stagePath = await dropboxStagePath('job-1')
+    const fetchSource = vi.fn<(url: string) => Effect.Effect<Response>>(() =>
+      Effect.succeed(sourceResponse(new Uint8Array(64))),
+    )
+    const h = harness(dropboxRoute, Layer.succeed(SourceFetch, { fetch: fetchSource }), {
+      controlRoute: (endpoint) =>
+        endpoint === 'files/get_metadata'
+          ? new Response(JSON.stringify(metadata('id:recovered', 64, stagePath)), { status: 200 })
+          : new Response('unexpected', { status: 500 }),
+    })
+
+    expect(await h.upload(input())).toMatchObject({
+      kind: 'progress',
+      attempt: {
+        phase: 'staged',
+        fileId: 'id:recovered',
+        bytes: 64,
+      },
+    })
+    expect(fetchSource).not.toHaveBeenCalled()
+    expect(h.calls).toHaveLength(0)
+    expect(h.controlCalls).toEqual(['files/get_metadata'])
   })
 
   it('empty source → failure', async () => {
@@ -197,7 +297,10 @@ describe('DropboxUploader.upload', () => {
       sourceStub(() => sourceResponse(new Uint8Array(1024), { contentLength: null })),
     )
     const out = await h.upload(input('alice/small.mp4'))
-    expect(out).toMatchObject({ kind: 'success', remoteId: 'id:session' })
+    expect(out).toMatchObject({
+      kind: 'progress',
+      attempt: { phase: 'staged', fileId: 'id:session' },
+    })
     expect(h.calls.map((c) => c.endpoint)).toEqual([
       'files/upload_session/start',
       'files/upload_session/finish',
@@ -250,14 +353,13 @@ describe('DropboxUploader.upload', () => {
     expect((await h.upload(input('alice/small.mp4'))).kind).toBe('failure')
   })
 
-  it('session success falls back to byte count + request path when finish omits size/path/id', async () => {
+  it('rejects a session result without durable metadata proof', async () => {
     const h = harness(
       routeSessionEmptyMeta,
       sourceStub(() => sourceResponse(new Uint8Array(1024), { contentLength: null })),
     )
     const out = await h.upload(input('alice/small.mp4'))
-    expect(out).toMatchObject({ kind: 'success', bytes: 1024, remotePath: '/alice/small.mp4' })
-    expect((out as { remoteId?: string }).remoteId).toBeUndefined()
+    expect(out).toMatchObject({ kind: 'failure' })
   })
 
   it("errText falls back to '' when the error body read itself fails", async () => {
@@ -268,14 +370,238 @@ describe('DropboxUploader.upload', () => {
     expect(await h.upload(input())).toMatchObject({ kind: 'failure', reason: 'dropbox HTTP 500' })
   })
 
-  it('falls back to local byte count + request path when metadata omits size/path', async () => {
+  it('rejects a simple result without durable metadata proof', async () => {
     const h = harness(
       routeEmptyMeta,
       sourceStub(() => sourceResponse(new Uint8Array(2048))),
     )
     const out = await h.upload(input('alice/t1_0.mp4'))
-    expect(out).toMatchObject({ kind: 'success', bytes: 2048, remotePath: '/alice/t1_0.mp4' })
-    expect((out as { remoteId?: string }).remoteId).toBeUndefined()
+    expect(out).toMatchObject({ kind: 'failure' })
+  })
+
+  it.each([
+    ['wrong id type', { id: 1 }],
+    ['missing revision', { rev: undefined }],
+    ['wrong content hash type', { content_hash: 1 }],
+    ['wrong size type', { size: '2048' }],
+    ['oversized id', { id: 'x'.repeat(4_097) }],
+  ])('fails closed on a simple-upload proof with %s', async (_case, patch) => {
+    const route: Route = (endpoint, init, body) => {
+      if (endpoint !== 'files/upload') return new Response('unexpected', { status: 500 })
+      const arg = JSON.parse(
+        String(((init?.headers ?? {}) as Record<string, string>)['dropbox-api-arg']),
+      ) as { path: string }
+      return new Response(
+        JSON.stringify({ ...metadata('id:proof', body?.byteLength ?? 0, arg.path), ...patch }),
+        { status: 200 },
+      )
+    }
+    const h = harness(
+      route,
+      sourceStub(() => sourceResponse(new Uint8Array(2048))),
+    )
+    expect(await h.upload(input())).toMatchObject({ kind: 'failure' })
+    expect(h.controlCalls).not.toContain('files/move_v2')
+  })
+
+  it('rejects a malformed upload-session id before append or finish', async () => {
+    const h = harness(
+      (endpoint) =>
+        endpoint === 'files/upload_session/start'
+          ? new Response(JSON.stringify({ session_id: 1 }), { status: 200 })
+          : new Response('unexpected', { status: 500 }),
+      sourceStub(() => sourceResponse(new Uint8Array(1024), { contentLength: null })),
+    )
+    expect(await h.upload(input('alice/small.mp4'))).toMatchObject({ kind: 'failure' })
+    expect(h.calls.map((call) => call.endpoint)).toEqual(['files/upload_session/start'])
+  })
+
+  it('bounds a malformed Dropbox error body', async () => {
+    const h = harness(
+      () => new Response('x'.repeat(20_000), { status: 500 }),
+      sourceStub(() => sourceResponse(new Uint8Array(2048))),
+    )
+    const out = await h.upload(input())
+    expect(out).toMatchObject({ kind: 'failure', status: 500 })
+    expect((out as { reason: string }).reason).toHaveLength('dropbox HTTP 500: '.length + 200)
+  })
+})
+
+const RECONCILE_STAGE_PATH = await dropboxStagePath('job-reconcile')
+
+describe('DropboxUploader.advance — stable-id reconcile and move', () => {
+  const stagePath = RECONCILE_STAGE_PATH
+  const staged: RemoteAttempt = {
+    kind: 'dropbox',
+    phase: 'staged',
+    ownerKey: OWNER_KEY,
+    stagePath,
+    fileId: 'id:staged',
+    rev: 'rev-id:staged',
+    contentHash: HASH,
+    bytes: 64,
+  }
+
+  const proof = (path: string, over: Record<string, unknown> = {}) => ({
+    ...metadata('id:staged', 64, path),
+    ...over,
+  })
+
+  it('settles after a lost move response when GET by id shows the destination', async () => {
+    const h = harness(
+      dropboxRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      {
+        controlRoute: (endpoint) =>
+          endpoint === 'files/get_metadata'
+            ? new Response(JSON.stringify(proof('/alice/t1_0.mp4')), { status: 200 })
+            : new Response('unexpected', { status: 500 }),
+      },
+    )
+    expect(await h.advance(staged)).toMatchObject({
+      kind: 'success',
+      remoteId: 'id:staged',
+      remotePath: 'alice/t1_0.mp4',
+    })
+    expect(h.calls).toHaveLength(0)
+    expect(h.controlCalls).toEqual(['files/get_metadata'])
+  })
+
+  it('moves the unchanged staged id without overwrite or autorename', async () => {
+    let moveArg: Record<string, unknown> | undefined
+    const h = harness(
+      dropboxRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      {
+        controlRoute: (endpoint, init) => {
+          if (endpoint === 'files/get_metadata')
+            return new Response(JSON.stringify(proof(stagePath)), { status: 200 })
+          if (endpoint === 'files/create_folder_v2')
+            return new Response(JSON.stringify({ metadata: { '.tag': 'folder' } }), {
+              status: 200,
+            })
+          if (endpoint === 'files/move_v2') {
+            moveArg = JSON.parse(String(init?.body)) as Record<string, unknown>
+            return new Response(JSON.stringify({ metadata: proof('/alice/t1_0.mp4') }), {
+              status: 200,
+            })
+          }
+          return new Response('unexpected', { status: 500 })
+        },
+      },
+    )
+    expect(await h.advance(staged)).toMatchObject({
+      kind: 'success',
+      remotePath: 'alice/t1_0.mp4',
+    })
+    expect(moveArg).toMatchObject({
+      from_path: 'id:staged',
+      to_path: '/alice/t1_0.mp4',
+      autorename: false,
+    })
+    expect(moveArg).not.toHaveProperty('mode', 'overwrite')
+  })
+
+  it('keeps the staged file on destination conflict', async () => {
+    let moves = 0
+    const h = harness(
+      dropboxRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      {
+        controlRoute: (endpoint) => {
+          if (endpoint === 'files/get_metadata')
+            return new Response(JSON.stringify(proof(stagePath)), { status: 200 })
+          if (endpoint === 'files/create_folder_v2')
+            return new Response(JSON.stringify({ metadata: { '.tag': 'folder' } }), {
+              status: 200,
+            })
+          if (endpoint === 'files/move_v2') {
+            moves += 1
+            return new Response('to/conflict/file', { status: 409 })
+          }
+          return new Response('unexpected', { status: 500 })
+        },
+      },
+    )
+    expect(await h.advance(staged)).toMatchObject({ kind: 'failure', status: 409 })
+    expect(moves).toBe(1)
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('never moves a staged id whose revision or content proof changed', async () => {
+    const h = harness(
+      dropboxRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      {
+        controlRoute: (endpoint) =>
+          endpoint === 'files/get_metadata'
+            ? new Response(JSON.stringify(proof(stagePath, { content_hash: 'c'.repeat(64) })), {
+                status: 200,
+              })
+            : new Response('move must not run', { status: 500 }),
+      },
+    )
+    expect(await h.advance(staged)).toMatchObject({
+      kind: 'failure',
+      reason: expect.stringContaining('staged file changed'),
+    })
+    expect(h.controlCalls).toEqual(['files/get_metadata'])
+  })
+
+  it.each([
+    ['wrong revision type', { rev: 1 }],
+    ['wrong content hash type', { content_hash: 1 }],
+    ['wrong size type', { size: '64' }],
+  ])('never moves after a staged proof has %s', async (_case, patch) => {
+    const h = harness(
+      dropboxRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      {
+        controlRoute: (endpoint) =>
+          endpoint === 'files/get_metadata'
+            ? new Response(JSON.stringify(proof(stagePath, patch)), { status: 200 })
+            : new Response('move must not run', { status: 500 }),
+      },
+    )
+    expect(await h.advance(staged)).toMatchObject({ kind: 'failure' })
+    expect(h.controlCalls).toEqual(['files/get_metadata'])
+  })
+
+  it('honors a user move by stable id while retaining the logical target path', async () => {
+    const h = harness(
+      dropboxRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      {
+        controlRoute: (endpoint) =>
+          endpoint === 'files/get_metadata'
+            ? new Response(JSON.stringify(proof('/archive/user-name.mp4')), { status: 200 })
+            : new Response('move must not run', { status: 500 }),
+      },
+    )
+    expect(await h.advance(staged)).toMatchObject({
+      kind: 'success',
+      remotePath: 'alice/t1_0.mp4',
+    })
+    expect(h.controlCalls).toEqual(['files/get_metadata'])
+  })
+
+  it('accepts the 1024-character logical path after Dropbox adds its slash', async () => {
+    const logicalPath = 'x'.repeat(1024)
+    const h = harness(
+      dropboxRoute,
+      sourceStub(() => sourceResponse(new Uint8Array(64))),
+      {
+        controlRoute: (endpoint) =>
+          endpoint === 'files/get_metadata'
+            ? new Response(JSON.stringify(proof(`/${logicalPath}`)), { status: 200 })
+            : new Response('move must not run', { status: 500 }),
+      },
+    )
+
+    await expect(h.advance(staged, input(logicalPath))).resolves.toMatchObject({
+      kind: 'success',
+      remotePath: logicalPath,
+    })
   })
 })
 

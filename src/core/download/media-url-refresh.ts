@@ -1,4 +1,4 @@
-import type { MediaItem } from '../schema'
+import { decodeRefreshMediaUrlResponse, type MediaItem } from '../schema'
 
 /** Locate a fresh MediaItem for retry — prefer exact id, else postId+index+type. */
 export function findFreshMediaItem(
@@ -30,7 +30,7 @@ export interface TabMessagingPort {
       readonly index?: number
       readonly type?: MediaItem['type']
     },
-  ) => Promise<{ readonly url?: string } | undefined>
+  ) => Promise<unknown>
 }
 
 /** Ask an open X tab's content script for a fresher CDN url before retry. */
@@ -49,8 +49,8 @@ export async function refreshMediaUrlFromTabs(
   for (const tab of tabs) {
     try {
       // oxlint-disable-next-line no-await-in-loop -- sequential: first tab to answer wins; don't fan out to every tab
-      const res = await port.sendTabMessage(tab.id, message)
-      if (typeof res?.url === 'string' && res.url.length > 0) return res.url
+      const res = decodeRefreshMediaUrlResponse(await port.sendTabMessage(tab.id, message))
+      if (res?.url !== undefined) return res.url
     } catch {
       /* tab has no injected content script */
     }

@@ -1,5 +1,5 @@
 import type { MediaItem, Platform } from '../../schema'
-import { mediaNodesFromPost } from './media-node'
+import { MAX_MEDIA_NODES_PER_POST, mediaNodesFromPost } from './media-node'
 import { forEachPostNode, isPostShaped } from './post-node'
 
 /* v8 ignore next -- String.split always yields a non-empty array; `?? url` is unreachable */
@@ -31,9 +31,10 @@ function extFromUrl(url: string, fallback: string): string {
  *  double-count them under BOTH the outer post and their own. Cheap for the
  *  overwhelmingly common case (no carousel, or a carousel of plain media
  *  nodes): `Array.isArray` + an already-required object check, no-op copy. */
-function ownMediaNode(node: Record<string, unknown>): Record<string, unknown> {
+function ownMediaNode(node: Record<string, unknown>): Record<string, unknown> | undefined {
   const carousel = node['carousel_media']
   if (!Array.isArray(carousel)) return node
+  if (carousel.length > MAX_MEDIA_NODES_PER_POST) return undefined
   const filtered = carousel.filter((child) => !isPostShaped(child))
   if (filtered.length === carousel.length) return node
   return { ...node, carousel_media: filtered }
@@ -62,13 +63,21 @@ function ownMediaNode(node: Record<string, unknown>): Record<string, unknown> {
 export function detectMediaItems(json: unknown, platform: Platform): MediaItem[] {
   const out: MediaItem[] = []
   const seenByPost = new Map<string, Set<string>>()
-  forEachPostNode(json, (ctx, node) => {
+  let exhausted = false
+  const complete = forEachPostNode(json, (ctx, node) => {
+    if (exhausted) return
     let seen = seenByPost.get(ctx.postId)
     if (!seen) {
       seen = new Set<string>()
       seenByPost.set(ctx.postId, seen)
     }
-    mediaNodesFromPost(ownMediaNode(node)).forEach((m, index) => {
+    const own = ownMediaNode(node)
+    const media = own === undefined ? undefined : mediaNodesFromPost(own)
+    if (media === undefined) {
+      exhausted = true
+      return
+    }
+    media.forEach((m, index) => {
       const id = mediaKeyFromUrl(m.url)
       if (id === '' || seen.has(id)) return
       seen.add(id)
@@ -86,7 +95,7 @@ export function detectMediaItems(json: unknown, platform: Platform): MediaItem[]
       })
     })
   })
-  return out
+  return complete && !exhausted ? out : []
 }
 
 /**
@@ -101,6 +110,5 @@ export function detectMediaItems(json: unknown, platform: Platform): MediaItem[]
  */
 export function postCodesInResponse(json: unknown): ReadonlyMap<string, string> {
   const out = new Map<string, string>()
-  forEachPostNode(json, (ctx) => out.set(ctx.postId, ctx.code))
-  return out
+  return forEachPostNode(json, (ctx) => out.set(ctx.postId, ctx.code)) ? out : new Map()
 }

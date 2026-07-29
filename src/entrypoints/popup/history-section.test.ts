@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import type { MediaItem } from '../../core/schema'
 import { recordFromMediaItem, applyOutcome } from '../../core/history/record'
+import { DEFAULT_HISTORY_CAP } from '../../core/history/store'
 import {
   groupByAuthor,
   formatRecord,
   historyEmptyLabel,
   confirmEraseHistoryCopy,
+  requestHistoryErase,
   fetchHistory,
 } from './history-section'
 
@@ -85,28 +87,77 @@ describe('fetchHistory', () => {
     browser.runtime.sendMessage = original
   })
 
-  it('returns the records from a HistoryRequest reply', async () => {
+  it('returns available records from an exact valid HistoryRequest reply', async () => {
     const records = [rec('1-0', 'alice', 100)]
+    browser.runtime.sendMessage = (async (request) => {
+      expect(request).toEqual({ _tag: 'HistoryRequest' })
+      return {
+        records,
+      }
+    }) as typeof browser.runtime.sendMessage
+    expect(await fetchHistory()).toEqual({ status: 'available', records })
+  })
+
+  it('accepts 500 records but rejects an oversized reply array', async () => {
+    const records = Array.from({ length: DEFAULT_HISTORY_CAP }, (_, index) =>
+      rec(`${index + 1}-0`, 'alice', index),
+    ).toReversed()
+    browser.runtime.sendMessage = (async () => ({ records })) as typeof browser.runtime.sendMessage
+    await expect(fetchHistory()).resolves.toEqual({ status: 'available', records })
+
     browser.runtime.sendMessage = (async () => ({
-      records,
+      records: [rec('501-0', 'alice', 501), ...records],
     })) as typeof browser.runtime.sendMessage
-    expect(await fetchHistory()).toBe(records)
+    await expect(fetchHistory()).resolves.toEqual({ status: 'unavailable' })
   })
 
-  it('returns [] when the reply has no records', async () => {
-    browser.runtime.sendMessage = (async () => ({})) as typeof browser.runtime.sendMessage
-    expect(await fetchHistory()).toEqual([])
+  it.each([
+    undefined,
+    null,
+    {},
+    { records: [] as unknown[], extra: true },
+    { records: [{ ...rec('1-0', 'alice', 100), status: 'unknown' }] },
+    { ok: false, reason: 'history failed' },
+  ])('returns unavailable for an unclaimed, malformed, or rejected reply: %o', async (reply) => {
+    browser.runtime.sendMessage = (async () => reply) as typeof browser.runtime.sendMessage
+    expect(await fetchHistory()).toEqual({ status: 'unavailable' })
   })
 
-  it('returns [] when the reply is null', async () => {
-    browser.runtime.sendMessage = (async () => null) as typeof browser.runtime.sendMessage
-    expect(await fetchHistory()).toEqual([])
-  })
-
-  it('returns [] when sendMessage rejects', async () => {
+  it('returns unavailable when sendMessage rejects or throws synchronously', async () => {
     browser.runtime.sendMessage = (async () => {
       throw new Error('no receiver')
     }) as typeof browser.runtime.sendMessage
-    expect(await fetchHistory()).toEqual([])
+    expect(await fetchHistory()).toEqual({ status: 'unavailable' })
+
+    browser.runtime.sendMessage = (() => {
+      throw new Error('Extension context invalidated')
+    }) as typeof browser.runtime.sendMessage
+    expect(await fetchHistory()).toEqual({ status: 'unavailable' })
+  })
+})
+
+describe('requestHistoryErase', () => {
+  const original = browser.runtime.sendMessage
+  afterEach(() => {
+    browser.runtime.sendMessage = original
+  })
+
+  it('reports success only after the background confirms erase', async () => {
+    browser.runtime.sendMessage = (async () => ({ ok: true })) as typeof browser.runtime.sendMessage
+    expect(await requestHistoryErase()).toBe(true)
+
+    browser.runtime.sendMessage = (async () => ({
+      ok: true,
+      extra: 'unexpected',
+    })) as typeof browser.runtime.sendMessage
+    expect(await requestHistoryErase()).toBe(false)
+
+    browser.runtime.sendMessage = (async () => undefined) as typeof browser.runtime.sendMessage
+    expect(await requestHistoryErase()).toBe(false)
+
+    browser.runtime.sendMessage = (async () => {
+      throw new Error('storage failed')
+    }) as typeof browser.runtime.sendMessage
+    expect(await requestHistoryErase()).toBe(false)
   })
 })

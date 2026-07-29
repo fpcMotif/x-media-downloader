@@ -86,7 +86,11 @@ describe('tweetRecordFromNode', () => {
               },
             },
           },
-          legacy: { id_str: '5002', conversation_id_str: '5002', full_text: 'the quoted tweet' },
+          legacy: {
+            id_str: '5002',
+            conversation_id_str: '5002',
+            full_text: 'the quoted tweet',
+          },
         },
       },
       core: {
@@ -112,7 +116,11 @@ describe('tweetRecordFromNode', () => {
       source: 'tweetDetail',
       capturedAt: at,
     })
-    expect(rec?.author).toEqual({ handle: 'outer_author', name: 'Outer Author', userId: '500' })
+    expect(rec?.author).toEqual({
+      handle: 'outer_author',
+      name: 'Outer Author',
+      userId: '500',
+    })
     expect(rec?.author.name).not.toBe('Inner Author')
     expect(rec?.author.userId).not.toBe('999')
     expect(rec?.quotedTweetId).toBe('5002')
@@ -178,7 +186,11 @@ describe('tweetRecordFromNode', () => {
       rest_id: '7100',
       core: {
         user_results: {
-          result: { __typename: 'User', rest_id: '71', legacy: { screen_name: 'two' } },
+          result: {
+            __typename: 'User',
+            rest_id: '71',
+            legacy: { screen_name: 'two' },
+          },
         },
       },
       legacy: {
@@ -224,7 +236,10 @@ describe('tweetRecordFromNode', () => {
         displayUrl: 'example.com/carded',
         title: 'Carded',
       },
-      { expandedUrl: 'https://example.org/plain', displayUrl: 'example.org/plain' },
+      {
+        expandedUrl: 'https://example.org/plain',
+        displayUrl: 'example.org/plain',
+      },
     ])
   })
 
@@ -234,7 +249,11 @@ describe('tweetRecordFromNode', () => {
       rest_id: '7001',
       core: {
         user_results: {
-          result: { __typename: 'User', rest_id: '70', legacy: { screen_name: 'a' } },
+          result: {
+            __typename: 'User',
+            rest_id: '70',
+            legacy: { screen_name: 'a' },
+          },
         },
       },
       legacy: {
@@ -269,7 +288,10 @@ describe('tweetRecordFromNode', () => {
       capturedAt: at,
     })
     expect(rec?.links).toEqual([
-      { expandedUrl: 'https://example.com/known', displayUrl: 'example.com/known' },
+      {
+        expandedUrl: 'https://example.com/known',
+        displayUrl: 'example.com/known',
+      },
     ])
   })
 
@@ -340,7 +362,11 @@ describe('tweetRecordFromNode', () => {
       rest_id: '6100',
       core: {
         user_results: {
-          result: { __typename: 'User', rest_id: '61', legacy: { screen_name: 'thin' } },
+          result: {
+            __typename: 'User',
+            rest_id: '61',
+            legacy: { screen_name: 'thin' },
+          },
         },
       },
       legacy: {
@@ -348,7 +374,9 @@ describe('tweetRecordFromNode', () => {
         full_text: 'thin one',
         created_at: 'not a date',
       },
-      retweeted_status_result: { result: { __typename: 'Tweet', rest_id: '6000' } },
+      retweeted_status_result: {
+        result: { __typename: 'Tweet', rest_id: '6000' },
+      },
     }
     const rec = tweetRecordFromNode({
       node: thin,
@@ -365,6 +393,76 @@ describe('tweetRecordFromNode', () => {
     expect(rec?.text).toBe('thin one')
     expect(rec?.retweetOf).toBe('6000')
     expect(rec?.source).toBe('other')
+  })
+
+  it('drops malformed raw media but keeps a valid sibling', () => {
+    const node = { rest_id: '6150', legacy: { id_str: '6150' } }
+    const rec = tweetRecordFromNode({
+      node,
+      author: { handle: 'capture' },
+      mediaRaw: [
+        { type: 'photo', media_url_https: 42 },
+        {
+          type: 'photo',
+          media_url_https: 'https://pbs.twimg.com/media/valid.jpg',
+        },
+      ],
+      source: 'timeline',
+      capturedAt: at,
+    })
+    expect(rec?.media).toEqual([
+      {
+        id: 'valid',
+        type: 'photo',
+        url: 'https://pbs.twimg.com/media/valid.jpg?name=orig',
+        ext: 'jpg',
+        index: 0,
+      },
+    ])
+  })
+
+  it('keeps first repeated X entities so the record remains schema-valid', () => {
+    const node = {
+      rest_id: '6160',
+      legacy: {
+        id_str: '6160',
+        full_text: 'repeat',
+        entities: {
+          urls: [
+            { url: 'https://t.co/a', expanded_url: 'https://example.test/a' },
+            { url: 'https://t.co/b', expanded_url: 'https://example.test/a' },
+          ],
+          user_mentions: [{ screen_name: 'Alice' }, { screen_name: 'alice' }],
+          hashtags: [{ text: 'Effect' }, { text: 'effect' }],
+        },
+      },
+      card: {
+        legacy: {
+          url: 'https://t.co/b',
+          binding_values: [{ key: 'title', value: { string_value: 'Repeated card' } }],
+        },
+      },
+    }
+    const rec = tweetRecordFromNode({
+      node,
+      author: { handle: 'capture' },
+      mediaRaw: [
+        {
+          type: 'photo',
+          media_url_https: 'https://pbs.twimg.com/media/repeated.jpg',
+        },
+        {
+          type: 'photo',
+          media_url_https: 'https://pbs.twimg.com/media/repeated.jpg',
+        },
+      ],
+      source: 'timeline',
+      capturedAt: at,
+    })
+    expect(rec?.links).toEqual([{ expandedUrl: 'https://example.test/a', title: 'Repeated card' }])
+    expect(rec?.mentions).toEqual(['Alice'])
+    expect(rec?.hashtags).toEqual(['Effect'])
+    expect(rec?.media).toHaveLength(1)
   })
 
   it('returns null for a node without a tweet legacy', () => {

@@ -6,10 +6,10 @@ import {
   extFromMetaImgUrl,
 } from '../meta-shared/dom'
 import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
-import { META_CDN_HOSTS } from '../meta-shared/cdn'
 import { postVideoKey, postVideoKeyIndexed } from '../detection-store'
 import type { MediaItem } from '../../schema'
 import type { PlatformAdapter } from '../types'
+import { INSTAGRAM_DESCRIPTOR } from '../catalog'
 
 /** Instagram's post-boundary selector — the confirmed stable ancestor
  *  (LIVE-VERIFIED 2026-07-05): a real <article>, no id/data-attr/role of its own. */
@@ -187,18 +187,6 @@ function slideIndexFromDom(li: Element): number {
   return siblings.indexOf(li)
 }
 
-/** Host-match pattern for Instagram tabs — the single source of truth for the
- *  manifest content-script glob and `browser.tabs.query` (mirrors X_HOST_MATCH's
- *  role). Instagram serves its whole web app from `www.instagram.com` only —
- *  no bare `instagram.com` redirect target to also list, unlike X's two hosts. */
-export const INSTAGRAM_HOST_MATCH = ['*://www.instagram.com/*'] as const
-
-/** Whether a URL is a www.instagram.com page. Anchored (`^`) so a URL that
- *  merely contains 'https://www.instagram.com/' as a substring — e.g. a
- *  redirect/query param carrying it — doesn't false-positive-match. */
-export const isInstagramUrl = (url: string): boolean =>
-  /^https?:\/\/www\.instagram\.com\//.test(url)
-
 /**
  * True for a captured response URL Instagram's own frontend plausibly used to
  * fetch post/media data.
@@ -268,11 +256,7 @@ function resolveMetaImageElement(img: HTMLImageElement): MediaItem | null {
  * `quoted_post` will.
  */
 export const instagramAdapter: PlatformAdapter = {
-  platform: 'instagram',
-  hostMatch: INSTAGRAM_HOST_MATCH,
-  // Same Meta CDN family as Threads — see meta-shared/cdn.ts's module doc.
-  cdnHosts: META_CDN_HOSTS,
-  matchesUrl: isInstagramUrl,
+  ...INSTAGRAM_DESCRIPTOR,
   // `requestHeaders` is accepted for interface conformance but unused here —
   // same posture as X's isGraphqlMediaUrl. A future revision may switch to
   // matching on `x-fb-friendly-name`/doc_id instead of the URL string once a

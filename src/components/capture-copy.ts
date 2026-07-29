@@ -11,7 +11,9 @@ export const fmtDay = (ms: number): string =>
 // Erase (Tier 1 — local data wipe) is the verb; "Clear" is retired from every
 // user-facing surface (2026-07-11 Stage redesign, design contract line 3).
 export const confirmEraseArchiveCopy = (count: number): string =>
-  `Erase all ${plural(count, 'captured tweet')}? This cannot be undone.`
+  `Erase all ${plural(count, 'captured tweet')} and pending mirror work? This cannot be undone. Copies already sent to Convex remain.`
 
 export const erasedArchiveCopy = (count: number): string =>
-  `Erased ${plural(count, 'tweet')} from the archive.`
+  `Erased ${plural(count, 'tweet')} and pending mirror work. Copies already sent to Convex remain.`
+
+export const eraseArchiveFailedCopy = (): string => 'Could not erase the archive. Try again.'

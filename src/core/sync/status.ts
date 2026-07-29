@@ -5,6 +5,9 @@
  * misconfigured. These helpers turn a thrown drain/test error into one
  * actionable line, and shape the status the popup polls.
  */
+import { boundedDiagnosticText, MAX_DIAGNOSTIC_TEXT_LENGTH } from '../diagnostic-text'
+import { hasWireKeys, isWireRecord } from '../wire/exact'
+import { isJsonWithinByteBudget } from '../wire/json-budget'
 
 /** Result of a connection test or the latest drain attempt, as the popup sees it. */
 export interface SyncStatus {
@@ -14,6 +17,38 @@ export interface SyncStatus {
   readonly detail: string
   /** Events still queued locally, waiting to be delivered. */
   readonly pending: number
+}
+
+/** Runtime reply/session cap. The detail's tighter shared limit dominates today. */
+export const MAX_SYNC_STATUS_BYTES = 16 * 1024
+export const MAX_SYNC_STATUS_DETAIL_LENGTH = MAX_DIAGNOSTIC_TEXT_LENGTH
+
+/** Canonical producer shape. Invalid counts are programmer errors; text is bounded. */
+export function normalizeSyncStatus(status: SyncStatus): SyncStatus {
+  if (!Number.isSafeInteger(status.pending) || status.pending < 0)
+    throw new RangeError('SyncStatus.pending must be a nonnegative safe integer')
+  return {
+    ok: status.ok,
+    detail: boundedDiagnosticText(status.detail),
+    pending: status.pending,
+  }
+}
+
+/** Exact shared decoder for both session storage and runtime replies. */
+export function decodeSyncStatus(value: unknown): SyncStatus | undefined {
+  if (
+    !isJsonWithinByteBudget(value, MAX_SYNC_STATUS_BYTES) ||
+    !isWireRecord(value) ||
+    !hasWireKeys(value, ['ok', 'detail', 'pending']) ||
+    typeof value.ok !== 'boolean' ||
+    typeof value.detail !== 'string' ||
+    value.detail.length > MAX_SYNC_STATUS_DETAIL_LENGTH ||
+    typeof value.pending !== 'number' ||
+    !Number.isSafeInteger(value.pending) ||
+    value.pending < 0
+  )
+    return undefined
+  return { ok: value.ok, detail: value.detail, pending: value.pending }
 }
 
 /**
@@ -29,6 +64,10 @@ export interface SyncStatus {
  * reachability fallback.
  */
 export function classifySyncError(err: unknown): string {
+  return boundedDiagnosticText(classifySyncErrorText(err))
+}
+
+function classifySyncErrorText(err: unknown): string {
   const tag = isTagged(err) ? err._tag : undefined
   if (tag === 'ConvexHttpError') return classifyHttpStatus((err as { status: number }).status)
   if (tag === 'ConvexMalformedError') return MALFORMED_HINT

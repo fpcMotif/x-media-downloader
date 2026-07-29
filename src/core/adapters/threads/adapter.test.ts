@@ -1,15 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import {
-  THREADS_HOST_MATCH,
-  isThreadsUrl,
-  isTrackedThreadsResponseUrl,
-  threadsAdapter,
-} from './adapter'
-import { META_CDN_HOSTS } from '../meta-shared/cdn'
+import { isTrackedThreadsResponseUrl, threadsAdapter } from './adapter'
+import { isThreadsUrl, META_CDN_HOSTS, THREADS_DESCRIPTOR, THREADS_HOST_MATCH } from '../catalog'
 
 describe('THREADS_HOST_MATCH', () => {
   it('covers both the pre- and post-migration hosts', () => {
-    expect(THREADS_HOST_MATCH).toEqual(['*://www.threads.net/*', '*://www.threads.com/*'])
+    expect(THREADS_HOST_MATCH).toEqual(['https://www.threads.net/*', 'https://www.threads.com/*'])
   })
 })
 
@@ -62,6 +57,7 @@ describe('threadsAdapter', () => {
   it('reports the threads platform tag and THREADS_HOST_MATCH host patterns', () => {
     expect(threadsAdapter.platform).toBe('threads')
     expect(threadsAdapter.hostMatch).toBe(THREADS_HOST_MATCH)
+    expect(threadsAdapter.matchesUrl).toBe(THREADS_DESCRIPTOR.matchesUrl)
   })
 
   it('reports the shared Meta CDN hosts', () => {

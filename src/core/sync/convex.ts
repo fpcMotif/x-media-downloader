@@ -6,6 +6,10 @@
  */
 import { Data, Effect, Option } from 'effect'
 import { FetchService, FetchError } from '../fetch-service'
+import { readBoundedJson } from '../http/bounded-response'
+
+/** Convex function replies are metadata-only; never buffer more than 1 MiB. */
+export const MAX_CONVEX_RESPONSE_BYTES = 1024 * 1024
 
 /**
  * A non-2xx answer from the deployment edge. `status` is the HTTP code so the
@@ -84,9 +88,31 @@ export function convexOriginPattern(deploymentUrl: string): Option.Option<string
   }
 }
 
+/**
+ * Canonical identity for one Convex deployment. Query, fragment, and embedded
+ * credentials are not valid deployment-base syntax.
+ */
+export function normalizeConvexDeploymentUrl(raw: string): string | undefined {
+  try {
+    const url = new URL(raw)
+    if (
+      (url.protocol !== 'https:' && url.protocol !== 'http:') ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.search !== '' ||
+      url.hash !== ''
+    )
+      return undefined
+    return url.href.replace(/\/+$/u, '')
+  } catch {
+    return undefined
+  }
+}
+
 /** Build a ConvexPort backed by HTTP against a Convex deployment. */
 export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): ConvexPort {
-  const base = cfg.deploymentUrl.replace(/\/+$/, '')
+  const base =
+    normalizeConvexDeploymentUrl(cfg.deploymentUrl) ?? cfg.deploymentUrl.replace(/\/+$/u, '')
   // Shared request+parse for both endpoints so `mutation` and `query` can never
   // drift in how they POST the envelope or classify a failure. `endpoint` is the
   // path after `/api` (`mutation` vs `query`).
@@ -99,28 +125,66 @@ export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): Con
         body: JSON.stringify(buildFunctionCall(path, args)),
       })
       if (!res.ok) return yield* new ConvexHttpError({ status: res.status })
-      // A 200 from a non-Convex host (parked domain, corp proxy, SPA index.html)
-      // serves HTML, so `res.json()` throws. Wrap it into the same vocabulary as
-      // the other failures so the drain loop classifies it as a sync error instead
-      // of surfacing an opaque parser stack trace.
-      const body = yield* Effect.tryPromise({
-        try: () =>
-          res.json() as Promise<{ status?: string; value?: unknown; errorMessage?: string }>,
+      // A deployment, proxy, or wrong host controls every response byte. Read
+      // through one streamed cap before validating the documented envelope.
+      const raw = yield* Effect.tryPromise({
+        try: () => readBoundedJson(res, MAX_CONVEX_RESPONSE_BYTES),
         catch: () =>
           new ConvexMalformedError({ detail: 'convex: malformed response (invalid JSON body)' }),
       })
-      if (body.status === 'error')
-        return yield* new ConvexFunctionError({
-          errorMessage: body.errorMessage ?? 'convex: function error',
-        })
-      if (body.status !== 'success')
+      const body = decodeConvexEnvelope(raw)
+      if (body === undefined)
         return yield* new ConvexMalformedError({ detail: 'convex: malformed response' })
-      return body.value
+      return body.status === 'success'
+        ? body.value
+        : yield* new ConvexFunctionError({ errorMessage: body.errorMessage })
     })
   return {
     mutation: (path, args) => call('mutation', path, args),
     query: (path, args) => call('query', path, args),
   }
+}
+
+type ConvexEnvelope =
+  | { readonly status: 'success'; readonly value: unknown }
+  | { readonly status: 'error'; readonly errorMessage: string }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const hasOnlyKeys = (
+  value: Record<string, unknown>,
+  required: ReadonlyArray<string>,
+  optional: ReadonlyArray<string>,
+): boolean => {
+  const allowed = new Set([...required, ...optional])
+  return (
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+  )
+}
+
+const hasValidLogLines = (value: Record<string, unknown>): boolean =>
+  !Object.hasOwn(value, 'logLines') ||
+  (Array.isArray(value.logLines) && value.logLines.every((line) => typeof line === 'string'))
+
+/** Exact documented Convex HTTP envelope, including its optional diagnostic fields. */
+function decodeConvexEnvelope(value: unknown): ConvexEnvelope | undefined {
+  if (!isRecord(value) || !hasValidLogLines(value)) return undefined
+  if (value.status === 'success') {
+    return hasOnlyKeys(value, ['status', 'value'], ['logLines'])
+      ? { status: 'success', value: value.value }
+      : undefined
+  }
+  if (value.status !== 'error') return undefined
+  if (
+    !hasOnlyKeys(value, ['status', 'errorMessage'], ['errorData', 'logLines']) ||
+    typeof value.errorMessage !== 'string' ||
+    value.errorMessage.trim() === '' ||
+    (Object.hasOwn(value, 'errorData') && !isRecord(value.errorData))
+  )
+    return undefined
+  return { status: 'error', errorMessage: value.errorMessage }
 }
 
 /**
@@ -140,17 +204,15 @@ export function queryDownloadedAmong(
 }
 
 /**
- * Ask the deployment which of `mediaIds` (MediaItem.id / requestId) have
- * already been downloaded on ANY device. Parallel to `queryDownloadedAmong`
- * (post-level); not currently called by the extension (v1 keeps per-item
- * dedup local-only) — see admission-gate wiring in background.ts.
+ * Ask which canonical Save Request IDs were downloaded on any device.
+ * Parallel to the coarser post-level `queryDownloadedAmong`.
  */
-export function queryDownloadedMediaIdsAmong(
+export function queryDownloadedRequestIdsAmong(
   port: ConvexPort,
   secret: string,
-  mediaIds: string[],
+  requestIds: string[],
 ): Effect.Effect<string[], ConvexMutationError, FetchService> {
-  return port.query('sync:downloadedMediaIdsAmong', { secret, mediaIds }) as Effect.Effect<
+  return port.query('sync:downloadedRequestIdsAmong', { secret, requestIds }) as Effect.Effect<
     string[],
     ConvexMutationError,
     FetchService

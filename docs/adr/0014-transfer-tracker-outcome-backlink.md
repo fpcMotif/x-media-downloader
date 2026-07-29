@@ -1,11 +1,11 @@
 # ADR-0014 — Transfer Tracker: durable outcome ledger + badge backlink
 
-- **Status:** Accepted (2026-06-20)
+- **Status:** Superseded in part (2026-07-22) by Transfer Registry v4.
 
 ## Context
 
 Download success was declared at **queue-start**. The Overlay marked the badge
-`saved` the instant `enqueue` reported `completed === total` — which only means
+`saved` the instant `enqueue` reported `started === total` — which only means
 "every request was handed to the browser downloader," not "bytes landed." The
 **real** terminal state (complete / interrupted / 403 / timeout) is observed later,
 in the module-level `downloads.onChanged` listener, and **no message carried that
@@ -23,7 +23,7 @@ were not reconciled.
 ## Decision
 
 Introduce a **Transfer Tracker** that owns the span from `Download Handle` →
-terminal outcome.
+terminal outcome. This describes the 2026-06 design.
 
 - **A pure ledger module** (`core/download/transfer-tracker.ts`): a durable set of
   in-flight browser transfers (`{ id, downloadId, tweetId?, startedAt }`) with
@@ -46,7 +46,9 @@ terminal outcome.
   (`badge.resolveOutcome` / `launcher.resolveOutcomeAll`), guarded by request-id +
   live media-key match; a dead tab or an entrance that moved on is a silent no-op
   (the `refreshMediaUrlFromTabs` dead-receiver pattern). `requestId` is the
-  `SaveRequest.id` (== `MediaItem.id`); `.json` sidecars are never announced.
+  the canonical media Save Request ID. It is derived from `MediaItem` identity;
+  it is not necessarily the adapter-local `MediaItem.id`. Sidecars are never
+  announced by suffix test: they have no Media Item and no terminal backlink.
 
 ### Bounded scope (decisions, deliberately)
 
@@ -59,9 +61,8 @@ terminal outcome.
   tracker reintroduces the exact recycle blind spot it exists to fix.
 - **`DownloadHandle` kept as a one-shot receipt** — the browser/aria2 observation
   asymmetry stays in the tracker, not pushed into `DownloadStrategy.save`.
-- **aria2 outcome observation deferred** — aria2 hand-offs are terminal at enqueue
-  (ADR-0006, no `tellStatus`); they never enter the ledger and emit no backlink.
-  The discriminated handle keeps the door open for a future `tellStatus` tracker.
+- **Historical aria2 limitation** — aria2 observation was deferred in this design.
+  It is now replaced by durable GID/profile tracking and `tellStatus` in v3.
 
 ## Consequences
 
@@ -85,6 +86,16 @@ terminal outcome.
 - A `complete` record purged by Chrome before reconcile is classified `unknown`
   (traced, not recorded) — neither a false success nor a false failure.
 - Launcher backlink downgrades the pill but does not re-arm its revert timer.
+
+## Supersession (2026-07-22)
+
+The session-scoped Transfer Tracker is no longer the transfer owner. The local
+Transfer Registry v4 owns launch intent, browser-id and aria2-GID
+correlation, retries, terminal replay, and profile health. It reserves the aria2
+GID/profile before the call, arms immediately before exactly one `addUri`, and
+observes the transfer through `tellStatus`. Queue acknowledgement still means only
+that a start was accepted. Clear remains browser-only because it needs Chrome's
+`downloadId`.
 
 ## Alternatives considered
 

@@ -109,6 +109,23 @@ describe('parseSyndicationTweet', () => {
     expect(items[0]?.author).toBe('')
   })
 
+  it('drops a malformed node but recovers its valid media sibling', () => {
+    const items = parseSyndicationTweet({
+      id_str: '8',
+      mediaDetails: [
+        {
+          type: 'video',
+          media_url_https: 'https://pbs.twimg.com/media/bad.jpg',
+          video_info: { variants: {} },
+        },
+        { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/valid.jpg' },
+      ],
+    })
+    expect(items).toMatchObject([
+      { type: 'photo', url: 'https://pbs.twimg.com/media/valid.jpg?name=orig' },
+    ])
+  })
+
   it('returns [] for a non-object, id-less, or media-less payload', () => {
     expect(parseSyndicationTweet(null)).toEqual([])
     expect(parseSyndicationTweet('nope')).toEqual([])

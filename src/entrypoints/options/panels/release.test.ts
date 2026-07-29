@@ -37,11 +37,10 @@ describe('Release panel: tier + verb system (Stage redesign)', () => {
     expect(source).not.toMatch(/\bconfirm\(/)
   })
 
-  it('documents the popup-only release rows, including the typed-word gate', () => {
-    const docIdx = source.indexOf('Release from the popup')
-    expect(docIdx).toBeGreaterThan(-1)
-    expect(source.indexOf('Release the whole list', docIdx)).toBeGreaterThan(docIdx)
-    expect(source.indexOf('RELEASE', docIdx)).toBeGreaterThan(docIdx)
+  it('does not promise removed direct Release actions', () => {
+    expect(source).not.toContain('Release from the popup')
+    expect(source).not.toContain('Release this page')
+    expect(source).not.toContain('Release the whole list')
   })
 
   it('never binds a keyboard accelerator to a destructive control', () => {

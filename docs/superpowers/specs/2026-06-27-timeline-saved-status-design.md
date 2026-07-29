@@ -24,7 +24,7 @@ is **read-only status surfacing** — no new download or clear behavior.
 
 1. **Granularity:** per-**post** (`tweetId`), not per-media. Matches the timeline
    UX and the existing sweep that de-dupes by `tweetId`.
-2. **Scope:** **cross-device** — a post saved on *any* device is "Saved". This is
+2. **Scope:** **cross-device** — a post saved on _any_ device is "Saved". This is
    the entire reason to route through Convex rather than local history alone.
 3. **"Saved" definition:** a post is Saved if **≥1** of its media reached
    `lastKind === 'completed'`. A "2/4 partial" indicator is explicitly **deferred**.
@@ -77,11 +77,13 @@ render "Saved ✓" chip on        ◀─reply── { saved: tweetId[] }        
 ### Component 1 — Convex backend (exact membership, the "B")
 
 `backend/convex/schema.ts`
+
 - Add top-level `tweetId: v.string()` to `media_state`.
 - Add index `by_tweet` on `['tweetId']`. (Cross-device by construction — the index
   ignores `deviceId`.)
 
 `backend/convex/sync.ts`
+
 - `materializeState`: set `tweetId` from `e.media.tweetId` when inserting a new row.
   (Patches never touch it.) Rows created by a media-less first event have no
   derivable `tweetId` — accepted limitation; such a row is simply not indexable by
@@ -98,6 +100,7 @@ render "Saved ✓" chip on        ◀─reply── { saved: tweetId[] }        
 ### Component 2 — Convex client read path
 
 `src/core/sync/convex.ts`
+
 - Extend `ConvexPort` with `query(path, args): Promise<unknown>` over
   `POST /api/query`, symmetric to `mutation()`: same `bindFetch` detachment (SW
   "Illegal invocation" footgun), same envelope handling and error vocabulary
@@ -107,8 +110,9 @@ render "Saved ✓" chip on        ◀─reply── { saved: tweetId[] }        
 
 New pure module (e.g. `src/core/sync/saved-index.ts`) owning a `Set<string>` of
 known-saved `tweetId`s:
+
 - **`seed(localCompletedTweetIds)`** — union the device's existing local download
-  history (completed only). Instant, offline, authoritative for *this* device.
+  history (completed only). Instant, offline, authoritative for _this_ device.
 - **`markSaved(tweetId)`** — called on every local completion so a just-grabbed
   post lights up with no network round-trip.
 - **`resolve(tweetIds, queryConvex)`** — return known ids from the Set immediately;
@@ -123,6 +127,7 @@ The module is pure (Set + injected `queryConvex` + clock); all I/O is injected.
 ### Component 4 — Background wiring
 
 `src/entrypoints/background.ts`
+
 - On boot: `SavedIndex.seed(...)` from the local download-history store.
 - Hook the existing completed-download path to call `SavedIndex.markSaved(tweetId)`.
 - New message handler **`SavedStatusRequest({ tweetIds }) → SavedStatusResponse({ saved })`**
@@ -130,11 +135,13 @@ The module is pure (Set + injected `queryConvex` + clock); all I/O is injected.
   `downloadedAmong` caller (gated on sync being configured; else local-only).
 
 `src/core/schema/index.ts`
+
 - Add the `SavedStatusRequest` / `SavedStatusResponse` tagged message structs.
 
 ### Component 5 — Overlay sweep + render
 
 `src/entrypoints/overlay.content/handlers.ts` + `index.tsx`
+
 - **Sweep:** reuse the article-enumeration + `tweetId` de-dupe pattern
   (`handlers.ts:210`) and the existing scroll/observer machinery; debounce; fire on
   mount and as new posts scroll into view. Send `SavedStatusRequest` with the
@@ -146,11 +153,13 @@ The module is pure (Set + injected `queryConvex` + clock); all I/O is injected.
   page-scope detection). Profiles / Bookmarks / Likes out of scope for v1.
 
 `src/entrypoints/overlay.content/style.css`
+
 - Chip styles using existing brand/overlay tokens.
 
 ### Component 6 — Settings
 
 `src/core/schema/index.ts` (Settings) + options/popup surface
+
 - `showSavedStatus: boolean` (default `true`). When Convex sync is unconfigured,
   the feature still runs **C-only** (local marks). When the toggle is off, no sweep
   and no badges.
@@ -185,18 +194,18 @@ The module is pure (Set + injected `queryConvex` + clock); all I/O is injected.
 
 ## File touch list
 
-| File | Change |
-|---|---|
-| `backend/convex/schema.ts` | `media_state.tweetId` column + `by_tweet` index |
-| `backend/convex/sync.ts` | set `tweetId` in `materializeState`; `backfillTweetId`; `downloadedAmong` query |
-| `backend/convex/sync.test.ts` | tests for the above |
-| `src/core/sync/convex.ts` | `ConvexPort.query` over `POST /api/query` |
-| `src/core/sync/convex.test.ts` | query-path tests |
-| `src/core/sync/saved-index.ts` (new) | pure Saved Index |
-| `src/core/sync/saved-index.test.ts` (new) | Saved Index tests |
-| `src/core/schema/index.ts` | `SavedStatusRequest`/`Response` messages; `showSavedStatus` setting |
-| `src/entrypoints/background.ts` | seed + `markSaved` hook + `SavedStatusRequest` handler |
-| `src/entrypoints/overlay.content/handlers.ts` | status sweep + idempotent chip injection |
-| `src/entrypoints/overlay.content/index.tsx` | wire sweep to scroll/observer + mount |
-| `src/entrypoints/overlay.content/style.css` | "Saved ✓" chip styles |
-| options/popup settings surface | `showSavedStatus` toggle |
+| File                                          | Change                                                                          |
+| --------------------------------------------- | ------------------------------------------------------------------------------- |
+| `backend/convex/schema.ts`                    | `media_state.tweetId` column + `by_tweet` index                                 |
+| `backend/convex/sync.ts`                      | set `tweetId` in `materializeState`; `backfillTweetId`; `downloadedAmong` query |
+| `backend/convex/sync.test.ts`                 | tests for the above                                                             |
+| `src/core/sync/convex.ts`                     | `ConvexPort.query` over `POST /api/query`                                       |
+| `src/core/sync/convex.test.ts`                | query-path tests                                                                |
+| `src/core/sync/saved-index.ts` (new)          | pure Saved Index                                                                |
+| `src/core/sync/saved-index.test.ts` (new)     | Saved Index tests                                                               |
+| `src/core/schema/index.ts`                    | `SavedStatusRequest`/`Response` messages; `showSavedStatus` setting             |
+| `src/entrypoints/background.ts`               | seed + `markSaved` hook + `SavedStatusRequest` handler                          |
+| `src/entrypoints/overlay.content/handlers.ts` | status sweep + idempotent chip injection                                        |
+| `src/entrypoints/overlay.content/index.tsx`   | wire sweep to scroll/observer + mount                                           |
+| `src/entrypoints/overlay.content/style.css`   | "Saved ✓" chip styles                                                           |
+| options/popup settings surface                | `showSavedStatus` toggle                                                        |

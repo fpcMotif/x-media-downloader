@@ -14,10 +14,11 @@ Users want durable, cross-session/cross-device visibility into what was grabbed
 export of selections to S3/Drive/Photos/Dropbox. Two constraints shape any
 remote backend here:
 
-- **Product promise:** v1 is local-only ("Local-only · no tracking", ADR-0005:
-  captures are sensitive and session-scoped; no persistent history). A remote
-  backend must be **opt-in** and must never receive captures, auth headers, or
-  media bytes.
+- **Product promise:** default operation is local-first and has no telemetry.
+  Captures are sensitive, durable local IndexedDB records with an explicit erase
+  control (ADR-0005). A remote backend must be **opt-in** and must never receive
+  auth headers or media bytes. ADR-0018 separately governs the opt-in Capture
+  text mirror.
 - **Convex platform facts** (verified against docs.convex.dev, 2026-06):
   HTTP actions cap request/response at 20 MiB; actions are at-most-once and not
   auto-retried; **scheduled mutations are exactly-once with automatic retries**;
@@ -34,12 +35,17 @@ Convex becomes a **sidecar control plane**, three-layered:
 2. **Metadata/orchestration layer (new, opt-in):** the background SW mirrors
    append-only **Sync Events** (`queued` / `completed` / `failed`, metadata
    only) into Convex through a local **Outbox**:
-   - Events carry a deterministic `eventId` (`device/request/kind`) so server
-     writes are **idempotent**; re-sending a batch is harmless.
+   - Events carry a deterministic, length-prefixed v1 `eventId` so server
+     writes are **idempotent**; re-sending a batch is harmless. The server
+     accepts the old slash form only while older durable outboxes drain. That
+     compatibility path requires slash-free UUID device IDs and media basenames.
    - The Outbox persists to `storage.local`, drains FIFO in batches of ≤64 via
      `POST {deployment}/api/mutation` (`sync:recordEvents`), and backs off
-     exponentially on failure. Downloads never block on, or fail because of,
-     the cloud.
+     exponentially on failure. A new worker bounds a persisted retry deadline
+     from its durable failure count, so wall-clock rollback cannot create an
+     unbounded sleep. Downloads never block on, or fail because of, the cloud.
+   - A corrupt durable Outbox is quarantined in place. Sync shows an error and
+     clears its retry alarm. Turning Cloud Sync off explicitly clears the data.
    - Transport is a minimal `fetch`-based port over Convex's public HTTP API
      (the `makeAria2RpcPort` pattern) — **no convex npm dependency, no
      WebSocket client** in the MV3 worker.
@@ -51,7 +57,7 @@ Privacy/permissions posture:
 - Default **off** (`cloudSyncEnabled: false`). The `https://*.convex.cloud/*`
   origin is an **optional** host permission requested at runtime on enable
   (aria2-localhost precedent). The popup footer says "Cloud sync on · metadata
-  only" while enabled — the "Local-only" claim is never shown untruthfully.
+  only" while enabled — the product is described as local-first, never local-only.
 - Mirrored data is CDN URLs + tweet/handle/type provenance only. Sidecar
   `data:` URLs, captures, and auth material are structurally excluded by the
   `SyncEvent` schema. Disabling sync clears the Outbox.
@@ -72,7 +78,7 @@ sequenceDiagram
 
   CS->>BG: download event (queued / completed / failed)
   Note over BG: gate — cloudSyncEnabled + URL + secret
-  BG->>OB: append SyncEvent (eventId = device/request/kind)
+  BG->>OB: append SyncEvent (eventId = v1(device, request, kind))
   BG-)BG: drainOutbox (fire-and-forget; download never blocks)
   loop FIFO, batch ≤64, until empty or first failure
     BG->>CX: POST sync:recordEvents {events, secret}
@@ -110,9 +116,9 @@ stateDiagram-v2
 
 ## Consequences
 
-- Local-only default mode is untouched; cloud mode gains a durable,
+- Local-first default mode is untouched; cloud mode gains a durable,
   device-tagged ledger and URL/state cache that survives browser restarts.
-- Idempotent events + at-least-once draining give exact-once *effects* without
+- Idempotent events + at-least-once draining give exact-once _effects_ without
   distributed transactions; append-only rows avoid Convex hot-document write
   conflicts.
 - Prolonged offline beyond the Outbox cap (2,000 events) drops oldest metadata
@@ -130,4 +136,4 @@ stateDiagram-v2
   for 1k–10k PNG/MP4 transfers.
 - **Mirroring whole queue/metrics blobs** — overwrites one hot document per
   tick (write conflicts, no audit trail); append-only events chosen instead.
-- **Mandatory cloud backend** — breaks the product's local-only promise.
+- **Mandatory cloud backend** — breaks the product's local-first, optional-cloud posture.

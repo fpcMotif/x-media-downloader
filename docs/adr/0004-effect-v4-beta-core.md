@@ -5,7 +5,7 @@
 ## Context
 
 The core (schema, services, concurrency, errors) is built on Effect. The project
-owner mandated the **bleeding-edge Effect v4** (`4.0.0-beta.78`, the "effect-smol"
+owner mandated the **bleeding-edge Effect v4** (`4.0.0-beta.92`, the "effect-smol"
 rewrite), which differs materially from v3: no `Effect.Service`, no
 `Schema.optionalWith`, no `decodeUnknownEither`/`ParseError`; `Schema`,
 `Semaphore`, `Result` live in core (grounding §0, §f, §g).
@@ -30,4 +30,4 @@ grounding snippets on any bump.
 
 - **Effect v3 stable** — safer, well-documented, but rejected by the owner.
 - **No Effect** — would forgo typed errors, DI via Layers, and the concurrency /
-  retry primitives the Download Queue relies on.
+  retry primitives the Start Queue relies on.

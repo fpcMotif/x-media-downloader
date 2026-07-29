@@ -1,5 +1,7 @@
 import { Schema } from 'effect'
+import { MAX_CAPTURE_SUMMARY_ROOT_TEXT_LENGTH } from './contract'
 import { TweetRecord } from './record'
+import { incomingCaptureWins } from './revision'
 
 /** A conversation thread summarized for the panel's recent list (spec §8). */
 export type RecentConversation = {
@@ -10,15 +12,20 @@ export type RecentConversation = {
   lastAt: number
 }
 
-const RecordsSchema = Schema.Array(TweetRecord)
+const decodeRecord = Schema.decodeUnknownSync(TweetRecord)
 
-/** Decode raw persisted input into validated records; corrupt input → `[]`. */
+/** Decode raw persisted input into validated records; skip corrupt rows. */
 export function decodeRecords(raw: unknown): TweetRecord[] {
-  try {
-    return [...Schema.decodeUnknownSync(RecordsSchema)(raw)]
-  } catch {
-    return []
+  if (!Array.isArray(raw)) return []
+  const records: TweetRecord[] = []
+  for (const row of raw) {
+    try {
+      records.push(decodeRecord(row))
+    } catch {
+      // A stale/corrupt IndexedDB row must not discard its healthy neighbours.
+    }
   }
+  return records
 }
 
 /**
@@ -29,11 +36,7 @@ export function decodeRecords(raw: unknown): TweetRecord[] {
  */
 export function mergeRecord(existing: TweetRecord | undefined, incoming: TweetRecord): TweetRecord {
   if (existing === undefined) return incoming
-  if (incoming.sourceRank > existing.sourceRank) return incoming
-  if (incoming.sourceRank === existing.sourceRank && incoming.capturedAt >= existing.capturedAt) {
-    return incoming
-  }
-  return existing
+  return incomingCaptureWins(existing, incoming) ? incoming : existing
 }
 
 /** All records belonging to one conversation thread. */
@@ -68,7 +71,7 @@ function foldConversation(byConversation: Map<string, RecentConversation>, r: Tw
     byConversation.set(r.conversationId, {
       conversationId: r.conversationId,
       rootHandle: r.author.handle,
-      rootText: r.text,
+      rootText: r.text.slice(0, MAX_CAPTURE_SUMMARY_ROOT_TEXT_LENGTH),
       count: 1,
       lastAt: r.capturedAt,
     })
@@ -78,7 +81,7 @@ function foldConversation(byConversation: Map<string, RecentConversation>, r: Tw
   existing.lastAt = Math.max(existing.lastAt, r.capturedAt)
   if (isRoot) {
     existing.rootHandle = r.author.handle
-    existing.rootText = r.text
+    existing.rootText = r.text.slice(0, MAX_CAPTURE_SUMMARY_ROOT_TEXT_LENGTH)
   }
 }
 

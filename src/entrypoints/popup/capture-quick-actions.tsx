@@ -1,18 +1,20 @@
-import { useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { cn } from '@/lib/utils'
 import { EraserIcon } from '@/components/icons'
-import { runCaptureExport, type CaptureSummary } from '@/components/capture-export'
+import { runCaptureExport, type CaptureSummaryResult } from '@/components/capture-export'
+import { requestCaptureErase } from '@/core/capture/client'
 import {
   plural,
   fmtDay,
   confirmEraseArchiveCopy,
   erasedArchiveCopy,
+  eraseArchiveFailedCopy,
 } from '@/components/capture-copy'
 import { ConfirmStrip } from '@/components/confirm-strip'
+import { useAsyncAuthority } from '@/components/use-async-authority'
 
-// Keep this in sync with the eager fetch in App.tsx (fetchCaptureSummary(3)) —
-// the popup asks the background for exactly this many recent conversations, so
-// slicing here is a defensive no-op, not a real pagination cut.
+// Keep this in sync with useCaptureSummary's eager three-row read. Slicing here
+// is a defensive no-op, not a real pagination cut.
 const RECENT_LIMIT = 3
 
 // Invisible hit-slop for the compact JSON/Markdown/Export-all/Erase text-links
@@ -21,7 +23,7 @@ const LINK_SLOP =
   'relative rounded-sm outline-none transition-colors after:absolute after:-inset-x-1 after:-inset-y-3 focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97]'
 
 interface CaptureQuickActionsProps {
-  readonly summary: CaptureSummary | null
+  readonly summary: CaptureSummaryResult | null
   /** Called after a successful erase so the parent can zero its own captureSummary
    *  state (mirrors the reset the Archive settings panel does locally). */
   readonly onCleared: () => void
@@ -35,45 +37,87 @@ interface CaptureQuickActionsProps {
 export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsProps) {
   const [open, setOpen] = useState(false)
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
+  const [erasing, setErasing] = useState(false)
+  const erasePending = useRef(false)
+  const statusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const statusAuthority = useAsyncAuthority()
 
-  const tweets = summary?.tweets ?? 0
+  useEffect(() => {
+    return () => {
+      if (statusTimer.current !== undefined) clearTimeout(statusTimer.current)
+    }
+  }, [])
+
+  const capture = summary?.status === 'available' ? summary.summary : null
+  const tweets = capture?.tweets ?? 0
   // A successful erase zeroes the parent's captureSummary synchronously in
   // the same batch that sets statusMsg below — an early return on tweets===0
   // alone would unmount this block before its own flash ever painted. Stay
   // mounted while a flash is pending; its own timeout (flashStatus) clears it.
+  if (summary === null)
+    return (
+      <p className="border-t border-border px-3.5 py-4 text-xs text-muted-foreground">
+        Archive loading…
+      </p>
+    )
+  if (summary.status === 'unavailable')
+    return (
+      <p className="border-t border-border px-3.5 py-4 text-xs text-muted-foreground">
+        Archive unavailable.
+      </p>
+    )
   if (tweets === 0 && statusMsg === null) return null
 
-  const flashStatus = (msg: string): void => {
+  const flashStatus = (epoch: number, msg: string): void => {
+    if (!statusAuthority.isCurrent(epoch)) return
+    if (statusTimer.current !== undefined) clearTimeout(statusTimer.current)
     setStatusMsg(msg)
-    setTimeout(() => setStatusMsg(null), 5000)
+    statusTimer.current = setTimeout(() => {
+      if (!statusAuthority.isCurrent(epoch)) return
+      statusTimer.current = undefined
+      setStatusMsg(null)
+    }, 5000)
   }
 
   const exportAll = async (): Promise<void> => {
+    const epoch = statusAuthority.begin()
     const outcome = await runCaptureExport('jsonl')
-    flashStatus(outcome.detail)
+    flashStatus(epoch, outcome.detail)
   }
 
   const exportConversation = async (
     kind: 'tree' | 'markdown',
     conversationId: string,
   ): Promise<void> => {
+    const epoch = statusAuthority.begin()
     const outcome =
       kind === 'tree'
         ? await runCaptureExport('tree', conversationId)
         : await runCaptureExport('markdown', conversationId)
-    flashStatus(outcome.detail)
+    flashStatus(epoch, outcome.detail)
   }
 
-  // Fire-and-forget, matching the Archive settings panel's eraseArchive: the
-  // local reset + status message happen unconditionally, since ClearCaptureRequest
-  // is a durable local wipe with no partial-failure mode worth branching on.
   const eraseArchive = async (): Promise<void> => {
-    await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
-    onCleared()
-    flashStatus(erasedArchiveCopy(tweets))
+    if (erasePending.current) return
+    erasePending.current = true
+    const epoch = statusAuthority.begin()
+    setErasing(true)
+    try {
+      const outcome = await requestCaptureErase((request) => browser.runtime.sendMessage(request))
+      if (!statusAuthority.isMounted()) return
+      if (outcome.ok) {
+        onCleared()
+        flashStatus(epoch, erasedArchiveCopy(outcome.cleared))
+      } else {
+        flashStatus(epoch, eraseArchiveFailedCopy())
+      }
+    } finally {
+      erasePending.current = false
+      if (statusAuthority.isMounted()) setErasing(false)
+    }
   }
 
-  const recent = (summary?.recent ?? []).slice(0, RECENT_LIMIT)
+  const recent = capture?.recent.slice(0, RECENT_LIMIT) ?? []
 
   return (
     <div className="grid gap-2 border-t border-border px-3.5 py-4">
@@ -176,10 +220,11 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
                     'flex items-center justify-self-start gap-1 text-xs font-medium text-destructive hover:underline',
                     LINK_SLOP,
                   )}
-                  onClick={arm}
+                  disabled={erasing}
+                  onClick={erasing ? undefined : arm}
                 >
                   <EraserIcon className="size-3.5" />
-                  Erase archive…
+                  {erasing ? 'Erasing archive…' : 'Erase archive…'}
                 </button>
               )}
             </ConfirmStrip>
