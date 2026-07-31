@@ -39,6 +39,12 @@ export interface PostGrabDeps {
   readonly pathname: () => string
   /** Freshest pointer intent: the hovered media + its key, or null. */
   readonly hovered: () => { media: HTMLImageElement | HTMLVideoElement; key: string } | null
+  /** Modifier-independent media under the cursor (Threads/IG `d d` fallback):
+   *  resolves the media at the last known pointer position WITHOUT requiring
+   *  the Quick Grab modifier to be held — mirroring X's j/k cursor fallback
+   *  for platforms that have no native keyboard cursor. Null when no pointer
+   *  position is known or no media is under it. */
+  readonly cursorHovered?: () => { media: HTMLImageElement | HTMLVideoElement; key: string } | null
   /** X's j/k-focused article (the X-only cursor recipe wired by the caller). */
   readonly focusedArticle: () => Element | null
   /** Map an element inside a tweet article to its tweetId (X-only). */
@@ -77,6 +83,10 @@ export function wholePostItemsFor(
   const code = deps.adapter.postCodeFromElement?.(media, deps.pathname()) ?? null
   const codePostId = code ? deps.store.postIdForCode(code) : undefined
   const teePost = codePostId ? deps.store.valuesForTweet(codePostId) : []
+  if (import.meta.env.DEV)
+    console.debug(
+      `[XMD] wholePostItemsFor · domCode=${code ?? 'null'} → teePostId=${codePostId ?? 'unlinked'} → teePost=${teePost.length} item(s)${teePost.length === 0 ? ` · FALLBACK to hovered post ${item.postId} = ${deps.store.valuesForTweet(item.postId).length} item(s)` : ''}`,
+    )
   return teePost.length > 0 ? teePost : postGrabItems(item, deps.store.valuesForTweet(item.postId))
 }
 
@@ -93,7 +103,12 @@ export function fireCurrentPost(deps: PostGrabDeps): void {
   let rect: GrabUiState['rect']
   let items: MediaItem[]
 
-  const hover = deps.hovered()
+  // Priority 1: the modifier-active hover (freshest pointer intent, all
+  // platforms). Priority 2 (Threads/IG only): the media under the cursor even
+  // WITHOUT the modifier — `d d` pressed bare, mirroring X's j/k fallback
+  // below. Priority 3 (X only): the post under X's native j/k cursor.
+  const hover =
+    deps.hovered() ?? (deps.adapter.platform !== 'x' ? (deps.cursorHovered?.() ?? null) : null)
   if (hover) {
     const item = deps.adapter.resolveHoverItem(
       hover.media,
@@ -101,8 +116,18 @@ export function fireCurrentPost(deps: PostGrabDeps): void {
       deps.store.keyIndex(),
       deps.pathname(),
     )
-    if (!item) return
+    if (!item) {
+      if (import.meta.env.DEV)
+        console.debug(
+          `[XMD] whole-post grab · ABORT · hovered ${hover.media.tagName} key=${hover.key} resolved to no item (silent no-op, no ring)`,
+        )
+      return
+    }
     items = wholePostItemsFor(deps, hover.media, item)
+    if (import.meta.env.DEV)
+      console.debug(
+        `[XMD] whole-post grab · hovered ${hover.media.tagName} key=${hover.key} → item ${item.id} (post ${item.postId}) → whole post = ${items.length} item(s): [${items.map((i) => `${i.type}#${i.id}`).join(', ')}]`,
+      )
     uiKey = `dd:${item.postId}`
     rect = deps.rectOf(hover.media)
   } else if (deps.adapter.platform === 'x') {
@@ -121,6 +146,10 @@ export function fireCurrentPost(deps: PostGrabDeps): void {
     uiKey = `dd:${tweetId}`
     rect = deps.rectOf(article.querySelector('img') ?? article.querySelector('video') ?? article)
   } else {
+    if (import.meta.env.DEV)
+      console.debug(
+        `[XMD] whole-post grab · ABORT · nothing hovered, no media under cursor, and platform=${deps.adapter.platform} has no keyboard cursor fallback (silent no-op, no ring)`,
+      )
     return
   }
 

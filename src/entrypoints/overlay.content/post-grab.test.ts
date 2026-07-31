@@ -221,6 +221,72 @@ describe('fireCurrentPost — X cursor target', () => {
   })
 })
 
+describe('fireCurrentPost — Threads/IG cursor fallback', () => {
+  const cursorItem = (item: MediaItem): Partial<PostGrabDeps> => ({
+    adapter: adapter({ platform: 'threads', resolveHoverItem: () => item }),
+    hovered: () => null, // no Quick Grab modifier held
+    cursorHovered: () => ({ media: document.createElement('img'), key: 'KH' }),
+  })
+
+  it('resolves the whole post via cursorHovered when no modifier is held', async () => {
+    vi.useFakeTimers()
+    const a = photo('a', 'KA', 't1')
+    const b = photo('b', 'KB', 't1')
+    const { deps, store, sent, marked, ui } = makeDeps(cursorItem(a))
+    store.addDetected([a, b])
+
+    fireCurrentPost(deps)
+    expect(sent).toEqual([[a, b]])
+    expect(ui()).toEqual({ key: 'dd:t1', rect: RECT, phase: 'queued', all: true, allCount: 2 })
+    expect(marked.toSorted()).toEqual(['KA', 'KB'])
+
+    await settle()
+    expect(ui()?.phase).toBe('saved')
+    vi.advanceTimersByTime(POST_GRAB_FLASH_MS)
+    expect(ui()).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('is a quiet no-op when cursorHovered also returns null', () => {
+    const { deps, sent, ui } = makeDeps({
+      adapter: adapter({ platform: 'threads' }),
+      hovered: () => null,
+      cursorHovered: () => null,
+    })
+    fireCurrentPost(deps)
+    expect(sent).toEqual([])
+    expect(ui()).toBeNull()
+  })
+
+  it('is a quiet no-op when cursorHovered resolves to no item', () => {
+    const { deps, sent, ui } = makeDeps({
+      adapter: adapter({ platform: 'threads', resolveHoverItem: () => null }),
+      hovered: () => null,
+      cursorHovered: () => ({ media: document.createElement('img'), key: 'ghost' }),
+    })
+    fireCurrentPost(deps)
+    expect(sent).toEqual([])
+    expect(ui()).toBeNull()
+  })
+
+  it('does not consult cursorHovered on X (j/k fallback owns that path)', () => {
+    const cursorHovered = vi.fn<() => { media: HTMLImageElement; key: string }>(() => ({
+      media: document.createElement('img'),
+      key: 'KH',
+    }))
+    const focusedArticle = vi.fn<() => Element>(() => articleWithMedia())
+    const { deps } = makeDeps({
+      adapter: adapter({ platform: 'x' }),
+      hovered: () => null,
+      cursorHovered,
+      focusedArticle,
+      tweetIdFromArticle: () => 't1',
+    })
+    fireCurrentPost(deps)
+    expect(cursorHovered).not.toHaveBeenCalled()
+  })
+})
+
 describe('fireCurrentPost — staleness', () => {
   it('a settle arriving after a newer grab owns the ring is ignored', async () => {
     vi.useFakeTimers()
