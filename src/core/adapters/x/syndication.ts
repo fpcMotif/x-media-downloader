@@ -1,6 +1,6 @@
 import { Option } from 'effect'
-import { resolveTweetMedia, type RawMedia } from '../../resolver'
-import type { MediaItem } from '../../schema'
+import { resolveTweetMedia, type RawMedia } from '@/packages/resolver'
+import type { MediaItem } from '@/packages/schema'
 
 /**
  * X's public embed endpoint (`cdn.syndication.twimg.com/tweet-result`) recovers a

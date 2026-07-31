@@ -4,10 +4,15 @@ import {
   isGrabbableMetaPhotoUrl,
   resolveMetaImageElement,
 } from '../meta-shared/dom'
-import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
+import {
+  findPostContainer,
+  permalinkAnchorFromContainer,
+  postCodeFromContainer,
+} from '../meta-shared/post-anchor'
+import { actionControlByAria, carouselControlsByAria } from '../meta-shared/nav-dom'
 import { META_CDN_HOSTS } from '../meta-shared/cdn'
 import { postVideoKey, postVideoKeyIndexed } from '../detection-store'
-import type { PlatformAdapter } from '../types'
+import type { AdapterNav, NavAction, PlatformAdapter } from '../types'
 
 /** Instagram's post-boundary selector — the confirmed stable ancestor
  *  (LIVE-VERIFIED 2026-07-05): a real <article>, no id/data-attr/role of its own. */
@@ -231,6 +236,31 @@ export function isTrackedInstagramResponseUrl(url: string): boolean {
  * special-case an embedded original post the way Threads' `reposted_post`/
  * `quoted_post` will.
  */
+/** Keyboard Navigation action labels (issue #58) — Instagram's reply control
+ *  is labeled "Comment". LOCALE-FRAGILE like Threads': a non-English UI
+ *  resolves no control and the command fails safe. */
+const INSTAGRAM_NAV_ACTION_LABELS: Readonly<Record<NavAction, readonly string[]>> = {
+  like: ['Like'],
+  reply: ['Comment'],
+  repost: ['Repost'],
+}
+
+const INSTAGRAM_NAV_FLIPPED_LABELS: Readonly<Record<'like' | 'repost', string>> = {
+  like: 'Unlike',
+  repost: 'Remove repost',
+}
+
+const instagramNav: AdapterNav = {
+  postSelector: INSTAGRAM_POST_SELECTOR,
+  permalinkOf: (post) => permalinkAnchorFromContainer(post, 'a[href]', INSTAGRAM_POST_LINK_PATTERN),
+  carouselControls: carouselControlsByAria,
+  actionControl: (post, action) => actionControlByAria(post, INSTAGRAM_NAV_ACTION_LABELS[action]),
+  actionFlipped: (post, action) =>
+    post.querySelector(`[aria-label="${INSTAGRAM_NAV_FLIPPED_LABELS[action]}"]`) !== null,
+  replyComposerOpen: () =>
+    document.querySelector('[role="dialog"] [contenteditable="true"]') !== null,
+}
+
 export const instagramAdapter: PlatformAdapter = {
   platform: 'instagram',
   hostMatch: INSTAGRAM_HOST_MATCH,
@@ -274,10 +304,22 @@ export const instagramAdapter: PlatformAdapter = {
   detectRenderedMedia: () => [],
   resolveHoverItem: (element, key, detected) => {
     const teed = detected.get(key)
-    if (teed !== undefined) return teed
-    return element instanceof HTMLImageElement
-      ? resolveMetaImageElement(element, 'instagram')
-      : null
+    if (teed !== undefined) {
+      if (import.meta.env.DEV)
+        console.debug(`[XMD] instagram hover resolve · key=${key} → tee item ${teed.id}`)
+      return teed
+    }
+    if (element instanceof HTMLImageElement) {
+      const fallback = resolveMetaImageElement(element, 'instagram')
+      if (import.meta.env.DEV)
+        console.debug(
+          `[XMD] instagram hover resolve · key=${key} → ${fallback ? `DOM fallback ${fallback.id}` : 'no match'}`,
+        )
+      return fallback
+    }
+    if (import.meta.env.DEV)
+      console.debug(`[XMD] instagram hover resolve · key=${key} → no match (non-img, not in tee)`)
+    return null
   },
   canResolveHoverItem: (element, key, detected) => {
     if (detected.has(key)) return true
@@ -289,9 +331,17 @@ export const instagramAdapter: PlatformAdapter = {
   extractPostCodes: postCodesInResponse,
   postKeyFromVideoElement: (video, pathname) => {
     const code = postIdFromDom(video, pathname)
-    if (!code) return null
+    if (!code) {
+      if (import.meta.env.DEV)
+        console.debug('[XMD] instagram postKeyFromVideo · no post code found for video element')
+      return null
+    }
     const li = video.closest('li')
-    if (!li) return postVideoKey(code) // no <ul>/<li> ancestor: single-media post
+    if (!li) {
+      if (import.meta.env.DEV)
+        console.debug(`[XMD] instagram postKeyFromVideo · code=${code} → single-media key`)
+      return postVideoKey(code) // no <ul>/<li> ancestor: single-media post
+    }
     // Always the indexed form once inside a real carousel <ul> — even at
     // slide 0. A DOM walk can't tell "this post has exactly one video" from
     // "this post has 2+ videos and the hovered one happens to be the first
@@ -302,7 +352,12 @@ export const instagramAdapter: PlatformAdapter = {
     // shortcut here instead would silently fail to resolve for any
     // multi-video carousel whose first slide is a video, since the store
     // deletes that bare key the moment a post has 2+ videos.
-    return postVideoKeyIndexed(code, slideIndexFromDom(li))
+    const slideIndex = slideIndexFromDom(li)
+    if (import.meta.env.DEV)
+      console.debug(
+        `[XMD] instagram postKeyFromVideo · code=${code} → carousel slideIndex=${slideIndex}`,
+      )
+    return postVideoKeyIndexed(code, slideIndex)
   },
   // The post's own `/p/{code}/` shortcode for ANY hovered element (photo or
   // video), so the overlay's whole-post grab can map it → the tee's real postId
@@ -312,4 +367,5 @@ export const instagramAdapter: PlatformAdapter = {
   // No findMediaNeedingRecovery: Instagram has no public/no-auth fallback
   // (oEmbed is Meta-app-registration-gated) — confirmed by research, per the
   // design spec's PlatformAdapter interface comment.
+  nav: instagramNav,
 } satisfies PlatformAdapter

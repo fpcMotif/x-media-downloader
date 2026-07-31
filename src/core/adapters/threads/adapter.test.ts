@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   THREADS_HOST_MATCH,
   isThreadsUrl,
@@ -6,6 +6,7 @@ import {
   threadsAdapter,
 } from './adapter'
 import { META_CDN_HOSTS } from '../meta-shared/cdn'
+import { resolveMetaImageElement } from '../meta-shared/dom'
 
 describe('THREADS_HOST_MATCH', () => {
   it('covers both the pre- and post-migration hosts', () => {
@@ -526,5 +527,136 @@ describe('threadsAdapter', () => {
       expect(threadsAdapter.canResolveHoverItem(video, key, new Map())).toBe(false)
       expect(threadsAdapter.resolveHoverItem(video, key, new Map(), '/@zuck/post/CODE1')).toBeNull()
     })
+  })
+})
+
+const makeThreadsNavPost = (inner: string): HTMLElement => {
+  const el = document.createElement('div')
+  el.setAttribute('data-pressable-container', 'true')
+  el.innerHTML = inner
+  return el
+}
+
+describe('threadsAdapter.nav descriptor', () => {
+  it('exposes the platform post selector', () => {
+    expect(threadsAdapter.nav?.postSelector).toBe("div[data-pressable-container='true']")
+  })
+
+  it('permalinkOf returns the post permalink anchor, or null', () => {
+    const post = makeThreadsNavPost('<a href="/@alice/post/ABC123">2h</a>')
+    expect(threadsAdapter.nav?.permalinkOf(post)?.getAttribute('href')).toBe('/@alice/post/ABC123')
+    expect(
+      threadsAdapter.nav?.permalinkOf(makeThreadsNavPost('<a href="/explore">x</a>')),
+    ).toBeNull()
+  })
+
+  it('actionControl finds like/reply/repost controls by aria-label', () => {
+    const post = makeThreadsNavPost(
+      '<span aria-label="Like"></span><span aria-label="Reply"></span><span aria-label="Repost"></span>',
+    )
+    expect(threadsAdapter.nav?.actionControl(post, 'like')?.getAttribute('aria-label')).toBe('Like')
+    expect(threadsAdapter.nav?.actionControl(post, 'reply')?.getAttribute('aria-label')).toBe(
+      'Reply',
+    )
+    expect(threadsAdapter.nav?.actionControl(post, 'repost')?.getAttribute('aria-label')).toBe(
+      'Repost',
+    )
+    expect(threadsAdapter.nav?.actionControl(makeThreadsNavPost(''), 'like')).toBeNull()
+  })
+
+  it('actionFlipped confirms like via Unlike and repost via Reposted', () => {
+    const nav = threadsAdapter.nav!
+    expect(nav.actionFlipped(makeThreadsNavPost('<span aria-label="Unlike"></span>'), 'like')).toBe(
+      true,
+    )
+    expect(nav.actionFlipped(makeThreadsNavPost('<span aria-label="Like"></span>'), 'like')).toBe(
+      false,
+    )
+    expect(
+      nav.actionFlipped(makeThreadsNavPost('<span aria-label="Reposted"></span>'), 'repost'),
+    ).toBe(true)
+    expect(
+      nav.actionFlipped(makeThreadsNavPost('<span aria-label="Repost"></span>'), 'repost'),
+    ).toBe(false)
+  })
+
+  it('replyComposerOpen detects the dialog composer', () => {
+    document.body.innerHTML = ''
+    expect(threadsAdapter.nav?.replyComposerOpen()).toBe(false)
+    document.body.innerHTML = '<div role="dialog"><div contenteditable="true"></div></div>'
+    expect(threadsAdapter.nav?.replyComposerOpen()).toBe(true)
+    document.body.innerHTML = ''
+  })
+
+  it('carouselControls resolves prev/next buttons when present', () => {
+    const post = makeThreadsNavPost(
+      '<button aria-label="Go back"></button><button aria-label="Next"></button>',
+    )
+    expect(threadsAdapter.nav?.carouselControls?.(post).next?.getAttribute('aria-label')).toBe(
+      'Next',
+    )
+    expect(threadsAdapter.nav?.carouselControls?.(makeThreadsNavPost('')).next).toBeNull()
+  })
+})
+
+describe('threadsAdapter — production build (DEV logging compiled out)', () => {
+  // This adapter's debug logging sits INSIDE the resolvers rather than at the
+  // entrypoint edge, so `import.meta.env.DEV` is a live branch in each of them.
+  // Vitest runs with DEV=true, which leaves the arm that actually ships
+  // unexercised. These re-run the same paths with the flag off and assert
+  // identical results — the logging is observation-only, never load-bearing.
+  beforeEach(() => vi.stubEnv('DEV', false))
+  afterEach(() => vi.unstubAllEnvs())
+
+  const item = {
+    id: 'k1',
+    platform: 'threads' as const,
+    postId: '1',
+    author: 'a',
+    type: 'photo' as const,
+    url: 'https://cdn.example/k1.jpg',
+    ext: 'jpg',
+    index: 0,
+  }
+
+  it('resolveHoverItem returns the same tee hit / DOM fallback / miss', () => {
+    const detected = new Map([['k1', item]])
+    expect(
+      threadsAdapter.resolveHoverItem(document.createElement('div'), 'k1', detected, '/'),
+    ).toEqual(item)
+
+    const img = document.createElement('img')
+    img.src = 'https://scontent.cdninstagram.com/v/t51.2885-15/x.jpg'
+    expect(threadsAdapter.resolveHoverItem(img, 'miss', new Map(), '/')).toEqual(
+      resolveMetaImageElement(img, 'threads'),
+    )
+    expect(
+      threadsAdapter.resolveHoverItem(document.createElement('div'), 'miss', new Map(), '/'),
+    ).toBeNull()
+  })
+
+  it('postKeyFromVideoElement returns the same null / single-media / carousel keys', () => {
+    const bare = document.createElement('div')
+    bare.innerHTML = `<div><video></video></div>`
+    expect(threadsAdapter.postKeyFromVideoElement?.(bare.querySelector('video')!, '/')).toBeNull()
+
+    const single = document.createElement('div')
+    single.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE1">link</a><video></video></div>`
+    expect(threadsAdapter.postKeyFromVideoElement?.(single.querySelector('video')!, '/')).toBe(
+      'post:code:CODE1',
+    )
+
+    const carousel = document.createElement('div')
+    carousel.innerHTML = `
+      <div data-pressable-container="true"><a href="/@zuck/post/CODE5">link</a>
+        <div style="transform: translateX(0px);">
+          <div></div>
+          <div><video></video></div>
+          <div><img /></div>
+        </div>
+      </div>`
+    expect(threadsAdapter.postKeyFromVideoElement?.(carousel.querySelector('video')!, '/')).toBe(
+      'post:code:CODE5:slot:0',
+    )
   })
 })

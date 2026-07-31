@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fakeBrowser } from 'wxt/testing'
 import { Schema } from 'effect'
 import { makeClearSession, type ClearSessionDeps, type SettleClock } from './clear-session'
-import { Settings as SettingsSchema, type Settings } from '../core/schema'
-import { decodeWorklist, isCleared } from '../core/clear/worklist'
+import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { decodeWorklist, isCleared } from '@/packages/clear/worklist'
 
 // ── Settle Port seam ──
 //
@@ -51,9 +51,15 @@ const makeFakeClock = (): SettleClock & {
   return { schedule, calls }
 }
 
+/** No list scope could be pinned when the entry was seeded — the fail-CLOSED pin every
+ *  seed without an origin page ends up with, and what the permalink leg is handed. */
+const NO_PIN = { source: 'none' } as const
+
 const makeDeps = (over: Partial<ClearSessionDeps> = {}) => {
   const dispatchClear = vi.fn<ClearSessionDeps['dispatchClear']>(async () => mountedFlip)
   const settleProbe = over.settleProbe ?? probeFn(async () => ({ state: 'complete', exists: true }))
+  const resolveOriginScope =
+    over.resolveOriginScope ?? vi.fn<ClearSessionDeps['resolveOriginScope']>(async () => undefined)
   const clock = makeFakeClock()
   const deps: ClearSessionDeps = {
     queueError: () => () => {},
@@ -63,8 +69,9 @@ const makeDeps = (over: Partial<ClearSessionDeps> = {}) => {
     clock,
     ...over,
     settleProbe,
+    resolveOriginScope,
   }
-  return { deps, dispatchClear, settleProbe, clock }
+  return { deps, dispatchClear, settleProbe, resolveOriginScope, clock }
 }
 
 /** Fire every settle-window callback the fake clock captured, then wait for every
@@ -116,7 +123,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
     await downloadAndSettle(makeClearSession(deps), clock, settleProbe)
     expect(dispatchClear).toHaveBeenCalledTimes(1)
     // allLists defaults false → page-scoped clear (current page's list only).
-    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, undefined)
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, undefined, NO_PIN)
   })
 
   it('passes allLists=true when "Clear from every list" is on', async () => {
@@ -125,11 +132,11 @@ describe('Settle Port gate (irreversible Clear)', () => {
         settings({ clearOnSave: true, autoUnbookmarkOnSave: true, clearAllListsOnSave: true }),
     })
     await downloadAndSettle(makeClearSession(deps), clock, settleProbe)
-    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], true, undefined)
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], true, undefined, NO_PIN)
   })
 
   it('keeps the origin tab inside the session', async () => {
-    const { deps, dispatchClear, settleProbe, clock } = makeDeps()
+    const { deps, dispatchClear, settleProbe, clock, resolveOriginScope } = makeDeps()
     const c = makeClearSession(deps)
     await c.seedLedger({
       decision: 'seed',
@@ -141,7 +148,10 @@ describe('Settle Port gate (irreversible Clear)', () => {
     })
     c.recordComplete('T', 'm0', 123)
     await fireSettleWindow(clock, settleProbe)
-    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, 9)
+    // The origin tab was asked for its list scope ONCE, at seed time; it isn't a list
+    // page (undefined), so the release leg is handed the fail-closed pin.
+    expect(resolveOriginScope).toHaveBeenCalledExactlyOnceWith(9)
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, 9, NO_PIN)
   })
 
   it('reset cancels stale settle timers', async () => {
@@ -174,6 +184,40 @@ describe('Settle Port gate (irreversible Clear)', () => {
     await Promise.resolve()
     expect(settleProbe).toHaveBeenCalledWith(123)
     expect(dispatchClear).not.toHaveBeenCalled()
+  })
+
+  it('traces a seeded Release media failure with ledger counts before pruning', async () => {
+    const trace = vi.fn<ClearSessionDeps['trace']>()
+    const { deps } = makeDeps({ trace })
+    const c = makeClearSession(deps)
+
+    c.recordFailure(undefined, 'unrelated')
+    c.recordFailure('unseeded', 'm0')
+    await Promise.resolve()
+    expect(trace).not.toHaveBeenCalled()
+
+    await c.seedLedger({
+      decision: 'seed',
+      byTweet: new Map([['T', ['m0']]]),
+      scopes: ['bookmark'],
+      origin: 'sweep',
+      unclearableCount: 0,
+    })
+    trace.mockClear()
+
+    c.recordFailure('T', 'm0')
+    await vi.waitFor(() =>
+      expect(trace).toHaveBeenCalledWith('clear-download-failed', {
+        tweetId: 'T',
+        itemId: 'm0',
+        detail: 'origin=sweep scopes=bookmark outcome=failed expected=1 done=0 inFlight=0 failed=1',
+      }),
+    )
+
+    trace.mockClear()
+    c.recordFailure('T', 'm0')
+    await Promise.resolve()
+    expect(trace).not.toHaveBeenCalled()
   })
 
   it('a dispatch rejection releases the claim for a later retry', async () => {
@@ -281,7 +325,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
     ])
     await fireSettleWindow(clock, settleProbe)
     expect(dispatchClear).toHaveBeenCalledTimes(1)
-    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, undefined)
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, undefined, NO_PIN)
   })
 
   it('one media late-interrupting VETOES the whole-tweet clear (the load-bearing gate)', async () => {
@@ -323,7 +367,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
     })
     c.recordComplete('T', 'm0', 123)
     await fireSettleWindow(clock, settleProbe)
-    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark', 'like'], true, undefined)
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark', 'like'], true, undefined, NO_PIN)
   })
 
   it('keeps single scope for sweep when clearAllListsOnSave is false', async () => {
@@ -346,7 +390,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
     })
     c.recordComplete('T', 'm0', 123)
     await fireSettleWindow(clock, settleProbe)
-    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, undefined)
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, undefined, NO_PIN)
   })
 
   it('resolves an authorized Drain result through the claim and worklist', async () => {
@@ -417,6 +461,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
           getSettings: async () => CLEAR_ON,
           trace: () => {},
           dispatchClear,
+          resolveOriginScope: async () => undefined,
           settleProbe,
         }
         const c = makeClearSession(deps)
@@ -432,10 +477,232 @@ describe('Settle Port gate (irreversible Clear)', () => {
         await vi.advanceTimersByTimeAsync(1500) // SETTLE_CONFIRM_MS
 
         expect(settleProbe).toHaveBeenCalledWith(123)
-        expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, undefined)
+        expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, undefined, NO_PIN)
       } finally {
         vi.useRealTimers()
       }
     })
+  })
+})
+
+/** Details of every trace line for `stage`, in order. */
+const linesFor = (
+  trace: ReturnType<typeof vi.fn<ClearSessionDeps['trace']>>,
+  stage: string,
+): string[] => trace.mock.calls.filter((c) => c[0] === stage).map((c) => String(c[1]?.detail ?? ''))
+
+const traceSpy = () => vi.fn<ClearSessionDeps['trace']>()
+
+// ── Release scope pin (seed time) ──
+//
+// The permalink release leg owns no list scope of its own, so whatever page scope it
+// is handed is the ONLY thing that can authorize an irreversible un-bookmark/un-like
+// there. That scope is fixed HERE, when the ledger entry is seeded — reading it back
+// off the origin tab once the download settles let an ordinary "now do the other list"
+// navigation re-aim the clear at a list the user never pressed Release for.
+describe('release scope pin', () => {
+  beforeEach(() => {
+    fakeBrowser.reset()
+  })
+
+  it('pins the origin tab’s list scope at SEED time and survives that tab navigating away', async () => {
+    const resolveOriginScope = vi.fn<ClearSessionDeps['resolveOriginScope']>(
+      async () => 'bookmark' as const,
+    )
+    const { deps, dispatchClear, settleProbe, clock } = makeDeps({ resolveOriginScope })
+    const c = makeClearSession(deps)
+    await c.seedLedger({
+      decision: 'seed',
+      byTweet: new Map([['T', ['m0']]]),
+      scopes: ['bookmark'],
+      origin: 'hook',
+      unclearableCount: 0,
+      originTabId: 4,
+    })
+    // The user moves that same tab from Bookmarks to Likes while the download runs —
+    // the live answer is now 'like'. Nothing may ask again.
+    resolveOriginScope.mockResolvedValue('like')
+
+    c.recordComplete('T', 'm0', 123)
+    await fireSettleWindow(clock, settleProbe)
+
+    expect(resolveOriginScope).toHaveBeenCalledExactlyOnceWith(4)
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, 4, {
+      source: 'seeded-origin',
+      scope: 'bookmark',
+    })
+  })
+
+  it('lets the sweep’s CONSENTED scope win, without reading the origin tab at all', async () => {
+    const { deps, dispatchClear, settleProbe, clock, resolveOriginScope } = makeDeps()
+    const c = makeClearSession(deps)
+    await c.seedLedger({
+      decision: 'seed',
+      byTweet: new Map([['T', ['m0']]]),
+      scopes: ['bookmark'],
+      origin: 'sweep',
+      unclearableCount: 0,
+      originTabId: 4,
+      consentedScope: 'bookmark',
+    })
+    c.recordComplete('T', 'm0', 123)
+    await fireSettleWindow(clock, settleProbe)
+
+    // The list the user literally pressed Release on beats any url derivation, so the
+    // tab is never consulted — there is nothing a navigation could corrupt.
+    expect(resolveOriginScope).not.toHaveBeenCalled()
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, 4, {
+      source: 'consented',
+      scope: 'bookmark',
+    })
+  })
+
+  it('records the pin on the seed line, so a click-nothing release is explainable', async () => {
+    const trace = traceSpy()
+    const { deps } = makeDeps({
+      trace,
+      resolveOriginScope: async () => 'like' as const,
+    })
+    await makeClearSession(deps).seedLedger({
+      decision: 'seed',
+      byTweet: new Map([['T', ['m0']]]),
+      scopes: ['like'],
+      origin: 'hook',
+      unclearableCount: 0,
+      originTabId: 4,
+    })
+    expect(linesFor(trace, 'clear-seeded')).toEqual([
+      'origin=hook scopes=like expected=1 release=seeded-origin:like',
+    ])
+  })
+
+  it('fails CLOSED when the origin page owns no list scope', async () => {
+    const trace = traceSpy()
+    const { deps, dispatchClear, settleProbe, clock } = makeDeps({ trace })
+    const c = makeClearSession(deps)
+    await c.seedLedger({
+      decision: 'seed',
+      byTweet: new Map([['T', ['m0']]]),
+      scopes: ['bookmark'],
+      origin: 'hook',
+      unclearableCount: 0,
+      originTabId: 4, // a profile/timeline tab: resolveOriginScope answers undefined
+    })
+    c.recordComplete('T', 'm0', 123)
+    await fireSettleWindow(clock, settleProbe)
+
+    expect(linesFor(trace, 'clear-seeded')).toEqual([
+      'origin=hook scopes=bookmark expected=1 release=none',
+    ])
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, 4, NO_PIN)
+  })
+})
+
+// ── Release diagnostics ──
+//
+// Every case here is a Release that STOPS after a `clear-settle truly=true` line. In
+// production those all looked identical in the exported diagnostics log — a verified
+// settle followed by silence — so "Release did nothing" could not be told apart from
+// "Release was deliberately skipped". These pin the stage + reason that separates them.
+describe('Release diagnostics', () => {
+  beforeEach(() => {
+    fakeBrowser.reset()
+  })
+
+  it('names clear-off when the toggle flips off between seed and settle', async () => {
+    const trace = traceSpy()
+    const { deps, dispatchClear, settleProbe, clock } = makeDeps({
+      trace,
+      getSettings: async () => settings({ clearOnSave: false, autoUnbookmarkOnSave: true }),
+    })
+    await downloadAndSettle(makeClearSession(deps), clock, settleProbe)
+
+    expect(dispatchClear).not.toHaveBeenCalled()
+    expect(linesFor(trace, 'clear-not-attempted')).toEqual(['reason=clear-off'])
+  })
+
+  it('names no-claimable-scopes, the latch states and that the entry was pruned', async () => {
+    // Clear-on-save is ON, but "Un-bookmark on save" is OFF while the ledger entry is
+    // scoped `bookmark` — so nothing is claimable and the Release silently ends. This is
+    // the case that looks MOST like a broken un-bookmark, and `enabled=` is what shows
+    // it isn't: the entry's scope simply isn't among the enabled ones.
+    const trace = traceSpy()
+    const { deps, dispatchClear, settleProbe, clock } = makeDeps({
+      trace,
+      getSettings: async () => settings({ clearOnSave: true, autoUnbookmarkOnSave: false }),
+    })
+    await downloadAndSettle(makeClearSession(deps), clock, settleProbe)
+
+    expect(dispatchClear).not.toHaveBeenCalled()
+    expect(linesFor(trace, 'clear-not-attempted')).toEqual([
+      'reason=no-claimable-scopes pruned=true clear=bookmark:none enabled=like+notInterested',
+    ])
+  })
+
+  it('reports the reset that threw away an in-flight release', async () => {
+    const trace = traceSpy()
+    const { deps } = makeDeps({ trace })
+    const c = makeClearSession(deps)
+    await c.seedLedger({
+      decision: 'seed',
+      byTweet: new Map([['T', ['m0']]]),
+      scopes: ['bookmark'],
+      origin: 'hook',
+      unclearableCount: 0,
+    })
+    c.recordComplete('T', 'm0', 123) // arms a settle window, never fired
+    await c.reset()
+
+    // One armed settle and one ledger entry discarded — without this line the export
+    // just stops here, which is also what a dead service worker looks like.
+    expect(linesFor(trace, 'clear-reset')).toEqual(['generation=1 cancelledSettles=1 ledgerSize=1'])
+  })
+
+  it('returns the ids the worklist skipped, not just how many', async () => {
+    let stored: unknown = null
+    const { deps } = makeDeps({
+      worklistStorage: {
+        get: async () => stored,
+        set: async (value) => {
+          stored = value
+        },
+      },
+    })
+    const c = makeClearSession(deps)
+    const posts = [
+      { tweetId: 'A', items: ['m0'] },
+      { tweetId: 'B', items: ['m1'] },
+    ]
+    const first = await c.enqueueSweep('bookmark', posts)
+    expect(first.skippedIds).toEqual([])
+    expect(first.queuedPosts).toHaveLength(2)
+
+    // 'A' releases; 'B' does not. Both queues are serial, so this lands before the
+    // re-run below reads the worklist.
+    c.setSweepState('A', ['bookmark'], 'cleared')
+
+    const second = await c.enqueueSweep('bookmark', posts)
+    // The id is the whole point: cross-referenced against the mounted, still-bookmarked
+    // posts, an id here proves an earlier Release latched 'cleared' without sticking.
+    expect(second.skippedIds).toEqual(['A'])
+    expect(second.skipped).toBe(1)
+    expect(second.queuedPosts).toHaveLength(1)
+  })
+
+  it('keeps each list independent — a bookmark release never skips the likes sweep', async () => {
+    let stored: unknown = null
+    const { deps } = makeDeps({
+      worklistStorage: {
+        get: async () => stored,
+        set: async (value) => {
+          stored = value
+        },
+      },
+    })
+    const c = makeClearSession(deps)
+    await c.enqueueSweep('bookmark', [{ tweetId: 'A', items: ['m0'] }])
+    c.setSweepState('A', ['bookmark'], 'cleared')
+
+    expect((await c.enqueueSweep('like', [{ tweetId: 'A', items: ['m0'] }])).skippedIds).toEqual([])
   })
 })

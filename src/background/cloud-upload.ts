@@ -1,11 +1,11 @@
 import { storage } from 'wxt/utils/storage'
-import { CLOUD_PROVIDERS, type Settings } from '../core/schema'
-import { setSettings } from '../core/settings'
+import { CLOUD_PROVIDERS, type Settings } from '@/packages/schema'
+import { setSettings } from '@/packages/settings'
 import { Effect, Layer, ManagedRuntime } from 'effect'
-import { makeConvexHttpPort } from '../core/sync/convex'
-import { makeCloudServicesLive } from '../core/cloud/cloud-services'
-import { DriveUploader, DriveUploaderLive, type DriveArgs } from '../core/cloud/drive'
-import { DropboxUploader, DropboxUploaderLive } from '../core/cloud/dropbox'
+import { makeConvexHttpPort } from '@/packages/sync/convex'
+import { makeCloudServicesLive } from '@/packages/cloud/cloud-services'
+import { DriveUploader, DriveUploaderLive, type DriveArgs } from '@/packages/cloud/drive'
+import { DropboxUploader, DropboxUploaderLive } from '@/packages/cloud/dropbox'
 import {
   guessMime,
   type CloudProviderId,
@@ -14,7 +14,7 @@ import {
   type UploadInput,
   type UploadOutcome,
   type UploadTarget,
-} from '../core/cloud/types'
+} from '@/packages/cloud/types'
 import {
   buildAuthUrl,
   computeCodeChallenge,
@@ -24,7 +24,7 @@ import {
   parseAuthRedirect,
   randomState,
   refreshAccessToken,
-} from '../core/cloud/oauth'
+} from '@/packages/cloud/oauth'
 import {
   applyUploadOutcome,
   capLedger,
@@ -40,11 +40,11 @@ import {
   toWireUploadJob,
   type JobLedger,
   type UploadJob,
-} from '../core/cloud/upload-job'
-import { PROVIDERS, revokeViaRecipe } from '../core/cloud/provider'
-import { classifyUploadError, type CloudUploadStatus } from '../core/cloud/status'
-import { makeSerialQueue, type SerialQueue } from '../core/serial-queue'
-import { runSerializedRmw, type DurableStore } from '../core/durable-store'
+} from '@/packages/cloud/upload-job'
+import { PROVIDERS, revokeViaRecipe } from '@/packages/cloud/provider'
+import { classifyUploadError, type CloudUploadStatus } from '@/packages/cloud/status'
+import { makeSerialQueue, type SerialQueue } from '@/packages/kernel/serial-queue'
+import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-store'
 import { isSyncConfigured } from './sync-config'
 
 /** A media item + its on-disk filename — the unit recordCloudUploads enqueues. */

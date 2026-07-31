@@ -8,9 +8,9 @@
  * in-memory store. IndexedDB needs the `unlimitedStorage` manifest permission
  * (wired separately) so the harvest is not evicted under storage pressure.
  */
-import { mergeRecord } from '../core/capture/store'
-import type { TweetRecord } from '../core/capture/record'
-import { makeSerialQueue } from '../core/serial-queue'
+import { mergeRecord } from '@/packages/capture/store'
+import type { TweetRecord } from '@/packages/capture/record'
+import { makeSerialQueue } from '@/packages/kernel/serial-queue'
 
 /** Per-record write policy: richer source wins (spec §6.4, {@link mergeRecord}). */
 type Merge = (existing: TweetRecord | undefined, incoming: TweetRecord) => TweetRecord

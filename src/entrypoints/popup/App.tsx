@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { getSettings, setSettings } from '@/core/settings'
-import { DOWNLOAD_MODES } from '@/core/download/strategy'
-import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
+import { getSettings, setSettings } from '@/packages/settings'
+import { DOWNLOAD_MODES } from '@/packages/download/strategy'
+import { CLEAR_AFTER_DOWNLOAD } from '@/packages/clear/copy'
 import { adapterForUrl } from '@/core/adapters/registry'
 import type { PlatformAdapter } from '@/core/adapters/types'
-import type { MembershipScope } from '@/core/clear/clearer'
-import type { MetricsSnapshot, Settings } from '@/core/schema'
+import type { MembershipScope } from '@/packages/clear/clearer'
+import { formatReleaseSummaryLine } from '@/packages/clear/correlate'
+import type { MetricsSnapshot, Settings } from '@/packages/schema'
 import { cn } from '@/lib/utils'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Progress } from '@/components/ui/progress'
@@ -26,6 +27,7 @@ import {
   releasedListResult,
   turnOnReleaseConfirm,
   drainResult,
+  type DrainResult,
   sweepResult,
   hoverGrabLine,
   wholePostLine,
@@ -37,8 +39,8 @@ import {
   isPersistentStatus,
 } from '@/components/action-copy'
 import { tabContext, tabScope, isXContext, contextLabel, type TabContext } from './context'
-import { planClearSeed } from '@/core/clear/seed'
-import type { Scope } from '@/core/clear/ledger'
+import { planClearSeed } from '@/packages/clear/seed'
+import type { Scope } from '@/packages/clear/ledger'
 import { recordOpen, markDone, shouldShowIntro, type FirstRunState } from './first-run'
 import { CaptureQuickActions } from './capture-quick-actions'
 
@@ -231,6 +233,39 @@ function MonitorZone({ metrics, onReset }: { metrics: MetricsSnapshot; onReset: 
           {metaLine}
         </p>
       )}
+    </section>
+  )
+}
+
+/**
+ * Release diagnostics summary (ticket #66) — "12 released · 12 flips · 0
+ * mismatches" at a glance, independent of `MonitorZone`'s own gating: it
+ * renders whenever `metrics.releaseDiagnostics` is present, whether or not a
+ * download batch happens to be active right now (a Release run can finish
+ * well after its downloads did). All arithmetic lives in
+ * `formatReleaseSummaryLine` (packages/clear/correlate.ts, unit-tested) — this
+ * component only renders the string and picks a color.
+ */
+function ReleaseSummaryZone({
+  summary,
+}: {
+  readonly summary: NonNullable<MetricsSnapshot['releaseDiagnostics']>
+}) {
+  const hasMismatch = summary.serverRejects + summary.reAddFingerprints + summary.reappearances > 0
+  return (
+    <section
+      aria-label="Release diagnostics summary"
+      className="animate-in fade-in slide-in-from-top-1 border-t border-border px-3.5 py-2.5 duration-[220ms] ease-[var(--xmd-ease)]"
+    >
+      <p
+        className={cn(
+          'font-mono text-xs leading-snug tabular-nums',
+          hasMismatch ? 'text-destructive' : 'text-muted-foreground',
+        )}
+      >
+        {formatReleaseSummaryLine(summary)}
+        {hasMismatch && ' · see the export'}
+      </p>
     </section>
   )
 }
@@ -646,7 +681,10 @@ export function App() {
   // the triggering promise settles, not after the next render.
   const downloadOkRef = useRef(false)
   const trackDownloadMsg = (m: string | null): void => {
-    downloadOkRef.current = m !== null && m !== PAGE_UNREACHABLE && m !== NO_ACTIVE_TAB
+    // Actionable errors (the persist-list) are exactly the lines that must NOT count
+    // as a completed Stage action — enumerated via the predicate so a new one (the
+    // drain's own DOWNLOAD_REQUEST_FAILED) can't silently start dismissing the strip.
+    downloadOkRef.current = m !== null && !isPersistentStatus(m)
     setDownloadMsg(m)
   }
 
@@ -671,9 +709,12 @@ export function App() {
   const willClearSweep = scope !== undefined ? willRelease({ scope }) : willClear
   const aria2Caveat = settings?.clearOnSave === true && settings.downloadStrategy === 'aria2'
 
-  const drain = usePageAction<{ count?: number }>({
+  // The reply is terminal (it settles after the background answers), so `busy` — the
+  // "Queuing…" label — now covers the real hand-off, and the status line reports what
+  // was ADMITTED rather than what was detected.
+  const drain = usePageAction<DrainResult>({
     request: { _tag: 'DrainPageRequest' },
-    format: (res) => drainResult(res?.count ?? 0, willClear),
+    format: (res) => drainResult(res, willClear),
     setMsg: trackDownloadMsg,
   })
 
@@ -686,10 +727,14 @@ export function App() {
   // Manual one-shot release: un-bookmark / un-like every post currently on the
   // X page, via the content script (the same click path that works by hand).
   // Page-scoped: the content script derives bookmark-vs-like from the list URL
-  // itself, so this carries no scope payload.
-  const releasePage = usePageAction<{ cleared?: number }>({
+  // itself, so this carries no scope payload. The WHOLE reply reaches the
+  // formatter (not just `cleared`): off a list page the handler refuses with
+  // `reason: 'not-list-page'`, and a count-only format rendered that refusal as
+  // "Released 0 posts on this page." — the off-list disclosure's only control
+  // (spec §2.2) reporting success for an action that never ran.
+  const releasePage = usePageAction<{ cleared?: number; reason?: string }>({
     request: { _tag: 'ClearVisibleRequest' },
-    format: (res) => releasedPageResult(res?.cleared ?? 0),
+    format: (res) => releasedPageResult(res),
     setMsg: setReleaseMsg,
   })
 
@@ -839,6 +884,10 @@ export function App() {
   // Only surface the monitor for a real download batch — not for stray hover/UI
   // trace events that also ride the metrics snapshot.
   const monitor = metrics && metrics.total > 0 ? metrics : null
+  // Independent of `monitor`: a Release run's diagnostics can exist (and matter)
+  // well after its download batch finished, or without one having been the popup's
+  // own concern at all (a manual "Release the whole list…" pass, say).
+  const releaseSummary = metrics?.releaseDiagnostics ?? null
 
   const showFirstRun = introState !== null && isXContext(ctx) && shouldShowIntro(introState)
   const mod = modifierLabel(settings.quickGrabModifier)
@@ -851,6 +900,7 @@ export function App() {
       {showFirstRun && <FirstRunStrip mod={mod} onDismiss={dismissFirstRun} />}
 
       {monitor && <MonitorZone metrics={monitor} onReset={() => void resetMonitor()} />}
+      {releaseSummary && <ReleaseSummaryZone summary={releaseSummary} />}
 
       <StageZone
         ctx={ctx}

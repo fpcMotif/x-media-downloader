@@ -1,6 +1,6 @@
 import { Option } from 'effect'
 import { adapterForUrl } from '@/core/adapters/registry'
-import { pageScope, type MembershipScope } from '@/core/clear/clearer'
+import { pageScope, type MembershipScope } from '@/packages/clear/clearer'
 import { contextLabel as contextLabelCopy } from '@/components/action-copy'
 
 /** The popup's tab-context state matrix (spec §2.2) — the single input that

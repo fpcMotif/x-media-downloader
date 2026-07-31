@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { canResolveHoverItem, resolveHoverItem } from './index'
-import type { MediaItem } from '../../schema'
+import type { MediaItem } from '@/packages/schema'
 
 /** Build a detached subtree and return its first `<img>`/`<video>`. */
 const el = (html: string): Element => {

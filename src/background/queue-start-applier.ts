@@ -1,8 +1,8 @@
-import type { ClearSeedVerdict } from '../core/clear/seed'
-import type { QueueStartEffects, QueueStartUploadItem } from '../core/download/queue-start'
-import type { MetricsState } from '../core/download/metrics'
-import type { HistoryAction } from '../core/history/wiring'
-import type { SyncEvent } from '../core/sync/events'
+import type { ClearSeedVerdict } from '@/packages/clear/seed'
+import type { QueueStartEffects, QueueStartUploadItem } from '@/packages/download/queue-start'
+import type { MetricsState } from '@/packages/download/metrics'
+import type { HistoryAction } from '@/packages/history/wiring'
+import type { SyncEvent } from '@/packages/sync/events'
 
 export interface QueueStartPorts {
   readonly resetCorrelation: () => void

@@ -1,4 +1,4 @@
-import type { MediaItem, Platform } from '../schema'
+import type { MediaItem, Platform } from '@/packages/schema'
 
 /** One CDN host a platform serves Original-quality media bytes from.
  *  `includeSubdomains` extends the exact `host` to dot-anchored subdomains
@@ -130,4 +130,38 @@ export interface PlatformAdapter {
    * already the identity, with no code→postId indirection.
    */
   postCodeFromElement?(el: Element, pathname: string): string | null
+
+  /**
+   * Optional: the platform-specific bits of Keyboard Navigation (issue #58) —
+   * post selector, action-control lookups, verified-flip probes. Present only
+   * on adapters the nav feature activates for (Instagram, Threads); X omits
+   * it because X's native shortcuts are authoritative there. The pure machine
+   * (`core/nav`) and the overlay controller never fork on platform — every
+   * selector difference lives behind this descriptor, so a platform DOM
+   * change is fixed in exactly one place (the ADR-0019 registry pattern).
+   */
+  readonly nav?: AdapterNav
+}
+
+/** The account actions Keyboard Navigation can fire on the focused post. */
+export type NavAction = 'like' | 'reply' | 'repost'
+
+/** Platform-owned DOM specifics for Keyboard Navigation. */
+export interface AdapterNav {
+  /** Post-container selector (the platform's post-boundary anchor). */
+  readonly postSelector: string
+  /** The post's own permalink anchor element (for `openPost`), re-read fresh. */
+  readonly permalinkOf: (post: Element) => Element | null
+  /** Carousel prev/next controls when the post is a multi-photo carousel. */
+  readonly carouselControls?: (post: Element) => {
+    readonly prev: Element | null
+    readonly next: Element | null
+  }
+  /** The clickable control for `action` inside the post, or null if absent. */
+  readonly actionControl: (post: Element, action: NavAction) => Element | null
+  /** Verified-flip probe: true once an already-fired like/repost is confirmed
+   *  by the platform's own rendered state (e.g. `Unlike` label appears). */
+  readonly actionFlipped: (post: Element, action: 'like' | 'repost') => boolean
+  /** True once a fired reply has opened the platform's composer. */
+  readonly replyComposerOpen: () => boolean
 }

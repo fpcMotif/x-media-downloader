@@ -5,9 +5,9 @@ import {
   type EnqueueOutcomeEffectPorts,
   type OutcomeEffectPorts,
 } from './outcome-effects'
-import { decideEnqueueOutcome, decideTerminalOutcome } from '../core/download/terminal-outcome'
-import { emptyMetrics } from '../core/download/metrics'
-import { emptyTracker, trackTransfer } from '../core/download/transfer-tracker'
+import { decideEnqueueOutcome, decideTerminalOutcome } from '@/packages/download/terminal-outcome'
+import { emptyMetrics } from '@/packages/download/metrics'
+import { emptyTracker, trackTransfer } from '@/packages/download/transfer-tracker'
 
 const outcome = (kind: 'complete' | 'failed') =>
   decideTerminalOutcome(

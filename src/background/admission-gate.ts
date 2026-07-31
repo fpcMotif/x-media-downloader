@@ -1,12 +1,12 @@
-import type { MediaItem, Settings } from '../core/schema'
+import type { MediaItem, Settings } from '@/packages/schema'
 import {
   type FilterSettings,
   type SkipReason,
   evaluateAdmission,
   freeReason,
-} from '../core/download/admission'
-import type { SizeProbePort } from '../core/download/size-probe'
-import type { SavedIndex, QueryConvex } from '../core/sync/saved-index'
+} from '@/packages/download/admission'
+import type { SizeProbePort } from '@/packages/download/size-probe'
+import type { SavedIndex, QueryConvex } from '@/packages/sync/saved-index'
 
 const MiB = 1024 * 1024
 

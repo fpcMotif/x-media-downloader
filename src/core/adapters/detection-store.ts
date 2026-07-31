@@ -1,4 +1,4 @@
-import type { MediaItem } from '../schema'
+import type { MediaItem } from '@/packages/schema'
 
 /**
  * Derives the stable media key a URL resolves to on the active platform, or
@@ -231,6 +231,10 @@ export function makeDetectionStore(deps: {
       }
     }
     for (const postId of touchedPosts) syncPostVideoKey(postId)
+    if (import.meta.env.DEV && added.length > 0)
+      console.debug(
+        `[XMD] store.addDetected · ${items.length} in → ${added.length} new (deduped ${items.length - added.length}) · total=${byId.size} keys=${byKey.size}`,
+      )
     return added
   }
 

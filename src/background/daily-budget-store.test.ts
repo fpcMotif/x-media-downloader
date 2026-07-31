@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { makeDailyBudgetStore, type BudgetStorage } from './daily-budget-store'
-import { localDay, type BudgetRecord } from '../core/download/daily-budget'
+import { localDay, type BudgetRecord } from '@/packages/download/daily-budget'
 
 function fakeStorage(
   initial: BudgetRecord | null = null,

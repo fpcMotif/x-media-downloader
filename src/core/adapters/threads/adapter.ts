@@ -1,11 +1,16 @@
-import type { PlatformAdapter } from '../types'
+import type { AdapterNav, NavAction, PlatformAdapter } from '../types'
 import { detectMediaItems, postCodesInResponse } from '../meta-shared/detect'
 import {
   mediaKeyFromMetaCombinedUrl,
   isGrabbableMetaPhotoUrl,
   resolveMetaImageElement,
 } from '../meta-shared/dom'
-import { findPostContainer, postCodeFromContainer } from '../meta-shared/post-anchor'
+import {
+  findPostContainer,
+  permalinkAnchorFromContainer,
+  postCodeFromContainer,
+} from '../meta-shared/post-anchor'
+import { actionControlByAria, carouselControlsByAria } from '../meta-shared/nav-dom'
 import { META_CDN_HOSTS } from '../meta-shared/cdn'
 import { postVideoKey, postVideoKeyByDomSlot } from '../detection-store'
 
@@ -142,6 +147,32 @@ export function isTrackedThreadsResponseUrl(
  * per research, the same backend media schema, so there is no Threads-only
  * parsing logic here at all.
  */
+/** Keyboard Navigation action labels (issue #58). LOCALE-FRAGILE: English
+ *  aria-labels from Meta's shared design system — a non-English UI simply
+ *  resolves no control, and the command fails safe (nothing happens, never a
+ *  wrong click). */
+const THREADS_NAV_ACTION_LABELS: Readonly<Record<NavAction, readonly string[]>> = {
+  like: ['Like'],
+  reply: ['Reply'],
+  repost: ['Repost'],
+}
+
+const THREADS_NAV_FLIPPED_LABELS: Readonly<Record<'like' | 'repost', string>> = {
+  like: 'Unlike',
+  repost: 'Reposted',
+}
+
+const threadsNav: AdapterNav = {
+  postSelector: THREADS_POST_SELECTOR,
+  permalinkOf: (post) => permalinkAnchorFromContainer(post, 'a[href]', THREADS_POST_LINK_PATTERN),
+  carouselControls: carouselControlsByAria,
+  actionControl: (post, action) => actionControlByAria(post, THREADS_NAV_ACTION_LABELS[action]),
+  actionFlipped: (post, action) =>
+    post.querySelector(`[aria-label="${THREADS_NAV_FLIPPED_LABELS[action]}"]`) !== null,
+  replyComposerOpen: () =>
+    document.querySelector('[role="dialog"] [contenteditable="true"]') !== null,
+}
+
 export const threadsAdapter: PlatformAdapter = {
   platform: 'threads',
   hostMatch: THREADS_HOST_MATCH,
@@ -189,8 +220,22 @@ export const threadsAdapter: PlatformAdapter = {
   detectRenderedMedia: () => [],
   resolveHoverItem: (el, key, detected) => {
     const teed = detected.get(key)
-    if (teed !== undefined) return teed
-    return el instanceof HTMLImageElement ? resolveMetaImageElement(el, 'threads') : null
+    if (teed !== undefined) {
+      if (import.meta.env.DEV)
+        console.debug(`[XMD] threads hover resolve · key=${key} → tee item ${teed.id}`)
+      return teed
+    }
+    if (el instanceof HTMLImageElement) {
+      const fallback = resolveMetaImageElement(el, 'threads')
+      if (import.meta.env.DEV)
+        console.debug(
+          `[XMD] threads hover resolve · key=${key} → ${fallback ? `DOM fallback ${fallback.id}` : 'no match'}`,
+        )
+      return fallback
+    }
+    if (import.meta.env.DEV)
+      console.debug(`[XMD] threads hover resolve · key=${key} → no match (non-img, not in tee)`)
+    return null
   },
   canResolveHoverItem: (el, key, detected) => {
     if (detected.has(key)) return true
@@ -204,10 +249,18 @@ export const threadsAdapter: PlatformAdapter = {
   // pathname-fallback Instagram's adapter implements.
   postKeyFromVideoElement: (video, _pathname) => {
     const code = postIdFromDom(video)
-    if (!code) return null
+    if (!code) {
+      if (import.meta.env.DEV)
+        console.debug('[XMD] threads postKeyFromVideo · no post code found for video element')
+      return null
+    }
     const track = trackFor(video)
     const wrapper = track ? slideWrapperFor(video, track) : null
-    if (!track || !wrapper) return postVideoKey(code) // no track/wrapper found: single-media post
+    if (!track || !wrapper) {
+      if (import.meta.env.DEV)
+        console.debug(`[XMD] threads postKeyFromVideo · code=${code} → single-media key`)
+      return postVideoKey(code) // no track/wrapper found: single-media post
+    }
     // Always the indexed/dom-slot form once inside a real carousel track —
     // even at domSlot 0. A DOM walk can't tell "this post has exactly one
     // video" from "this post has 2+ videos and the hovered one happens to be
@@ -219,6 +272,8 @@ export const threadsAdapter: PlatformAdapter = {
     // whose first mounted slide is a video, since the store deletes that
     // bare key the moment a post has 2+ videos.
     const domSlot = videoDomSlotAmongMountedSlides(wrapper, track)
+    if (import.meta.env.DEV)
+      console.debug(`[XMD] threads postKeyFromVideo · code=${code} → carousel domSlot=${domSlot}`)
     return postVideoKeyByDomSlot(code, domSlot)
   },
   // The post's own `/@user/post/{code}` shortcode for ANY hovered element
@@ -230,4 +285,5 @@ export const threadsAdapter: PlatformAdapter = {
   // findMediaNeedingRecovery intentionally omitted: no public/no-auth
   // recovery fallback exists for Threads (oEmbed is Meta-app-registration-
   // gated), confirmed by the design spec's research — not merely unbuilt.
+  nav: threadsNav,
 }

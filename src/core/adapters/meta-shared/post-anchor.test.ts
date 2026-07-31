@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { findPostContainer, postCodeFromContainer } from './post-anchor'
+import {
+  findPostContainer,
+  permalinkAnchorFromContainer,
+  postCodeFromContainer,
+} from './post-anchor'
 
 describe('findPostContainer', () => {
   it('finds the nearest matching ancestor 2 levels up', () => {
@@ -91,5 +95,29 @@ describe('postCodeFromContainer', () => {
       </div>
     `
     expect(postCodeFromContainer(el, 'a[href]', IG_PATTERN)).toBe('OUTERCODE')
+  })
+})
+
+describe('permalinkAnchorFromContainer', () => {
+  const IG_PATTERN = /^\/p\/([A-Za-z0-9_-]+)\//
+
+  it('returns the first pattern-matching anchor element itself', () => {
+    const el = document.createElement('article')
+    el.innerHTML = `<a href="/explore/">no</a><a href="/p/CODE1/">yes</a>`
+    const anchor = permalinkAnchorFromContainer(el, 'a[href]', IG_PATTERN)
+    expect(anchor?.getAttribute('href')).toBe('/p/CODE1/')
+  })
+
+  it('skips anchors that carry no href attribute at all', () => {
+    const el = document.createElement('article')
+    el.innerHTML = `<a>bare</a><a href="/p/CODE2/">yes</a>`
+    const anchor = permalinkAnchorFromContainer(el, 'a', IG_PATTERN)
+    expect(anchor?.getAttribute('href')).toBe('/p/CODE2/')
+  })
+
+  it('returns null when no link matches', () => {
+    const el = document.createElement('article')
+    el.innerHTML = `<a href="/explore/">no</a>`
+    expect(permalinkAnchorFromContainer(el, 'a[href]', IG_PATTERN)).toBeNull()
   })
 })

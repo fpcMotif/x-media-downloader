@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
 import { makeCaptureOutbox, type LedgerStorage } from './capture-outbox'
-import { Settings as SettingsSchema, type Settings } from '../core/schema'
-import { decodeLedger, readyJobs } from '../core/sync/captures'
-import type { TweetRecord } from '../core/capture/record'
+import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { decodeLedger, readyJobs } from '@/packages/sync/captures'
+import type { TweetRecord } from '@/packages/capture/record'
 
 const baseSettings: Settings = Schema.decodeUnknownSync(SettingsSchema)({})
 

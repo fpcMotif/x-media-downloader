@@ -1,4 +1,4 @@
-import type { Settings } from '../core/schema'
+import type { Settings } from '@/packages/schema'
 
 /** Is Cloud Sync usable: enabled, with a deployment URL and a shared secret.
  *  Fail closed — the Convex deployment requires a shared secret (ADR-0009), so

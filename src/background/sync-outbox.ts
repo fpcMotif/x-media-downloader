@@ -1,7 +1,7 @@
 import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import type { Settings } from '../core/schema'
-import type { SyncEvent } from '../core/sync/events'
+import type { Settings } from '@/packages/schema'
+import type { SyncEvent } from '@/packages/sync/events'
 import {
   append,
   decodeOutbox,
@@ -9,11 +9,11 @@ import {
   markDrained,
   markFailed,
   takeBatch,
-} from '../core/sync/outbox'
-import { convexOriginPattern, makeConvexPromisePort } from '../core/sync/convex'
-import { classifySyncError, describeSyncOk, type SyncStatus } from '../core/sync/status'
-import { makeSerialQueue, type SerialQueue } from '../core/serial-queue'
-import { runSerializedRmw, type DurableStore } from '../core/durable-store'
+} from '@/packages/sync/outbox'
+import { convexOriginPattern, makeConvexPromisePort } from '@/packages/sync/convex'
+import { classifySyncError, describeSyncOk, type SyncStatus } from '@/packages/sync/status'
+import { makeSerialQueue, type SerialQueue } from '@/packages/kernel/serial-queue'
+import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-store'
 import { isSyncConfigured } from './sync-config'
 import type { ConvexPort } from './convex-port'
 

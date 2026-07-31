@@ -1,4 +1,5 @@
 import { adapterForHostname, ALL_ADAPTERS } from '../core/adapters/registry'
+import { matchReleaseMutationOp } from '../core/adapters/x/tracked-mutation'
 
 /**
  * MAIN-world passive tee (ADR-0001, grounding §c; widened to Instagram/Threads
@@ -6,6 +7,18 @@ import { adapterForHostname, ALL_ADAPTERS } from '../core/adapters/registry'
  * Patches XHR + fetch to copy the current platform's own media-bearing network
  * responses to the ISOLATED content script via a document CustomEvent. Issues
  * no requests of its own; always returns the page's response.
+ *
+ * X-only, and on a SEPARATE predicate + CustomEvent channel from the media tee
+ * above: Release diagnostics mutation observation (spec #59 ticket #63) —
+ * `CreateBookmark`/`DeleteBookmark`/`FavoriteTweet`/`UnfavoriteTweet`. Always
+ * watched (cheap — one more URL-string test per request); the ISOLATED side
+ * decides whether to keep/relay anything, gated on the `releaseMutationDiagnosticsEnabled`
+ * setting, so a page-forged event with the toggle off still costs nothing. Unlike
+ * the media tee (which drops every non-OK response), this one reports the HTTP
+ * status AND body on BOTH success and failure — a non-200 or an errors-array-
+ * bearing 200 is exactly the H1 evidence this ticket exists to capture. It also
+ * captures the REQUEST body (the tweet id lives there, not in the response) —
+ * the one place this tee reads more than a response.
  */
 export default defineContentScript({
   matches: [...new Set(ALL_ADAPTERS.flatMap((a) => a.hostMatch))],
@@ -18,8 +31,36 @@ export default defineContentScript({
     const isTrackedUrl = (url: string): boolean => adapter.isTrackedResponseUrl(url)
 
     const emit = (path: string, body: string): void => {
+      if (import.meta.env.DEV)
+        console.debug(
+          `[XMD] tee emit · ${adapter.platform} · path=${path} · body=${body.length} chars`,
+        )
       document.dispatchEvent(new CustomEvent('xmd:media-response', { detail: { path, body } }))
     }
+
+    // Inert off X: `matchReleaseMutationOp` only ever matches X's GraphQL mutation
+    // paths, but the explicit platform gate is the same "never on Instagram/Threads"
+    // guarantee the rest of the Release feature makes, made local to this tee too.
+    const isMutationUrl = (url: string): boolean =>
+      adapter.platform === 'x' && matchReleaseMutationOp(url) !== null
+
+    const emitMutation = (
+      path: string,
+      status: number,
+      body: string,
+      requestBody: string | null,
+    ): void => {
+      if (import.meta.env.DEV) console.debug(`[XMD] tee mutation · path=${path} · status=${status}`)
+      document.dispatchEvent(
+        new CustomEvent('xmd:mutation-response', { detail: { path, status, body, requestBody } }),
+      )
+    }
+
+    // Request bodies for an in-flight XHR mutation, keyed by the XHR instance so
+    // `send`'s body (captured here) reaches `open`'s 'load' listener (registered
+    // first, since `open()` always precedes `send()`). A WeakMap so a request that
+    // never completes (`load` never fires) can never leak its body.
+    const xhrMutationBody = new WeakMap<XMLHttpRequest, string>()
 
     const origOpen = XMLHttpRequest.prototype.open
     XMLHttpRequest.prototype.open = function (
@@ -29,6 +70,8 @@ export default defineContentScript({
       ...rest: unknown[]
     ): void {
       if (isTrackedUrl(String(url))) {
+        if (import.meta.env.DEV)
+          console.debug(`[XMD] tee XHR intercept · ${adapter.platform} · ${method} ${url}`)
         this.addEventListener('load', () => {
           if (this.status === 200) {
             try {
@@ -36,10 +79,38 @@ export default defineContentScript({
             } catch {
               /* never break the page */
             }
+          } else if (import.meta.env.DEV) {
+            console.debug(
+              `[XMD] tee XHR non-200 · ${adapter.platform} · status=${this.status} · ${url}`,
+            )
           }
         })
       }
+      if (isMutationUrl(String(url))) {
+        this.addEventListener('load', () => {
+          try {
+            emitMutation(
+              new URL(this.responseURL).pathname,
+              this.status,
+              this.responseText,
+              xhrMutationBody.get(this) ?? null,
+            )
+          } catch {
+            /* never break the page */
+          }
+          xhrMutationBody.delete(this)
+        })
+      }
       ;(origOpen as (...args: unknown[]) => void).apply(this, [method, url, ...rest])
+    }
+
+    const origSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.send = function (
+      this: XMLHttpRequest,
+      body?: Document | XMLHttpRequestBodyInit | null,
+    ): void {
+      if (typeof body === 'string') xhrMutationBody.set(this, body)
+      origSend.call(this, body)
     }
 
     const origFetch = window.fetch
@@ -49,6 +120,8 @@ export default defineContentScript({
         const reqUrl =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
         if (isTrackedUrl(reqUrl)) {
+          if (import.meta.env.DEV)
+            console.debug(`[XMD] tee fetch intercept · ${adapter.platform} · ${reqUrl}`)
           void promise.then((res) => {
             if (res.ok) {
               void res
@@ -56,8 +129,32 @@ export default defineContentScript({
                 .text()
                 .then((body) => emit(new URL(reqUrl, location.origin).pathname, body))
                 .catch(() => {})
+            } else if (import.meta.env.DEV) {
+              console.debug(
+                `[XMD] tee fetch non-ok · ${adapter.platform} · status=${res.status} · ${reqUrl}`,
+              )
             }
           })
+        }
+        if (isMutationUrl(reqUrl)) {
+          const requestBody = typeof init?.body === 'string' ? init.body : null
+          void promise
+            .then((res) =>
+              res
+                .clone()
+                .text()
+                .then((body) =>
+                  emitMutation(
+                    new URL(reqUrl, location.origin).pathname,
+                    res.status,
+                    body,
+                    requestBody,
+                  ),
+                ),
+            )
+            .catch(() => {
+              /* a rejected fetch (network failure) never reached a status — nothing to report */
+            })
         }
       } catch {
         /* never break the page */

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { makeCaptureDb, type CaptureStore } from './capture-db'
-import type { TweetRecord } from '../core/capture/record'
+import type { TweetRecord } from '@/packages/capture/record'
 
 const mk = (tweetId: string, opts: Partial<TweetRecord> = {}): TweetRecord => ({
   tweetId,
@@ -65,7 +65,7 @@ describe('makeCaptureDb', () => {
     await db.putRecords([mk('1'), mk('2')])
 
     expect(await db.count()).toBe(2)
-    expect((await db.allRecords()).map((r) => r.tweetId).sort()).toEqual(['1', '2'])
+    expect((await db.allRecords()).map((r) => r.tweetId).toSorted()).toEqual(['1', '2'])
   })
 
   it('putRecords([]) is a no-op — it never touches the store', async () => {
@@ -110,7 +110,7 @@ describe('makeCaptureDb', () => {
       mk('3', { conversationId: 'c2' }),
     ])
 
-    expect((await db.conversation('c1')).map((r) => r.tweetId).sort()).toEqual(['1', '2'])
+    expect((await db.conversation('c1')).map((r) => r.tweetId).toSorted()).toEqual(['1', '2'])
   })
 
   it('clear empties the store', async () => {

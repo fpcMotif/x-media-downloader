@@ -1,9 +1,9 @@
-import type { MetricsState } from '../core/download/metrics'
-import type { EnqueueOutcomeEffects, OutcomeEffects } from '../core/download/terminal-outcome'
-import type { TrackerState } from '../core/download/transfer-tracker'
-import type { HistoryAction } from '../core/history/wiring'
-import type { SyncEvent } from '../core/sync/events'
-import type { TransferOutcome } from '../core/schema'
+import type { MetricsState } from '@/packages/download/metrics'
+import type { EnqueueOutcomeEffects, OutcomeEffects } from '@/packages/download/terminal-outcome'
+import type { TrackerState } from '@/packages/download/transfer-tracker'
+import type { HistoryAction } from '@/packages/history/wiring'
+import type { SyncEvent } from '@/packages/sync/events'
+import type { TransferOutcome } from '@/packages/schema'
 
 /** I/O shell for one browser Terminal Outcome. */
 export interface OutcomeEffectPorts {

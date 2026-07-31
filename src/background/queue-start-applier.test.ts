@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Schema } from 'effect'
 import { applyQueueStartEffects } from './queue-start-applier'
-import { decideQueueStart } from '../core/download/queue-start'
-import { Settings, type MediaItem } from '../core/schema'
+import { decideQueueStart } from '@/packages/download/queue-start'
+import { Settings, type MediaItem } from '@/packages/schema'
 
 const settings = Schema.decodeUnknownSync(Settings)({
   clearOnSave: true,

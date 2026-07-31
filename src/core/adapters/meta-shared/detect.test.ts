@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { detectMediaItems, postCodesInResponse } from './detect'
-import { partitionAllowedMediaItems } from '../../sync/url-guard'
+import { partitionAllowedMediaItems } from '@/packages/sync/url-guard'
 
 describe('detectMediaItems', () => {
   it('resolves a single photo post into one MediaItem, tagged with the given platform', () => {
@@ -261,5 +261,50 @@ describe('detectMediaItems × url-guard composition', () => {
     const { allowed, rejected } = partitionAllowedMediaItems([parsed!])
     expect(allowed).toEqual([])
     expect(rejected.map((r) => r.itemId)).toEqual(['BBB'])
+  })
+})
+
+describe('detectMediaItems — production build (DEV logging compiled out)', () => {
+  // The per-post and per-response detect traces are the live evidence for "is
+  // the tee firing on this platform at all" (see the module doc), so they sit
+  // inside the walker rather than at the entrypoint edge. Vitest runs DEV=true,
+  // so without this the arm that actually ships is never exercised.
+  beforeEach(() => vi.stubEnv('DEV', false))
+  afterEach(() => vi.unstubAllEnvs())
+
+  const photoPost = {
+    data: {
+      items: [
+        {
+          pk: '111',
+          code: 'CODE1',
+          user: { username: 'alice' },
+          image_versions2: {
+            candidates: [{ url: 'https://cdn.example/media/AAA.jpg', width: 1080, height: 1080 }],
+          },
+        },
+      ],
+    },
+  }
+
+  it('walks a post to the same MediaItems with the traces compiled out', () => {
+    expect(detectMediaItems(photoPost, 'instagram')).toEqual([
+      {
+        id: 'AAA',
+        platform: 'instagram',
+        postId: '111',
+        author: 'alice',
+        type: 'photo',
+        url: 'https://cdn.example/media/AAA.jpg',
+        ext: 'jpg',
+        index: 0,
+        width: 1080,
+        height: 1080,
+      },
+    ])
+  })
+
+  it('still returns [] for a response carrying no media', () => {
+    expect(detectMediaItems({ data: { items: [] } }, 'threads')).toEqual([])
   })
 })

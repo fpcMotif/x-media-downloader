@@ -1,4 +1,4 @@
-import { addCompletion, freshRecord, type BudgetRecord } from '../core/download/daily-budget'
+import { addCompletion, freshRecord, type BudgetRecord } from '@/packages/download/daily-budget'
 
 export interface BudgetStorage {
   get(): Promise<BudgetRecord | null>

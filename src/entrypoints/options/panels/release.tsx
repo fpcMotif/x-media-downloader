@@ -1,9 +1,12 @@
-import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
+import { useEffect, useRef, useState } from 'preact/hooks'
+import { CLEAR_AFTER_DOWNLOAD } from '@/packages/clear/copy'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { ConfirmStrip } from '@/components/confirm-strip'
 import { TURN_ON_RELEASE_LABEL, turnOnReleaseConfirm } from '@/components/action-copy'
+import { runDiagnosticsExport } from '@/components/diagnostics-export'
 import { Section, type PanelProps } from '../ui'
 
 // Renders its own header (rather than the shared `PanelHeader`) only so the
@@ -29,6 +32,24 @@ function ReleaseHeader() {
 }
 
 export function ReleasePanel({ settings, update }: PanelProps) {
+  const [diagStatus, setDiagStatus] = useState<string | null>(null)
+  // One owned status-flash timer (mirrors ArchivePanel's `statusTimer`): a newer
+  // flash cancels the older timer before rearming, and unmount cancels whatever
+  // is pending.
+  const diagStatusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    return () => clearTimeout(diagStatusTimer.current)
+  }, [])
+
+  const flashDiagStatus = (msg: string): void => {
+    setDiagStatus(msg)
+    clearTimeout(diagStatusTimer.current)
+    diagStatusTimer.current = setTimeout(() => {
+      setDiagStatus(null)
+      diagStatusTimer.current = undefined
+    }, 5000)
+  }
+
   return (
     <>
       <ReleaseHeader />
@@ -162,6 +183,46 @@ export function ReleasePanel({ settings, update }: PanelProps) {
           everything in it. The single most destructive control in the extension; asks you to type
           RELEASE first.
         </p>
+      </Section>
+
+      <Section
+        title="Diagnostics"
+        description="Export the Release diagnostics log (stages, timings, ids only — no post content) as JSONL."
+      >
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="releaseMutationDiagnosticsEnabled">
+              Observe bookmark/like mutations
+            </FieldLabel>
+            <FieldDescription>
+              Records whether each un-bookmark/un-like actually succeeded on X's server (status,
+              errors) and flags any bookmark/like that fires mid-Release. Read-only — never clicks
+              or changes what Release does. Off by default.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="releaseMutationDiagnosticsEnabled"
+            aria-label="Observe bookmark/like mutations"
+            checked={settings.releaseMutationDiagnosticsEnabled}
+            onCheckedChange={(checked: boolean) =>
+              void update({ releaseMutationDiagnosticsEnabled: checked })
+            }
+          />
+        </Field>
+
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="min-h-10 self-start"
+          onClick={() => void runDiagnosticsExport().then((o) => flashDiagStatus(o.detail))}
+        >
+          Export diagnostics
+        </Button>
+
+        <div aria-live="polite">
+          {diagStatus && <FieldDescription>{diagStatus}</FieldDescription>}
+        </div>
       </Section>
     </>
   )

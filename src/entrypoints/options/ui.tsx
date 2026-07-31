@@ -1,5 +1,5 @@
 import type { ComponentChildren, VNode } from 'preact'
-import type { Settings } from '@/core/schema'
+import type { Settings } from '@/packages/schema'
 import { FieldGroup } from '@/components/ui/field'
 
 /** Every settings panel reads the live settings and writes through `update`;

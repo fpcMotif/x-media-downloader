@@ -5,9 +5,9 @@
  * logged-in Instagram + Threads), so one module covers both, same as
  * `detect.ts`/`media-node.ts`/`post-node.ts` already do for the network path.
  */
-import type { MediaItem } from '../../schema'
+import type { MediaItem } from '@/packages/schema'
 
-import { mediaBasenameKey } from '../../media-key'
+import { mediaBasenameKey } from '../../../packages/schema/media-key'
 
 /** True for any cdninstagram.com host — both Instagram's region-prefixed form
  *  (`scontent-lga3-2.cdninstagram.com`) and Threads' bare form

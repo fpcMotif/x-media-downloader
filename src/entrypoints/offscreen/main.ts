@@ -1,4 +1,4 @@
-import { isFromExtensionWorker } from '../../core/sender-guard'
+import { isFromExtensionWorker } from '@/packages/kernel/sender-guard'
 
 interface OffscreenSaveRequest {
   readonly _tag: 'OffscreenSaveRequest'

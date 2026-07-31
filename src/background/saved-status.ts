@@ -12,8 +12,8 @@
  * reply; late cross-device hits are pushed through `notifyFresh` (broadcast to
  * the overlays as `SavedStatusUpdate`), so they still land without re-sweeping.
  */
-import type { SavedStatusRequest, SavedStatusResponse } from '../core/schema'
-import type { SavedIndex, QueryConvex } from '../core/sync/saved-index'
+import type { SavedStatusRequest, SavedStatusResponse } from '@/packages/schema'
+import type { SavedIndex, QueryConvex } from '@/packages/sync/saved-index'
 
 export interface SavedStatusCoordinator {
   /** Answer an overlay sweep: which of these tweetIds are already downloaded. */
@@ -33,9 +33,10 @@ export function makeSavedStatusCoordinator(deps: {
       const ids = [...req.tweetIds]
       // Fire the backstop behind the reply. `refresh` never rejects and
       // coalesces concurrent sweeps, so a scroll burst costs one query.
-      void deps.index.refresh(ids, deps.queryConvex).then((fresh) => {
+      void (async () => {
+        const fresh = await deps.index.refresh(ids, deps.queryConvex)
         if (fresh.length > 0) deps.notifyFresh?.(fresh)
-      })
+      })()
       return { _tag: 'SavedStatusResponse', saved: deps.index.known(ids) }
     },
     onCompleted: (tweetId) => deps.index.markSaved(tweetId),

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { makeSavedStatusCoordinator } from './saved-status'
-import { makeSavedIndex } from '../core/sync/saved-index'
+import { makeSavedIndex } from '@/packages/sync/saved-index'
 
 describe('makeSavedStatusCoordinator', () => {
   it('answers instantly from the local index and still queries the backstop for unknowns', async () => {

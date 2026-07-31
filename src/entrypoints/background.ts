@@ -6,54 +6,54 @@ import {
   type MediaItem,
   type MetricsSnapshot,
   type Settings,
-} from '../core/schema'
+} from '@/packages/schema'
 import {
   SettingsService,
   SettingsServiceLive,
   getSettings,
   setSettings,
   watchSettings,
-} from '../core/settings'
-import { planConvexEnvSeed, planCloudEnvSeed } from '../core/settings/env-seed'
-import type { SyncEvent } from '../core/sync/events'
-import { makeConvexHttpPort, queryDownloadedAmong } from '../core/sync/convex'
-import { makeSavedIndex, type QueryConvex } from '../core/sync/saved-index'
+} from '@/packages/settings'
+import { planConvexEnvSeed, planCloudEnvSeed } from '@/packages/settings/env-seed'
+import type { SyncEvent } from '@/packages/sync/events'
+import { makeConvexHttpPort, queryDownloadedAmong } from '@/packages/sync/convex'
+import { makeSavedIndex, type QueryConvex } from '@/packages/sync/saved-index'
 import {
   partitionAllowedMediaItems,
   assertAllowedMediaUrl,
   UnsafeUrlError,
-} from '../core/sync/url-guard'
-import { refreshMediaUrlFromTabs } from '../core/download/media-url-refresh'
+} from '@/packages/sync/url-guard'
+import { refreshMediaUrlFromTabs } from '@/packages/download/media-url-refresh'
 import {
   makeDirectStrategy,
   makeSchemeRoutingStrategy,
   type DownloadStrategy,
-} from '../core/download/strategy'
-import { makeAria2Strategy, makeAria2RpcPort } from '../core/download/aria2'
-import { makeFetchServiceLive } from '../core/fetch-service'
+} from '@/packages/download/strategy'
+import { makeAria2Strategy, makeAria2RpcPort } from '@/packages/download/aria2'
+import { makeFetchServiceLive } from '@/packages/kernel/fetch-service'
 import {
   makeFetchedStrategy,
   makeFetchPort,
   makeOffscreenPort,
   makePermissionsPort,
-} from '../core/download/fetched-strategy'
-import { makeDownloadQueueCore } from '../core/download/queue'
-import { makeSerialQueue } from '../core/serial-queue'
-import { isMessageAllowed } from '../core/sender-guard'
-import { planDownloads } from '../core/download/destination'
-import { makeSizeProbe } from '../core/download/size-probe'
-import { type BudgetRecord } from '../core/download/daily-budget'
-import { type SkipReason } from '../core/download/admission'
-import { bindFetch } from '../core/fetch'
+} from '@/packages/download/fetched-strategy'
+import { makeDownloadQueueCore } from '@/packages/download/queue'
+import { makeSerialQueue } from '@/packages/kernel/serial-queue'
+import { isMessageAllowed } from '@/packages/kernel/sender-guard'
+import { planDownloads } from '@/packages/download/destination'
+import { makeSizeProbe } from '@/packages/download/size-probe'
+import { type BudgetRecord } from '@/packages/download/daily-budget'
+import { type SkipReason } from '@/packages/download/admission'
+import { bindFetch } from '@/packages/kernel/fetch'
 import {
   recordRetry,
   recordSample,
   samplesFromSearch,
   snapshot,
   type MetricsState,
-} from '../core/download/metrics'
-import { decideQueueStart } from '../core/download/queue-start'
-import type { PendingInterruptRetry } from '../core/download/interrupt-retry'
+} from '@/packages/download/metrics'
+import { decideQueueStart } from '@/packages/download/queue-start'
+import type { PendingInterruptRetry } from '@/packages/download/interrupt-retry'
 import { syndicationUrl } from '../core/adapters/x/syndication'
 import {
   classifyTransfer,
@@ -64,22 +64,39 @@ import {
   trackTransfer,
   type ReconcileRow,
   type TrackerState,
-} from '../core/download/transfer-tracker'
+} from '@/packages/download/transfer-tracker'
 import {
   decideEnqueueOutcome,
   decideTerminalOutcome,
   type TerminalOutcome,
-} from '../core/download/terminal-outcome'
+} from '@/packages/download/terminal-outcome'
 import {
   decodeRequestMetaStore,
   emptyRequestMetaStore,
   planMetaReconcile,
   type PersistedRequestMeta,
-} from '../core/download/request-meta'
-import { decodeStore, emptyStore } from '../core/history/store'
-import { planHistory, type HistoryAction } from '../core/history/wiring'
-import { type Scope } from '../core/clear/ledger'
-import type { ClearScope, SweepEnqueueResponse } from '../core/schema'
+} from '@/packages/download/request-meta'
+import { decodeStore, emptyStore } from '@/packages/history/store'
+import { planHistory, type HistoryAction } from '@/packages/history/wiring'
+import { type Scope } from '@/packages/clear/ledger'
+import {
+  isReleaseDiagnosticsEvent,
+  appendManyReleaseDiagnostics,
+  decodeReleaseDiagnostics,
+  composeDiagnosticsExport,
+} from '@/packages/clear/diagnostics'
+import {
+  computeReleaseCorrelationCounters,
+  correlateMutation,
+  EMPTY_CORRELATION_STATE,
+  formatCorrelationVerdict,
+  parseClearResolveEvent,
+  parseMutationEvent,
+  recordResolve,
+  type CorrelationState,
+} from '@/packages/clear/correlate'
+import { runSerializedRmw } from '@/packages/kernel/durable-store'
+import type { ClearScope, SweepEnqueueResponse } from '@/packages/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
 import { makeSyncOutbox } from '../background/sync-outbox'
@@ -90,15 +107,15 @@ import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearSession } from '../background/clear-session'
 import { applyQueueStartEffects } from '../background/queue-start-applier'
 import { applyEnqueueOutcomeEffects, applyOutcomeEffects } from '../background/outcome-effects'
-import { makeRetryQueue } from '../core/download/retry-queue'
+import { makeRetryQueue } from '@/packages/download/retry-queue'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
 import {
   emptyCaptureSummary,
   finishCaptureSummary,
   foldCaptureSummary,
-} from '../core/capture/store'
-import { composeCaptureExport } from '../core/capture/build-export'
+} from '@/packages/capture/store'
+import { composeCaptureExport } from '@/packages/capture/build-export'
 
 // Ephemeral monitoring snapshot — session storage survives SW recycling but not
 // a browser restart (ADR-0005). The popup polls it via `MetricsRequest`.
@@ -171,8 +188,17 @@ const transfersItem = storage.defineItem<TrackerState>('session:transfers', {
 // The single X-tab messaging surface (queryXTabs / broadcast / reportTransferOutcome
 // / sendClearToTabs). Owns no module state, so it constructs first — every other
 // collaborator and the lifecycle below depend on its seams. (Findings [00]/[36].)
-const tabBroadcaster = makeTabBroadcaster()
-const { reportTransferOutcome, sendClearToTabs } = tabBroadcaster
+// `trace` is a lazy arrow, not a direct `traceBackground` reference: this constructs
+// first (above), so naming the function here would be a TDZ error. The arrow only runs
+// once a clear is dispatched. Without this sink, `sendClearToTabs`'s four distinct
+// failure worlds — no X tab, orphaned content script, a background tab answering
+// instead of the user's, and a mounted all-noop answer — all reach the log as the same
+// `bookmark:fail`, which is the single most common false diagnosis on this path.
+const tabBroadcaster = makeTabBroadcaster(undefined, {
+  trace: (stage, detail, tweetId) =>
+    traceBackground(stage, { detail, ...(tweetId === undefined ? {} : { tweetId }) }),
+})
+const { reportTransferOutcome, sendClearToTabs, resolveTabListScope } = tabBroadcaster
 
 /** Re-resolve a CDN url from an open tab before an interrupt retry. Despite the
  *  name (a holdover from the X-only original), this asks whichever open tab's
@@ -213,8 +239,28 @@ const currentSnapshot = (now: number): MetricsSnapshot =>
 
 const persistSnapshot = (now: number): Promise<void> => metricsItem.setValue(currentSnapshot(now))
 
+// Mutation↔clear correlation (spec #59 ticket #65): ephemeral, in-memory, like
+// `traceEvents` above — the recent-resolve table only needs to survive the
+// correlation window, not a service-worker restart (see correlate.ts's docstring
+// on that tradeoff).
+let correlationState: CorrelationState = EMPTY_CORRELATION_STATE
+
 function recordTrace(event: DownloadTraceEntry): void {
   traceEvents = [...traceEvents, event].slice(-MAX_TRACE_EVENTS)
+  // Correlate BEFORE the label/buffer work below so a verdict's own emitted event
+  // (via the recursive `recordTrace` call inside `traceBackground`) lands in the
+  // durable log and session ring in the same relative order a live reader expects:
+  // the resolve, then the mutation, then (immediately) the correlation verdict.
+  const resolveEvent = parseClearResolveEvent(event)
+  if (resolveEvent) correlationState = recordResolve(correlationState, resolveEvent, Date.now())
+  const mutationEvent = parseMutationEvent(event)
+  if (mutationEvent) {
+    const verdict = correlateMutation(correlationState, mutationEvent)
+    if (verdict) {
+      const { stage, detail } = formatCorrelationVerdict(verdict)
+      traceBackground(stage, { tweetId: mutationEvent.tweetId, detail })
+    }
+  }
   const label = [
     event.stage,
     event.type,
@@ -225,6 +271,99 @@ function recordTrace(event: DownloadTraceEntry): void {
     .filter(Boolean)
     .join(' ')
   console.info(`[XMD] ${event.source} ${label}`)
+  // Release diagnostics: mirror the subset of trace events belonging to a Release run
+  // into the durable capped log — BUFFERED, never one write per event. `recordTrace`
+  // runs on EVERY download/clear trace event, so its synchronous callers must never be
+  // delayed by a storage round-trip; and `runSerializedRmw` decodes + re-writes the
+  // WHOLE log per call, so at the 1000-event cap a 50-post Bookmarks run (~600 events)
+  // would do ~600 full-array round-trips of quadratic total work, all queued ahead of
+  // the settle path that shares this worker.
+  if (isReleaseDiagnosticsEvent(event)) bufferReleaseDiagnostics(event)
+}
+
+// A trailing flush window long enough to fold a burst into one write, short enough
+// that an SW recycle loses at most this much of the tail.
+const RELEASE_DIAGNOSTICS_FLUSH_MS = 250
+// Hard flush ceiling: bounds BOTH the loss window and the per-write array size, so a
+// dense burst can't sit un-persisted just because events keep arriving.
+const RELEASE_DIAGNOSTICS_FLUSH_AT = 32
+
+let releaseDiagnosticsBuffer: DownloadTraceEntry[] = []
+let releaseDiagnosticsFlushTimer: ReturnType<typeof setTimeout> | undefined
+
+// The popup's Release summary (ticket #66) is polled every 1-3s
+// (POLL_ACTIVE_MS/POLL_IDLE_MS) alongside the UNRELATED, latency-sensitive download
+// snapshot — memoized so a quiet popup (nothing new to report) never pays for a
+// flush + full log decode on every poll. Invalidated the instant a NEW
+// release-diagnostics event is buffered (below); recomputed lazily on the next
+// `releaseDiagnosticsSummary()` call, never eagerly.
+let releaseDiagnosticsSummaryCache: MetricsSnapshot['releaseDiagnostics']
+let releaseDiagnosticsSummaryDirty = true
+
+/** Drain the buffer into the durable log in ONE serialized read-modify-write.
+ *  Awaitable so the export handler can flush before it reads — a user clicking
+ *  "Export diagnostics" must never race the tail of their own Release run. */
+const flushReleaseDiagnostics = async (): Promise<void> => {
+  if (releaseDiagnosticsFlushTimer !== undefined) {
+    clearTimeout(releaseDiagnosticsFlushTimer)
+    releaseDiagnosticsFlushTimer = undefined
+  }
+  if (releaseDiagnosticsBuffer.length === 0) return
+  // Detach the batch BEFORE awaiting: events arriving during the write belong to the
+  // next flush, not this one, or they'd be dropped by the reassignment below.
+  const batch = releaseDiagnosticsBuffer
+  releaseDiagnosticsBuffer = []
+  await runSerializedRmw(
+    releaseDiagnosticsQueue,
+    {
+      get: () => releaseDiagnosticsItem.getValue(),
+      set: (v) => releaseDiagnosticsItem.setValue(v),
+    },
+    decodeReleaseDiagnostics,
+    (log) => appendManyReleaseDiagnostics(log, batch),
+  ).catch(queueError('release-diagnostics'))
+}
+
+const bufferReleaseDiagnostics = (event: DownloadTraceEntry): void => {
+  releaseDiagnosticsBuffer = [...releaseDiagnosticsBuffer, event]
+  releaseDiagnosticsSummaryDirty = true
+  if (releaseDiagnosticsBuffer.length >= RELEASE_DIAGNOSTICS_FLUSH_AT) {
+    void flushReleaseDiagnostics()
+    return
+  }
+  if (releaseDiagnosticsFlushTimer !== undefined) return
+  releaseDiagnosticsFlushTimer = setTimeout(() => {
+    releaseDiagnosticsFlushTimer = undefined
+    void flushReleaseDiagnostics()
+  }, RELEASE_DIAGNOSTICS_FLUSH_MS)
+}
+
+/** The popup's Release summary (ticket #66): memoized (see
+ *  `releaseDiagnosticsSummaryDirty` above) — a quiet popup poll with nothing new
+ *  since the last call returns the cached value with ZERO storage I/O, adversarial-
+ *  review finding: this used to flush + decode the whole durable log on every
+ *  1-3s poll regardless of whether anything changed. On a cache miss it flushes
+ *  first (so it reads the exact same durable state `ExportDiagnosticsRequest`
+ *  would, and can never disagree with an export taken moments later), then derives
+ *  counters via the SAME `computeReleaseCorrelationCounters` the export's meta line
+ *  uses. `undefined` when every counter is zero — the field is `Schema.optional`,
+ *  and the popup's zero-state must render exactly as it did before this ticket. */
+const releaseDiagnosticsSummary = async (): Promise<MetricsSnapshot['releaseDiagnostics']> => {
+  if (!releaseDiagnosticsSummaryDirty) return releaseDiagnosticsSummaryCache
+  await flushReleaseDiagnostics()
+  const log = await releaseDiagnosticsQueue.run(async () =>
+    decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue()),
+  )
+  const counters = computeReleaseCorrelationCounters(log.events)
+  const hasAny =
+    counters.clears > 0 ||
+    counters.mutations > 0 ||
+    counters.serverRejects > 0 ||
+    counters.reAddFingerprints > 0 ||
+    counters.reappearances > 0
+  releaseDiagnosticsSummaryCache = hasAny ? counters : undefined
+  releaseDiagnosticsSummaryDirty = false
+  return releaseDiagnosticsSummaryCache
 }
 
 const traceBackground = (
@@ -234,14 +373,34 @@ const traceBackground = (
   recordTrace({ source: 'background', stage, t: Date.now(), ...opts })
 }
 
+const traceStageForSweep = (stage: string, sweep: { readonly scope: Scope } | undefined): string =>
+  sweep === undefined ? stage : `clear-sweep-${stage}`
+
+const redactTraceDetail = (detail: string): string =>
+  detail.replace(/\bhttps?:\/\/\S+|blob:\S+/g, '[url]')
+
+// The queue labels that belong to a Release run. Their failures must reach the DURABLE
+// Release log, and a `queue:` stage satisfies NEITHER arm of `isReleaseDiagnosticsEvent`
+// (source is 'background', and the stage doesn't start with 'clear-') — so they only
+// ever reached the SW console, which is gone by the time a user exports. `clear-settle`
+// matters most: its chain wraps the whole settle → decide → dispatch → resolve release,
+// so a throw anywhere in the irreversible path was invisible in the export.
+const RELEASE_QUEUE_LABELS = new Set(['clear', 'clear-settle', 'worklist', 'release-diagnostics'])
+
 // One observable failure path for the serialized RMW queues below. These chains
 // each used to end in `.catch(() => {})`, so a thrown drain (storage quota, a
 // decode failure, an unexpected reducer throw) vanished. Now it leaves a trace
 // instead. Observe-and-log only — never re-throw, or the chain would wedge.
 const queueError =
   (label: string) =>
-  (err: unknown): void =>
-    traceBackground(`queue:${label}`, { detail: err instanceof Error ? err.message : String(err) })
+  (err: unknown): void => {
+    const detail = err instanceof Error ? err.message : String(err)
+    if (RELEASE_QUEUE_LABELS.has(label))
+      traceBackground('clear-queue-error', {
+        detail: `label=${label} reason=${redactTraceDetail(detail)}`,
+      })
+    else traceBackground(`queue:${label}`, { detail })
+  }
 
 // Every persist of the in-memory transfer ledger goes through one serialized
 // chain. The in-memory compose is already race-free (each mutation is a
@@ -328,8 +487,12 @@ const clearSession = makeClearSession({
   queueError,
   getSettings,
   trace: traceBackground,
-  dispatchClear: (tweetId, scopes, allLists, preferTabId) =>
-    sendClearToTabs(tweetId, scopes, preferTabId, allLists),
+  dispatchClear: (tweetId, scopes, allLists, preferTabId, release) =>
+    sendClearToTabs(tweetId, scopes, preferTabId, allLists, release),
+  // Seed-time only: the pin the permalink release leg is judged against. The leg itself
+  // never reads a tab url, so a mid-download navigation of the origin tab can no longer
+  // re-aim an irreversible clear at a list the user never pressed Release for.
+  resolveOriginScope: resolveTabListScope,
   // Settle Port: the real `chrome.downloads.search`. Returns the row (or undefined
   // when it's gone), swallowing a teardown-time throw to undefined — `decideSettle`
   // fails that closed, so the irreversible Clear never fires on an unconfirmed byte.
@@ -340,6 +503,17 @@ const clearSession = makeClearSession({
       .catch(() => undefined),
 })
 const { recordComplete: recordClearComplete, recordFailure: recordClearFailure } = clearSession
+
+// Durable, capped log of Release (Likes/Bookmarks clear) trace events
+// for post-hoc diagnostics. `local:` (not `session:`, unlike `metricsItem` above)
+// because a bad Release run is exactly the kind of thing a user notices AFTER
+// closing the browser — it must survive a full browser restart, not just an SW
+// recycle. Ring-capped by `appendReleaseDiagnostics` (packages/clear/diagnostics.ts),
+// so it can't grow unbounded over the extension's lifetime.
+const releaseDiagnosticsItem = storage.defineItem<unknown>('local:releaseDiagnostics', {
+  fallback: [],
+})
+const releaseDiagnosticsQueue = makeSerialQueue(queueError('release-diagnostics'))
 
 // Cross-device "Saved" status (B+C): the local-first SavedIndex answers overlay
 // sweeps. Seeded from the durable history (this device's completed downloads), fed
@@ -466,7 +640,7 @@ const settleBrowserDownload = async (
   clearInterruptRetryState(id)
   requestIdByDownloadId.delete(downloadId)
   stopStuckPollIfIdle() // last download settled → let the watchdog go quiet
-  // The terminal-outcome fan-out is ONE pure decision (core/download/terminal-outcome):
+  // The terminal-outcome fan-out is ONE pure decision (packages/download/terminal-outcome):
   // it advances the tracker + metrics and emits the sync/history/backlink intents. This
   // shell only RUNS the returned effects, in order. The settled tracker MUST be flushed
   // before the durable sync/history writes, so a recycle can never leave this id in
@@ -522,7 +696,7 @@ const completeBrowserDownload = (id: string, downloadId: number, now: number): P
 // Retry Scheduler shell (CONTEXT.md's Clock Port entry): the queue owns the
 // whole interrupt-retry state machine — attempt counter, queue row, live timer,
 // and the durable `session:interruptRetries` mirror move together behind its
-// interface (core/download/retry-queue). `fire` is a forward reference to
+// interface (packages/download/retry-queue). `fire` is a forward reference to
 // `fireInterruptRetry` (declared next) — legal JS: the closure only resolves it
 // when actually CALLED, long after every module-level `const` here has run at
 // SW startup.
@@ -842,7 +1016,9 @@ const handleDownload = (
 ) =>
   Effect.gen(function* () {
     const requestReceivedAt = Date.now()
-    traceBackground('request-received', { detail: `${items.length} item(s)` })
+    traceBackground(traceStageForSweep('request-received', sweep), {
+      detail: sweep ? `scope=${sweep.scope} items=${items.length}` : `${items.length} item(s)`,
+    })
     const svc = yield* SettingsService
     const settings = yield* svc.get
     const strategy = chooseStrategy(settings)
@@ -886,8 +1062,10 @@ const handleDownload = (
     // Nothing to schedule (all gate-skipped or already in flight): report with the
     // skip summary so the overlay can explain why nothing downloaded.
     if (requests.length === 0) {
-      traceBackground('request-deduped', {
-        detail: `${admission.admitted.length} admitted, ${admission.skipped.length} skipped`,
+      traceBackground(traceStageForSweep('request-deduped', sweep), {
+        detail: sweep
+          ? `scope=${sweep.scope} items=${items.length} admitted=${admission.admitted.length} skipped=${admission.skipped.length} urlRejected=${urlFailures.length}`
+          : `${admission.admitted.length} admitted, ${admission.skipped.length} skipped`,
       })
       yield* Effect.promise(() => persistSnapshot(Date.now()))
       return {
@@ -915,9 +1093,11 @@ const handleDownload = (
     // Clear seed verdict. The shell applies those effects before queue hand-off.
     const startedAt = Date.now()
     for (const r of requests) requestStartedAt.set(r.id, startedAt)
-    traceBackground('queue-started', {
+    traceBackground(traceStageForSweep('queue-started', sweep), {
       elapsedMs: startedAt - requestReceivedAt,
-      detail: `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
+      detail: sweep
+        ? `scope=${sweep.scope} requests=${requests.length} concurrency=${settings.downloadConcurrency}`
+        : `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
     })
     const startFx = decideQueueStart({
       metrics: live,
@@ -999,10 +1179,10 @@ const handleDownload = (
         )
         const reason = o.error ?? 'unknown'
         failures.push({ itemId: o.id, reason })
-        traceBackground('start-failed', {
+        traceBackground(traceStageForSweep('start-failed', sweep), {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
-          detail: reason,
+          detail: sweep ? `scope=${sweep.scope} reason=${redactTraceDetail(reason)}` : reason,
         })
       } else if (o.handle?.kind === 'browser') {
         requestIdByDownloadId.set(o.handle.id, o.id)
@@ -1017,10 +1197,12 @@ const handleDownload = (
             startedAt: requestStartedAt.get(o.id) ?? startedAt,
           })
         live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })
-        traceBackground('browser-started', {
+        traceBackground(traceStageForSweep('browser-started', sweep), {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
-          detail: `downloadId ${o.handle.id}`,
+          detail: sweep
+            ? `scope=${sweep.scope} downloadId=${o.handle.id}`
+            : `downloadId ${o.handle.id}`,
         })
       } else {
         inFlight.delete(o.id)
@@ -1038,10 +1220,16 @@ const handleDownload = (
           }),
           enqueuePorts,
         )
-        traceBackground('external-complete', {
+        traceBackground(traceStageForSweep('external-complete', sweep), {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
-          detail: o.handle ? `aria2 ${o.handle.gid}` : undefined,
+          detail: sweep
+            ? o.handle
+              ? `scope=${sweep.scope} strategy=aria2 gid=${o.handle.gid}`
+              : `scope=${sweep.scope} strategy=external`
+            : o.handle
+              ? `aria2 ${o.handle.gid}`
+              : undefined,
         })
       }
     }
@@ -1069,13 +1257,59 @@ const handleDownload = (
 const handleSweepEnqueue = async (
   scope: ClearScope,
   posts: ReadonlyArray<{ readonly tweetId: string; readonly items: ReadonlyArray<MediaItem> }>,
+  // The list tab the sweep button was pressed on. Recorded as the clear's ORIGIN so the
+  // fan-out tries the user's own tab FIRST (the same guarantee DownloadRequest already
+  // gets), and so a permalink release can name the list the user consented to empty.
+  originTabId?: number,
 ): Promise<SweepEnqueueResponse> => {
-  const { queuedPosts, skipped } = await clearSession.enqueueSweep(scope, posts)
+  const requestedItems = posts.reduce((total, post) => total + post.items.length, 0)
+  traceBackground('clear-sweep-request', {
+    detail: `scope=${scope} posts=${posts.length} items=${requestedItems}`,
+  })
+
+  let queuedPosts: { readonly items: ReadonlyArray<MediaItem> }[] = []
+  let skipped = 0
+  let skippedIds: string[] = []
+  try {
+    const enqueued = await clearSession.enqueueSweep(scope, posts)
+    queuedPosts = enqueued.queuedPosts
+    skipped = enqueued.skipped
+    skippedIds = enqueued.skippedIds
+  } catch (error) {
+    traceBackground('clear-sweep-failed', {
+      detail: `scope=${scope} phase=enqueue posts=${posts.length} items=${requestedItems} reason=${redactTraceDetail(error instanceof Error ? error.message : String(error))}`,
+    })
+    throw error
+  }
+
   // Fire into the queue with the sweep's explicit list scope — handleDownload
   // seeds the clear ledger with origin 'sweep' (only this scope), independent of
   // the global clearOnSave/per-scope toggles, which the sweep never mutates.
   const items = queuedPosts.flatMap((p) => [...p.items])
-  if (items.length > 0) void Effect.runPromise(handleDownload(items, { scope }))
+  traceBackground('clear-sweep-candidates', {
+    detail: `scope=${scope} posts=${queuedPosts.length} skipped=${skipped} items=${items.length}`,
+  })
+  // Name the ids the worklist skipped, once per run (not per post — the budget matters).
+  // Cross-referenced against the overlay's own candidate id list, any id here that is
+  // still mounted AND still a member of this list is direct proof that an earlier
+  // Release reported a flip which never stuck: the post is latched 'cleared' durably
+  // and will never be retried, which is exactly how "Release silently does nothing on
+  // the second run" happens. Ids are numeric post ids, never post content.
+  if (skippedIds.length > 0)
+    traceBackground('clear-sweep-skipped', {
+      detail: `scope=${scope} skipped=${skipped} ids=${skippedIds.join(',')}`,
+    })
+  if (items.length > 0)
+    void Effect.runPromise(handleDownload(items, { scope }, undefined, originTabId)).catch(
+      (error) => {
+        traceBackground('clear-sweep-failed', {
+          detail: `scope=${scope} phase=background posts=${queuedPosts.length} items=${items.length} reason=${redactTraceDetail(error instanceof Error ? error.message : String(error))}`,
+        })
+      },
+    )
+  traceBackground('clear-sweep-response', {
+    detail: `scope=${scope} queued=${queuedPosts.length} skipped=${skipped} items=${items.length}`,
+  })
   return { _tag: 'SweepEnqueueResponse', queued: queuedPosts.length, skipped }
 }
 
@@ -1193,8 +1427,16 @@ const messageHandlers: MessageHandlers = {
   DownloadRequest: handle<'DownloadRequest'>((msg, sender) =>
     Effect.runPromise(handleDownload(msg.items, undefined, msg.clearExpect, sender.tab?.id)),
   ),
-  MetricsRequest: async () => (await metricsItem.getValue()) ?? currentSnapshot(Date.now()),
-  DownloadTraceEvent: handle<'DownloadTraceEvent'>(async (msg) => {
+  MetricsRequest: async () => {
+    const base = (await metricsItem.getValue()) ?? currentSnapshot(Date.now())
+    const releaseDiagnostics = await releaseDiagnosticsSummary()
+    return releaseDiagnostics === undefined ? base : { ...base, releaseDiagnostics }
+  },
+  // NOTE: this projection is an allowlist — a field added to `traceFields` but NOT
+  // added here is silently dropped for every content-script event. `tabId` is taken
+  // from `sender`, never from `msg`, so the page can't forge it (and the popup/options
+  // legs, which have no `sender.tab`, simply omit it).
+  DownloadTraceEvent: handle<'DownloadTraceEvent'>(async (msg, sender) => {
     recordTrace({
       source: msg.source,
       stage: msg.stage,
@@ -1204,6 +1446,7 @@ const messageHandlers: MessageHandlers = {
       ...(msg.type !== undefined ? { type: msg.type } : {}),
       ...(msg.elapsedMs !== undefined ? { elapsedMs: msg.elapsedMs } : {}),
       ...(msg.detail !== undefined ? { detail: msg.detail } : {}),
+      ...(sender.tab?.id !== undefined ? { tabId: sender.tab.id } : {}),
     })
     await persistSnapshot(Date.now())
     return { ok: true }
@@ -1226,8 +1469,8 @@ const messageHandlers: MessageHandlers = {
   CloudStatusRequest: () => cloudUpload.cloudUploadStatus(),
   CloudRetryRequest: () => cloudUpload.retryDeadUploads(),
   CloudBackfillRequest: () => cloudUpload.backfillCloudUploads(),
-  SweepEnqueueRequest: handle<'SweepEnqueueRequest'>((msg) =>
-    handleSweepEnqueue(msg.scope, msg.posts),
+  SweepEnqueueRequest: handle<'SweepEnqueueRequest'>((msg, sender) =>
+    handleSweepEnqueue(msg.scope, msg.posts, sender.tab?.id),
   ),
   // Recover an un-teed tweet's media via the syndication endpoint (videos the
   // DOM can't expose). Reply with the raw body; the content script parses it.
@@ -1269,6 +1512,31 @@ const messageHandlers: MessageHandlers = {
     await captureDb.clear()
     return { cleared }
   },
+  // Build the Release diagnostics export from the durable capped log
+  // (mirrors ExportCaptureRequest's SW-builds/options-page-downloads split above).
+  ExportDiagnosticsRequest: handle<'ExportDiagnosticsRequest'>(async () => {
+    // Flush the trailing buffer FIRST — otherwise the export silently omits the last
+    // few hundred ms of the run, which is exactly where a failing Release ends.
+    await flushReleaseDiagnostics()
+    const log = await releaseDiagnosticsQueue.run(async () =>
+      decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue()),
+    )
+    return composeDiagnosticsExport(log, Date.now())
+  }),
+  // Release diagnostics (spec #59 ticket #63): one observed bookmark/like mutation,
+  // already re-validated by the overlay before it ever reached this message (the
+  // content script only sends this tag while `releaseMutationDiagnosticsEnabled`
+  // is on). `traceBackground` gives it the `clear-` stage prefix that admits it
+  // into the durable Release diagnostics log via `isReleaseDiagnosticsEvent`,
+  // exactly like every other Release trace line — no separate storage, no
+  // separate export path.
+  ReleaseMutationEvent: handle<'ReleaseMutationEvent'>(async (msg) => {
+    traceBackground('clear-mutation', {
+      ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
+      detail: `op=${msg.op} status=${msg.status} error=${msg.error}`,
+    })
+    return { _tag: 'ReleaseMutationAck' }
+  }),
 }
 
 export default defineBackground(() => {

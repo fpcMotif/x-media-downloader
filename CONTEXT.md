@@ -103,6 +103,11 @@ use these words, they mean exactly this.
   never fires on bytes that never arrived. The verdict is pure (`core/clear`);
   the **Settle Port** is its injected probe seam — real `chrome.downloads.search`
   in the service worker, a fixture row in tests.
+- **Release** — the user-facing verb for **Clear** on every UI surface (popup and
+  options copy, the Reset / Erase / Release verb tiers). Copy says "Release";
+  code, specs, and this glossary keep the **Clear** noun (`core/clear`,
+  `clearOnSave`), and identifiers that face the user (storage keys, exports) may
+  carry the Release name.
 - **Drain** (Scroll Drain) — the recovery path for a **Clear** whose Tweet is not
   currently mounted. X virtualizes the timeline (only a small window of articles
   sits in the DOM at once), so a Clear firing seconds after its download settles
