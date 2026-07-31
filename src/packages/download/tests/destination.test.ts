@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import type { MediaItem } from '@/packages/schema'
-import { sidecarFilename, buildSidecar, sidecarDataUrl, planDownloads } from '../destination'
+import {
+  sidecarFilename,
+  buildSidecar,
+  sidecarDataUrl,
+  planDownloads,
+  partitionUsableIds,
+  SIDECAR_ID_SUFFIX,
+} from '../destination'
 
 const item: MediaItem = {
   id: 'm1',
@@ -94,5 +101,57 @@ describe('sidecarDataUrl', () => {
     expect(url.startsWith('data:application/json;charset=utf-8,')).toBe(true)
     const payload = url.slice(url.indexOf(',') + 1)
     expect(JSON.parse(decodeURIComponent(payload))).toEqual(meta)
+  })
+})
+
+describe('partitionUsableIds', () => {
+  const withId = (id: string): MediaItem => ({ ...item, id })
+
+  it('passes a batch of distinct, non-reserved ids through untouched', () => {
+    const items = [withId('m1'), withId('m2')]
+    expect(partitionUsableIds(items)).toEqual({ allowed: items, rejected: [] })
+  })
+
+  it("rejects an id that would collide with another item's generated sidecar", () => {
+    // `planDownloads` mints item `Y`'s sidecar as `Y.json`. A page-supplied item
+    // literally called `Y.json` keys onto that same request id, and whichever
+    // download settles first resolves the other's entry.
+    const sidecarId = `m1${SIDECAR_ID_SUFFIX}`
+    expect(planDownloads({ template: '{id}', item, sidecar: true })[1]?.id).toBe(sidecarId)
+
+    const { allowed, rejected } = partitionUsableIds([withId('m1'), withId(sidecarId)])
+    expect(allowed.map((i) => i.id)).toEqual(['m1'])
+    expect(rejected).toEqual([{ itemId: sidecarId, reason: 'reserved sidecar id' }])
+  })
+
+  it('rejects a repeat of an id inside one batch, keeping the first', () => {
+    const { allowed, rejected } = partitionUsableIds([withId('m1'), withId('m1'), withId('m2')])
+    expect(allowed.map((i) => i.id)).toEqual(['m1', 'm2'])
+    expect(rejected).toEqual([{ itemId: 'm1', reason: 'duplicate id in batch' }])
+  })
+
+  it('partitions rather than failing the whole batch, so good slides still save', () => {
+    const { allowed, rejected } = partitionUsableIds([
+      withId('good1'),
+      withId(`x${SIDECAR_ID_SUFFIX}`),
+      withId('good2'),
+      withId('good1'),
+    ])
+    expect(allowed.map((i) => i.id)).toEqual(['good1', 'good2'])
+    expect(rejected.map((r) => r.reason)).toEqual(['reserved sidecar id', 'duplicate id in batch'])
+  })
+
+  it('reports a repeated reserved id under the reserved reason both times', () => {
+    // The reserved check runs first, so such an id never reaches `seen` — it can
+    // never be reported as a duplicate, which would understate why it was refused.
+    const id = `dupe${SIDECAR_ID_SUFFIX}`
+    expect(partitionUsableIds([withId(id), withId(id)]).rejected).toEqual([
+      { itemId: id, reason: 'reserved sidecar id' },
+      { itemId: id, reason: 'reserved sidecar id' },
+    ])
+  })
+
+  it('is a no-op on an empty batch', () => {
+    expect(partitionUsableIds([])).toEqual({ allowed: [], rejected: [] })
   })
 })
