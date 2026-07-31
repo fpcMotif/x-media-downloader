@@ -118,6 +118,15 @@ export const Settings = Schema.Struct({
   // "Not interested" stays For-You-only (it has no membership to read off-feed).
   // More aggressive than the default, so it ships off until the user opts in.
   clearAllListsOnSave: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  // Release diagnostics: mutation observation (spec #59 ticket #63, default off).
+  // With this on, the MAIN-world tee additionally relays CreateBookmark/
+  // DeleteBookmark/FavoriteTweet/UnfavoriteTweet request+response evidence into
+  // the durable Release diagnostics log — the H1/H5 discriminators (a server-side
+  // reject, or a mutation firing mid-Release). Off ⇒ zero collection; the tee's
+  // media-detection path is completely untouched either way.
+  releaseMutationDiagnosticsEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+  ),
   // Cloud upload (ADR-0013): opt-in, CLIENT-SIDE OAuth — uploads the real media
   // BYTES (not links) to your own Google Drive / Dropbox. Bytes go extension →
   // provider directly; nothing transits Convex. Master gate, default off so the
@@ -493,6 +502,38 @@ export type ClearCaptureRequest = typeof ClearCaptureRequest.Type
 export const ExportDiagnosticsRequest = Schema.TaggedStruct('ExportDiagnosticsRequest', {})
 export type ExportDiagnosticsRequest = typeof ExportDiagnosticsRequest.Type
 
+export const ReleaseMutationOp = Schema.Literals([
+  'CreateBookmark',
+  'DeleteBookmark',
+  'FavoriteTweet',
+  'UnfavoriteTweet',
+])
+export type ReleaseMutationOp = typeof ReleaseMutationOp.Type
+
+/** content → background: one X bookmark/like mutation the MAIN-world tee observed
+ *  (spec #59 ticket #63) — the H1/H5 evidence (a server-side reject, or a
+ *  `CreateBookmark` fired mid-Release). Sent ONLY while
+ *  `releaseMutationDiagnosticsEnabled` is on; forwarded into the same durable
+ *  Release diagnostics log `ExportDiagnosticsRequest` exports. `status` and
+ *  `error` are the failure signals the ordinary media tee drops (it only ever
+ *  sees `res.ok`); `tweetId` is best-effort (parsed from the mutation's own
+ *  request body, never guaranteed present). */
+export const ReleaseMutationEvent = Schema.TaggedStruct('ReleaseMutationEvent', {
+  op: ReleaseMutationOp,
+  status: Schema.Number,
+  error: Schema.Boolean,
+  tweetId: Schema.optional(Schema.String),
+  t: Schema.Number,
+})
+export type ReleaseMutationEvent = typeof ReleaseMutationEvent.Type
+
+/** background → content: acknowledges a `ReleaseMutationEvent` — no payload, the
+ *  overlay only needs to know the message was received (mirrors the other
+ *  fire-and-forget content→background diagnostics sinks, which reply so
+ *  `runtime.sendMessage` never hangs on a dead channel). */
+export const ReleaseMutationAck = Schema.TaggedStruct('ReleaseMutationAck', {})
+export type ReleaseMutationAck = typeof ReleaseMutationAck.Type
+
 // ── Tab-targeted messages (popup → content script, `browser.tabs.sendMessage`) ──
 // A DIFFERENT transport from the `Message` union below (`runtime.sendMessage`,
 // content/popup → background): these seven tags never enter `Message` —
@@ -568,5 +609,7 @@ export const Message = Schema.Union([
   ExportCaptureRequest,
   ClearCaptureRequest,
   ExportDiagnosticsRequest,
+  ReleaseMutationEvent,
+  ReleaseMutationAck,
 ])
 export type Message = typeof Message.Type

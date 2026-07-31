@@ -47,4 +47,14 @@ describe('Release panel: tier + verb system (Stage redesign)', () => {
   it('never binds a keyboard accelerator to a destructive control', () => {
     expect(source).not.toContain('accesskey')
   })
+
+  it('offers the mutation-observation toggle inside the Diagnostics section, off by default, above the export button', () => {
+    const sectionIdx = source.indexOf('title="Diagnostics"')
+    const toggleIdx = source.indexOf('id="releaseMutationDiagnosticsEnabled"')
+    const exportIdx = source.indexOf('Export diagnostics')
+    expect(sectionIdx).toBeGreaterThan(-1)
+    expect(toggleIdx).toBeGreaterThan(sectionIdx)
+    expect(exportIdx).toBeGreaterThan(toggleIdx)
+    expect(source).toContain('Off by default')
+  })
 })

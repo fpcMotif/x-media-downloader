@@ -6,6 +6,11 @@ import { harvestTweets } from '@/packages/capture/harvest'
 import type { Source, TweetRecord } from '@/packages/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
 import { focusedTweetArticle, tweetIdFromArticle } from '../../core/adapters/x'
+import {
+  bodyHasErrorSignal,
+  matchReleaseMutationOp,
+  tweetIdFromMutationRequestBody,
+} from '../../core/adapters/x/tracked-mutation'
 import { VIDEO_PREVIEW_SECTIONS } from '../../core/adapters/x/dom'
 import {
   mediaStillUnderPointer,
@@ -868,6 +873,10 @@ export default defineContentScript({
     // TWEET_ARTICLE_SEL/tweetIdOfArticle are X-DOM-specific), so `isActive`
     // includes the platform gate and the observer is never constructed off-X.
     let savedStatusOn = false
+    // Release diagnostics mutation observation (spec #59 ticket #63), default off.
+    // Gates `handleMutationResponse` below FIRST — off means zero work, not just
+    // zero relay — kept live by `applySettings` like every other toggle here.
+    let releaseMutationDiagnosticsOn = false
     // Tweet-text harvest gate + breadth flag (§7); applySettings keeps them live.
     let captureEnabled = false
     let captureAllScrolled = false
@@ -1303,6 +1312,7 @@ export default defineContentScript({
       // don't even arm the debounce timer on Instagram/Threads.
       savedStatusOn = s.showSavedStatus
       savedStatusLifecycle.sync()
+      releaseMutationDiagnosticsOn = s.releaseMutationDiagnosticsEnabled
       // Tweet-text harvest (§7): default OFF. `captureAllScrolled` widens breadth
       // from media/thread tweets to every scrolled text-only tweet.
       captureEnabled = s.captureEnabled
@@ -1583,6 +1593,44 @@ export default defineContentScript({
       if (adapter.platform === 'x') harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
     }
     document.addEventListener('xmd:media-response', handleMediaResponse)
+
+    // Release diagnostics: one observed bookmark/like mutation off the MAIN-world
+    // tee's separate 'xmd:mutation-response' channel (spec #59 ticket #63). Fail-
+    // closed trust boundary, same posture as `handleMediaResponse` above: page
+    // scripts can forge this event, so every field is re-derived/re-validated here
+    // — the tee's own classification is not proof of anything. Gated FIRST on the
+    // setting (off ⇒ zero work, not just zero relay) and repeats the X-only gate
+    // the tee itself already applies (defense in depth).
+    const handleMutationResponse = (event: Event): void => {
+      if (!releaseMutationDiagnosticsOn || adapter.platform !== 'x') return
+      const detail = (
+        event as CustomEvent<{
+          path: unknown
+          status: unknown
+          body: unknown
+          requestBody: unknown
+        }>
+      ).detail
+      if (typeof detail.path !== 'string' || typeof detail.status !== 'number') return
+      const op = matchReleaseMutationOp(detail.path)
+      if (op === null) return
+      const error = typeof detail.body === 'string' ? bodyHasErrorSignal(detail.body) : false
+      const tweetId =
+        typeof detail.requestBody === 'string'
+          ? tweetIdFromMutationRequestBody(detail.requestBody)
+          : undefined
+      void safeSend(() =>
+        browser.runtime.sendMessage({
+          _tag: 'ReleaseMutationEvent',
+          op,
+          status: detail.status,
+          error,
+          ...(tweetId !== undefined ? { tweetId } : {}),
+          t: Date.now(),
+        }),
+      )
+    }
+    document.addEventListener('xmd:mutation-response', handleMutationResponse)
 
     // Cold-navigation blind spot: on a direct navigation to a reel/post URL,
     // the MAIN-world XHR/fetch tee above sees nothing for the first item —
@@ -1951,6 +1999,7 @@ export default defineContentScript({
       // `browser.runtime` is already undefined once the context is invalidated.
       browser.runtime?.onMessage?.removeListener(handleRuntimeMessage)
       document.removeEventListener('xmd:media-response', handleMediaResponse)
+      document.removeEventListener('xmd:mutation-response', handleMutationResponse)
     })
   },
 })

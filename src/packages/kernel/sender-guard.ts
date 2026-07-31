@@ -39,6 +39,9 @@ export const CONTENT_SCRIPT_TAGS: ReadonlySet<Message['_tag']> = new Set([
   // Timeline "Saved ✓" sweep: the overlay asks which mounted tweets are already
   // downloaded. Read-only membership over the page's own tweet ids.
   'SavedStatusRequest',
+  // Release diagnostics: the overlay relays one observed bookmark/like mutation
+  // event off the MAIN-world tee. Never triggers a mutation itself — observe only.
+  'ReleaseMutationEvent',
 ])
 
 // Derived from the adapter registry (docs/adr/0019-platform-identity-derives-from-adapter-registry.md)

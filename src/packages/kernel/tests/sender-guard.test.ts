@@ -16,6 +16,7 @@ describe('CONTENT_SCRIPT_TAGS', () => {
         'SweepEnqueueRequest',
         'CaptureTweets',
         'SavedStatusRequest',
+        'ReleaseMutationEvent',
       ].toSorted(),
     )
   })
@@ -46,6 +47,18 @@ describe('Saved-status sweep', () => {
     expect(
       isMessageAllowed(
         'SavedStatusRequest',
+        { id: OWN, tab: { id: 1 }, origin: 'https://x.com' },
+        OWN,
+      ),
+    ).toBe(true)
+  })
+})
+
+describe('Release diagnostics mutation relay', () => {
+  it('allows the overlay content script to send ReleaseMutationEvent', () => {
+    expect(
+      isMessageAllowed(
+        'ReleaseMutationEvent',
         { id: OWN, tab: { id: 1 }, origin: 'https://x.com' },
         OWN,
       ),

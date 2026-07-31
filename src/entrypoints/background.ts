@@ -1423,6 +1423,20 @@ const messageHandlers: MessageHandlers = {
     )
     return composeDiagnosticsExport(log, Date.now())
   }),
+  // Release diagnostics (spec #59 ticket #63): one observed bookmark/like mutation,
+  // already re-validated by the overlay before it ever reached this message (the
+  // content script only sends this tag while `releaseMutationDiagnosticsEnabled`
+  // is on). `traceBackground` gives it the `clear-` stage prefix that admits it
+  // into the durable Release diagnostics log via `isReleaseDiagnosticsEvent`,
+  // exactly like every other Release trace line — no separate storage, no
+  // separate export path.
+  ReleaseMutationEvent: handle<'ReleaseMutationEvent'>(async (msg) => {
+    traceBackground('clear-mutation', {
+      ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
+      detail: `op=${msg.op} status=${msg.status} error=${msg.error}`,
+    })
+    return {}
+  }),
 }
 
 export default defineBackground(() => {

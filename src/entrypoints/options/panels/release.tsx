@@ -189,6 +189,27 @@ export function ReleasePanel({ settings, update }: PanelProps) {
         title="Diagnostics"
         description="Export the Release diagnostics log (stages, timings, ids only — no post content) as JSONL."
       >
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="releaseMutationDiagnosticsEnabled">
+              Observe bookmark/like mutations
+            </FieldLabel>
+            <FieldDescription>
+              Records whether each un-bookmark/un-like actually succeeded on X's server (status,
+              errors) and flags any bookmark/like that fires mid-Release. Read-only — never clicks
+              or changes what Release does. Off by default.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="releaseMutationDiagnosticsEnabled"
+            aria-label="Observe bookmark/like mutations"
+            checked={settings.releaseMutationDiagnosticsEnabled}
+            onCheckedChange={(checked: boolean) =>
+              void update({ releaseMutationDiagnosticsEnabled: checked })
+            }
+          />
+        </Field>
+
         <Button
           type="button"
           variant="outline"
