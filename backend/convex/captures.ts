@@ -40,23 +40,45 @@ export const recordCaptures = mutation({
   returns: v.object({ received: v.number(), upserted: v.number() }),
   handler: async (ctx, { captures, secret }) => {
     assertSecret(secret)
-    let upserted = 0
+
+    // Deduplicate in-memory to avoid redundant reads and concurrent write
+    // constraint violations on identical identifiers. Applies the §6.4 merge
+    // rule during dedup so only the winning row for a captureId goes to the DB.
+    const deduped = new Map<string, (typeof captures)[0]>()
     for (const c of captures) {
-      const row = await ctx.db
-        .query('tweet_captures')
-        .withIndex('by_capture_id', (q) => q.eq('captureId', c.captureId))
-        .first()
-      if (row === null) {
-        await ctx.db.insert('tweet_captures', c)
-        upserted += 1
-      } else if (
-        c.sourceRank > row.sourceRank ||
-        (c.sourceRank === row.sourceRank && c.at >= row.at)
+      const prev = deduped.get(c.captureId)
+      if (
+        !prev ||
+        c.sourceRank > prev.sourceRank ||
+        (c.sourceRank === prev.sourceRank && c.at >= prev.at)
       ) {
-        await ctx.db.patch(row._id, c)
-        upserted += 1
+        deduped.set(c.captureId, c)
       }
     }
+
+    const results = await Promise.all(
+      Array.from(deduped.values()).map(async (c) => {
+        const row = await ctx.db
+          .query('tweet_captures')
+          .withIndex('by_capture_id', (q) => q.eq('captureId', c.captureId))
+          .first()
+
+        if (row === null) {
+          await ctx.db.insert('tweet_captures', c)
+          return 1
+        } else if (
+          c.sourceRank > row.sourceRank ||
+          (c.sourceRank === row.sourceRank && c.at >= row.at)
+        ) {
+          await ctx.db.patch(row._id, c)
+          return 1
+        }
+        return 0
+      })
+    )
+
+    const upserted = results.reduce((acc: number, val: number) => acc + val, 0)
+
     return { received: captures.length, upserted }
   },
 })
