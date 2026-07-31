@@ -9,9 +9,9 @@
  * gate and drain are testable without IndexedDB, wxt storage, or the network.
  */
 import { storage } from 'wxt/utils/storage'
-import type { Settings } from '../core/schema'
-import { getSettings } from '../core/settings'
-import type { TweetRecord } from '../core/capture/record'
+import type { Settings } from '@/packages/schema'
+import { getSettings } from '@/packages/settings'
+import type { TweetRecord } from '@/packages/capture/record'
 import {
   capLedger,
   captureEventFromRecord,
@@ -20,10 +20,10 @@ import {
   enqueue,
   readyJobs,
   type SyncCaptureEvent,
-} from '../core/sync/captures'
-import { makeConvexPromisePort } from '../core/sync/convex'
-import { makeSerialQueue } from '../core/serial-queue'
-import { runSerializedRmw, type DurableStore } from '../core/durable-store'
+} from '@/packages/sync/captures'
+import { makeConvexPromisePort } from '@/packages/sync/convex'
+import { makeSerialQueue } from '@/packages/kernel/serial-queue'
+import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-store'
 import { isSyncConfigured } from './sync-config'
 import type { ConvexPort } from './convex-port'
 

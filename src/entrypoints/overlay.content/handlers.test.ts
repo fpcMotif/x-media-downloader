@@ -5,14 +5,19 @@ import {
   handleClearDrain,
   handleClearVisible,
   handleClearWholeList,
+  handleDrainPage,
+  handleSweepPage,
   handleSavedStatusUpdate,
+  releaseRunDetail,
+  releaseTerminalStage,
   sweepSavedStatus,
   isSavedStatusScope,
   savedStatusVisible,
   dispatchOverlayMessage,
 } from './handlers'
-import type { HandlerDeps } from './handlers'
-import { findArticle } from '../../core/clear/clearer'
+import type { HandlerDeps, ReleaseRun, TrackedSendResult } from './handlers'
+import type { MediaItem } from '@/packages/schema'
+import { findArticle } from '@/packages/clear/clearer'
 
 // handleClearTweet is the (previously untested) wiring that decides WHICH scopes
 // actually click on a clear: page-scoped by default, membership-driven under
@@ -51,6 +56,7 @@ const makeDeps = (over: {
   clearScope: HandlerDeps['clearScope']
   pathname: string
   runDrain?: HandlerDeps['runDrain']
+  reportClear?: HandlerDeps['reportClear']
   platform?: 'x' | 'instagram' | 'threads'
 }): HandlerDeps =>
   ({
@@ -59,13 +65,19 @@ const makeDeps = (over: {
     location: { pathname: over.pathname } as Location,
     clearScope: over.clearScope,
     clearLog: () => {},
+    reportClear: over.reportClear ?? (() => {}),
     runDrain: over.runDrain ?? (async () => []),
   }) as unknown as HandlerDeps
 
 /** Drive the handler to completion (it returns true sync, then resolves async). */
 const run = (
   deps: HandlerDeps,
-  message: { tweetId: string; scopes: string[]; allLists?: boolean },
+  message: {
+    tweetId: string
+    scopes: string[]
+    allLists?: boolean
+    asPageScope?: 'bookmark' | 'like'
+  },
 ): Promise<{
   mounted: boolean
   drainEligible: boolean
@@ -76,6 +88,26 @@ const run = (
   })
 
 const ALL: string[] = ['bookmark', 'like', 'notInterested']
+
+const mediaItem = (id: string, postId: string): MediaItem => ({
+  id,
+  platform: 'x',
+  postId,
+  author: 'jack',
+  type: 'photo',
+  url: `https://pbs.twimg.com/media/${id}?format=jpg&name=orig`,
+  ext: 'jpg',
+  index: 0,
+})
+
+/** The two inputs `handleSavedStatusUpdate` actually reads — the setting gate and the
+ *  platform tag; everything else on HandlerDeps is unreachable from that path. */
+const depsWith = (active: boolean, platform: 'x' | 'instagram' | 'threads' = 'x'): HandlerDeps =>
+  ({
+    adapter: { platform },
+    document,
+    savedStatusActive: () => active,
+  }) as unknown as HandlerDeps
 
 describe('handleClearTweet — scope wiring', () => {
   beforeEach(() => {
@@ -236,12 +268,256 @@ describe('handleClearTweet — scope wiring', () => {
   })
 })
 
+describe('handleClearTweet — Release diagnostics', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('reports request and not-mounted decisions with the tweet id', async () => {
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const res = await run(
+      makeDeps({ clearScope: async () => true, pathname: '/jack/likes', reportClear }),
+      { tweetId: '999', scopes: ['bookmark', 'like'], allLists: true },
+    )
+
+    expect(res.mounted).toBe(false)
+    expect(reportClear.mock.calls).toEqual([
+      [
+        'clear-tweet-request',
+        'pageScope=like scopes=bookmark,like allLists=true drainEligible=true',
+        '999',
+      ],
+      ['clear-tweet-not-mounted', 'pageScope=like articles=0 drainEligible=true', '999'],
+    ])
+  })
+
+  it('reports mounted clear results with the tweet id', async () => {
+    document.body.append(tweetArticle({ tweetId: '105', liked: true }))
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async () => true)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const res = await run(makeDeps({ clearScope, pathname: '/jack/likes', reportClear }), {
+      tweetId: '105',
+      scopes: ['like'],
+      allLists: false,
+    })
+
+    expect(res.results).toEqual([{ scope: 'like', ok: true }])
+    expect(reportClear.mock.calls).toEqual([
+      [
+        'clear-tweet-request',
+        'pageScope=like scopes=like allLists=false drainEligible=true',
+        '105',
+      ],
+      [
+        'clear-tweet-result',
+        'pageScope=like mounted=true drainEligible=true results=like:ok',
+        '105',
+      ],
+    ])
+  })
+  it('REGRESSION: Bookmarks allLists remounts when page scope fails after cross-scope detach', async () => {
+    const tweetId = '2082291973432455198'
+    document.body.append(tweetArticle({ tweetId, bookmarked: true, liked: true }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async (_, scope) => {
+      if (scope === 'like') {
+        const live = findArticle(document, tweetId)
+        if (Option.isSome(live)) live.value.remove()
+        return true
+      }
+      return false
+    })
+
+    const res = await run(makeDeps({ clearScope, pathname: '/i/bookmarks', reportClear }), {
+      tweetId,
+      scopes: ['bookmark', 'like'],
+      allLists: true,
+    })
+
+    expect(clearScope.mock.calls.map((c) => c[1])).toEqual(['like', 'bookmark'])
+    expect(res).toEqual({
+      _tag: 'ClearTweetResponse',
+      mounted: false,
+      drainEligible: true,
+      results: [
+        { scope: 'like', ok: true },
+        { scope: 'bookmark', ok: false },
+      ],
+    })
+    expect(reportClear.mock.calls).toEqual([
+      [
+        'clear-tweet-request',
+        'pageScope=bookmark scopes=bookmark,like allLists=true drainEligible=true',
+        tweetId,
+      ],
+      ['clear-tweet-remount-needed', 'pageScope=bookmark', tweetId],
+    ])
+  })
+  it('keeps mounted true when the page-scope failure leaves the article mounted', async () => {
+    const tweetId = '107'
+    document.body.append(tweetArticle({ tweetId, bookmarked: true, liked: true }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async (_, scope) => scope !== 'bookmark')
+
+    const res = await run(makeDeps({ clearScope, pathname: '/i/bookmarks', reportClear }), {
+      tweetId,
+      scopes: ['bookmark', 'like'],
+      allLists: true,
+    })
+
+    expect(res).toEqual({
+      _tag: 'ClearTweetResponse',
+      mounted: true,
+      drainEligible: true,
+      results: [
+        { scope: 'like', ok: true },
+        { scope: 'bookmark', ok: false },
+      ],
+    })
+    expect(reportClear.mock.calls.at(-1)).toEqual([
+      'clear-tweet-result',
+      'pageScope=bookmark mounted=true drainEligible=true results=like:ok,bookmark:failed',
+      tweetId,
+    ])
+  })
+
+  it('keeps mounted true when only a non-page scope fails after the article detaches', async () => {
+    const tweetId = '108'
+    document.body.append(tweetArticle({ tweetId, bookmarked: true, liked: true }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async (_, scope) => {
+      if (scope === 'bookmark') {
+        const live = findArticle(document, tweetId)
+        if (Option.isSome(live)) live.value.remove()
+        return false
+      }
+      return true
+    })
+
+    const res = await run(makeDeps({ clearScope, pathname: '/jack/likes', reportClear }), {
+      tweetId,
+      scopes: ['bookmark', 'like'],
+      allLists: true,
+    })
+
+    expect(res).toEqual({
+      _tag: 'ClearTweetResponse',
+      mounted: true,
+      drainEligible: true,
+      results: [
+        { scope: 'bookmark', ok: false },
+        { scope: 'like', ok: true },
+      ],
+    })
+    expect(reportClear.mock.calls.at(-1)).toEqual([
+      'clear-tweet-result',
+      'pageScope=like mounted=true drainEligible=true results=bookmark:failed,like:ok',
+      tweetId,
+    ])
+  })
+
+  it('reports mounted clear errors with the tweet id', async () => {
+    document.body.append(tweetArticle({ tweetId: '106', liked: true }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const res = await run(
+      makeDeps({
+        clearScope: async () => {
+          throw new Error('detached')
+        },
+        pathname: '/jack/likes',
+        reportClear,
+      }),
+      { tweetId: '106', scopes: ['like'], allLists: false },
+    )
+
+    expect(res.results).toEqual([{ scope: 'like', ok: false }])
+    expect(reportClear.mock.calls).toEqual([
+      [
+        'clear-tweet-request',
+        'pageScope=like scopes=like allLists=false drainEligible=true',
+        '106',
+      ],
+      [
+        'clear-tweet-failed',
+        'pageScope=like mounted=true drainEligible=true reason=detached results=like:failed',
+        '106',
+      ],
+    ])
+  })
+
+  // A1 regression: the permalink release page owns NO list scope, so a page-scoped
+  // clear there has nothing to scope to. These three pin the three outcomes.
+
+  it('clears ONLY the background-supplied asPageScope on a permalink page', async () => {
+    document.body.append(tweetArticle({ tweetId: '105', bookmarked: true, liked: true }))
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async () => true)
+
+    const res = await run(makeDeps({ clearScope, pathname: '/i/web/status/105' }), {
+      tweetId: '105',
+      scopes: ['bookmark', 'like'],
+      allLists: false,
+      asPageScope: 'bookmark',
+    })
+
+    expect(clearScope.mock.calls).toEqual([['105', 'bookmark', 'settle']])
+    expect(res.results).toEqual([
+      { scope: 'like', ok: true, noop: true },
+      { scope: 'bookmark', ok: true },
+    ])
+  })
+
+  it('clicks NOTHING on a permalink page when no asPageScope was supplied', async () => {
+    document.body.append(tweetArticle({ tweetId: '105', bookmarked: true, liked: true }))
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async () => true)
+
+    const res = await run(makeDeps({ clearScope, pathname: '/i/web/status/105' }), {
+      tweetId: '105',
+      scopes: ['bookmark', 'like'],
+      allLists: false,
+    })
+
+    expect(clearScope).not.toHaveBeenCalled()
+    expect(res.results).toEqual([
+      { scope: 'bookmark', ok: true, noop: true },
+      { scope: 'like', ok: true, noop: true },
+    ])
+  })
+
+  it('never lets a supplied asPageScope override a real page’s OWN list scope', async () => {
+    document.body.append(tweetArticle({ tweetId: '105', bookmarked: true, liked: true }))
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async () => true)
+
+    await run(makeDeps({ clearScope, pathname: '/jack/likes' }), {
+      tweetId: '105',
+      scopes: ['bookmark', 'like'],
+      allLists: false,
+      asPageScope: 'bookmark',
+    })
+
+    expect(clearScope.mock.calls).toEqual([['105', 'like', 'settle']])
+  })
+
+  it('appends asPageScope to the request trace only when one was supplied', async () => {
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    await run(
+      makeDeps({ clearScope: async () => true, pathname: '/i/web/status/105', reportClear }),
+      { tweetId: '105', scopes: ['bookmark'], allLists: false, asPageScope: 'bookmark' },
+    )
+
+    expect(reportClear.mock.calls[0]).toEqual([
+      'clear-tweet-request',
+      'pageScope=none scopes=bookmark allLists=false drainEligible=false asPageScope=bookmark',
+      '105',
+    ])
+  })
+})
+
 describe('handleClearVisible — platform gate', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
   })
 
-  it('REGRESSION: non-x adapter short-circuits to cleared:0, never scans the DOM', () => {
+  it('REGRESSION: non-x adapter short-circuits to a not-x reason, never scans the DOM', () => {
     document.body.append(tweetArticle({ tweetId: '201', bookmarked: true }))
     const deps = {
       adapter: { platform: 'instagram' },
@@ -251,7 +527,11 @@ describe('handleClearVisible — platform gate', () => {
     const querySpy = vi.spyOn(document, 'querySelectorAll')
     const sendResponse = vi.fn<(r: unknown) => void>()
     const kept = handleClearVisible({}, deps, sendResponse)
-    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 0 })
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'ClearVisibleResponse',
+      cleared: 0,
+      reason: 'not-x',
+    })
     expect(querySpy).not.toHaveBeenCalled()
     expect(kept).toBeUndefined()
     querySpy.mockRestore()
@@ -318,6 +598,87 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 1 })
   })
 
+  // Manual release has no poll loop (unlike settle/drain's tweet-clear.ts) — a single
+  // read at the existing 350ms pace boundary, reusing the SAME classifyFlip/
+  // flipConfirmed vocabulary so `origin=manual` lines read exactly like the other two
+  // origins, just with `attempt=1` (one look, not six).
+  it('ClearVisibleRequest traces a confirmed flip with origin=manual (single-shot, no poll)', async () => {
+    const article = tweetArticle({ tweetId: '310', bookmarked: true })
+    article
+      .querySelector('[data-testid="removeBookmark"]')!
+      .addEventListener('click', () =>
+        article
+          .querySelector('[data-testid="removeBookmark"]')!
+          .setAttribute('data-testid', 'bookmark'),
+      )
+    document.body.append(article)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      adapter: { platform: 'x' },
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      clearLog: () => {},
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    handleClearVisible({}, deps, sendResponse)
+    await vi.runAllTimersAsync()
+
+    expect(reportClear).toHaveBeenCalledWith(
+      'clear-flip',
+      'scope=bookmark arm=testid attempt=1 elapsedMs=350 target=button disabled=false reresolved=cleared origin=manual',
+      '310',
+    )
+  })
+
+  it('ClearVisibleRequest traces clear-attempt-fail reason=no-flip with origin=manual when the control never changes', async () => {
+    document.body.append(tweetArticle({ tweetId: '311', bookmarked: true }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      adapter: { platform: 'x' },
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      clearLog: () => {},
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    handleClearVisible({}, deps, sendResponse)
+    await vi.runAllTimersAsync()
+
+    expect(reportClear).toHaveBeenCalledWith(
+      'clear-attempt-fail',
+      'scope=bookmark reason=no-flip attempts=1 elapsedMs=350 target=button disabled=false testids=removeBookmark,like origin=manual',
+      '311',
+    )
+  })
+
+  it('ClearVisibleRequest traces a distinct clear-flip-fabricated line when the clicked node detaches but a fresh node for the same id is still a member (origin=manual)', async () => {
+    const captured = tweetArticle({ tweetId: '312', bookmarked: true })
+    document.body.append(captured)
+    captured.querySelector('[data-testid="removeBookmark"]')!.addEventListener('click', () => {
+      // The virtualizer detaches the clicked node and mounts a fresh one for the SAME
+      // tweetId — still bookmarked, i.e. no mutation ever landed.
+      captured.remove()
+      document.body.append(tweetArticle({ tweetId: '312', bookmarked: true }))
+    })
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      adapter: { platform: 'x' },
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      clearLog: () => {},
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    handleClearVisible({}, deps, sendResponse)
+    await vi.runAllTimersAsync()
+
+    const detail =
+      'scope=bookmark arm=detached attempt=1 elapsedMs=350 target=button disabled=false reresolved=member origin=manual'
+    expect(reportClear).toHaveBeenCalledWith('clear-flip', detail, '312')
+    expect(reportClear).toHaveBeenCalledWith('clear-flip-fabricated', detail, '312')
+  })
+
   it('ClearVisibleRequest off a list page emits a terminal clear-visible-skip, never a dangling start', async () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
@@ -334,7 +695,35 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     expect(reportClear).toHaveBeenCalledWith('clear-visible-skip', 'not a Likes/Bookmarks list')
     const stages = reportClear.mock.calls.map((c) => c[0])
     expect(stages).not.toContain('clear-visible-start')
-    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 0 })
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'ClearVisibleResponse',
+      cleared: 0,
+      reason: 'not-list-page',
+    })
+  })
+
+  // The two Release rows must refuse with the SAME discriminator: `releasedPageResult`
+  // and `releasedListResult` each branch on this one literal, so a rename on one side
+  // only would silently return that row to rendering a success-shaped count.
+  it('REGRESSION: both Release refusals off a list page carry the identical not-list-page reason', async () => {
+    const deps = {
+      adapter: { platform: 'x' },
+      document,
+      location: { pathname: '/home' } as Location,
+      clearLog: () => {},
+      reportClear: () => {},
+    } as unknown as HandlerDeps
+    const visible = vi.fn<(r: unknown) => void>()
+    const list = vi.fn<(r: unknown) => void>()
+    handleClearVisible({}, deps, visible)
+    handleClearWholeList({}, deps, list)
+    await vi.runAllTimersAsync()
+
+    // ONE literal, asserted against both replies — that shared binding IS the
+    // "identical discriminator" claim; two hand-typed strings could drift apart.
+    const refusal = { reason: 'not-list-page' }
+    expect(visible).toHaveBeenCalledWith(expect.objectContaining(refusal))
+    expect(list).toHaveBeenCalledWith(expect.objectContaining(refusal))
   })
 
   it('ClearWholeListRequest on a bookmarks-page fake emits clear-list stage events through reportClear', async () => {
@@ -354,6 +743,418 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     expect(stages).toContain('clear-list-start')
     expect(stages).toContain('clear-list-end')
     expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearWholeListResponse', cleared: 0 })
+  })
+
+  it('REGRESSION: a mid-run Likes→Bookmarks switch stops the sweep — no un-like clicks on the new list', async () => {
+    const article = tweetArticle({ tweetId: '203', liked: true })
+    document.body.append(article)
+    // A mutable Location stand-in: the SPA route change happens DURING the run, which
+    // is exactly what the request-time closure could not see.
+    const location = { pathname: '/jack/likes' } as Location
+    const clicks = vi.fn<() => void>()
+    article.addEventListener('click', () => {
+      clicks()
+      location.pathname = '/i/bookmarks'
+    })
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      adapter: { platform: 'x' },
+      document,
+      location,
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+    const kept = handleClearWholeList({}, deps, sendResponse)
+    expect(kept).toBe(true)
+    await vi.runAllTimersAsync()
+
+    // One pass, not 400: the article stays "liked" (nothing re-renders it here), so a
+    // scope-blind loop would keep re-clicking its un-like control on the Bookmarks page.
+    expect(clicks).toHaveBeenCalledTimes(1)
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'ClearWholeListResponse',
+      cleared: 1,
+      reason: 'scope-changed',
+    })
+    expect(reportClear.mock.calls.map((c) => c[0])).toContain('clear-list-abort')
+  })
+})
+
+describe('handleDrainPage — Release diagnostics', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('Download-this-page stamps one run on the start, hands it to sendTracked, and only replies once the send settles', async () => {
+    const items = [mediaItem('m401', '401'), mediaItem('m402', '402')]
+    let resolveSend: ((value: TrackedSendResult) => void) | undefined
+    const sendDone = new Promise<TrackedSendResult>((resolve) => {
+      resolveSend = resolve
+    })
+    const sendTracked = vi.fn<HandlerDeps['sendTracked']>(() => sendDone)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      store: { values: () => items },
+      location: { pathname: '/jack/bookmarks' } as Location,
+      clearLog: () => {},
+      sendTracked,
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+
+    const kept = handleDrainPage({}, deps, sendResponse)
+
+    expect(kept).toBe(true)
+    // The run is minted HERE and handed down: that argument, not the page URL, is what
+    // authorizes the single terminal (written by sendTracked).
+    const release = sendTracked.mock.calls[0]![1] as ReleaseRun
+    expect(release).toEqual({ scope: 'bookmark', items: 2, run: expect.any(String) })
+    expect(reportClear.mock.calls).toEqual([
+      ['clear-download-page-start', `scope=bookmark run=${release.run} items=2`],
+    ])
+    // TERMINAL reply: nothing is answered while the send is still in flight — the old
+    // immediate `{ count }` was measured before any work happened.
+    expect(sendResponse).not.toHaveBeenCalled()
+
+    resolveSend?.({ ok: true, admitted: 2, skipped: 0 })
+    await sendDone
+    await Promise.resolve()
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'DrainPageResponse',
+      count: 2,
+      admitted: 2,
+      skipped: 0,
+      ok: true,
+      onList: true,
+    })
+    // Exactly one line from the handler: the terminal belongs to sendTracked.
+    expect(reportClear.mock.calls).toEqual([
+      ['clear-download-page-start', `scope=bookmark run=${release.run} items=2`],
+    ])
+  })
+
+  it('Download-this-page still terminates the trace AND the reply when the send itself throws', async () => {
+    const items = [mediaItem('m501', '501')]
+    const sendTracked = vi.fn<HandlerDeps['sendTracked']>(async () => {
+      throw new Error('background boom')
+    })
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      store: { values: () => items },
+      location: { pathname: '/jack/likes' } as Location,
+      clearLog: () => {},
+      sendTracked,
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+
+    handleDrainPage({}, deps, sendResponse)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'DrainPageResponse',
+      count: 1,
+      admitted: 0,
+      skipped: 0,
+      ok: false,
+      onList: true,
+    })
+    const release = sendTracked.mock.calls[0]![1] as ReleaseRun
+    expect(reportClear.mock.calls).toEqual([
+      ['clear-download-page-start', `scope=like run=${release.run} items=1`],
+      [
+        'clear-download-page-failed',
+        `scope=like run=${release.run} items=1 reason=background-boom`,
+      ],
+    ])
+  })
+
+  it('off a Likes/Bookmarks list the run still starts, still enqueues, and terminates as a SKIP', async () => {
+    const items = [mediaItem('m601', '601')]
+    const sendTracked = vi.fn<HandlerDeps['sendTracked']>(async () => ({
+      ok: true,
+      admitted: 1,
+      skipped: 0,
+    }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      store: { values: () => items },
+      // A profile timeline: pageScope is None, so the page owns no list to release.
+      location: { pathname: '/lambda_functor' } as Location,
+      clearLog: () => {},
+      sendTracked,
+      reportClear,
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+
+    handleDrainPage({}, deps, sendResponse)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const release = sendTracked.mock.calls[0]![1] as ReleaseRun
+    // `scope: null` is what makes the terminal a skip — and the items still go out.
+    expect(release.scope).toBeNull()
+    expect(sendTracked).toHaveBeenCalledWith(items, release)
+    expect(reportClear.mock.calls).toEqual([
+      ['clear-download-page-start', `scope=none run=${release.run} items=1`],
+    ])
+    expect(releaseTerminalStage(release.scope, true)).toBe('clear-download-page-skip')
+    // …and the reply says so, so the popup cannot promise "each post releases as it
+    // finishes" on a page the run has already resolved as having no list.
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'DrainPageResponse',
+      count: 1,
+      admitted: 1,
+      skipped: 0,
+      ok: true,
+      onList: false,
+    })
+  })
+
+  it('reports the REAL outcome of a fully-deduped batch, not the detection-store size', async () => {
+    // The live regression: 7 detected, background answers `0 admitted, 7 skipped`.
+    const items = [mediaItem('m701', '701'), mediaItem('m702', '702'), mediaItem('m703', '703')]
+    const sendTracked = vi.fn<HandlerDeps['sendTracked']>(async () => ({
+      ok: true,
+      admitted: 0,
+      skipped: 3,
+    }))
+    const deps = {
+      store: { values: () => items },
+      location: { pathname: '/jack/likes' } as Location,
+      clearLog: () => {},
+      sendTracked,
+      reportClear: vi.fn<HandlerDeps['reportClear']>(),
+    } as unknown as HandlerDeps
+    const sendResponse = vi.fn<(r: unknown) => void>()
+
+    handleDrainPage({}, deps, sendResponse)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // `ok` is TRUE here (completed 0 === total 0) — only `admitted` tells the truth.
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'DrainPageResponse',
+      count: 3,
+      admitted: 0,
+      skipped: 3,
+      ok: true,
+      onList: true,
+    })
+  })
+
+  it('gives consecutive presses distinct run ids', async () => {
+    const sendTracked = vi.fn<HandlerDeps['sendTracked']>(async () => ({
+      ok: true,
+      admitted: 0,
+      skipped: 0,
+    }))
+    const deps = {
+      store: { values: () => [] },
+      location: { pathname: '/jack/bookmarks' } as Location,
+      clearLog: () => {},
+      sendTracked,
+      reportClear: vi.fn<HandlerDeps['reportClear']>(),
+    } as unknown as HandlerDeps
+
+    handleDrainPage({}, deps, vi.fn<(r: unknown) => void>())
+    handleDrainPage({}, deps, vi.fn<(r: unknown) => void>())
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const first = (sendTracked.mock.calls[0]![1] as ReleaseRun).run
+    const second = (sendTracked.mock.calls[1]![1] as ReleaseRun).run
+    expect(second).not.toBe(first)
+  })
+})
+
+describe('Release run line builders', () => {
+  it('releaseRunDetail joins a start to its terminal via the run token', () => {
+    expect(releaseRunDetail({ scope: 'bookmark', items: 12, run: '4' })).toBe(
+      'scope=bookmark run=4 items=12',
+    )
+  })
+
+  it('releaseRunDetail renders a scope-less run as scope=none', () => {
+    expect(releaseRunDetail({ scope: null, items: 7, run: '1' })).toBe('scope=none run=1 items=7')
+  })
+
+  it('releaseTerminalStage: a list page ends or fails, a SUCCEEDING scope-less page skips', () => {
+    expect(releaseTerminalStage('like', true)).toBe('clear-download-page-end')
+    expect(releaseTerminalStage('like', false)).toBe('clear-download-page-failed')
+    // A skip is TERMINAL, not a failure — the downloads still went out (mirrors
+    // clear-visible-skip).
+    expect(releaseTerminalStage(null, true)).toBe('clear-download-page-skip')
+  })
+
+  it('releaseTerminalStage: a FAILED run is -failed even off a list page', () => {
+    // The scope-first form logged this as `-skip`, so a run on a profile page where the
+    // queue answered `completed=3 total=7` left NO failure stage in the log at all —
+    // invisible to a diagnostician grepping for one. Same reasoning `sendTracked`'s
+    // dead-channel arm already applies: the run started, so losing it is a failure.
+    expect(releaseTerminalStage(null, false)).toBe('clear-download-page-failed')
+  })
+})
+
+describe('handleSweepPage — Release diagnostics', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('Sweep reports request, candidate counts, and queue response without media URLs', async () => {
+    document.body.append(
+      tweetArticle({ tweetId: '601', bookmarked: true }),
+      tweetArticle({ tweetId: '602', bookmarked: true }),
+    )
+    const items601 = [mediaItem('m601a', '601'), mediaItem('m601b', '601')]
+    const items602 = [mediaItem('m602', '602')]
+    const sendMessage = vi.fn<(_message: unknown) => Promise<{ queued: number; skipped: number }>>(
+      async () => ({ queued: 2, skipped: 1 }),
+    )
+    vi.spyOn(browser.runtime, 'sendMessage').mockImplementation(sendMessage)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      store: {
+        valuesForTweet: (tweetId: string) =>
+          tweetId === '601' ? items601 : tweetId === '602' ? items602 : [],
+      },
+      clearLog: () => {},
+      notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
+      reportClear,
+    } as unknown as HandlerDeps
+
+    const response = await new Promise<unknown>((resolve) => {
+      expect(handleSweepPage({}, deps, resolve)).toBe(true)
+    })
+
+    expect(sendMessage).toHaveBeenCalledWith({
+      _tag: 'SweepEnqueueRequest',
+      scope: 'bookmark',
+      posts: [
+        { tweetId: '601', items: items601 },
+        { tweetId: '602', items: items602 },
+      ],
+    })
+    expect(response).toEqual({ _tag: 'SweepPageResponse', ok: true, queued: 2, skipped: 1 })
+    expect(reportClear.mock.calls).toEqual([
+      ['clear-sweep-request', 'scope=bookmark'],
+      ['clear-sweep-candidates', 'scope=bookmark tweets=2 items=3 tweetIds=601,602'],
+      ['clear-sweep-response', 'scope=bookmark ok=true queued=2 skipped=1'],
+    ])
+    for (const [, detail] of reportClear.mock.calls) expect(detail).not.toContain('https://')
+  })
+
+  it('Sweep reports failure when the queue channel is gone', async () => {
+    document.body.append(tweetArticle({ tweetId: '603', bookmarked: true }))
+    const items603 = [mediaItem('m603', '603')]
+    const sendMessage = vi.fn<(_message: unknown) => Promise<never>>(async () => {
+      throw new Error('Extension context invalidated')
+    })
+    vi.spyOn(browser.runtime, 'sendMessage').mockImplementation(sendMessage)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const notifyContextLost = vi.fn<HandlerDeps['notifyContextLost']>()
+    const deps = {
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      store: { valuesForTweet: () => items603 },
+      clearLog: () => {},
+      notifyContextLost,
+      reportClear,
+    } as unknown as HandlerDeps
+
+    const response = await new Promise<unknown>((resolve) => {
+      handleSweepPage({}, deps, resolve)
+    })
+
+    expect(notifyContextLost).toHaveBeenCalledTimes(1)
+    expect(response).toEqual({
+      _tag: 'SweepPageResponse',
+      ok: false,
+      queued: 0,
+      skipped: 0,
+      reason: 'context',
+    })
+    expect(reportClear.mock.calls).toEqual([
+      ['clear-sweep-request', 'scope=bookmark'],
+      ['clear-sweep-candidates', 'scope=bookmark tweets=1 items=1 tweetIds=603'],
+      ['clear-sweep-failed', 'scope=bookmark reason=context candidates=1 items=1'],
+    ])
+  })
+
+  // The background router answers a THROWN `handleSweepEnqueue` with its generic
+  // `{ ok: false, error }` envelope. Read with `?? 0` that is indistinguishable
+  // from a legitimately empty sweep — the durable log would claim `ok=true
+  // queued=0` and the popup would blame the list ("No new media detected") for an
+  // extension crash. The reply must be judged on `queued` being PRESENT.
+  it('Sweep reports failure when the background answers its handler-failed envelope', async () => {
+    document.body.append(tweetArticle({ tweetId: '604', bookmarked: true }))
+    const items604 = [mediaItem('m604', '604')]
+    vi.spyOn(browser.runtime, 'sendMessage').mockImplementation((async () => ({
+      ok: false,
+      error: 'handler failed',
+    })) as never)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      store: { valuesForTweet: () => items604 },
+      clearLog: () => {},
+      notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
+      reportClear,
+    } as unknown as HandlerDeps
+
+    const response = await new Promise<unknown>((resolve) => {
+      handleSweepPage({}, deps, resolve)
+    })
+
+    expect(response).toEqual({
+      _tag: 'SweepPageResponse',
+      ok: false,
+      queued: 0,
+      skipped: 0,
+      reason: 'malformed-reply',
+    })
+    expect(reportClear.mock.calls).toEqual([
+      ['clear-sweep-request', 'scope=bookmark'],
+      ['clear-sweep-candidates', 'scope=bookmark tweets=1 items=1 tweetIds=604'],
+      ['clear-sweep-failed', 'scope=bookmark reason=malformed-reply candidates=1 items=1'],
+    ])
+  })
+
+  // The guard is on PRESENCE, not truthiness: a background that genuinely queued
+  // nothing still answers a well-formed reply, and must keep the empty-sweep copy.
+  it('Sweep treats a genuine zero-queued reply as a real, successful answer', async () => {
+    document.body.append(tweetArticle({ tweetId: '605', bookmarked: true }))
+    vi.spyOn(browser.runtime, 'sendMessage').mockImplementation((async () => ({
+      queued: 0,
+      skipped: 0,
+    })) as never)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const deps = {
+      document,
+      location: { pathname: '/jack/bookmarks' } as Location,
+      store: { valuesForTweet: () => [mediaItem('m605', '605')] },
+      clearLog: () => {},
+      notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
+      reportClear,
+    } as unknown as HandlerDeps
+
+    const response = await new Promise<unknown>((resolve) => {
+      handleSweepPage({}, deps, resolve)
+    })
+
+    expect(response).toEqual({ _tag: 'SweepPageResponse', ok: true, queued: 0, skipped: 0 })
+    expect(reportClear.mock.calls.at(-1)).toEqual([
+      'clear-sweep-response',
+      'scope=bookmark ok=true queued=0 skipped=0',
+    ])
   })
 })
 
@@ -433,13 +1234,6 @@ describe('handleSavedStatusUpdate — late cross-device chips', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
   })
-
-  const depsWith = (active: boolean, platform: 'x' | 'instagram' | 'threads' = 'x'): HandlerDeps =>
-    ({
-      adapter: { platform },
-      document,
-      savedStatusActive: () => active,
-    }) as unknown as HandlerDeps
 
   it('chips the mounted articles named by the push, idempotently', () => {
     document.body.append(tweetArticle({ tweetId: '1' }), tweetArticle({ tweetId: '2' }))
@@ -578,7 +1372,11 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     } as unknown as HandlerDeps
     const sendResponse = vi.fn<(r: unknown) => void>()
     dispatchOverlayMessage(raw, deps, sendResponse)
-    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'ClearVisibleResponse', cleared: 0 })
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'ClearVisibleResponse',
+      cleared: 0,
+      reason: 'not-x',
+    })
   })
 
   it('ClearWholeListRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
@@ -599,18 +1397,33 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     })
   })
 
-  it('DrainPageRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
+  it('DrainPageRequest — the real popup usePageAction literal ({ _tag }) dispatches', async () => {
     const raw = { _tag: 'DrainPageRequest' }
     const deps = {
       store: { values: () => [] },
       location: { pathname: '/home' } as Location,
       clearLog: () => {},
-      sendTracked: vi.fn<HandlerDeps['sendTracked']>(async () => true),
+      sendTracked: vi.fn<HandlerDeps['sendTracked']>(async () => ({
+        ok: true,
+        admitted: 0,
+        skipped: 0,
+      })),
+      reportClear: vi.fn<HandlerDeps['reportClear']>(),
     } as unknown as HandlerDeps
     const sendResponse = vi.fn<(r: unknown) => void>()
     const kept = dispatchOverlayMessage(raw, deps, sendResponse)
     expect(kept).toBe(true)
-    expect(sendResponse).toHaveBeenCalledWith({ _tag: 'DrainPageResponse', count: 0 })
+    // The reply is TERMINAL now — it lands only after the send settles.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(sendResponse).toHaveBeenCalledWith({
+      _tag: 'DrainPageResponse',
+      count: 0,
+      admitted: 0,
+      skipped: 0,
+      ok: true,
+      onList: false,
+    })
   })
 
   it('SweepPageRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
@@ -618,6 +1431,7 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     const deps = {
       location: { pathname: '/jack' } as Location, // not a Likes/Bookmarks list page
       clearLog: () => {},
+      reportClear: vi.fn<HandlerDeps['reportClear']>(),
     } as unknown as HandlerDeps
     const sendResponse = vi.fn<(r: unknown) => void>()
     const kept = dispatchOverlayMessage(raw, deps, sendResponse)

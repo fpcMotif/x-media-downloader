@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'preact/hooks'
 import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import type { MediaType, Settings } from '@/core/schema'
-import { aria2OriginPattern } from '@/core/download/aria2'
-import { DOWNLOAD_MODES } from '@/core/download/strategy'
-import { freshRecord, type BudgetRecord } from '@/core/download/daily-budget'
-import { dedupeToggleDelta } from '@/core/settings/coupling'
+import type { MediaType, Settings } from '@/packages/schema'
+import { aria2OriginPattern } from '@/packages/download/aria2'
+import { DOWNLOAD_MODES } from '@/packages/download/strategy'
+import { freshRecord, type BudgetRecord } from '@/packages/download/daily-budget'
+import { dedupeToggleDelta } from '@/packages/settings/coupling'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import {
   Select,
@@ -113,8 +113,8 @@ export function SavingPanel({ settings, update }: PanelProps) {
             <FieldContent>
               <FieldLabel htmlFor="quickGrabModifier">Quick grab modifier</FieldLabel>
               <FieldDescription>
-                Hold {settings.quickGrabModifier === 'meta' ? 'Alt' : 'Cmd'} as well to grab the
-                whole post (Instagram &amp; Threads)
+                Hold {settings.quickGrabModifier === 'meta' ? 'Alt' : 'Cmd'} as well, or press d d
+                on a post, to grab the whole post
               </FieldDescription>
             </FieldContent>
             <Select
@@ -141,6 +141,22 @@ export function SavingPanel({ settings, update }: PanelProps) {
             </Select>
           </Field>
         )}
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="keyboardNavEnabled">Keyboard navigation</FieldLabel>
+            <FieldDescription>
+              On Threads &amp; Instagram: j/k move between posts, arrow keys switch columns or flip
+              carousel photos, d downloads the focused post
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="keyboardNavEnabled"
+            aria-label="Keyboard navigation"
+            checked={settings.keyboardNavEnabled}
+            onCheckedChange={(checked: boolean) => void update({ keyboardNavEnabled: checked })}
+          />
+        </Field>
 
         <Field orientation="horizontal">
           <FieldContent>

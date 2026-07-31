@@ -1,4 +1,4 @@
-import type { MediaItem, Platform } from '../../schema'
+import type { MediaItem, Platform } from '@/packages/schema'
 import { mediaNodesFromPost } from './media-node'
 import { forEachPostNode, isPostShaped } from './post-node'
 
@@ -62,12 +62,15 @@ function ownMediaNode(node: Record<string, unknown>): Record<string, unknown> {
 export function detectMediaItems(json: unknown, platform: Platform): MediaItem[] {
   const out: MediaItem[] = []
   const seenByPost = new Map<string, Set<string>>()
+  let postsFound = 0
   forEachPostNode(json, (ctx, node) => {
+    postsFound++
     let seen = seenByPost.get(ctx.postId)
     if (!seen) {
       seen = new Set<string>()
       seenByPost.set(ctx.postId, seen)
     }
+    const mediaBefore = out.length
     mediaNodesFromPost(ownMediaNode(node)).forEach((m, index) => {
       const id = mediaKeyFromUrl(m.url)
       if (id === '' || seen.has(id)) return
@@ -85,7 +88,15 @@ export function detectMediaItems(json: unknown, platform: Platform): MediaItem[]
         ...(m.height !== undefined ? { height: m.height } : {}),
       })
     })
+    if (import.meta.env.DEV && out.length > mediaBefore)
+      console.debug(
+        `[XMD] detect · ${platform} · post ${ctx.postId} (@${ctx.author}) → ${out.length - mediaBefore} media item(s)`,
+      )
   })
+  if (import.meta.env.DEV)
+    console.debug(
+      `[XMD] detect · ${platform} · ${postsFound} post(s) found → ${out.length} media item(s) total`,
+    )
   return out
 }
 

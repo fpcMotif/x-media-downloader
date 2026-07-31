@@ -20,6 +20,8 @@ import {
   PAGE_UNREACHABLE,
   NO_ACTIVE_TAB,
   SWEEP_STALE_CONTEXT,
+  SWEEP_REQUEST_FAILED,
+  DOWNLOAD_REQUEST_FAILED,
   isPersistentStatus,
 } from './action-copy'
 
@@ -59,17 +61,36 @@ describe('release cluster copy', () => {
     )
   })
 
+  it('releasedPageResult: not-list reason — a refusal, never a success-shaped count', () => {
+    expect(releasedPageResult({ reason: 'not-list-page' })).toBe(
+      'Open a Likes or Bookmarks list — "Release this page" only runs on a list.',
+    )
+  })
+
+  it('releasedPageResult: null result treated as zero', () => {
+    expect(releasedPageResult(null)).toBe('Released 0 posts on this page.')
+  })
+
   it.each([
     [0, 'Released 0 posts on this page.'],
     [1, 'Released 1 post on this page.'],
     [3, 'Released 3 posts on this page.'],
-  ])('releasedPageResult(%i) → %s', (n, expected) => {
-    expect(releasedPageResult(n)).toBe(expected)
+  ])('releasedPageResult({ cleared: %i }) → %s', (cleared, expected) => {
+    expect(releasedPageResult({ cleared })).toBe(expected)
   })
 
   it('releasedListResult: not-list reason', () => {
     expect(releasedListResult({ reason: 'not-list-page' })).toBe(
       'Open a Likes or Bookmarks list to release it.',
+    )
+  })
+
+  it('releasedListResult: scope-changed reports a PARTIAL run, never "across the list"', () => {
+    expect(releasedListResult({ cleared: 12, reason: 'scope-changed' })).toBe(
+      'Stopped after 12 posts — you left that list.',
+    )
+    expect(releasedListResult({ cleared: 1, reason: 'scope-changed' })).toBe(
+      'Stopped after 1 post — you left that list.',
     )
   })
 
@@ -91,24 +112,93 @@ describe('release cluster copy', () => {
 
 describe('drainResult', () => {
   it('n=0: teaches instead of reporting nothing', () => {
-    expect(drainResult(0, false)).toBe(
+    expect(drainResult({ count: 0 }, false)).toBe(
       'No media detected yet — scroll to load posts, then try again.',
     )
-    expect(drainResult(0, true)).toBe(
+    expect(drainResult({ count: 0 }, true)).toBe(
+      'No media detected yet — scroll to load posts, then try again.',
+    )
+    expect(drainResult(null, true)).toBe(
       'No media detected yet — scroll to load posts, then try again.',
     )
   })
 
-  it('releasing (willClear true)', () => {
-    expect(drainResult(5, true)).toBe('Downloading 5 items — each post releases as it finishes.')
+  it('releasing (willClear true, on a list page)', () => {
+    expect(drainResult({ count: 5, admitted: 5, skipped: 0, ok: true, onList: true }, true)).toBe(
+      'Downloading 5 items — each post releases as it finishes.',
+    )
   })
 
   it('plain (willClear false)', () => {
-    expect(drainResult(5, false)).toBe('Downloading 5 items.')
+    expect(drainResult({ count: 5, admitted: 5, skipped: 0, ok: true, onList: true }, false)).toBe(
+      'Downloading 5 items.',
+    )
   })
 
   it('singular item count', () => {
-    expect(drainResult(1, false)).toBe('Downloading 1 item.')
+    expect(drainResult({ count: 1, admitted: 1, skipped: 0, ok: true, onList: true }, false)).toBe(
+      'Downloading 1 item.',
+    )
+  })
+
+  it('REGRESSION: release ON but off a list page does not promise a release', () => {
+    // `handleDrainPage` already resolved the scope to null here and terminated the run
+    // as `clear-download-page-skip` — the copy said "each post releases as it finishes."
+    // about posts the code had decided could not be released.
+    expect(drainResult({ count: 5, admitted: 5, skipped: 0, ok: true, onList: false }, true)).toBe(
+      'Downloading 5 items — nothing releases off a Likes or Bookmarks list.',
+    )
+  })
+
+  it('a reply with no onList field is treated as off-list, never as a release', () => {
+    // Fail-safe direction: the promise is the thing that can be wrong, so an absent
+    // field must lose it, not fabricate it.
+    expect(drainResult({ count: 5, admitted: 5, skipped: 0, ok: true }, true)).toBe(
+      'Downloading 5 items — nothing releases off a Likes or Bookmarks list.',
+    )
+  })
+
+  it('REGRESSION: counts what was ADMITTED, not what was detected', () => {
+    // The live trace: 75 detected, 35 already saved, 40 actually queued.
+    expect(
+      drainResult({ count: 75, admitted: 40, skipped: 35, ok: true, onList: true }, true),
+    ).toBe('Downloading 40 items — each post releases as it finishes.')
+  })
+
+  it('REGRESSION: a fully-deduped batch reports nothing new, even though ok is TRUE', () => {
+    // background.ts answers `completed:0 total:0` — i.e. ok === true — with nothing
+    // scheduled. Keying off `ok` is what produced "Downloading 7 items" over a
+    // background `request-deduped 0 admitted, 7 skipped`.
+    expect(drainResult({ count: 7, admitted: 0, skipped: 7, ok: true, onList: true }, true)).toBe(
+      'Nothing new to download — 7 items already saved or filtered, so nothing releases.',
+    )
+    expect(drainResult({ count: 7, admitted: 0, skipped: 7, ok: true, onList: true }, false)).toBe(
+      'Nothing new to download — 7 items already saved or filtered.',
+    )
+    // Same setting, off a list page: the release clause has nothing to be about.
+    expect(drainResult({ count: 7, admitted: 0, skipped: 7, ok: true, onList: false }, true)).toBe(
+      'Nothing new to download — 7 items already saved or filtered.',
+    )
+    expect(drainResult({ count: 1, admitted: 0, skipped: 1, ok: true, onList: true }, false)).toBe(
+      'Nothing new to download — 1 item already saved or filtered.',
+    )
+  })
+
+  it('some admitted but the batch failed to start', () => {
+    expect(drainResult({ count: 4, admitted: 3, skipped: 1, ok: false, onList: true }, true)).toBe(
+      'Queued 3 items — some failed to start.',
+    )
+  })
+
+  it('nothing admitted AND ok=false ⇒ the request never landed (not a dedup)', () => {
+    expect(drainResult({ count: 7, admitted: 0, skipped: 0, ok: false, onList: true }, true)).toBe(
+      DOWNLOAD_REQUEST_FAILED,
+    )
+    // And it is PERSISTENT — the line that must survive the 6s auto-clear and must not
+    // count as a successful Stage action (popup `downloadOkRef`). R2's fabricated
+    // `admitted` made this branch unreachable: a background handler rejection took the
+    // "some failed to start." arm instead, which self-clears and dismisses first-run.
+    expect(isPersistentStatus(DOWNLOAD_REQUEST_FAILED)).toBe(true)
   })
 })
 
@@ -123,6 +213,16 @@ describe('sweepResult', () => {
     expect(sweepResult({ reason: 'context' }, false)).toBe(
       'Reload the X tab (the extension was updated), then try again.',
     )
+  })
+
+  // A background crash must never be reported as an empty list — that sends the
+  // user scrolling for media that was never the problem.
+  it('malformed-reply reason is a persistent extension failure, not an empty sweep', () => {
+    expect(sweepResult({ reason: 'malformed-reply' }, true)).toBe(SWEEP_REQUEST_FAILED)
+    expect(sweepResult({ reason: 'malformed-reply', queued: 0, skipped: 0 }, false)).toBe(
+      SWEEP_REQUEST_FAILED,
+    )
+    expect(isPersistentStatus(SWEEP_REQUEST_FAILED)).toBe(true)
   })
 
   it('nothing new: zero queued and zero skipped', () => {
@@ -171,6 +271,12 @@ describe('page-action error copy', () => {
   it('sweepResult surfaces SWEEP_STALE_CONTEXT for the context reason', () => {
     expect(sweepResult({ reason: 'context' }, false)).toBe(SWEEP_STALE_CONTEXT)
   })
+
+  it('DOWNLOAD_REQUEST_FAILED', () => {
+    expect(DOWNLOAD_REQUEST_FAILED).toBe(
+      'The download request never reached the extension — reload the X tab, then try again.',
+    )
+  })
 })
 
 describe('isPersistentStatus (§2.6 cluster status lifecycle)', () => {
@@ -178,6 +284,7 @@ describe('isPersistentStatus (§2.6 cluster status lifecycle)', () => {
     expect(isPersistentStatus(PAGE_UNREACHABLE)).toBe(true)
     expect(isPersistentStatus(NO_ACTIVE_TAB)).toBe(true)
     expect(isPersistentStatus(SWEEP_STALE_CONTEXT)).toBe(true)
+    expect(isPersistentStatus(DOWNLOAD_REQUEST_FAILED)).toBe(true)
   })
 
   it('does not flag null or an ordinary result line', () => {

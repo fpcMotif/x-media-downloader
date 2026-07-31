@@ -18,6 +18,10 @@ export default defineContentScript({
     const isTrackedUrl = (url: string): boolean => adapter.isTrackedResponseUrl(url)
 
     const emit = (path: string, body: string): void => {
+      if (import.meta.env.DEV)
+        console.debug(
+          `[XMD] tee emit · ${adapter.platform} · path=${path} · body=${body.length} chars`,
+        )
       document.dispatchEvent(new CustomEvent('xmd:media-response', { detail: { path, body } }))
     }
 
@@ -29,6 +33,8 @@ export default defineContentScript({
       ...rest: unknown[]
     ): void {
       if (isTrackedUrl(String(url))) {
+        if (import.meta.env.DEV)
+          console.debug(`[XMD] tee XHR intercept · ${adapter.platform} · ${method} ${url}`)
         this.addEventListener('load', () => {
           if (this.status === 200) {
             try {
@@ -36,6 +42,10 @@ export default defineContentScript({
             } catch {
               /* never break the page */
             }
+          } else if (import.meta.env.DEV) {
+            console.debug(
+              `[XMD] tee XHR non-200 · ${adapter.platform} · status=${this.status} · ${url}`,
+            )
           }
         })
       }
@@ -49,6 +59,8 @@ export default defineContentScript({
         const reqUrl =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
         if (isTrackedUrl(reqUrl)) {
+          if (import.meta.env.DEV)
+            console.debug(`[XMD] tee fetch intercept · ${adapter.platform} · ${reqUrl}`)
           void promise.then((res) => {
             if (res.ok) {
               void res
@@ -56,6 +68,10 @@ export default defineContentScript({
                 .text()
                 .then((body) => emit(new URL(reqUrl, location.origin).pathname, body))
                 .catch(() => {})
+            } else if (import.meta.env.DEV) {
+              console.debug(
+                `[XMD] tee fetch non-ok · ${adapter.platform} · status=${res.status} · ${reqUrl}`,
+              )
             }
           })
         }

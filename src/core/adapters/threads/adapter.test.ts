@@ -528,3 +528,72 @@ describe('threadsAdapter', () => {
     })
   })
 })
+
+const makeThreadsNavPost = (inner: string): HTMLElement => {
+  const el = document.createElement('div')
+  el.setAttribute('data-pressable-container', 'true')
+  el.innerHTML = inner
+  return el
+}
+
+describe('threadsAdapter.nav descriptor', () => {
+  it('exposes the platform post selector', () => {
+    expect(threadsAdapter.nav?.postSelector).toBe("div[data-pressable-container='true']")
+  })
+
+  it('permalinkOf returns the post permalink anchor, or null', () => {
+    const post = makeThreadsNavPost('<a href="/@alice/post/ABC123">2h</a>')
+    expect(threadsAdapter.nav?.permalinkOf(post)?.getAttribute('href')).toBe('/@alice/post/ABC123')
+    expect(
+      threadsAdapter.nav?.permalinkOf(makeThreadsNavPost('<a href="/explore">x</a>')),
+    ).toBeNull()
+  })
+
+  it('actionControl finds like/reply/repost controls by aria-label', () => {
+    const post = makeThreadsNavPost(
+      '<span aria-label="Like"></span><span aria-label="Reply"></span><span aria-label="Repost"></span>',
+    )
+    expect(threadsAdapter.nav?.actionControl(post, 'like')?.getAttribute('aria-label')).toBe('Like')
+    expect(threadsAdapter.nav?.actionControl(post, 'reply')?.getAttribute('aria-label')).toBe(
+      'Reply',
+    )
+    expect(threadsAdapter.nav?.actionControl(post, 'repost')?.getAttribute('aria-label')).toBe(
+      'Repost',
+    )
+    expect(threadsAdapter.nav?.actionControl(makeThreadsNavPost(''), 'like')).toBeNull()
+  })
+
+  it('actionFlipped confirms like via Unlike and repost via Reposted', () => {
+    const nav = threadsAdapter.nav!
+    expect(nav.actionFlipped(makeThreadsNavPost('<span aria-label="Unlike"></span>'), 'like')).toBe(
+      true,
+    )
+    expect(nav.actionFlipped(makeThreadsNavPost('<span aria-label="Like"></span>'), 'like')).toBe(
+      false,
+    )
+    expect(
+      nav.actionFlipped(makeThreadsNavPost('<span aria-label="Reposted"></span>'), 'repost'),
+    ).toBe(true)
+    expect(
+      nav.actionFlipped(makeThreadsNavPost('<span aria-label="Repost"></span>'), 'repost'),
+    ).toBe(false)
+  })
+
+  it('replyComposerOpen detects the dialog composer', () => {
+    document.body.innerHTML = ''
+    expect(threadsAdapter.nav?.replyComposerOpen()).toBe(false)
+    document.body.innerHTML = '<div role="dialog"><div contenteditable="true"></div></div>'
+    expect(threadsAdapter.nav?.replyComposerOpen()).toBe(true)
+    document.body.innerHTML = ''
+  })
+
+  it('carouselControls resolves prev/next buttons when present', () => {
+    const post = makeThreadsNavPost(
+      '<button aria-label="Go back"></button><button aria-label="Next"></button>',
+    )
+    expect(threadsAdapter.nav?.carouselControls?.(post).next?.getAttribute('aria-label')).toBe(
+      'Next',
+    )
+    expect(threadsAdapter.nav?.carouselControls?.(makeThreadsNavPost('')).next).toBeNull()
+  })
+})

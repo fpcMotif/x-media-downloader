@@ -9,9 +9,9 @@
 import { describe, it } from 'vitest'
 import * as fc from 'fast-check'
 import { Option } from 'effect'
-import { convexOriginPattern } from '../sync/convex'
-import { aria2OriginPattern } from '../download/aria2'
-import { pickVideoVariant } from '../resolver/index'
+import { convexOriginPattern } from '@/packages/sync/convex'
+import { aria2OriginPattern } from '@/packages/download/aria2'
+import { pickVideoVariant } from '@/packages/resolver'
 
 /** Structural equality of two Options (None==None, or Some(x)==Some(y) when x===y). */
 const eqOption = <A>(x: Option.Option<A>, y: Option.Option<A>): boolean =>

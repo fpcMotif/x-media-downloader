@@ -8,16 +8,16 @@ import {
   type CloudRuntimePort,
   type CloudUploadDeps,
 } from './cloud-upload'
-import { Settings as SettingsSchema, type Settings } from '../core/schema'
-import { PROVIDERS } from '../core/cloud/provider'
+import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { PROVIDERS } from '@/packages/cloud/provider'
 import {
   decodeLedger,
   enqueue,
   readyJobs,
   summarize,
   type JobLedger,
-} from '../core/cloud/upload-job'
-import type { UploadOutcome, UploadTarget } from '../core/cloud/types'
+} from '@/packages/cloud/upload-job'
+import type { UploadOutcome, UploadTarget } from '@/packages/cloud/types'
 
 // The cloud-upload SHELL through its injected seams (ADR-0013/0017). The pure
 // UploadJob ledger is covered in core/cloud/upload-job.test.ts; these tests pin the

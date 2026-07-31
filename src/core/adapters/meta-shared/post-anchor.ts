@@ -58,3 +58,20 @@ export function postCodeFromContainer(
   }
   return null
 }
+
+/** The first pattern-matching permalink ANCHOR inside `container` —
+ *  {@link postCodeFromContainer}'s element-returning twin, for callers that
+ *  need the link itself (Keyboard Navigation's `openPost` clicks it) rather
+ *  than the code. Same fresh-read rule, same first-match semantics. */
+export function permalinkAnchorFromContainer(
+  container: Element,
+  linkSelector: string,
+  codePattern: RegExp,
+): Element | null {
+  for (const a of container.querySelectorAll(linkSelector)) {
+    const href = a.getAttribute('href')
+    if (!href) continue
+    if (codePattern.test(href)) return a
+  }
+  return null
+}

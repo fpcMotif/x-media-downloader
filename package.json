@@ -11,6 +11,7 @@
     "typecheck": "wxt prepare && tsgo --noEmit",
     "lint": "oxlint",
     "lint:ci": "oxlint --deny-warnings",
+    "lint:boundaries": "depcruise src",
     "fmt": "oxfmt --write src",
     "fmt:check": "oxfmt --check src",
     "effect:check": "effect-language-service diagnostics --project tsconfig.json --format text",
@@ -19,9 +20,10 @@
     "test:coverage": "vitest run --coverage",
     "test:backend": "cd backend && vitest run",
     "test:all": "vitest run && cd backend && vitest run",
-    "check": "oxfmt --check src && oxlint && wxt prepare && tsgo --noEmit && vitest run"
+    "check": "oxfmt --check src && oxlint && wxt prepare && tsgo --noEmit && depcruise src && vitest run"
   },
   "dependencies": {
+    "@base-ui/react": "^1.6.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cnfast": "^0.0.8",
@@ -36,6 +38,7 @@
     "@tailwindcss/vite": "^4.3.1",
     "@typescript/native-preview": "^7.0.0-dev.20260618.1",
     "@vitest/coverage-v8": "4.1.9",
+    "dependency-cruiser": "^18.1.0",
     "happy-dom": "^20.10.6",
     "oxfmt": "^0.55.0",
     "oxlint": "^1.70.0",

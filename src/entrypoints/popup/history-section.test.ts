@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import type { MediaItem } from '../../core/schema'
-import { recordFromMediaItem, applyOutcome } from '../../core/history/record'
+import type { MediaItem } from '@/packages/schema'
+import { recordFromMediaItem, applyOutcome } from '@/packages/history/record'
 import {
   groupByAuthor,
   formatRecord,

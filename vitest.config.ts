@@ -17,7 +17,7 @@ export default defineConfig({
       // content scripts, offscreen document, and Preact views) are exercised by
       // the real extension, not unit tests, and are out of the gate by design.
       // The Convex backend has its own gate in `backend/` (also 100%).
-      include: ['src/core/**/*.{ts,tsx}', 'src/lib/**/*.{ts,tsx}'],
+      include: ['src/core/**/*.{ts,tsx}', 'src/lib/**/*.{ts,tsx}', 'src/packages/**/*.{ts,tsx}'],
       exclude: ['**/*.{test,spec}.{ts,tsx}', '**/*.d.ts'],
       thresholds: { statements: 100, branches: 100, functions: 100, lines: 100 },
     },

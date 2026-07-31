@@ -1,4 +1,4 @@
-import { mediaBasenameKey } from '../../media-key'
+import { mediaBasenameKey } from '../../../packages/schema/media-key'
 
 /** The final path segment of a URL pathname (everything after the last `/`). */
 const lastSegment = (pathname: string): string => pathname.slice(pathname.lastIndexOf('/') + 1)

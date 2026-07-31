@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import type { DownloadRecord } from '@/core/history/record'
+import type { DownloadRecord } from '@/packages/history/record'
 import { Badge } from '@/components/ui/badge'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'

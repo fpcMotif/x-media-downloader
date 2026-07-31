@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { RawMedia } from '../../resolver'
+import type { RawMedia } from '@/packages/resolver'
 import { forEachTweetNode, findAuthor, NESTED_TWEET_KEYS, type Author } from './walk'
 import { detectFromJson } from './index'
 import tweetDetailThread from '../../../test/fixtures/tweet-detail-thread.json'

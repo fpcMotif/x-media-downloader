@@ -7,10 +7,10 @@ import {
   type SyncOutboxDeps,
 } from './sync-outbox'
 import type { ConvexPort } from './convex-port'
-import { Settings as SettingsSchema, type Settings } from '../core/schema'
-import { append, decodeOutbox, emptyOutbox, type OutboxState } from '../core/sync/outbox'
-import { outcomeEvent } from '../core/sync/events'
-import type { SyncStatus } from '../core/sync/status'
+import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { append, decodeOutbox, emptyOutbox, type OutboxState } from '@/packages/sync/outbox'
+import { outcomeEvent } from '@/packages/sync/events'
+import type { SyncStatus } from '@/packages/sync/status'
 
 // The Cloud Sync outbox SHELL (ADR-0009/0005/0017) through its injected seams. The
 // pure outbox reducer is covered in core/sync/outbox.test.ts; these tests pin the

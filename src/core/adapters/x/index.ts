@@ -1,6 +1,6 @@
-import { TWEET_ARTICLE_SEL } from '../../clear/clearer'
-import { resolveTweetMedia, upgradePhotoUrl } from '../../resolver'
-import type { MediaItem } from '../../schema'
+import { TWEET_ARTICLE_SEL } from '../../../packages/clear/clearer'
+import { resolveTweetMedia, upgradePhotoUrl } from '../../../packages/resolver'
+import type { MediaItem } from '@/packages/schema'
 import {
   mediaKeyFromUrl,
   isGrabbablePhotoUrl,
@@ -78,6 +78,40 @@ function contextFromArticle(article: Element): TweetContext | null {
     fallback ??= ctx
   }
   return fallback
+}
+
+/**
+ * The tweetId of the tweet article containing `el`, via the same article-link
+ * walk the hover resolver trusts. The keyboard (`d d`) counterpart to hover
+ * resolution: X's j/k cursor names an article, not a media element, so the
+ * whole-post hotkey anchors identity here. Null outside an article or when the
+ * article carries no status link.
+ */
+export function tweetIdFromArticle(el: Element): string | null {
+  const article = el.closest(TWEET_ARTICLE_SEL)
+  return (article ? contextFromArticle(article)?.tweetId : null) ?? null
+}
+
+/**
+ * The tweet article X's native j/k cursor currently points at, using the
+ * recipe verified in the sibling Lasso extension: `[aria-activedescendant]` →
+ * `getElementById` → closest (or descendant) article, then
+ * `document.activeElement`'s article, then `article:focus-within`. Re-queries
+ * on EVERY call and never caches nodes — X's timeline is virtualized and
+ * recycles elements between reads.
+ */
+export function focusedTweetArticle(doc: Document): Element | null {
+  const activeId = doc
+    .querySelector('[aria-activedescendant]')
+    ?.getAttribute('aria-activedescendant')
+  if (activeId) {
+    const node = doc.getElementById(activeId)
+    const tweet = node?.closest(TWEET_ARTICLE_SEL) ?? node?.querySelector(TWEET_ARTICLE_SEL) ?? null
+    if (tweet) return tweet
+  }
+  const fromActive = doc.activeElement?.closest(TWEET_ARTICLE_SEL)
+  if (fromActive) return fromActive
+  return doc.querySelector(`${TWEET_ARTICLE_SEL}:focus-within`)
 }
 
 /**

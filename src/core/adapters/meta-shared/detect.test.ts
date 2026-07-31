@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { detectMediaItems, postCodesInResponse } from './detect'
-import { partitionAllowedMediaItems } from '../../sync/url-guard'
+import { partitionAllowedMediaItems } from '@/packages/sync/url-guard'
 
 describe('detectMediaItems', () => {
   it('resolves a single photo post into one MediaItem, tagged with the given platform', () => {

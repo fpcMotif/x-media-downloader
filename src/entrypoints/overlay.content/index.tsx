@@ -1,10 +1,11 @@
 import './style.css'
 import { render } from 'preact'
 import { adapterForHostname, ALL_ADAPTERS } from '../../core/adapters/registry'
-import { makeDetectionStore, postGrabItems } from '../../core/adapters/detection-store'
-import { harvestTweets } from '../../core/capture/harvest'
-import type { Source, TweetRecord } from '../../core/capture/record'
+import { makeDetectionStore } from '../../core/adapters/detection-store'
+import { harvestTweets } from '@/packages/capture/harvest'
+import type { Source, TweetRecord } from '@/packages/capture/record'
 import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
+import { focusedTweetArticle, tweetIdFromArticle } from '../../core/adapters/x'
 import { VIDEO_PREVIEW_SECTIONS } from '../../core/adapters/x/dom'
 import {
   mediaStillUnderPointer,
@@ -29,8 +30,8 @@ import {
   type ModifierFlags,
   type QuickGrabState,
   type QuickGrabUiPhase,
-} from '../../core/quickgrab'
-import { makeLatestFrameTask } from '../../core/latest-frame'
+} from '@/packages/overlay/quickgrab'
+import { makeLatestFrameTask } from '@/packages/overlay/latest-frame'
 import {
   badgeNudgeDelayMs,
   badgeSavedRevertMs,
@@ -43,7 +44,7 @@ import {
   nudgeBadge,
   resolveSave,
   type BadgeState,
-} from '../../core/badge'
+} from '@/packages/overlay/badge'
 import {
   beginSendAll,
   launcherAriaLabel,
@@ -53,30 +54,40 @@ import {
   resolveSendAll,
   settleLauncher,
   type LauncherPhase,
-} from '../../core/launcher'
-import { getSettings, watchSettings } from '../../core/settings'
-import { safeSend } from '../../core/messaging'
+} from '@/packages/overlay/launcher'
+import { getSettings, watchSettings } from '@/packages/settings'
+import { idlePostHotkey, postHotkeyKey } from '../../core/post-hotkey'
+import { fireCurrentPost, wholePostItemsFor, type PostGrabDeps } from './post-grab'
+import { safeSend } from '@/packages/kernel/messaging'
 import { clickSensitiveReveals } from '../../core/adapters/x/reveal'
 import {
+  alreadyCleared,
   CLEARED_STUB_ATTR,
   CLEARED_STUB_CSS,
   collapseClearedStubs,
+  findArticle,
   isForYouHome,
+  isMember,
   tweetIdOfArticle,
   TWEET_ARTICLE_SEL,
-} from '../../core/clear/clearer'
+} from '@/packages/clear/clearer'
 import { Option } from 'effect'
 import {
   clearMountedTweet,
   dispatchOverlayMessage,
+  releaseRunDetail,
+  releaseTerminalStage,
   sweepSavedStatus,
   savedStatusVisible,
   type HandlerDeps,
+  type ReleaseRun,
+  type TrackedSendResult,
 } from './handlers'
-import { makeScrollDrain } from '../../core/clear/scroll-drain'
+import { makeScrollDrain } from '@/packages/clear/scroll-drain'
 import { makeSavedStatusLifecycle } from './saved-status-lifecycle'
-import { partitionAllowedMediaItems } from '../../core/sync/url-guard'
-import { makeTweetClearer } from '../../core/clear/tweet-clear'
+import { partitionAllowedMediaItems } from '@/packages/sync/url-guard'
+import { makeTweetClearer } from '@/packages/clear/tweet-clear'
+import { makeReleaseRecheck } from '@/packages/clear/recheck'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type {
   CaptureTweets,
@@ -85,7 +96,7 @@ import type {
   RecoverTweetMediaResponse,
   Settings,
   SavedStatusResponse,
-} from '../../core/schema'
+} from '@/packages/schema'
 
 interface Rect {
   readonly top: number
@@ -103,10 +114,28 @@ const clearLog = (...args: unknown[]): void => console.info('[XMD clear]', ...ar
 // The click → poll → confirm machinery for the irreversible un-bookmark/un-like/
 // "Not interested" lives in `core/clear/tweet-clear`; here we inject the live
 // document + timer port and (DEV-only) the page-console trace sink.
+//
+// `trace` is the PRODUCTION sink and is deliberately separate from `log`: `log` is
+// DEV-only and prints element `textContent` on the "Not interested" path, which must
+// never reach the durable Release log. `trace` carries only stage tokens, scopes,
+// data-testids, ids and counters, so it is safe to persist and export.
+//
+// Both `trace` and `onFlip` MUST stay lazy arrows — `reportClear` and
+// `releaseRecheck` are declared below this call, so a direct reference would be a
+// TDZ error at module init. The arrow bodies only run once a clear is in flight.
 const { clearScope } = makeTweetClearer({
   document,
   clock: { sleep: (ms) => new Promise((r) => setTimeout(r, ms)) },
   ...(import.meta.env.DEV ? { log: clearLog } : {}),
+  trace: (stage, detail, tweetId) => reportClear(stage, detail, tweetId),
+  // Every CONFIRMED flip arms the re-appearance watchdog. `notInterested` is
+  // excluded by type (it has no membership control to re-probe) and never gets here
+  // anyway — tweet-clear returns from that branch before the flip poll fires onFlip.
+  // `origin` isn't threaded into `releaseRecheck.arm` yet — the watchdog itself
+  // doesn't record it until #64 extends `recheck.ts`'s report line to carry it.
+  onFlip: (tweetId, scope, _origin) => {
+    if (scope !== 'notInterested') releaseRecheck.arm(tweetId, scope)
+  },
 })
 
 // ── Auto-scroll drain for not-mounted clears ──
@@ -161,11 +190,48 @@ const reportClear = (stage: string, detail: string, tweetId?: string): void => {
       source: 'clear',
       stage,
       t: Date.now(),
-      ...(tweetId !== undefined ? { itemId: tweetId } : {}),
+      ...(tweetId !== undefined ? { tweetId } : {}),
       detail,
     }),
   )
 }
+
+// ── Release re-appearance watchdog ──
+// A confirmed flip is NOT proof the release stuck: the flip poll starts 200ms after
+// the click, well before X answers the mutation, so a server-side revert (4xx/429 on
+// DeleteBookmark) reports as success — and `flipConfirmed`'s detach arm can call a
+// virtualizer unmount a flip that never happened. Both leave the post bookmarked while
+// the durable worklist latches it 'cleared', which is why re-running the sweep then
+// skips it forever. Re-probing seconds later is the only signal that separates them.
+const releaseRecheck = makeReleaseRecheck({
+  clock: {
+    after: (ms, fn) => {
+      const h = setTimeout(fn, ms)
+      return () => clearTimeout(h)
+    },
+  },
+  probe: (tweetId, scope) => {
+    const article = findArticle(document, tweetId)
+    // `absent` folds together "the row is gone" and "the row is here but shows
+    // NEITHER control" (ambiguous DOM / selector rot). Both are inconclusive, and
+    // folding the ambiguous case toward `cleared` would falsely absolve a release that
+    // never landed — the watchdog must only ever accuse, never exonerate on a guess.
+    // `articles` disambiguates a scrolled-away timeline (0) from a live one.
+    const state = Option.isNone(article)
+      ? 'absent'
+      : isMember(article.value, scope)
+        ? 'member'
+        : alreadyCleared(article.value, scope)
+          ? 'cleared'
+          : 'absent'
+    return {
+      state,
+      articles: document.querySelectorAll(TWEET_ARTICLE_SEL).length,
+      path: location.pathname,
+    }
+  },
+  report: reportClear,
+})
 
 // The bounded scroll-pass loop is `core/clear/scroll-drain`; here we inject the live
 // window/document/timer ports + the real clear and trace sinks.
@@ -185,7 +251,8 @@ const scrollDrain = makeScrollDrain({
   },
   path: () => location.pathname,
   liveMountedIds: mountedTweetIds,
-  clearMounted: (id, scopes, allLists) => clearMountedTweet(drainDeps(), id, scopes, allLists),
+  clearMounted: (id, scopes, allLists) =>
+    clearMountedTweet(drainDeps(), id, scopes, allLists, 'drain'),
   report: reportClear,
 })
 const runDrain = scrollDrain.run
@@ -266,14 +333,110 @@ const reportFailures = (failures?: ReadonlyArray<{ itemId: string; reason: strin
   )
 }
 
-/** Send one tracked request; false on a background start failure OR a dead
- *  channel (a stale tab — the user is told to reload rather than failing mutely).
- *  `clearExpect` (For You only) widens the clear gate to the whole post. */
+const compactReleaseReason = (reason: unknown): string => {
+  const raw = reason instanceof Error ? reason.message : String(reason)
+  const compact = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+  return compact || 'unknown'
+}
+
+const skipSummaryDetail = (skipped?: SkipSummary): string | null =>
+  skipped && skipped.length > 0 ? skipped.map((s) => `${s.reason}:${s.count}`).join(',') : null
+
+const failureSummaryDetail = (
+  failures?: ReadonlyArray<{ readonly itemId: string; readonly reason: string }>,
+): string | null =>
+  failures && failures.length > 0
+    ? failures.map((f) => `${f.itemId}:${compactReleaseReason(f.reason)}`).join(',')
+    : null
+
+/** Gate-skipped ITEM total, folded out of the reply's by-reason summary. */
+const skippedTotal = (skipped?: SkipSummary): number =>
+  (skipped ?? []).reduce((n, s) => n + s.count, 0)
+
+/**
+ * How many of the requested items the background actually SCHEDULED work for — the
+ * only honest answer to "is anything downloading?", and the one the popup now reports.
+ *
+ * `ok` cannot answer it: a fully-deduped batch takes background.ts's early return and
+ * replies `completed:0 total:0`, which is `completed === total`, i.e. `ok === true`,
+ * with nothing scheduled. `total` cannot answer it either — it counts REQUESTS, and a
+ * sidecar expands one item into two. So: `total === 0` IS the background's own
+ * "nothing was scheduled at all" signal (that same early return, and the only way to
+ * see the already-in-flight drop, which happens AFTER admission); otherwise the gate's
+ * partition of the batch gives the item-level count. URL-rejected items (the
+ * fail-closed CDN allow-list) are neither admitted nor gate-skipped, so a forged-URL
+ * batch overstates this by that many — the same trace line names them in `failures=`.
+ *
+ * The `completed === undefined` half is the well-formedness gate, and it is NOT
+ * defensive: `reply` is an UNDECODED cast. background.ts's router turns any handler
+ * rejection into `{ ok: false, error: 'handler failed' }` (background.ts's
+ * `.catch(sendResponse)`), whose `total` is `undefined` — so a `total === 0` test alone
+ * fell through and reported the FULL batch as admitted. That fabricated
+ * `admitted=7 completed=0 total=7 ok=false` on a run that scheduled nothing, made the
+ * popup say "Queued 7 items — some failed to start.", and left DOWNLOAD_REQUEST_FAILED
+ * (which needs `admitted === 0`) unreachable.
+ */
+const admittedCount = (itemCount: number, reply: QueueUpdate | undefined): number =>
+  reply?.completed === undefined || reply.total === 0 ? 0 : itemCount - skippedTotal(reply.skipped)
+
+const releaseQueueDetail = (
+  release: ReleaseRun,
+  reply: QueueUpdate | undefined,
+  ok: boolean,
+  admitted: number,
+): string => {
+  const parts = [
+    releaseRunDetail(release),
+    `admitted=${admitted}`,
+    `completed=${reply?.completed ?? 0}`,
+    // Falls back to 0, NOT `release.items`: `total` counts what the background said it
+    // scheduled, and standing the press-time detection count in for it printed
+    // `total=7` next to `completed=0` for a run that never reached the queue — a
+    // fabricated number in the one log this whole spine exists to make trustworthy.
+    // `items=` on the shared head already carries what was asked for.
+    `total=${reply?.total ?? 0}`,
+    `ok=${ok}`,
+  ]
+  const skipped = skipSummaryDetail(reply?.skipped)
+  const failures = failureSummaryDetail(reply?.failures)
+  if (skipped !== null) parts.push(`skipped=${skipped}`)
+  if (failures !== null) parts.push(`failures=${failures}`)
+  // Two different silences, and telling them apart is the difference between "the tab
+  // never heard back" and "the background answered, but not with a QueueUpdate" — the
+  // shape its router replies for ANY handler rejection.
+  if (reply?.completed === undefined)
+    parts.push(reply === undefined ? 'reason=no-reply' : 'reason=malformed-reply')
+  return parts.join(' ')
+}
+
+/**
+ * Send one tracked request. `clearExpect` (For You only) widens the clear gate to the
+ * whole post.
+ *
+ * `release` is the ONE key to the Release trace: the drain — the only caller that
+ * wrote a `clear-download-page-start` — hands its run down, and exactly one terminal
+ * is written for it here. This deliberately replaces a gate on
+ * `pageScope(location.pathname)`, which fired for EVERY caller: one hover grab on
+ * /i/bookmarks used to write a `clear-download-page-end` with no start, byte-identical
+ * to a real Release terminal, into the durable log — while a drain off a list page got
+ * no terminal at all.
+ */
 const sendTracked = (
   items: ReadonlyArray<MediaItem>,
   clearExpect?: ClearExpect,
-): Promise<boolean> =>
-  safeSend(() =>
+  release?: ReleaseRun,
+): Promise<TrackedSendResult> => {
+  // A dead channel terminates the run as `-failed` even off a list page: the run DID
+  // start, and losing the runtime is a real failure, not the "no list here" skip.
+  const traceReleaseFailure = (reason: string): void => {
+    if (release !== undefined)
+      reportClear('clear-download-page-failed', `${releaseRunDetail(release)} reason=${reason}`)
+  }
+  return safeSend(() =>
     browser.runtime.sendMessage({
       _tag: 'DownloadRequest',
       items,
@@ -282,7 +445,8 @@ const sendTracked = (
   ).then((out) => {
     if (out.status === 'context-invalidated') {
       notifyContextLost()
-      return false
+      traceReleaseFailure('context')
+      return { ok: false, admitted: 0, skipped: 0 }
     }
     if (out.status === 'error') {
       // The send itself rejected (an async failure `safeSend` didn't classify as
@@ -291,13 +455,22 @@ const sendTracked = (
       // reply). Previously silently discarded; log it so "why did this fail?"
       // doesn't require opening the SW's own separate devtools context.
       console.warn('[XMD] DownloadRequest send FAILED —', out.error)
-      return false
+      traceReleaseFailure(`channel-${compactReleaseReason(out.error)}`)
+      return { ok: false, admitted: 0, skipped: 0 }
     }
     const r = out.reply as QueueUpdate | undefined
     reportSkipped(r?.skipped)
     reportFailures(r?.failures)
-    return r?.completed !== undefined && r.completed === r.total
+    const ok = r?.completed !== undefined && r.completed === r.total
+    const admitted = admittedCount(items.length, r)
+    if (release !== undefined)
+      reportClear(
+        releaseTerminalStage(release.scope, ok),
+        releaseQueueDetail(release, r, ok, admitted),
+      )
+    return { ok, admitted, skipped: skippedTotal(r?.skipped) }
   })
+}
 
 const traceDownloadUi =
   (source: 'quickgrab' | 'badge') =>
@@ -414,6 +587,10 @@ function PhaseGlyphs({ block }: { readonly block: 'xmd-badge' | 'xmd-launcher' }
  * under the cursor downloads itself at Original quality after a short dwell. A
  * ring + progress charge shows what's about to happen (and a window to bail); the
  * pure `core/quickgrab` state machine fires each media item at most once per press.
+ * Adding the augment modifier (Alt+Cmd by default) grabs the WHOLE post instead;
+ * the same whole-post grab fires from the keyboard — `d d` (double-tap) on the
+ * hovered post, else the one under X's native j/k cursor (`core/post-hotkey` +
+ * `post-grab`).
  *
  * Note: the hover anchor matches rendered `<img>`/`<video poster>` elements to detected items by
  * twimg media key. Photos can also fall back to a DOM-only resolver; videos/GIFs
@@ -430,10 +607,6 @@ export default defineContentScript({
     // none of the X-only clear/capture/reveal machinery below ever runs.
     const adapter = adapterForHostname(location.hostname)
     if (!adapter) return
-    // Whole-post grab (Cmd augment): only platforms that can resolve a whole post from a
-    // DOM element (IG/Threads via postCodeFromElement; X deliberately omits it — product
-    // decision, not an accident of capability).
-    const postGrabEligible = adapter.postCodeFromElement !== undefined
     // Boot marker: if you don't see this in the X page console, the content
     // script isn't live on this tab (old build loaded, or the tab predates the
     // extension reload) — reload the extension AND refresh the tab.
@@ -455,6 +628,8 @@ export default defineContentScript({
     // Whether the Cmd augment is held right now (all-mode). Tracked as a scalar
     // because the dwell fires on a timer with no event in hand.
     let postGrabArmed = false
+    // The `d d` hotkey sequence state (vim-style whole-post grab).
+    let hotkey = idlePostHotkey
     let hoverMedia: HoverMediaElement | null = null
     let hoverKey: string | null = null
     // Phases: charging (dwell running) → queued (background handoff pending) →
@@ -697,10 +872,18 @@ export default defineContentScript({
     let captureEnabled = false
     let captureAllScrolled = false
     let savedStatusAlive = true
+    /** The COMMITTED route, pinned for exactly the duration of one synchronous
+     *  `savedStatusLifecycle.sync()`. WXT dispatches `wxt:locationchange`
+     *  synchronously from inside the Navigation API `navigate` event
+     *  (wxt/dist/utils/internal/location-watcher.mjs) — i.e. BEFORE the URL
+     *  commits — so a route read from that listener is still the OLD one. Null
+     *  everywhere else, so every later read (the debounced sweep, the observer's
+     *  reschedules, applySettings) still sees the live `location`. */
+    let savedStatusCommittedPath: string | null = null
     const savedStatusIsActive = (): boolean =>
       savedStatusAlive &&
       adapter.platform === 'x' &&
-      savedStatusVisible(location.pathname, savedStatusOn)
+      savedStatusVisible(savedStatusCommittedPath ?? location.pathname, savedStatusOn)
     const savedStatusLifecycle = makeSavedStatusLifecycle({
       isActive: savedStatusIsActive,
       root: document.body,
@@ -797,7 +980,7 @@ export default defineContentScript({
             item: trace.item,
             ...(trace.armedAt !== undefined ? { elapsedMs: sendStartedAt - trace.armedAt } : {}),
           })
-        const ok = await sendTracked(items, forYouClearExpect(items))
+        const { ok } = await sendTracked(items, forYouClearExpect(items))
         if (trace)
           trace.fn(ok ? 'start-ack' : 'start-failed', {
             item: trace.item,
@@ -808,6 +991,28 @@ export default defineContentScript({
         rerender()
         onSettled?.(ok)
       })()
+    }
+
+    // Deps for the whole-post orchestration (`d d` hotkey + the shared payload
+    // resolver fireGrab delegates to). Every entry closes over LIVE state.
+    const postGrabDeps: PostGrabDeps = {
+      adapter,
+      store,
+      doc: document,
+      pathname: () => location.pathname,
+      hovered: () => (hoverMedia && hoverKey ? { media: hoverMedia, key: hoverKey } : null),
+      focusedArticle: () => focusedTweetArticle(document),
+      tweetIdFromArticle,
+      send: async (items) => (await sendTracked(items, forYouClearExpect(items))).ok,
+      setUi: (ui) => {
+        grabUi = ui
+        rerender()
+      },
+      getUi: () => grabUi,
+      markGrabbed: (keys) => {
+        grab = markAllGrabbed(grab, keys)
+      },
+      rectOf,
     }
 
     const fireGrab = (armed: HoverMediaElement, key: string): void => {
@@ -829,25 +1034,13 @@ export default defineContentScript({
       const all = postGrabArmed
       let items: MediaItem[] = [item]
       if (all) {
-        // Resolve the WHOLE post from the DOM post anchor, NOT the hovered
-        // media's own url key: an Instagram/Threads photo's rendered `<img>`
-        // basename can differ from the tee's captured basename, so the hovered
-        // item falls back to a placeholder whose `postId` is its own media key
-        // (grouping nothing) — `valuesForTweet` on it would return just itself.
-        // The post's DOM shortcode → the tee's real `postId` recovers the whole
-        // detected set (all slides, best quality). Falls back to the hovered
-        // item alone when the tee hasn't linked/seen this post yet.
-        const code = adapter.postCodeFromElement?.(media, location.pathname) ?? null
-        const codePostId = code ? store.postIdForCode(code) : undefined
-        const teePost = codePostId ? store.valuesForTweet(codePostId) : []
-        items =
-          teePost.length > 0 ? teePost : postGrabItems(item, store.valuesForTweet(item.postId))
+        items = wholePostItemsFor(postGrabDeps, media, item)
         // Mark every key of the resolved post so a cursor sweep across sibling
         // slides doesn't re-charge the ring (downstream the gate dedups anyway).
-        grab = markAllGrabbed(grab, [
-          ...store.keysForTweet(item.postId),
-          ...(codePostId ? store.keysForTweet(codePostId) : []),
-        ])
+        grab = markAllGrabbed(
+          grab,
+          [...new Set(items.map((i) => i.postId))].flatMap((id) => store.keysForTweet(id)),
+        )
       }
       // After the dwell completes, move out of the charge state immediately.
       // The background reply then confirms whether the browser/aria2 handoff started.
@@ -1343,23 +1536,45 @@ export default defineContentScript({
       try {
         json = JSON.parse(detail.body)
       } catch {
+        if (import.meta.env.DEV)
+          console.debug(
+            `[XMD] media-response · ${adapter.platform} · path=${detail.path} · non-JSON body (${detail.body.length} chars), skipping`,
+          )
         return /* non-JSON tee body */
       }
       try {
         // Fail-closed trust boundary: page scripts can forge 'xmd:media-response'
         // events, so only CDN-allow-listed items ever reach the store.
-        const checked = partitionAllowedMediaItems(adapter.detectFromResponse(detail.path, json))
+        const raw = adapter.detectFromResponse(detail.path, json)
+        const checked = partitionAllowedMediaItems(raw)
+        if (import.meta.env.DEV)
+          console.debug(
+            `[XMD] media-response · ${adapter.platform} · path=${detail.path} · detected=${raw.length} allowed=${checked.allowed.length} rejected=${checked.rejected.length}`,
+          )
         if (checked.rejected.length > 0) {
           console.warn(`[XMD] dropped ${checked.rejected.length} media item(s) with unsafe URLs`)
         }
-        if (store.addDetected(checked.allowed).length > 0) rerender()
+        const added = store.addDetected(checked.allowed)
+        if (added.length > 0) {
+          if (import.meta.env.DEV)
+            console.debug(
+              `[XMD] media-response · ${adapter.platform} · store added ${added.length} new item(s), total=${store.count}`,
+            )
+          rerender()
+        }
         // Instagram/Threads only (X omits extractPostCodes): links the DOM's
         // URL-shortcode to the tee's own postId (which may differ — e.g.
         // Instagram's numeric pk vs its /p/{code}/ shortcode), so a hovered
         // video's DOM-derived post:{code} key (see previewKeyFromMedia above)
         // resolves to the same MediaItem addDetected just indexed by postId.
         const codes = adapter.extractPostCodes?.(json)
-        if (codes) for (const [postId, code] of codes) store.registerPostCode(postId, code)
+        if (codes) {
+          if (import.meta.env.DEV && codes.size > 0)
+            console.debug(
+              `[XMD] media-response · ${adapter.platform} · registered ${codes.size} post code(s)`,
+            )
+          for (const [postId, code] of codes) store.registerPostCode(postId, code)
+        }
       } catch {
         /* media detection is best-effort */
       }
@@ -1382,9 +1597,15 @@ export default defineContentScript({
     // through the identical, already-tested JSON.parse → detect →
     // registerPostCode path — no separate ingestion code to maintain. SPA
     // route changes after this are already teed live, so this is a one-shot,
-    // not a MutationObserver.
-    if (postGrabEligible) {
-      for (const body of inlineDataPayloads(document.scripts)) {
+    // not a MutationObserver. Instagram/Threads-only: X embeds no media JSON in
+    // document scripts, so there is nothing to replay there.
+    if (adapter.platform === 'instagram' || adapter.platform === 'threads') {
+      const inlineBodies = inlineDataPayloads(document.scripts)
+      if (import.meta.env.DEV)
+        console.debug(
+          `[XMD] inline-data replay · ${adapter.platform} · ${inlineBodies.length} candidate script(s)`,
+        )
+      for (const body of inlineBodies) {
         document.dispatchEvent(
           new CustomEvent('xmd:media-response', { detail: { path: 'inline:document', body } }),
         )
@@ -1415,7 +1636,7 @@ export default defineContentScript({
       // keyup and cover the common "hold modifier, then hover media" path where
       // the page never saw the initial keydown.
       const grabbing = qgEnabled && syncGrabFromPointer(sample)
-      refreshPostGrabArmed(postGrabActive(grab.active, sample, qgModifier, postGrabEligible))
+      refreshPostGrabArmed(postGrabActive(grab.active, sample, qgModifier))
       const target = sample.target
       // Hovering this extension's own UI (the badge) must not read as leaving
       // the media underneath it — the entrance would hide before the click.
@@ -1519,7 +1740,7 @@ export default defineContentScript({
       if (!qgEnabled || !isModifierKey(e.key, qgModifier)) return
       const was = grab.active
       grab = pressModifier(grab)
-      postGrabArmed = postGrabActive(grab.active, e, qgModifier, postGrabEligible)
+      postGrabArmed = postGrabActive(grab.active, e, qgModifier)
       if (grab.active && !was) {
         setCursorActive(true)
         // One affordance at a time: the ring owns the hover while the modifier is held.
@@ -1556,15 +1777,35 @@ export default defineContentScript({
     // event because the base modifier can change via settings at runtime.
     ctx.addEventListener(window, 'keydown', (event) => {
       const e = event as KeyboardEvent
-      if (!qgEnabled || !postGrabEligible) return
+      if (!qgEnabled) return
       if (!isModifierKey(e.key, allAugmentModifier(qgModifier))) return
-      refreshPostGrabArmed(postGrabActive(grab.active, e, qgModifier, postGrabEligible))
+      refreshPostGrabArmed(postGrabActive(grab.active, e, qgModifier))
     })
     ctx.addEventListener(window, 'keyup', (event) => {
       const e = event as KeyboardEvent
-      if (!postGrabEligible) return
       if (!isModifierKey(e.key, allAugmentModifier(qgModifier))) return
       refreshPostGrabArmed(false)
+    })
+    // Vim-style `d d`: grab ALL media of the current post — hovered, else X's
+    // j/k-focused. Bare `d` is unbound on x.com (`g d` is X's display-settings
+    // chord, guarded inside postHotkeyKey), so this stays passive: no
+    // preventDefault, X always sees the key.
+    ctx.addEventListener(window, 'keydown', (event) => {
+      const e = event as KeyboardEvent
+      const next = postHotkeyKey(
+        hotkey,
+        {
+          key: e.key,
+          altKey: e.altKey,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          repeat: e.repeat,
+          target: (e.composedPath?.()[0] ?? e.target) as EventTarget | null,
+        },
+        Date.now(),
+      )
+      hotkey = next.state
+      if (next.action === 'fire') fireCurrentPost(postGrabDeps)
     })
     ctx.addEventListener(document, 'mouseleave', () => {
       mouseHitTest.clear()
@@ -1572,16 +1813,48 @@ export default defineContentScript({
       focusBadge(null, null)
     })
 
-    ctx.addEventListener(window, 'wxt:locationchange', () => {
+    ctx.addEventListener(window, 'wxt:locationchange', (event) => {
       // A pre-navigation sample must not re-arm UI against detached DOM.
       mouseHitTest.clear()
       releaseAll()
       resetBadge()
       focusHover(null, null)
+      // "Download this page" must never inherit media detected on a previous SPA
+      // route. Without this reset, visiting Tweet Detail/Likes before Bookmarks
+      // makes Release enqueue those stale posts against the Bookmarks drain.
+      store.clear()
+      // An armed 5s probe that wakes up here would query the NEW timeline for a post
+      // released off the OLD one, find nothing mounted, and write `clear-recheck
+      // state=absent` about a page that no longer exists — noise evicting real evidence
+      // from the capped diagnostics ring. This is the navigation half of `cancelAll`'s
+      // contract; the teardown half is in `ctx.onInvalidated` below.
+      releaseRecheck.cancelAll()
       settleRenderedScan()
-      savedStatusLifecycle.sync()
+      // `sync()` is the ONE synchronous route reader here — everything above is
+      // route-independent, and settleRenderedScan defers its scans to rAF. WXT
+      // fires this event from inside the Navigation API `navigate` event, BEFORE
+      // the URL commits, so an unpinned read evaluates the OLD route: a
+      // /likes → /home hop takes savedStatusIsActive()'s inactive branch and the
+      // observer is never attached. `showSavedStatus` defaults ON, so that is the
+      // DEFAULT path — only a later applySettings re-armed it. Pin the committed
+      // path across the call and drop it in `finally`: `sync()` is fully
+      // synchronous (it arms the observer and starts a timer, nothing more), so
+      // the debounced sweep that fires later still reads the live `location`.
+      savedStatusCommittedPath = event.newUrl.pathname
+      try {
+        savedStatusLifecycle.sync()
+      } finally {
+        savedStatusCommittedPath = null
+      }
       rerender()
     })
+
+    // The handlers' door onto `sendTracked`: it forwards the drain's `ReleaseRun`
+    // (and nothing else does), which is what authorizes the terminal. No
+    // `clearExpect` — the drain has never widened the For You clear gate, and this
+    // is a pure relocation of that behavior, not a change to it.
+    const handlerSendTracked: HandlerDeps['sendTracked'] = (items, release) =>
+      sendTracked(items, undefined, release)
 
     // LIVE handles on the closed-over state + helpers above. Scalars are threaded
     // as getter/setter pairs so each handler reads the current value and writes
@@ -1617,7 +1890,7 @@ export default defineContentScript({
         grabUi = null
       },
       clearRescanSpin,
-      sendTracked,
+      sendTracked: handlerSendTracked,
       recoverMissingVideos,
       notifyContextLost,
       clearLog,
@@ -1647,6 +1920,11 @@ export default defineContentScript({
       clearLauncherRevert()
       clearRescanSpin()
       clearSettleTimers()
+      // Teardown half of `cancelAll`'s contract (the navigation half is on
+      // `wxt:locationchange`): a probe surviving invalidation reports `absent` about a
+      // page whose overlay is already gone, and `reportClear` can no longer reach the
+      // background to say so — a guaranteed-useless line in a capped log.
+      releaseRecheck.cancelAll()
       if (scrollRecoveryTimer !== null) {
         clearTimeout(scrollRecoveryTimer)
         scrollRecoveryTimer = null

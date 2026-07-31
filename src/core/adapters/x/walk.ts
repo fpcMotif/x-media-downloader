@@ -1,4 +1,4 @@
-import type { RawMedia } from '../../resolver'
+import type { RawMedia } from '@/packages/resolver'
 
 type Obj = Record<string, unknown>
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null

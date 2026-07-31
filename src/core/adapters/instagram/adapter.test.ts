@@ -9,6 +9,11 @@ import {
 } from './adapter'
 import { META_CDN_HOSTS } from '../meta-shared/cdn'
 
+/** A stubbed `getBoundingClientRect` — happy-dom computes no layout, so every
+ *  viewport-dominance assertion has to hand the adapter its own geometry. */
+const rect = (top: number, left: number, width: number, height: number) => () =>
+  ({ top, left, right: left + width, bottom: top + height, width, height }) as DOMRect
+
 describe('INSTAGRAM_HOST_MATCH / isInstagramUrl', () => {
   it('is the single www.instagram.com host pattern', () => {
     expect(INSTAGRAM_HOST_MATCH).toEqual(['*://www.instagram.com/*'])
@@ -444,8 +449,6 @@ describe('instagramAdapter', () => {
         // smaller-area sibling mid-transition, must NOT also claim that same
         // code. An exact area tie is treated as "don't know which one is
         // active" and resolves to null on both sides, rather than guessing.
-        const rect = (top: number, left: number, width: number, height: number) => () =>
-          ({ top, left, right: left + width, bottom: top + height, width, height }) as DOMRect
 
         it('dominant hovered video (fills the 1024x768 viewport) resolves to post:code:{pathnameCode}, and postCodeFromElement returns the raw code', () => {
           const root = document.createElement('div')
@@ -633,5 +636,75 @@ describe('instagramAdapter', () => {
       expect(instagramAdapter.canResolveHoverItem(video, key, new Map())).toBe(false)
       expect(instagramAdapter.resolveHoverItem(video, key, new Map(), '/p/CODE1/')).toBeNull()
     })
+  })
+})
+
+const makeInstagramNavPost = (inner: string): HTMLElement => {
+  const el = document.createElement('article')
+  el.innerHTML = inner
+  return el
+}
+
+describe('instagramAdapter.nav descriptor', () => {
+  it('exposes the platform post selector', () => {
+    expect(instagramAdapter.nav?.postSelector).toBe('article')
+  })
+
+  it('permalinkOf returns the /p/ permalink anchor, or null', () => {
+    const post = makeInstagramNavPost('<a href="/p/ABC123/">2h</a>')
+    expect(instagramAdapter.nav?.permalinkOf(post)?.getAttribute('href')).toBe('/p/ABC123/')
+    expect(
+      instagramAdapter.nav?.permalinkOf(makeInstagramNavPost('<a href="/explore">x</a>')),
+    ).toBeNull()
+  })
+
+  it('actionControl finds like/comment/repost controls by aria-label', () => {
+    const post = makeInstagramNavPost(
+      '<span aria-label="Like"></span><span aria-label="Comment"></span><span aria-label="Repost"></span>',
+    )
+    expect(instagramAdapter.nav?.actionControl(post, 'like')?.getAttribute('aria-label')).toBe(
+      'Like',
+    )
+    expect(instagramAdapter.nav?.actionControl(post, 'reply')?.getAttribute('aria-label')).toBe(
+      'Comment',
+    )
+    expect(instagramAdapter.nav?.actionControl(post, 'repost')?.getAttribute('aria-label')).toBe(
+      'Repost',
+    )
+    expect(instagramAdapter.nav?.actionControl(makeInstagramNavPost(''), 'reply')).toBeNull()
+  })
+
+  it('actionFlipped confirms like via Unlike and repost via Remove repost', () => {
+    const nav = instagramAdapter.nav!
+    expect(
+      nav.actionFlipped(makeInstagramNavPost('<span aria-label="Unlike"></span>'), 'like'),
+    ).toBe(true)
+    expect(nav.actionFlipped(makeInstagramNavPost('<span aria-label="Like"></span>'), 'like')).toBe(
+      false,
+    )
+    expect(
+      nav.actionFlipped(makeInstagramNavPost('<span aria-label="Remove repost"></span>'), 'repost'),
+    ).toBe(true)
+    expect(
+      nav.actionFlipped(makeInstagramNavPost('<span aria-label="Repost"></span>'), 'repost'),
+    ).toBe(false)
+  })
+
+  it('replyComposerOpen detects the dialog composer', () => {
+    document.body.innerHTML = ''
+    expect(instagramAdapter.nav?.replyComposerOpen()).toBe(false)
+    document.body.innerHTML = '<div role="dialog"><div contenteditable="true"></div></div>'
+    expect(instagramAdapter.nav?.replyComposerOpen()).toBe(true)
+    document.body.innerHTML = ''
+  })
+
+  it('carouselControls resolves prev/next buttons when present', () => {
+    const post = makeInstagramNavPost(
+      '<button aria-label="Go back"></button><button aria-label="Next"></button>',
+    )
+    expect(instagramAdapter.nav?.carouselControls?.(post).prev?.getAttribute('aria-label')).toBe(
+      'Go back',
+    )
+    expect(instagramAdapter.nav?.carouselControls?.(makeInstagramNavPost('')).prev).toBeNull()
   })
 })

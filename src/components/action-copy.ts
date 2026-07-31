@@ -27,8 +27,20 @@ export const releaseListConfirm =
 export const RELEASE_PAGE_CONFIRM_LABEL = 'Release this page'
 export const RELEASE_LIST_CONFIRM_LABEL = 'Release the list'
 
-export const releasedPageResult = (n: number): string =>
-  `Released ${plural(n, 'post')} on this page.`
+export interface ReleasePageResult {
+  readonly cleared?: number
+  readonly reason?: string
+}
+
+export const releasedPageResult = (res: ReleasePageResult | null): string => {
+  // Off a list page there is nothing this control CAN do, and it is the only
+  // control the popup's off-list Release disclosure renders (spec §2.2) — so the
+  // refusal has to read as a refusal. A count-only line ("Released 0 posts on
+  // this page.") is success-shaped and made the dead trigger unfalsifiable.
+  if (res?.reason === 'not-list-page')
+    return 'Open a Likes or Bookmarks list — "Release this page" only runs on a list.'
+  return `Released ${plural(res?.cleared ?? 0, 'post')} on this page.`
+}
 
 export interface ReleaseListResult {
   readonly cleared?: number
@@ -38,6 +50,11 @@ export interface ReleaseListResult {
 export const releasedListResult = (res: ReleaseListResult | null): string => {
   if (res?.reason === 'not-list-page') return 'Open a Likes or Bookmarks list to release it.'
   const n = res?.cleared ?? 0
+  // A run the page navigated out from under stops early (list-clear's `scope-changed`).
+  // Its count is a PARTIAL, so it must never render as the "across the list" sentence —
+  // that reads as "the list is done" and is the whole reason the abort is surfaced.
+  if (res?.reason === 'scope-changed')
+    return `Stopped after ${plural(n, 'post')} — you left that list.`
   return n === 0
     ? 'No posts to release on this list.'
     : `Released ${plural(n, 'post')} across the list.`
@@ -52,11 +69,52 @@ export const TURN_ON_RELEASE_LABEL = 'Turn it on'
 
 // ── Stage — download status line (§2.3 "Stage — download status line") ──
 
-export const drainResult = (n: number, willClear: boolean): string => {
-  if (n === 0) return 'No media detected yet — scroll to load posts, then try again.'
+/** The drain's TERMINAL reply (`DrainPageResponse`), which settles only after the
+ *  background has answered — never the optimistic detection-store size the popup
+ *  used to format from. */
+export interface DrainResult {
+  /** Items the page had detected when the press landed. */
+  readonly count?: number
+  /** Items the background actually scheduled work for. This — never `ok` — is the
+   *  "did anything happen?" test: a fully-deduped batch answers `completed:0 total:0`,
+   *  i.e. `ok === true`, with nothing downloading. */
+  readonly admitted?: number
+  readonly skipped?: number
+  readonly ok?: boolean
+  /** Whether the page the run happened on owns a list to release from (`pageScope`
+   *  resolved). Absent ⇒ treated as off-list: never promise a release we can't see
+   *  evidence for. */
+  readonly onList?: boolean
+}
+
+export const drainResult = (res: DrainResult | null, willClear: boolean): string => {
+  const count = res?.count ?? 0
+  if (count === 0) return 'No media detected yet — scroll to load posts, then try again.'
+  const admitted = res?.admitted ?? 0
+  const failed = res?.ok === false
+  // A release needs BOTH halves: `willClear` is the setting, `onList` is the page.
+  // On a profile/search page `handleDrainPage` has already resolved the scope to null
+  // and terminated the run as `clear-download-page-skip` — so the release sentence
+  // there promises something the run itself already ruled out.
+  const releases = willClear && res?.onList === true
+  // Nothing scheduled AND the send failed ⇒ the request never landed (dead channel /
+  // background throw), which is a different story from "everything was a duplicate"
+  // and gets the actionable, persistent line. Order matters: both cases have
+  // `admitted === 0`.
+  if (admitted === 0)
+    return failed
+      ? DOWNLOAD_REQUEST_FAILED
+      : releases
+        ? `Nothing new to download — ${plural(count, 'item')} already saved or filtered, so nothing releases.`
+        : `Nothing new to download — ${plural(count, 'item')} already saved or filtered.`
+  if (failed) return `Queued ${plural(admitted, 'item')} — some failed to start.`
+  if (releases)
+    return `Downloading ${plural(admitted, 'item')} — each post releases as it finishes.`
+  // Release is ON but this page has no list: say so, rather than silently dropping the
+  // clause and leaving the user to wonder why nothing un-bookmarked.
   return willClear
-    ? `Downloading ${plural(n, 'item')} — each post releases as it finishes.`
-    : `Downloading ${plural(n, 'item')}.`
+    ? `Downloading ${plural(admitted, 'item')} — nothing releases off a Likes or Bookmarks list.`
+    : `Downloading ${plural(admitted, 'item')}.`
 }
 
 export interface SweepResult {
@@ -69,6 +127,7 @@ export const sweepResult = (res: SweepResult | null, willClear: boolean): string
   if (res?.reason === 'not-list-page')
     return 'Open a Likes or Bookmarks page — the sweep only runs on a list.'
   if (res?.reason === 'context') return SWEEP_STALE_CONTEXT
+  if (res?.reason === 'malformed-reply') return SWEEP_REQUEST_FAILED
   const q = res?.queued ?? 0
   const s = res?.skipped ?? 0
   if (q === 0 && s === 0) return 'No new media detected — scroll to load posts, then run again.'
@@ -82,6 +141,17 @@ export const sweepResult = (res: SweepResult | null, willClear: boolean): string
 export const PAGE_UNREACHABLE = 'Could not reach the page — reload the X tab and try again.'
 export const NO_ACTIVE_TAB = 'No active tab.'
 export const SWEEP_STALE_CONTEXT = 'Reload the X tab (the extension was updated), then try again.'
+/** The drain reached the page but the page could not reach the extension (dead
+ *  runtime channel / a throw inside the background's DownloadRequest handler). */
+export const DOWNLOAD_REQUEST_FAILED =
+  'The download request never reached the extension — reload the X tab, then try again.'
+/** The sweep reached the page, the page reached the extension, and the extension
+ *  answered with something that is not a sweep result (a throw inside the
+ *  background's SweepEnqueueRequest handler). Kept distinct from the empty-sweep
+ *  line: nothing was queued because the extension failed, NOT because the list had
+ *  nothing new — blaming the list would send the user scrolling for no reason. */
+export const SWEEP_REQUEST_FAILED =
+  'The sweep never reached the extension — reload the X tab, then try again.'
 
 // ── Cluster status lifecycle (§2.6) ──
 
@@ -92,6 +162,8 @@ const PERSISTENT_STATUS_MESSAGES: ReadonlySet<string> = new Set([
   PAGE_UNREACHABLE,
   NO_ACTIVE_TAB,
   SWEEP_STALE_CONTEXT,
+  DOWNLOAD_REQUEST_FAILED,
+  SWEEP_REQUEST_FAILED,
 ])
 
 export const isPersistentStatus = (m: string | null): boolean =>
@@ -136,11 +208,11 @@ const MODIFIER_LABEL: Record<QuickGrabModifier, string> = {
   meta: 'Cmd',
 }
 
-/** `{mod}` — the quick-grab modifier's display name, same mapping general.tsx
+/** `{mod}` — the quick-grab modifier's display name, same mapping saving.tsx
  *  uses for its Select options (just shorter labels for prose). */
 export const modifierLabel = (mod: QuickGrabModifier): string => MODIFIER_LABEL[mod]
 
-/** `{mod2}` — the whole-post second key: mirrors general.tsx line 44
+/** `{mod2}` — the whole-post second key: mirrors saving.tsx
  *  (`quickGrabModifier === 'meta' ? 'Alt' : 'Cmd'`). */
 export const secondModifierLabel = (mod: QuickGrabModifier): string =>
   mod === 'meta' ? 'Alt' : 'Cmd'

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
 import { makeAdmissionGate, PROBE_CONCURRENCY } from './admission-gate'
-import { Settings, type MediaItem } from '../core/schema'
-import type { SavedIndex } from '../core/sync/saved-index'
-import type { SizeProbePort } from '../core/download/size-probe'
+import { Settings, type MediaItem } from '@/packages/schema'
+import type { SavedIndex } from '@/packages/sync/saved-index'
+import type { SizeProbePort } from '@/packages/download/size-probe'
 
 const baseSettings = (over: Partial<typeof Settings.Type>): typeof Settings.Type => ({
   ...Schema.decodeUnknownSync(Settings)({}),

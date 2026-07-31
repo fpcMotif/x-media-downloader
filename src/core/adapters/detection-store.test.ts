@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { MediaItem } from '../schema'
+import type { MediaItem } from '@/packages/schema'
 import {
   makeDetectionStore,
   keysForItem,

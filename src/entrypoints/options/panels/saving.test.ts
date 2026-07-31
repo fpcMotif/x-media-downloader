@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { Settings } from '@/core/schema'
+import { Settings } from '@/packages/schema'
 
 const source = readFileSync('src/entrypoints/options/panels/saving.tsx', 'utf8')
 

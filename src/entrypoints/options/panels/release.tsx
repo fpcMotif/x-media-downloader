@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { CLEAR_AFTER_DOWNLOAD } from '@/core/clear/copy'
+import { CLEAR_AFTER_DOWNLOAD } from '@/packages/clear/copy'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'

@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest'
 import {
   detectFromJson,
   detectRenderedImageElements,
+  focusedTweetArticle,
   resolveImageElement,
+  tweetIdFromArticle,
   videoTweetsNeedingRecovery,
   isXUrl,
 } from './index'
-import { renderFilename } from '../../download/filename'
+import { renderFilename } from '@/packages/download/filename'
 import tweetDetail from '../../../test/fixtures/tweet-detail.json'
 
 /** Build a detached subtree and return the nth `<img>` in document order. */
@@ -631,5 +633,124 @@ describe('isXUrl', () => {
     expect(isXUrl('https://x.com/alice/status/1')).toBe(true)
     expect(isXUrl('http://twitter.com/bob')).toBe(true)
     expect(isXUrl('https://example.com/x.com/fake')).toBe(false)
+  })
+})
+
+/** Build a detached subtree and return the first match for `sel`. */
+const elAt = (html: string, sel: string): Element => {
+  const root = document.createElement('div')
+  root.innerHTML = html
+  return root.querySelector(sel)!
+}
+
+describe('tweetIdFromArticle', () => {
+  it('resolves the tweet id for any element nested in the article', () => {
+    const el = elAt(
+      `<article data-testid="tweet">
+         <a href="/alice/status/1790"><time>now</time></a>
+         <div><span><img src="https://pbs.twimg.com/media/A?format=jpg&name=small" /></span></div>
+       </article>`,
+      'img',
+    )
+    expect(tweetIdFromArticle(el)).toBe('1790')
+  })
+
+  it('falls back to the author-less /i/ link when no real-author link exists', () => {
+    const el = elAt(
+      `<article data-testid="tweet">
+         <a href="/i/web/status/4242"><span>analytics</span></a>
+         <img src="https://pbs.twimg.com/media/B?format=jpg&name=small" />
+       </article>`,
+      'img',
+    )
+    expect(tweetIdFromArticle(el)).toBe('4242')
+  })
+
+  it('returns null outside an article, and for an article with no status link', () => {
+    expect(tweetIdFromArticle(elAt('<div><span>hi</span></div>', 'span'))).toBeNull()
+    expect(
+      tweetIdFromArticle(
+        elAt('<article data-testid="tweet"><span>no links</span></article>', 'span'),
+      ),
+    ).toBeNull()
+  })
+})
+
+/** Mount `html` as the live document body (focused-tweet lookups read document). */
+const mount = (html: string): void => {
+  document.body.innerHTML = html
+}
+
+describe('focusedTweetArticle', () => {
+  const ARTICLE = 'article[data-testid="tweet"]'
+
+  it('resolves via aria-activedescendant → getElementById → closest article', () => {
+    mount(`
+      <div aria-activedescendant="cell-7"></div>
+      <article data-testid="tweet" id="other">
+        <a href="/alice/status/1"><time>now</time></a>
+      </article>
+      <div id="cell-7">
+        <article data-testid="tweet">
+          <a href="/bob/status/2"><time>now</time></a>
+        </article>
+      </div>`)
+    const tweet = focusedTweetArticle(document)
+    expect(tweet?.querySelector('a')?.getAttribute('href')).toBe('/bob/status/2')
+  })
+
+  it('also accepts a descendant article of the activedescendant node', () => {
+    mount(`
+      <div aria-activedescendant="cell-9"></div>
+      <div id="cell-9">
+        <div>
+          <article data-testid="tweet"><a href="/c/status/3"><time>t</time></a></article>
+        </div>
+      </div>`)
+    expect(focusedTweetArticle(document)?.querySelector('a')?.getAttribute('href')).toBe(
+      '/c/status/3',
+    )
+  })
+
+  it('falls back to document.activeElement’s article', () => {
+    mount(`
+      <article data-testid="tweet">
+        <a href="/alice/status/5" tabindex="0"><time>now</time></a>
+      </article>`)
+    ;(document.querySelector('a') as HTMLElement).focus()
+    expect(focusedTweetArticle(document)?.matches(ARTICLE)).toBe(true)
+  })
+
+  it('falls back to article:focus-within', () => {
+    mount(`
+      <article data-testid="tweet">
+        <a href="/alice/status/6"><time>now</time></a>
+        <button>like</button>
+      </article>
+      <article data-testid="tweet">
+        <a href="/bob/status/7"><time>now</time></a>
+      </article>`)
+    ;(document.querySelector('button') as HTMLElement).focus()
+    const tweet = focusedTweetArticle(document)
+    expect(tweet?.querySelector('a')?.getAttribute('href')).toBe('/alice/status/6')
+  })
+
+  it('falls through when the activedescendant id is missing from the DOM', () => {
+    mount(`
+      <div aria-activedescendant="gone"></div>
+      <article data-testid="tweet">
+        <button>like</button>
+        <a href="/alice/status/11"><time>t</time></a>
+      </article>`)
+    ;(document.querySelector('button') as HTMLElement).focus()
+    const tweet = focusedTweetArticle(document)
+    expect(tweet?.querySelector('a')?.getAttribute('href')).toBe('/alice/status/11')
+  })
+
+  it('returns null when nothing is focused anywhere', () => {
+    mount('<article data-testid="tweet"><a href="/a/status/8"><time>t</time></a></article>')
+    // No aria-activedescendant, nothing focused: every tier misses.
+    expect(document.activeElement).toBe(document.body)
+    expect(focusedTweetArticle(document)).toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import type { DownloadRecord } from '../../core/history/record'
+import type { DownloadRecord } from '@/packages/history/record'
 import { plural } from '@/components/capture-copy'
 
 /** Group download records by author handle, preserving newest-first order. */
