@@ -35,6 +35,7 @@
  */
 import { Schema } from 'effect'
 import { DownloadTraceEntry } from '@/packages/schema'
+import { computeReleaseCorrelationCounters } from './correlate'
 
 /** The durable Release diagnostics state: the event window plus the accounting that
  *  makes what's MISSING from that window legible (see the module docstring). */
@@ -194,25 +195,34 @@ function utcStamp(nowMs: number): string {
  *
  * The first line is a synthetic `clear-export-meta` event — itself valid JSONL and
  * itself a Release event by `isReleaseDiagnosticsEvent`, so nothing downstream has to
- * special-case it — carrying the accounting the events alone can't show. The four counters
- * partition every event ever offered, so each kind of loss is attributable on its own:
- * `evicted > 0` means this file is a TAIL, `decodeDropped > 0` means entries were persisted
- * but came back corrupt, and the remainder — `appended - entries - evicted - decodeDropped
- * > 0` — means storage refused writes (quota/serialization loss). That last reading is what makes
- * the "No Release diagnostics recorded yet" empty state interpretable rather than
- * misleading: an empty log is one thing when nothing was ever offered and quite another
- * when hundreds of events were offered and none of them stuck.
+ * special-case it — carrying the accounting the events alone can't show. The four loss
+ * counters partition every event ever offered, so each kind of loss is attributable on
+ * its own: `evicted > 0` means this file is a TAIL, `decodeDropped > 0` means entries
+ * were persisted but came back corrupt, and the remainder — `appended - entries -
+ * evicted - decodeDropped > 0` — means storage refused writes (quota/serialization
+ * loss). That last reading is what makes the "No Release diagnostics recorded yet"
+ * empty state interpretable rather than misleading: an empty log is one thing when
+ * nothing was ever offered and quite another when hundreds of events were offered and
+ * none of them stuck.
+ *
+ * The four mismatch counters (ticket #65) are DERIVED from `log.events` fresh on every
+ * export — never separately persisted, so they can only ever agree with the events
+ * that follow them in this same file (see `computeReleaseCorrelationCounters`'s own
+ * docstring on why a parallel running total was deliberately not built).
  */
 export function composeDiagnosticsExport(
   log: ReleaseDiagnosticsLog,
   now: number,
 ): { ok: boolean; filename: string; text: string } {
   if (log.events.length === 0) return { ok: false, filename: '', text: '' }
+  const { clears, mutations, serverRejects, reAddFingerprints } = computeReleaseCorrelationCounters(
+    log.events,
+  )
   const meta: DownloadTraceEntry = {
     source: 'clear',
     stage: 'clear-export-meta',
     t: now,
-    detail: `entries=${log.events.length} evicted=${log.evicted} appended=${log.appended} decodeDropped=${log.decodeDropped} cap=${RELEASE_DIAGNOSTICS_CAP}`,
+    detail: `entries=${log.events.length} evicted=${log.evicted} appended=${log.appended} decodeDropped=${log.decodeDropped} cap=${RELEASE_DIAGNOSTICS_CAP} clears=${clears} mutations=${mutations} serverRejects=${serverRejects} reAddFingerprints=${reAddFingerprints}`,
   }
   const text = [meta, ...log.events].map((e) => JSON.stringify(e)).join('\n') + '\n'
   return { ok: true, filename: `xmd-release-diagnostics-${utcStamp(now)}.jsonl`, text }

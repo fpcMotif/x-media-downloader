@@ -85,6 +85,15 @@ import {
   decodeReleaseDiagnostics,
   composeDiagnosticsExport,
 } from '@/packages/clear/diagnostics'
+import {
+  correlateMutation,
+  EMPTY_CORRELATION_STATE,
+  formatCorrelationVerdict,
+  parseClearResolveEvent,
+  parseMutationEvent,
+  recordResolve,
+  type CorrelationState,
+} from '@/packages/clear/correlate'
 import { runSerializedRmw } from '@/packages/kernel/durable-store'
 import type { ClearScope, SweepEnqueueResponse } from '@/packages/schema'
 import { isSyncConfigured } from '../background/sync-config'
@@ -215,8 +224,28 @@ const currentSnapshot = (now: number): MetricsSnapshot =>
 
 const persistSnapshot = (now: number): Promise<void> => metricsItem.setValue(currentSnapshot(now))
 
+// Mutation↔clear correlation (spec #59 ticket #65): ephemeral, in-memory, like
+// `traceEvents` above — the recent-resolve table only needs to survive the
+// correlation window, not a service-worker restart (see correlate.ts's docstring
+// on that tradeoff).
+let correlationState: CorrelationState = EMPTY_CORRELATION_STATE
+
 function recordTrace(event: DownloadTraceEntry): void {
   traceEvents = [...traceEvents, event].slice(-MAX_TRACE_EVENTS)
+  // Correlate BEFORE the label/buffer work below so a verdict's own emitted event
+  // (via the recursive `recordTrace` call inside `traceBackground`) lands in the
+  // durable log and session ring in the same relative order a live reader expects:
+  // the resolve, then the mutation, then (immediately) the correlation verdict.
+  const resolveEvent = parseClearResolveEvent(event)
+  if (resolveEvent) correlationState = recordResolve(correlationState, resolveEvent, Date.now())
+  const mutationEvent = parseMutationEvent(event)
+  if (mutationEvent) {
+    const verdict = correlateMutation(correlationState, mutationEvent)
+    if (verdict) {
+      const { stage, detail } = formatCorrelationVerdict(verdict)
+      traceBackground(stage, { tweetId: mutationEvent.tweetId, detail })
+    }
+  }
   const label = [
     event.stage,
     event.type,
