@@ -566,7 +566,7 @@ export const handleClearDrain: MessageHandler = (message, deps, sendResponse) =>
 // grab/badge/launcher) with no X-specific DOM read. The one branch that touches the
 // page, `rescanVisible`, calls `deps.adapter.detectRenderedMedia` — already correctly
 // dispatched per-platform (every registered adapter implements it; Instagram/Threads
-// currently return `[]`, a separate and intentional TODO, not a gating concern here).
+// currently return `[]`, a separate and intentional omission, not a gating concern here).
 // Gating this handler would silently break "Clear detected media" for Instagram/
 // Threads users, who have nothing X-specific to protect against in the first place.
 //
