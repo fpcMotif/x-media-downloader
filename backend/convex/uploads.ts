@@ -59,6 +59,11 @@ const uploadJobDoc = v.object({
  * Idempotent + last-write-wins by `at` on the `by_job` index: re-sent state is
  * harmless. Control plane only — NO bytes ever reach Convex; the byte path is
  * extension → provider. Fails closed on the shared secret, like recordEvents.
+ *
+ * Same-batch duplicates of one `jobId` collapse in memory under the same
+ * last-write-wins rule BEFORE any read, so each `jobId` touches the DB exactly
+ * once and the reads can run concurrently. `upserted` therefore counts distinct
+ * rows written, not input array entries that would have written.
  */
 export const recordUploadJobs = mutation({
   args: { jobs: v.array(job), secret: v.string() },
@@ -66,7 +71,7 @@ export const recordUploadJobs = mutation({
   handler: async (ctx, { jobs, secret }) => {
     assertSecret(secret)
 
-    const deduped = new Map<string, typeof jobs[0]>()
+    const deduped = new Map<string, (typeof jobs)[0]>()
     for (const j of jobs) {
       const existing = deduped.get(j.jobId)
       if (!existing || j.at >= existing.at) {
