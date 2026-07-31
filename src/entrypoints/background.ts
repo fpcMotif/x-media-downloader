@@ -1452,12 +1452,22 @@ const messageHandlers: MessageHandlers = {
     return { ok: true }
   }),
   ClearDownloadMonitorRequest: () => clearDownloadMonitor(),
-  HistoryRequest: async () => ({ records: decodeStore(await historyItem.getValue()).records }),
+  // Both of these go through `historyQueue`, like `recordHistory` — reading or
+  // erasing outside it races the queued read-modify-write. A `recordHistory`
+  // task that already read the store, then an erase, then that task's write:
+  // the erased records come back. The read is queued for the weaker reason —
+  // otherwise the popup can render a store that a queued write is about to
+  // replace.
+  HistoryRequest: () =>
+    historyQueue.run(async () => ({
+      records: decodeStore(await historyItem.getValue()).records,
+    })),
   SavedStatusRequest: handle<'SavedStatusRequest'>((msg) => savedStatusCoordinator.handle(msg)),
-  ClearHistoryRequest: async () => {
-    await historyItem.setValue(emptyStore)
-    return { ok: true }
-  },
+  ClearHistoryRequest: () =>
+    historyQueue.run(async () => {
+      await historyItem.setValue(emptyStore)
+      return { ok: true } as const
+    }),
   SyncTestRequest: async () => runSyncConnectionTest(await getSettings()),
   SyncStatusRequest: () => syncOutbox.getSyncStatus(),
   CloudConnectRequest: handle<'CloudConnectRequest'>((msg) =>
