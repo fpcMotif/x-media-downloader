@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   THREADS_HOST_MATCH,
   isThreadsUrl,
@@ -6,6 +6,7 @@ import {
   threadsAdapter,
 } from './adapter'
 import { META_CDN_HOSTS } from '../meta-shared/cdn'
+import { resolveMetaImageElement } from '../meta-shared/dom'
 
 describe('THREADS_HOST_MATCH', () => {
   it('covers both the pre- and post-migration hosts', () => {
@@ -595,5 +596,67 @@ describe('threadsAdapter.nav descriptor', () => {
       'Next',
     )
     expect(threadsAdapter.nav?.carouselControls?.(makeThreadsNavPost('')).next).toBeNull()
+  })
+})
+
+describe('threadsAdapter — production build (DEV logging compiled out)', () => {
+  // This adapter's debug logging sits INSIDE the resolvers rather than at the
+  // entrypoint edge, so `import.meta.env.DEV` is a live branch in each of them.
+  // Vitest runs with DEV=true, which leaves the arm that actually ships
+  // unexercised. These re-run the same paths with the flag off and assert
+  // identical results — the logging is observation-only, never load-bearing.
+  beforeEach(() => vi.stubEnv('DEV', false))
+  afterEach(() => vi.unstubAllEnvs())
+
+  const item = {
+    id: 'k1',
+    platform: 'threads' as const,
+    postId: '1',
+    author: 'a',
+    type: 'photo' as const,
+    url: 'https://cdn.example/k1.jpg',
+    ext: 'jpg',
+    index: 0,
+  }
+
+  it('resolveHoverItem returns the same tee hit / DOM fallback / miss', () => {
+    const detected = new Map([['k1', item]])
+    expect(
+      threadsAdapter.resolveHoverItem(document.createElement('div'), 'k1', detected, '/'),
+    ).toEqual(item)
+
+    const img = document.createElement('img')
+    img.src = 'https://scontent.cdninstagram.com/v/t51.2885-15/x.jpg'
+    expect(threadsAdapter.resolveHoverItem(img, 'miss', new Map(), '/')).toEqual(
+      resolveMetaImageElement(img, 'threads'),
+    )
+    expect(
+      threadsAdapter.resolveHoverItem(document.createElement('div'), 'miss', new Map(), '/'),
+    ).toBeNull()
+  })
+
+  it('postKeyFromVideoElement returns the same null / single-media / carousel keys', () => {
+    const bare = document.createElement('div')
+    bare.innerHTML = `<div><video></video></div>`
+    expect(threadsAdapter.postKeyFromVideoElement?.(bare.querySelector('video')!, '/')).toBeNull()
+
+    const single = document.createElement('div')
+    single.innerHTML = `<div data-pressable-container="true"><a href="/@zuck/post/CODE1">link</a><video></video></div>`
+    expect(threadsAdapter.postKeyFromVideoElement?.(single.querySelector('video')!, '/')).toBe(
+      'post:code:CODE1',
+    )
+
+    const carousel = document.createElement('div')
+    carousel.innerHTML = `
+      <div data-pressable-container="true"><a href="/@zuck/post/CODE5">link</a>
+        <div style="transform: translateX(0px);">
+          <div></div>
+          <div><video></video></div>
+          <div><img /></div>
+        </div>
+      </div>`
+    expect(threadsAdapter.postKeyFromVideoElement?.(carousel.querySelector('video')!, '/')).toBe(
+      'post:code:CODE5:slot:0',
+    )
   })
 })

@@ -217,6 +217,37 @@ describe('makeRetryQueue', () => {
       expect(scheduled).toBe(false)
       expect(deps.failBrowserDownload).toHaveBeenCalledWith('m0', 7, 1_000)
       expect(clock.calls).toHaveLength(0)
+      expect(deps.trace).toHaveBeenCalledWith(
+        'interrupt-retry-abandoned',
+        expect.objectContaining({
+          itemId: 'm0',
+          detail: 'reason=USER_CANCELED attempt=0 retryable=false',
+        }),
+      )
+    })
+
+    it('traces "unknown" when an undefined reason exhausts the attempt cap', async () => {
+      // The other exhausted-path cases all carry a reason, so the `?? 'unknown'`
+      // arm only exists here: Chrome can report an interrupted transfer with no
+      // InterruptReason at all, and that is precisely the case where the trace
+      // must not read `reason=undefined`. Undefined is treated as retryable, so
+      // reaching this branch takes the full attempt cap rather than the
+      // non-retryable shortcut above.
+      const { deps } = makeDeps()
+      const queue = makeRetryQueue(deps)
+      for (const now of [1_000, 2_000, 3_000])
+        await queue.schedule({ ...baseArgs, reason: undefined, now })
+
+      const scheduled = await queue.schedule({ ...baseArgs, reason: undefined, now: 4_000 })
+
+      expect(scheduled).toBe(false)
+      expect(deps.trace).toHaveBeenCalledWith(
+        'interrupt-retry-abandoned',
+        expect.objectContaining({
+          itemId: 'm0',
+          detail: 'reason=unknown attempt=3 retryable=true',
+        }),
+      )
     })
   })
 
