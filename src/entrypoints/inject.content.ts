@@ -1,5 +1,11 @@
 import { adapterForHostname, ALL_ADAPTERS } from '../core/adapters/registry'
 import { matchReleaseMutationOp } from '../core/adapters/x/tracked-mutation'
+import {
+  makeTeeBudget,
+  readBoundedUtf8Response,
+  utf8ByteLengthAtMost,
+  MAX_TEE_BODY_BYTES,
+} from '@/packages/kernel/tee-limits'
 
 /**
  * MAIN-world passive tee (ADR-0001, grounding §c; widened to Instagram/Threads
@@ -29,6 +35,38 @@ export default defineContentScript({
     if (!adapter) return // fail closed: no platform recognized, tee nothing
 
     const isTrackedUrl = (url: string): boolean => adapter.isTrackedResponseUrl(url)
+
+    // Shared across both tee legs. Only the fetch paths take a lease: `clone()`
+    // pins the whole body in the PAGE's heap until it is drained, so an unbounded
+    // number of concurrent clones is the real leak. XHR's `responseText` is a
+    // string the page already materialized — nothing extra is pinned by reading
+    // it, so those paths take the byte cap alone.
+    const teeBudget = makeTeeBudget()
+
+    /** Bounded read of a fetch response, or null when it must be dropped. Always
+     *  releases its slot, including on the refusal paths. */
+    const readTeeBody = async (res: Response): Promise<string | null> => {
+      const lease = teeBudget.acquire()
+      if (!lease) {
+        if (import.meta.env.DEV)
+          console.debug(`[XMD] tee drop · ${adapter.platform} · captures in flight`)
+        return null
+      }
+      try {
+        return await readBoundedUtf8Response(res, lease)
+      } finally {
+        lease.release()
+      }
+    }
+
+    /** Over-budget is a DROP, never a truncation — a half-body parses into
+     *  plausible partial media, and under-reporting is worse than not reporting. */
+    const withinTeeBudget = (body: string, what: string): boolean => {
+      if (utf8ByteLengthAtMost(body, MAX_TEE_BODY_BYTES)) return true
+      if (import.meta.env.DEV)
+        console.debug(`[XMD] tee drop · ${adapter.platform} · ${what} over ${MAX_TEE_BODY_BYTES}B`)
+      return false
+    }
 
     const emit = (path: string, body: string): void => {
       if (import.meta.env.DEV)
@@ -75,7 +113,8 @@ export default defineContentScript({
         this.addEventListener('load', () => {
           if (this.status === 200) {
             try {
-              emit(new URL(this.responseURL).pathname, this.responseText)
+              const body = this.responseText
+              if (withinTeeBudget(body, 'xhr body')) emit(new URL(this.responseURL).pathname, body)
             } catch {
               /* never break the page */
             }
@@ -89,12 +128,15 @@ export default defineContentScript({
       if (isMutationUrl(String(url))) {
         this.addEventListener('load', () => {
           try {
-            emitMutation(
-              new URL(this.responseURL).pathname,
-              this.status,
-              this.responseText,
-              xhrMutationBody.get(this) ?? null,
+            const body = this.responseText
+            const requestBody = xhrMutationBody.get(this) ?? null
+            // A mutation body is a small GraphQL envelope; anything at this size
+            // is not the evidence #63 is looking for.
+            if (
+              withinTeeBudget(body, 'xhr mutation body') &&
+              (requestBody === null || withinTeeBudget(requestBody, 'xhr mutation request'))
             )
+              emitMutation(new URL(this.responseURL).pathname, this.status, body, requestBody)
           } catch {
             /* never break the page */
           }
@@ -124,10 +166,10 @@ export default defineContentScript({
             console.debug(`[XMD] tee fetch intercept · ${adapter.platform} · ${reqUrl}`)
           void promise.then((res) => {
             if (res.ok) {
-              void res
-                .clone()
-                .text()
-                .then((body) => emit(new URL(reqUrl, location.origin).pathname, body))
+              void readTeeBody(res)
+                .then((body) => {
+                  if (body !== null) emit(new URL(reqUrl, location.origin).pathname, body)
+                })
                 .catch(() => {})
             } else if (import.meta.env.DEV) {
               console.debug(
@@ -140,17 +182,17 @@ export default defineContentScript({
           const requestBody = typeof init?.body === 'string' ? init.body : null
           void promise
             .then((res) =>
-              res
-                .clone()
-                .text()
-                .then((body) =>
-                  emitMutation(
-                    new URL(reqUrl, location.origin).pathname,
-                    res.status,
-                    body,
-                    requestBody,
-                  ),
-                ),
+              readTeeBody(res).then((body) => {
+                if (body === null) return
+                if (requestBody !== null && !withinTeeBudget(requestBody, 'fetch mutation request'))
+                  return
+                emitMutation(
+                  new URL(reqUrl, location.origin).pathname,
+                  res.status,
+                  body,
+                  requestBody,
+                )
+              }),
             )
             .catch(() => {
               /* a rejected fetch (network failure) never reached a status — nothing to report */
