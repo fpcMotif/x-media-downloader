@@ -174,10 +174,24 @@ const transfersItem = storage.defineItem<TrackerState>('session:transfers', {
 const tabBroadcaster = makeTabBroadcaster()
 const { reportTransferOutcome, sendClearToTabs } = tabBroadcaster
 
-/** Re-resolve a CDN url from an open X tab before an interrupt retry. */
+/** Re-resolve a CDN url from an open tab before an interrupt retry. Despite the
+ *  name (a holdover from the X-only original), this asks whichever open tab's
+ *  content script answers first — X, Instagram, or Threads — via the shared
+ *  `RefreshMediaUrlRequest` handler (`handleRefreshMediaUrl`). Meta's CDN urls
+ *  are believed to expire far faster than X's (unconfirmed — no live TTL
+ *  measurement exists yet), which makes a refresh MISS here the prime suspect
+ *  for "an interrupted Threads/Instagram download just keeps failing": every
+ *  retry attempt silently re-uses the same already-401/403'd `meta.url`, with
+ *  no visible difference from a retry that legitimately found nothing better.
+ *  `traceBackground` here is the one thing that tells the two apart live. */
 const resolveRetryUrl = async (meta: RequestMeta): Promise<string> => {
   if (meta.item === undefined) return meta.url
   const fresh = await refreshMediaUrlFromTabs(meta.item, tabBroadcaster.makeTabMessagingPort())
+  traceBackground(fresh ? 'retry-url-refreshed' : 'retry-url-refresh-miss', {
+    itemId: meta.item.id,
+    type: meta.item.type,
+    ...(fresh ? {} : { detail: 'no open tab returned a fresher url — reusing the stale one' }),
+  })
   return fresh ?? meta.url
 }
 
@@ -855,6 +869,20 @@ const handleDownload = (
         }),
       )
       .filter((r) => !inFlight.has(r.id))
+    // A MIXED batch (e.g. Quick-Grab-all on a carousel where some slides are
+    // already-saved duplicates) previously left its skip reasons invisible to
+    // anyone watching only the background console: the all-skipped branch below
+    // ('request-deduped') traces its own skip count, but a batch that still
+    // schedules SOME requests fell straight through with no background-side
+    // signal at all — the reasons only ever reached the tab's own console via
+    // `QueueUpdate.skipped` → `reportSkipped` (index.tsx). Gated on
+    // `requests.length > 0` so the all-skipped branch stays the sole source for
+    // the zero-requests case (no double-trace of the same batch).
+    if (skipped.length > 0 && requests.length > 0) {
+      traceBackground('items-skipped', {
+        detail: skipped.map((s) => `${s.count} ${s.reason}`).join(', '),
+      })
+    }
     // Nothing to schedule (all gate-skipped or already in flight): report with the
     // skip summary so the overlay can explain why nothing downloaded.
     if (requests.length === 0) {
