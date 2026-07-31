@@ -75,6 +75,7 @@ import {
   isMember,
   tweetIdOfArticle,
   TWEET_ARTICLE_SEL,
+  type MembershipScope,
 } from '@/packages/clear/clearer'
 import { Option } from 'effect'
 import {
@@ -92,7 +93,8 @@ import { makeScrollDrain } from '@/packages/clear/scroll-drain'
 import { makeSavedStatusLifecycle } from './saved-status-lifecycle'
 import { partitionAllowedMediaItems } from '@/packages/sync/url-guard'
 import { makeTweetClearer } from '@/packages/clear/tweet-clear'
-import { makeReleaseRecheck } from '@/packages/clear/recheck'
+import { makeReleaseRecheck, type FreshTimelineMembership } from '@/packages/clear/recheck'
+import { timelineTweetIds } from '../../core/adapters/x/walk'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type {
   CaptureTweets,
@@ -136,10 +138,8 @@ const { clearScope } = makeTweetClearer({
   // Every CONFIRMED flip arms the re-appearance watchdog. `notInterested` is
   // excluded by type (it has no membership control to re-probe) and never gets here
   // anyway — tweet-clear returns from that branch before the flip poll fires onFlip.
-  // `origin` isn't threaded into `releaseRecheck.arm` yet — the watchdog itself
-  // doesn't record it until #64 extends `recheck.ts`'s report line to carry it.
-  onFlip: (tweetId, scope, _origin) => {
-    if (scope !== 'notInterested') releaseRecheck.arm(tweetId, scope)
+  onFlip: (tweetId, scope, origin) => {
+    if (scope !== 'notInterested') releaseRecheck.arm(tweetId, scope, origin)
   },
 })
 
@@ -207,7 +207,27 @@ const reportClear = (stage: string, detail: string, tweetId?: string): void => {
 // DeleteBookmark) reports as success — and `flipConfirmed`'s detach arm can call a
 // virtualizer unmount a flip that never happened. Both leave the post bookmarked while
 // the durable worklist latches it 'cleared', which is why re-running the sweep then
-// skips it forever. Re-probing seconds later is the only signal that separates them.
+// skips it forever. Re-probing repeatedly across a bounded window is the only signal
+// that separates them.
+//
+// The ghost-vs-real discriminator (`freshTimelineHasMember` below) reads these two
+// module-level sets — MUST be module-level, not `main()`-local, because `releaseRecheck`
+// itself is also module-level (constructed once at content-script load, mirroring
+// `clearScope`/`scrollDrain`), while the sets are WRITTEN from `handleMediaResponse`
+// inside `main()`. `null` = no fresh capture yet (SPA start, or before the first
+// Bookmarks/Likes response of this session) — a real third state, never coerced to
+// "absent" (see `FreshTimelineMembership`'s docstring in recheck.ts).
+let freshBookmarksIds: ReadonlySet<string> | null = null
+let freshLikesIds: ReadonlySet<string> | null = null
+const freshTimelineHasMember = (
+  tweetId: string,
+  scope: MembershipScope,
+): FreshTimelineMembership => {
+  const ids = scope === 'bookmark' ? freshBookmarksIds : freshLikesIds
+  if (ids === null) return 'unknown'
+  return ids.has(tweetId) ? 'present' : 'absent'
+}
+
 const releaseRecheck = makeReleaseRecheck({
   clock: {
     after: (ms, fn) => {
@@ -235,6 +255,7 @@ const releaseRecheck = makeReleaseRecheck({
       path: location.pathname,
     }
   },
+  freshTimelineHasMember,
   report: reportClear,
 })
 
@@ -1551,6 +1572,20 @@ export default defineContentScript({
             `[XMD] media-response · ${adapter.platform} · path=${detail.path} · non-JSON body (${detail.body.length} chars), skipping`,
           )
         return /* non-JSON tee body */
+      }
+      // Release re-appearance watchdog's ghost-vs-real discriminator (spec #59 ticket
+      // #64): the media tee already captures Bookmarks/Likes timeline responses for
+      // detection — reuse that SAME capture to track which tweet ids are CURRENTLY
+      // members of each list, independent of media (a text-only bookmark still counts).
+      // Own try/catch: this must never disrupt media detection below, whatever X's
+      // response shape does.
+      if (adapter.platform === 'x') {
+        try {
+          if (detail.path.endsWith('/Bookmarks')) freshBookmarksIds = timelineTweetIds(json)
+          else if (detail.path.endsWith('/Likes')) freshLikesIds = timelineTweetIds(json)
+        } catch {
+          /* the watchdog degrades to freshTimeline=unknown; never break the page */
+        }
       }
       try {
         // Fail-closed trust boundary: page scripts can forge 'xmd:media-response'

@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import type { RawMedia } from '@/packages/resolver'
-import { forEachTweetNode, findAuthor, NESTED_TWEET_KEYS, type Author } from './walk'
+import {
+  forEachTweetNode,
+  findAuthor,
+  NESTED_TWEET_KEYS,
+  timelineTweetIds,
+  type Author,
+} from './walk'
 import { detectFromJson } from './index'
 import tweetDetailThread from '../../../test/fixtures/tweet-detail-thread.json'
 
@@ -169,6 +175,45 @@ describe('forEachTweetNode', () => {
       'reply_b_author',
       'root_author',
     ])
+  })
+})
+
+describe('timelineTweetIds', () => {
+  it('collects every tweet id present, media or not', () => {
+    const textOnly = {
+      __typename: 'Tweet',
+      rest_id: '3300',
+      core: { user_results: { result: { legacy: { screen_name: 'wordy' } } } },
+      legacy: {},
+    }
+    const ids = timelineTweetIds({
+      data: {
+        instructions: [
+          { tweet_results: { result: photoTweet('1790', 'alice') } },
+          { tweet_results: { result: textOnly } },
+        ],
+      },
+    })
+    expect([...ids].toSorted()).toEqual(['1790', '3300'])
+  })
+
+  it('empty set for a response with no tweet nodes', () => {
+    expect(timelineTweetIds({ data: { instructions: [] } })).toEqual(new Set())
+  })
+
+  it('a tombstoned tweet contributes no id', () => {
+    const ids = timelineTweetIds({
+      data: {
+        instructions: [
+          {
+            tweet_results: {
+              result: { __typename: 'TweetTombstone', tombstone: { text: { text: 'x' } } },
+            },
+          },
+        ],
+      },
+    })
+    expect(ids.size).toBe(0)
   })
 })
 

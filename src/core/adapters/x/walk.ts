@@ -121,3 +121,18 @@ export function forEachTweetNode(
   }
   walk(json)
 }
+
+/**
+ * Every tweet id present in a captured X GraphQL response — a thin door onto
+ * {@link forEachTweetNode} that ignores media entirely (unlike `harvestTweets`,
+ * which the Capture feature gates on `mediaRaw`/`includeTextOnly`). Built for the
+ * Release re-appearance watchdog's ghost-vs-real discriminator (spec #59 ticket
+ * #64): ANY tweet present in the freshest captured `Bookmarks`/`Likes` timeline
+ * response is a genuine server-side member of that list, whether or not it
+ * carries downloadable media — a text-only bookmarked post must still count.
+ */
+export function timelineTweetIds(json: unknown): ReadonlySet<string> {
+  const ids = new Set<string>()
+  forEachTweetNode(json, ({ tweetId }) => ids.add(tweetId))
+  return ids
+}

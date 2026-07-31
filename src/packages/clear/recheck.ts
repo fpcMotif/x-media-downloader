@@ -13,36 +13,53 @@
  *    as a flip by design (`!article.isConnected`) — a fabricated success on a post nobody
  *    ever un-bookmarked.
  * Both fail the same way LATER: seconds on, the post is a scope member again. So we
- * re-probe once, well after X's mutation response has had time to land, and put the
- * verdict in the durable Release log (`clear-` prefix — see diagnostics.ts).
+ * re-probe REPEATEDLY across a bounded watch window, well after X's mutation response has
+ * had time to land, and put the verdict in the durable Release log (`clear-` prefix — see
+ * diagnostics.ts). A single fixed-delay probe (the original v1 of this module) missed a
+ * remount past its one check; polling — same ATTEMPTS × INTERVAL shape as `tweet-clear.ts`'s
+ * flip poll — catches one that surfaces anywhere across the window, not just at one instant.
  *
  * Membership scopes ONLY (bookmark/like). `notInterested` is out of scope here for the
  * same reason `clearer.ts` types the flip helpers to exclude it — it has no membership
  * control, so "is it back?" is not a question this probe can answer.
  *
- * Pure: the timer, the DOM re-resolve and the trace sink all arrive as injected ports
- * (matching scroll-drain / tweet-clear), so the dedupe + cancel behaviour is testable
- * with a fake clock and no DOM at all. The dependency runs ONE way — `tweet-clear` calls
- * into this module through its flip/report seam; nothing here imports `tweet-clear`
- * (depcruise enforces no-circular globally).
+ * Pure: the timer, the DOM re-resolve, the fresh-timeline lookup, and the trace sink all
+ * arrive as injected ports (matching scroll-drain / tweet-clear), so the dedupe + cancel +
+ * re-arm behaviour is testable with a fake clock and no DOM at all. The dependency runs ONE
+ * way — `tweet-clear` calls into this module through its flip/report seam; nothing here
+ * imports `tweet-clear` (depcruise enforces no-circular globally).
  */
 import { Option } from 'effect'
-import { pageScope, type MembershipScope } from './clearer'
+import { pageScope, type ClearOrigin, type MembershipScope } from './clearer'
 
 /**
- * How long after the Release click to re-probe. Must sit comfortably past the flip
- * poll's whole window (6 × 200ms = 1.2s) AND past a slow `DeleteBookmark` round-trip
- * plus X's re-render of the reverted row — a probe that fires too early reads the
- * optimistic state we already know about and proves nothing.
+ * The poll shape — same ATTEMPTS × INTERVAL vocabulary as `tweet-clear.ts`'s
+ * `FLIP_POLL_ATTEMPTS`/`FLIP_POLL_INTERVAL_MS`: `elapsedMs` on every line below is
+ * `attempt * intervalMs`, a DERIVED count, not a measured wall-clock delta (this
+ * codebase's established convention — see that module's own docstring on the same
+ * choice). The first probe fires at ONE interval, comfortably past the flip poll's
+ * whole window (6 × 200ms = 1.2s) AND past a slow `DeleteBookmark` round-trip; a
+ * probe that fired immediately would read the optimistic state we already know
+ * about and prove nothing. Six probes at 5s apart (30s total) mirrors the flip
+ * poll's own six-attempt budget.
  */
-export const RELEASE_RECHECK_DELAY_MS = 5000
+export const RELEASE_RECHECK_INTERVAL_MS = 5000
+export const RELEASE_RECHECK_ATTEMPTS = 6
 
-/** The stage every watchdog line carries. The overlay's `reportClear` stamps
- *  `source:'clear'`, which alone admits the event to the durable Release log
+/** The stage every ordinary watchdog line carries. The overlay's `reportClear`
+ *  stamps `source:'clear'`, which alone admits the event to the durable Release log
  *  (diagnostics.ts's `isReleaseDiagnosticsEvent`); the `clear-` prefix keeps the line
  *  admissible even if it is ever re-emitted from the background, whose `source` is
  *  shared with unrelated trace lines. */
 const RECHECK_STAGE = 'clear-recheck'
+
+/** The DISTINCT, loud stage for the one state that matters most: the release did
+ *  NOT stick. Separated from the ordinary per-attempt `clear-recheck` line (which
+ *  fires on every probe, including the ones that see nothing wrong) the same way
+ *  `tweet-clear.ts`'s `clear-flip-fabricated` is separated from `clear-flip` — a
+ *  diagnostician can grep this one stage instead of parsing `state=` out of every
+ *  attempt. */
+const REAPPEARED_STAGE = 'clear-reappeared'
 
 /** A probe that threw tells us nothing about membership, so it gets its OWN token rather
  *  than being folded into `absent`: `absent` is already the ambiguous bucket, and quietly
@@ -74,6 +91,13 @@ const pageToken = (pathname: string): string =>
     onNone: () => (pathname === '/home' ? 'home' : 'other'),
   })
 
+/** Is the tweetId present in the freshest captured Bookmarks/Likes timeline
+ *  response for this scope? 'unknown' when no fresh capture exists yet (the tee
+ *  never saw one, or none since the last SPA navigation) — the ghost-vs-real
+ *  discriminator MUST distinguish "we checked and it's not there" from "we never
+ *  got to check", so `unknown` is a real third answer, never folded into `absent`. */
+export type FreshTimelineMembership = 'present' | 'absent' | 'unknown'
+
 export interface ReleaseRecheckDeps {
   /** Timer port: schedule `fn` after `ms`, returning a cancel. Mirrors the Drain clock's `after` slice. */
   readonly clock: { readonly after: (ms: number, fn: () => void) => () => void }
@@ -93,9 +117,21 @@ export interface ReleaseRecheckDeps {
     /** Raw `location.pathname`; classified to a bounded token before it is logged. */
     readonly path: string
   }
+  /** Ghost-vs-real discriminator, consulted ONLY on a `state=member` verdict (the
+   *  re-appearance line): does the tweet appear in the freshest captured
+   *  Bookmarks/Likes response for this scope? `present` ⇒ the server really still
+   *  has it (H1 territory — a genuine revert or double-add); `absent` while the row
+   *  renders ⇒ a client-cache ghost (H4); `unknown` ⇒ no fresh capture to check
+   *  against. Pure lookup — never issues a request. */
+  readonly freshTimelineHasMember: (
+    tweetId: string,
+    scope: MembershipScope,
+  ) => FreshTimelineMembership
   readonly report: (stage: string, detail: string, tweetId?: string) => void
-  /** Defaults to RELEASE_RECHECK_DELAY_MS when omitted. */
-  readonly delayMs?: number | undefined
+  /** Defaults to RELEASE_RECHECK_INTERVAL_MS when omitted. */
+  readonly intervalMs?: number | undefined
+  /** Defaults to RELEASE_RECHECK_ATTEMPTS when omitted. */
+  readonly attempts?: number | undefined
 }
 
 export function makeReleaseRecheck(deps: ReleaseRecheckDeps): {
@@ -106,11 +142,12 @@ export function makeReleaseRecheck(deps: ReleaseRecheckDeps): {
    * exactly like one that stuck. It also never reaches here: `tweet-clear` returns from
    * its `notInterested` branch BEFORE the flip poll that fires `onFlip`.
    */
-  readonly arm: (tweetId: string, scope: MembershipScope) => void
+  readonly arm: (tweetId: string, scope: MembershipScope, origin: ClearOrigin) => void
   readonly cancelAll: () => void
 } {
-  const delay = deps.delayMs ?? RELEASE_RECHECK_DELAY_MS
-  // One pending probe per (tweetId, scope) — the same post can be released from
+  const interval = deps.intervalMs ?? RELEASE_RECHECK_INTERVAL_MS
+  const attempts = deps.attempts ?? RELEASE_RECHECK_ATTEMPTS
+  // One pending probe chain per (tweetId, scope) — the same post can be released from
   // bookmarks and likes independently, and each is its own question.
   const pending = new Map<string, () => void>()
 
@@ -129,22 +166,24 @@ export function makeReleaseRecheck(deps: ReleaseRecheckDeps): {
     }
   }
 
-  function arm(tweetId: string, scope: MembershipScope): void {
-    const key = `${tweetId}:${scope}`
-    // Already watching this exact question — keep the FIRST timer. Re-arming a pending
-    // probe would either double-report the same release or (if it reset the timer) let a
-    // stream of releases push the probe out past the evidence window. Re-arming AFTER the
-    // probe fired is fine and lands below: the key is dropped before the report.
-    if (pending.has(key)) return
+  function schedule(
+    key: string,
+    tweetId: string,
+    scope: MembershipScope,
+    origin: ClearOrigin,
+    attempt: number,
+  ): void {
     pending.set(
       key,
-      deps.clock.after(delay, () => {
-        pending.delete(key)
+      deps.clock.after(interval, () => {
+        const elapsedMs = attempt * interval
         const { state, articles, page } = read(tweetId, scope)
+        const head = `scope=${scope} origin=${origin} attempt=${attempt} elapsedMs=${elapsedMs}`
         // `state=member` is the definitive "the release did NOT stick" evidence — a
         // server revert or a fabricated flip, both indistinguishable from here and both
-        // actionable. `state=cleared` is the happy path: X still shows the post with its
-        // cleared control, so the mutation survived.
+        // actionable. Report it on the ordinary line (unchanged reading for existing
+        // exports) AND on the distinct loud stage below, then stop — the question this
+        // watchdog asks is answered.
         //
         // `state=absent` is AMBIGUOUS and must NOT be read as failure: on a worklist page
         // a released row legitimately detaches, the virtualizer unmounts anything the user
@@ -153,20 +192,42 @@ export function makeReleaseRecheck(deps: ReleaseRecheckDeps): {
         // saw nothing, not that this post survived) and `page` (are we even still on the
         // list we released from? compare it against `scope=`) ride on the same line: they
         // are what lets a reader separate "row went away as expected" from "page was gone".
-        //
-        // `delay=` is the CONFIGURED wait, not a measured elapsed — there is no clock here
-        // by design, and naming it `at=` would have implied an observation. Residual blind
-        // spot a future reader must know about: Chrome throttles `setTimeout` in a
-        // backgrounded tab, so a probe can fire far later than `delay` says, and that is a
-        // live cause of the ambiguous `state=absent articles=0` reading. Discriminating it
-        // needs a time source on the deps, which this seam deliberately does not take.
         deps.report(
           RECHECK_STAGE,
-          `scope=${scope} delay=${delay}ms state=${state} articles=${articles} page=${page}`,
+          `${head} state=${state} articles=${articles} page=${page}`,
           tweetId,
         )
+        if (state === 'member') {
+          pending.delete(key)
+          const freshTimeline = deps.freshTimelineHasMember(tweetId, scope)
+          deps.report(
+            REAPPEARED_STAGE,
+            `${head} articles=${articles} page=${page} freshTimeline=${freshTimeline}`,
+            tweetId,
+          )
+          return
+        }
+        // Window exhausted with nothing definitive ⇒ disarm SILENTLY: the per-attempt
+        // `clear-recheck` lines already on the log ARE the record of what happened
+        // across the window — no extra "gave up" line on top of them.
+        if (attempt >= attempts) {
+          pending.delete(key)
+          return
+        }
+        schedule(key, tweetId, scope, origin, attempt + 1)
       }),
     )
+  }
+
+  function arm(tweetId: string, scope: MembershipScope, origin: ClearOrigin): void {
+    const key = `${tweetId}:${scope}`
+    // Already watching this exact question — keep the FIRST chain. Re-arming a pending
+    // watch would either double-report the same release or (if it reset the chain) let a
+    // stream of releases push the last probe out past the evidence window. Re-arming AFTER
+    // the chain finished (member found, or window exhausted) is fine and lands below: the
+    // key is dropped before either terminal returns.
+    if (pending.has(key)) return
+    schedule(key, tweetId, scope, origin, 1)
   }
 
   /** Drop every pending probe. The caller fires this on navigation/teardown: a probe that
