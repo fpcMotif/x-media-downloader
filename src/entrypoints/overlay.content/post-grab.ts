@@ -45,6 +45,15 @@ export interface PostGrabDeps {
    *  for platforms that have no native keyboard cursor. Null when no pointer
    *  position is known or no media is under it. */
   readonly cursorHovered?: () => { media: HTMLImageElement | HTMLVideoElement; key: string } | null
+  /** Called when the DOM-shortcode → tee-postId chain came up empty and the
+   *  grab fell back to the hovered item's own post. On Threads/Instagram that
+   *  fallback IS the "grabbed 1 of 4 photos" bug shape, so the caller traces it
+   *  prod-visibly; `code` says which link broke — null = no shortcode from the
+   *  DOM at all, non-null = a shortcode the tee hasn't registered yet. */
+  readonly onWholePostFallback?: (info: {
+    readonly item: MediaItem
+    readonly code: string | null
+  }) => void
   /** X's j/k-focused article (the X-only cursor recipe wired by the caller). */
   readonly focusedArticle: () => Element | null
   /** Map an element inside a tweet article to its tweetId (X-only). */
@@ -76,17 +85,14 @@ export interface PostGrabDeps {
  * post yet.
  */
 export function wholePostItemsFor(
-  deps: Pick<PostGrabDeps, 'adapter' | 'store' | 'pathname'>,
+  deps: Pick<PostGrabDeps, 'adapter' | 'store' | 'pathname' | 'onWholePostFallback'>,
   media: Element,
   item: MediaItem,
 ): MediaItem[] {
   const code = deps.adapter.postCodeFromElement?.(media, deps.pathname()) ?? null
   const codePostId = code ? deps.store.postIdForCode(code) : undefined
   const teePost = codePostId ? deps.store.valuesForTweet(codePostId) : []
-  if (import.meta.env.DEV)
-    console.debug(
-      `[XMD] wholePostItemsFor · domCode=${code ?? 'null'} → teePostId=${codePostId ?? 'unlinked'} → teePost=${teePost.length} item(s)${teePost.length === 0 ? ` · FALLBACK to hovered post ${item.postId} = ${deps.store.valuesForTweet(item.postId).length} item(s)` : ''}`,
-    )
+  if (teePost.length === 0) deps.onWholePostFallback?.({ item, code })
   return teePost.length > 0 ? teePost : postGrabItems(item, deps.store.valuesForTweet(item.postId))
 }
 

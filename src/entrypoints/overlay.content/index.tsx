@@ -691,6 +691,14 @@ export default defineContentScript({
     // (bytes landed / 403, seconds after the optimistic save) maps back to it.
     let badgeRequestId: string | null = null
     let badgeRequestKey: string | null = null
+    // Dedup key for `focusBadge`'s 'media-no-key' trace: `enterMedia`/`leaveMedia`
+    // already no-op (return the same `badge` reference) across repeat frames over
+    // an unchanged hover, but a "media resolved, no key" element always maps to
+    // the SAME `hiddenBadge` singleton as "nothing hovered" — that no-op alone
+    // can't tell "still the same broken element" from "a different one, still
+    // broken". Tracked independently so the trace only fires once per distinct
+    // element, not once per mousemove frame while it's under the cursor.
+    let badgeNoKeyMedia: HoverMediaElement | null = null
 
     // Download-all launcher hand-off feedback; one batch in flight at a time.
     // `dockEnabled` fails closed (like the badge): the dock stays hidden until
@@ -1044,6 +1052,17 @@ export default defineContentScript({
         const key = previewKeyFromMedia(adapter, media, location.pathname)
         return key ? { media, key } : null
       },
+      // Whole-post grab is Threads/Instagram-only — silently falling back to
+      // just the hovered item (instead of the whole carousel) is exactly the
+      // "grabbed 1 of 4 photos" bug shape. detail says which link in the chain
+      // came up empty: no DOM shortcode at all (post-anchor selector miss), or
+      // a shortcode the tee hasn't registered yet (postCodeFromElement raced
+      // ahead of the network tee).
+      onWholePostFallback: ({ item, code }) =>
+        traceQuickGrab('whole-post-fallback', {
+          item,
+          detail: code ? `code ${code} not yet registered` : 'no post code from DOM',
+        }),
       focusedArticle: () => focusedTweetArticle(document),
       tweetIdFromArticle,
       send: async (items) => (await sendTracked(items, forYouClearExpect(items))).ok,
@@ -1062,13 +1081,31 @@ export default defineContentScript({
       dwell = null
       const media = liveGrabTarget(armed, key)
       if (media === null) {
+        // The dwell completed but the armed node went stale AND the re-resolved
+        // live media at the pointer either doesn't exist or no longer carries the
+        // same key — the single "hold, wait, nothing happens" shape this dwell
+        // window exists to protect against. `liveGrabTarget`'s own doc names
+        // Threads' virtualized timeline as the confirmed cause (a mounted node
+        // recycled to different content mid-dwell); previously silent.
+        traceQuickGrab('grab-target-stale', { key })
         grabUi = null
         rerender()
         return
       }
       const item = adapter.resolveHoverItem(media, key, store.keyIndex(), location.pathname)
       if (!item) {
-        traceQuickGrab('no-item-for-hover', { key })
+        // detail distinguishes the two ways this can happen: the tee HAS this key
+        // (resolveHoverItem's own detected.get(key) branch) yet still returned
+        // null — shouldn't happen, worth knowing if it ever does — vs. the tee
+        // never saw this key at all, so it fell to the adapter's DOM-only
+        // fallback (photo-only; a hovered video with no teed key can never
+        // resolve). The single highest-value signal for "why did Quick Grab do
+        // nothing" on Threads/Instagram, where DOM↔tee key matching is the
+        // documented weak point (see meta-shared/dom.ts's own caveats).
+        traceQuickGrab('no-item-for-hover', {
+          key,
+          detail: `${store.keyIndex().has(key) ? 'teed' : 'not-teed'} ${media.tagName.toLowerCase()}`,
+        })
         grabUi = null
         rerender()
         return
@@ -1124,6 +1161,16 @@ export default defineContentScript({
       if (grab.active && media && key) {
         armHover(media, key)
       } else {
+        // A real media element resolved under the cursor (`resolveHoverMedia`
+        // found an img/video) but `previewKeyFromMedia` couldn't derive a key
+        // for it at all — no ring ever arms, with nothing else downstream to
+        // report it (fireGrab never runs). On Threads/Instagram this means
+        // `mediaKeyFromMetaCombinedUrl` rejected the element's own
+        // src/currentSrc (e.g. an avatar path family, or a CDN host outside
+        // cdninstagram.com) AND, for a hovered video, `postKeyFromVideoElement`'s
+        // DOM post-anchor also came up empty.
+        if (grab.active && media)
+          traceQuickGrab('media-no-key', { detail: media.tagName.toLowerCase() })
         grabUi = null
         rerender()
       }
@@ -1188,6 +1235,18 @@ export default defineContentScript({
 
     /** Move the badge entrance to the hovered media (either may be null). */
     const focusBadge = (media: HoverMediaElement | null, key: string | null): void => {
+      // Unlike Quick Grab's 'media-no-key' (focusHover, grab.active-gated only),
+      // the badge is the DEFAULT no-modifier affordance — this is the more
+      // commonly hit "hover real media, nothing appears at all" report on
+      // Threads/Instagram. See badgeNoKeyMedia's own doc for the dedup rationale.
+      if (media && !key) {
+        if (media !== badgeNoKeyMedia) {
+          badgeNoKeyMedia = media
+          traceBadge('media-no-key', { detail: media.tagName.toLowerCase() })
+        }
+      } else {
+        badgeNoKeyMedia = null
+      }
       const next = media && key ? enterMedia(badge, key, badgeInput(media, key)) : leaveMedia(badge)
       if (next === badge) return
       clearBadgeTimers()
@@ -1216,15 +1275,30 @@ export default defineContentScript({
       const next = beginSave(badge)
       if (!media || !key || next === badge) return
       // The node may have been recycled or detached during the entrance (X's
-      // timeline is virtualized) — bail unless it is still the same media.
+      // timeline is virtualized, and Threads' pressable-container carousels are
+      // independently documented doing the same — see threads/adapter.ts's
+      // postIdFromDom doc) — bail unless it is still the same media.
       if (!media.isConnected || previewKeyFromMedia(adapter, media, location.pathname) !== key) {
+        traceBadge('badge-target-stale', {
+          key,
+          detail: media.isConnected ? 'key-changed' : 'detached',
+        })
         resetBadge()
         rerender()
         return
       }
       const item = adapter.resolveHoverItem(media, key, store.keyIndex(), location.pathname)
       if (!item) {
-        traceBadge('no-item-for-hover', { key })
+        // Same detail shape as fireGrab's own 'no-item-for-hover' — see that
+        // call site's comment. The badge showed at all (so `canResolveHoverItem`
+        // said yes at entrance-time) yet the click-time `resolveHoverItem`
+        // still failed — this can only happen if the tee's detected set changed
+        // between the badge's entrance and the click (e.g. a virtualized
+        // Threads container recycled this node to different content mid-hover).
+        traceBadge('no-item-for-hover', {
+          key,
+          detail: `${store.keyIndex().has(key) ? 'teed' : 'not-teed'} ${media.tagName.toLowerCase()}`,
+        })
         resetBadge()
         rerender()
         return
@@ -1613,6 +1687,13 @@ export default defineContentScript({
           console.warn(`[XMD] dropped ${checked.rejected.length} media item(s) with unsafe URLs`)
         }
         const added = store.addDetected(checked.allowed)
+        // Completes the per-response detect trace above with what actually
+        // landed: Instagram/Threads' walker is a reverse-engineered, "not
+        // independently verified against a live response" shape match (see
+        // meta-shared/detect.ts's module doc), so "is the tee even firing and
+        // parsing on this platform" needs live evidence, not 12 rounds of
+        // hand-added console.logs. The line above reports detected/allowed;
+        // this one reports how many survived de-duplication into the store.
         if (added.length > 0) {
           if (import.meta.env.DEV)
             console.debug(
@@ -1633,8 +1714,18 @@ export default defineContentScript({
             )
           for (const [postId, code] of codes) store.registerPostCode(postId, code)
         }
-      } catch {
-        /* media detection is best-effort */
+      } catch (err) {
+        // Previously fully silent ("media detection is best-effort"). A shape-drift
+        // throw here — Meta's response schema shifting under the reverse-engineered
+        // walker — meant zero items were EVER detected for that response with no
+        // visible signal at all: the single hardest case to diagnose live, because
+        // nothing downstream (hover, badge, grab) had anything to even report as
+        // missing. Mirrors the capture-harvest catch immediately below, which
+        // already logs its own throws.
+        console.warn(
+          `[XMD] media detection THREW on ${adapter.platform} path=${detail.path} —`,
+          err,
+        )
       }
       // Knowledge Capture is X-only-forever (design spec Non-goals): harvestTweets'
       // tree walker assumes X's tweet-node JSON shape, so never call it off-platform.

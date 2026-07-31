@@ -106,6 +106,37 @@ describe('wholePostItemsFor', () => {
       wholePostItemsFor(deps, document.createElement('img'), photo('solo', 'KS', 't9')),
     ).toEqual([photo('solo', 'KS', 't9')])
   })
+
+  it('reports which link broke when it falls back, and stays quiet when it does not', () => {
+    const onWholePostFallback = vi.fn<(info: { item: MediaItem; code: string | null }) => void>()
+    const a = photo('a', 'KA', 'pk1')
+    const hovered = photo('h', 'KH', 'hover-self')
+
+    // No shortcode from the DOM at all — the post-anchor selector missed.
+    const noCode = makeDeps({ onWholePostFallback })
+    wholePostItemsFor(noCode.deps, document.createElement('img'), hovered)
+    expect(onWholePostFallback).toHaveBeenCalledWith({ item: hovered, code: null })
+
+    // A shortcode the tee hasn't registered yet — postCodeFromElement raced ahead.
+    onWholePostFallback.mockClear()
+    const unregistered = makeDeps({
+      adapter: adapter({ postCodeFromElement: () => 'CODE1' }),
+      onWholePostFallback,
+    })
+    wholePostItemsFor(unregistered.deps, document.createElement('img'), hovered)
+    expect(onWholePostFallback).toHaveBeenCalledWith({ item: hovered, code: 'CODE1' })
+
+    // Chain intact: the whole post resolved, so there is nothing to report.
+    onWholePostFallback.mockClear()
+    const linked = makeDeps({
+      adapter: adapter({ postCodeFromElement: () => 'CODE1' }),
+      onWholePostFallback,
+    })
+    linked.store.addDetected([a])
+    linked.store.registerPostCode('pk1', 'CODE1')
+    expect(wholePostItemsFor(linked.deps, document.createElement('img'), hovered)).toEqual([a])
+    expect(onWholePostFallback).not.toHaveBeenCalled()
+  })
 })
 
 describe('fireCurrentPost — hover target', () => {

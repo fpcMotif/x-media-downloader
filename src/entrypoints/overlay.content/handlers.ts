@@ -331,12 +331,36 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
   }
   let fresh = deps.store.get(req.itemId)
   if (fresh?.postId !== req.tweetId) fresh = undefined
+  let rescanAttempted = false
   if (fresh === undefined && req.index !== undefined && req.type !== undefined) {
+    rescanAttempted = true
     const domItems = deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname)
     if (domItems.length > 0) deps.store.addDetected(domItems)
     fresh = findFreshMediaItem(
       { id: req.itemId, postId: req.tweetId, index: req.index, type: req.type },
       [...deps.store.values(), ...domItems],
+    )
+  }
+  if (fresh === undefined) {
+    // The background half of this same round-trip (`resolveRetryUrl` in
+    // background.ts) can only tell "some open tab answered with nothing" —
+    // this is the one place that can say WHY: the item just isn't in this
+    // tab's live detected set anymore (rotated out of the tee's memory,
+    // typical for a Meta CDN url that expired well before an interrupted
+    // download got retried), and either there was no index/type to attempt a
+    // DOM rescan with, or the rescan found nothing either. On Instagram/Threads
+    // that rescan is structural, not incidental: both adapters implement
+    // `detectRenderedMedia` as a hard-coded `() => []` (no rendered-media
+    // rescan built — see instagram/adapter.ts and threads/adapter.ts), so this
+    // branch can NEVER recover a rotated-out item there; only scrolling the
+    // post back into view (re-arming the network tee) can. On X the rescan is
+    // a real DOM walk, so a miss there is "not currently on screen", not a
+    // structural gap.
+    console.warn(
+      `[XMD] refresh-url miss for ${req.itemId} (${deps.adapter.platform}) —`,
+      rescanAttempted
+        ? 'store+DOM rescan both missed'
+        : 'not in store, no index/type to rescan with',
     )
   }
   sendResponse({ _tag: 'RefreshMediaUrlResponse', ...(fresh ? { url: fresh.url } : {}) })
@@ -888,7 +912,7 @@ export const handleClearDrain: MessageHandler = (message, deps, sendResponse) =>
 // grab/badge/launcher) with no X-specific DOM read. The one branch that touches the
 // page, `rescanVisible`, calls `deps.adapter.detectRenderedMedia` — already correctly
 // dispatched per-platform (every registered adapter implements it; Instagram/Threads
-// currently return `[]`, a separate and intentional TODO, not a gating concern here).
+// currently return `[]`, a separate and intentional omission, not a gating concern here).
 // Gating this handler would silently break "Clear detected media" for Instagram/
 // Threads users, who have nothing X-specific to protect against in the first place.
 //

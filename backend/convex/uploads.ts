@@ -59,26 +59,45 @@ const uploadJobDoc = v.object({
  * Idempotent + last-write-wins by `at` on the `by_job` index: re-sent state is
  * harmless. Control plane only — NO bytes ever reach Convex; the byte path is
  * extension → provider. Fails closed on the shared secret, like recordEvents.
+ *
+ * Same-batch duplicates of one `jobId` collapse in memory under the same
+ * last-write-wins rule BEFORE any read, so each `jobId` touches the DB exactly
+ * once and the reads can run concurrently. `upserted` therefore counts distinct
+ * rows written, not input array entries that would have written.
  */
 export const recordUploadJobs = mutation({
   args: { jobs: v.array(job), secret: v.string() },
   returns: v.object({ received: v.number(), upserted: v.number() }),
   handler: async (ctx, { jobs, secret }) => {
     assertSecret(secret)
-    let upserted = 0
+
+    const deduped = new Map<string, (typeof jobs)[0]>()
     for (const j of jobs) {
-      const row = await ctx.db
-        .query('upload_jobs')
-        .withIndex('by_job', (q) => q.eq('jobId', j.jobId))
-        .first()
-      if (row === null) {
-        await ctx.db.insert('upload_jobs', j)
-        upserted += 1
-      } else if (j.at >= row.at) {
-        await ctx.db.patch(row._id, j)
-        upserted += 1
+      const existing = deduped.get(j.jobId)
+      if (!existing || j.at >= existing.at) {
+        deduped.set(j.jobId, j)
       }
     }
+
+    const results = await Promise.all(
+      Array.from(deduped.values()).map(async (j) => {
+        const row = await ctx.db
+          .query('upload_jobs')
+          .withIndex('by_job', (q) => q.eq('jobId', j.jobId))
+          .first()
+        if (row === null) {
+          await ctx.db.insert('upload_jobs', j)
+          return 1
+        } else if (j.at >= row.at) {
+          await ctx.db.patch(row._id, j)
+          return 1
+        }
+        return 0
+      })
+    )
+
+    const upserted = results.reduce<number>((acc, curr) => acc + curr, 0)
+
     return { received: jobs.length, upserted }
   },
 })

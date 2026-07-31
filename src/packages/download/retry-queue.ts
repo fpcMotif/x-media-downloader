@@ -1,5 +1,9 @@
 import type { DownloadTraceEntry, MediaItem } from '@/packages/schema'
-import { planInterruptRetry, type PendingInterruptRetry } from './interrupt-retry'
+import {
+  isRetryableInterruptReason,
+  planInterruptRetry,
+  type PendingInterruptRetry,
+} from './interrupt-retry'
 
 /** Durable mirror seam (`session:interruptRetries`). `set` is fire-and-forget —
  *  the queue never awaits it, matching today's `syncPendingRetries` semantics. */
@@ -129,6 +133,18 @@ export function makeRetryQueue(deps: RetryQueueDeps): RetryQueue {
     const attempt = attemptById.get(id) ?? 0
     const plan = planInterruptRetry({ reason, attempt })
     if (!plan.schedule) {
+      // Chrome's own `InterruptReason` — the one piece of evidence for WHY this
+      // browser transfer died — was previously dropped right here: the eventual
+      // `browser-failed` trace `failBrowserDownload` fires only carries the
+      // downloadId, not this reason. `SERVER_FORBIDDEN`/`SERVER_UNAUTHORIZED`
+      // (both deliberately non-retryable, see interrupt-retry.ts's own doc) are
+      // exactly what an expired Meta CDN url returns — this is the trace that
+      // lets a live session tell "abandoned because the CDN url was already
+      // dead" apart from "abandoned because retries ran out on a flaky network".
+      trace('interrupt-retry-abandoned', {
+        itemId: id,
+        detail: `reason=${reason ?? 'unknown'} attempt=${attempt} retryable=${isRetryableInterruptReason(reason)}`,
+      })
       await failBrowserDownload(id, downloadId, now)
       return false
     }
