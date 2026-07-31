@@ -5,6 +5,7 @@ import { CLEAR_AFTER_DOWNLOAD } from '@/packages/clear/copy'
 import { adapterForUrl } from '@/core/adapters/registry'
 import type { PlatformAdapter } from '@/core/adapters/types'
 import type { MembershipScope } from '@/packages/clear/clearer'
+import { formatReleaseSummaryLine } from '@/packages/clear/correlate'
 import type { MetricsSnapshot, Settings } from '@/packages/schema'
 import { cn } from '@/lib/utils'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
@@ -232,6 +233,39 @@ function MonitorZone({ metrics, onReset }: { metrics: MetricsSnapshot; onReset: 
           {metaLine}
         </p>
       )}
+    </section>
+  )
+}
+
+/**
+ * Release diagnostics summary (ticket #66) — "12 released · 12 flips · 0
+ * mismatches" at a glance, independent of `MonitorZone`'s own gating: it
+ * renders whenever `metrics.releaseDiagnostics` is present, whether or not a
+ * download batch happens to be active right now (a Release run can finish
+ * well after its downloads did). All arithmetic lives in
+ * `formatReleaseSummaryLine` (packages/clear/correlate.ts, unit-tested) — this
+ * component only renders the string and picks a color.
+ */
+function ReleaseSummaryZone({
+  summary,
+}: {
+  readonly summary: NonNullable<MetricsSnapshot['releaseDiagnostics']>
+}) {
+  const hasMismatch = summary.serverRejects + summary.reAddFingerprints + summary.reappearances > 0
+  return (
+    <section
+      aria-label="Release diagnostics summary"
+      className="animate-in fade-in slide-in-from-top-1 border-t border-border px-3.5 py-2.5 duration-[220ms] ease-[var(--xmd-ease)]"
+    >
+      <p
+        className={cn(
+          'font-mono text-xs leading-snug tabular-nums',
+          hasMismatch ? 'text-destructive' : 'text-muted-foreground',
+        )}
+      >
+        {formatReleaseSummaryLine(summary)}
+        {hasMismatch && ' · see the export'}
+      </p>
     </section>
   )
 }
@@ -850,6 +884,10 @@ export function App() {
   // Only surface the monitor for a real download batch — not for stray hover/UI
   // trace events that also ride the metrics snapshot.
   const monitor = metrics && metrics.total > 0 ? metrics : null
+  // Independent of `monitor`: a Release run's diagnostics can exist (and matter)
+  // well after its download batch finished, or without one having been the popup's
+  // own concern at all (a manual "Release the whole list…" pass, say).
+  const releaseSummary = metrics?.releaseDiagnostics ?? null
 
   const showFirstRun = introState !== null && isXContext(ctx) && shouldShowIntro(introState)
   const mod = modifierLabel(settings.quickGrabModifier)
@@ -862,6 +900,7 @@ export function App() {
       {showFirstRun && <FirstRunStrip mod={mod} onDismiss={dismissFirstRun} />}
 
       {monitor && <MonitorZone metrics={monitor} onReset={() => void resetMonitor()} />}
+      {releaseSummary && <ReleaseSummaryZone summary={releaseSummary} />}
 
       <StageZone
         ctx={ctx}

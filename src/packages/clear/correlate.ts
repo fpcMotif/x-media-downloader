@@ -231,30 +231,75 @@ export function formatCorrelationVerdict(verdict: CorrelationVerdict): {
 /** Running mismatch counters — DERIVED fresh from a `DownloadTraceEntry[]` (the
  *  durable log's own retained window, or any slice of it), never separately
  *  persisted: the log itself is already durable, so a parallel incrementing counter
- *  would only be a second source of truth to keep in sync. `clears` counts
- *  `clear-flip` lines plus verified `clear-already-cleared` no-ops (mirrors
- *  `parseClearResolveEvent`'s own admission rule) — NOT `clear-flip-fabricated`,
- *  which duplicates an already-counted `clear-flip`. */
+ *  would only be a second source of truth to keep in sync. Feeds BOTH the
+ *  diagnostics export's meta line and the popup summary (ticket #66) — one
+ *  computation, so the two can never disagree. `clears` counts `clear-flip` lines
+ *  plus verified `clear-already-cleared` no-ops (mirrors `parseClearResolveEvent`'s
+ *  own admission rule) — NOT `clear-flip-fabricated`, which duplicates an
+ *  already-counted `clear-flip`; `clearsByBranch` is the SAME admitted set, split
+ *  by `confirmBranch` for the summary's "12 released · 12 flips" style readout. */
 export interface ReleaseCorrelationCounters {
   readonly clears: number
+  readonly clearsByBranch: {
+    readonly testid: number
+    readonly detached: number
+    readonly alreadyCleared: number
+  }
   readonly mutations: number
   readonly serverRejects: number
   readonly reAddFingerprints: number
+  readonly reappearances: number
 }
 
 export function computeReleaseCorrelationCounters(
   events: ReadonlyArray<DownloadTraceEntry>,
 ): ReleaseCorrelationCounters {
   let clears = 0
+  let testid = 0
+  let detached = 0
+  let alreadyCleared = 0
   let mutations = 0
   let serverRejects = 0
   let reAddFingerprints = 0
+  let reappearances = 0
   for (const e of events) {
-    if (e.stage === 'clear-flip') clears++
-    else if (e.stage === 'clear-already-cleared' && parseClearResolveEvent(e) !== null) clears++
-    else if (e.stage === 'clear-mutation') mutations++
+    if (e.stage === 'clear-flip' || e.stage === 'clear-already-cleared') {
+      const resolved = parseClearResolveEvent(e)
+      if (resolved !== null) {
+        clears++
+        if (resolved.confirmBranch === 'testid') testid++
+        else if (resolved.confirmBranch === 'detached') detached++
+        else alreadyCleared++
+      }
+    } else if (e.stage === 'clear-mutation') mutations++
     else if (e.stage === 'clear-server-reject') serverRejects++
     else if (e.stage === 'clear-re-add-fingerprint') reAddFingerprints++
+    else if (e.stage === 'clear-reappeared') reappearances++
   }
-  return { clears, mutations, serverRejects, reAddFingerprints }
+  return {
+    clears,
+    clearsByBranch: { testid, detached, alreadyCleared },
+    mutations,
+    serverRejects,
+    reAddFingerprints,
+    reappearances,
+  }
+}
+
+/**
+ * The popup's Release summary readout (ticket #66's "12 released · 12 flips · 0
+ * mismatches" demo line) — the ONE piece of "counter derivation logic" the ticket
+ * asks to be pure and unit-tested, kept out of the (untested-by-design)
+ * `entrypoints/popup` React tree entirely so the UI component stays a thin renderer
+ * of a string this module already produced. `flips` is `testid + detached` — the
+ * two branches that involved an actual click-and-confirm, deliberately excluding
+ * `alreadyCleared` (a verified no-op is not "a flip"). `mismatches` sums every
+ * anomaly a reader would want to know about at a glance: server-rejects, re-add
+ * fingerprints, and re-appearances — the three counters that, at zero, mean
+ * "nothing to see"; above zero, mean "open the export."
+ */
+export function formatReleaseSummaryLine(counters: ReleaseCorrelationCounters): string {
+  const flips = counters.clearsByBranch.testid + counters.clearsByBranch.detached
+  const mismatches = counters.serverRejects + counters.reAddFingerprints + counters.reappearances
+  return `${counters.clears} released · ${flips} flip${flips === 1 ? '' : 's'} · ${mismatches} mismatch${mismatches === 1 ? '' : 'es'}`
 }

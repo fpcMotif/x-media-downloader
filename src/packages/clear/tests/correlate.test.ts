@@ -6,6 +6,7 @@ import {
   correlateMutation,
   EMPTY_CORRELATION_STATE,
   formatCorrelationVerdict,
+  formatReleaseSummaryLine,
   parseClearResolveEvent,
   parseMutationEvent,
   recordResolve,
@@ -372,13 +373,27 @@ describe('formatCorrelationVerdict', () => {
   })
 })
 
+const ZERO_COUNTERS = {
+  clears: 0,
+  clearsByBranch: { testid: 0, detached: 0, alreadyCleared: 0 },
+  mutations: 0,
+  serverRejects: 0,
+  reAddFingerprints: 0,
+  reappearances: 0,
+}
+
 describe('computeReleaseCorrelationCounters', () => {
-  it('counts clear-flip and VERIFIED already-cleared lines as clears, ignoring clear-flip-fabricated', () => {
+  it('counts clear-flip and VERIFIED already-cleared lines as clears, split by confirmBranch, ignoring clear-flip-fabricated', () => {
     const events: DownloadTraceEntry[] = [
       entry({
         stage: 'clear-flip',
         tweetId: '1',
         detail: 'scope=bookmark arm=testid origin=settle',
+      }),
+      entry({
+        stage: 'clear-flip',
+        tweetId: '4',
+        detail: 'scope=bookmark arm=detached origin=settle',
       }),
       entry({
         stage: 'clear-flip-fabricated',
@@ -396,28 +411,32 @@ describe('computeReleaseCorrelationCounters', () => {
         detail: 'scope=bookmark clicked=false alreadyCleared=false testids= origin=settle',
       }),
     ]
-    expect(computeReleaseCorrelationCounters(events).clears).toBe(2)
+    const counters = computeReleaseCorrelationCounters(events)
+    expect(counters.clears).toBe(3)
+    expect(counters.clearsByBranch).toEqual({ testid: 1, detached: 1, alreadyCleared: 1 })
   })
 
-  it('counts mutations, server-rejects, and re-add-fingerprints independently', () => {
+  it('counts mutations, server-rejects, re-add-fingerprints, and reappearances independently', () => {
     const events: DownloadTraceEntry[] = [
       entry({ stage: 'clear-mutation', tweetId: '1' }),
       entry({ stage: 'clear-mutation', tweetId: '2' }),
       entry({ stage: 'clear-server-reject', tweetId: '1' }),
       entry({ stage: 'clear-re-add-fingerprint', tweetId: '2' }),
       entry({ stage: 'clear-re-add-fingerprint', tweetId: '3' }),
+      entry({ stage: 'clear-reappeared', tweetId: '4' }),
     ]
     const counters = computeReleaseCorrelationCounters(events)
-    expect(counters).toEqual({ clears: 0, mutations: 2, serverRejects: 1, reAddFingerprints: 2 })
+    expect(counters).toEqual({
+      ...ZERO_COUNTERS,
+      mutations: 2,
+      serverRejects: 1,
+      reAddFingerprints: 2,
+      reappearances: 1,
+    })
   })
 
   it('zero counters for an empty log', () => {
-    expect(computeReleaseCorrelationCounters([])).toEqual({
-      clears: 0,
-      mutations: 0,
-      serverRejects: 0,
-      reAddFingerprints: 0,
-    })
+    expect(computeReleaseCorrelationCounters([])).toEqual(ZERO_COUNTERS)
   })
 
   it('ignores unrelated stages entirely', () => {
@@ -426,11 +445,56 @@ describe('computeReleaseCorrelationCounters', () => {
       entry({ stage: 'clear-sweep-request' }),
       entry({ stage: 'clear-visible-start' }),
     ]
-    expect(computeReleaseCorrelationCounters(events)).toEqual({
-      clears: 0,
-      mutations: 0,
-      serverRejects: 0,
-      reAddFingerprints: 0,
-    })
+    expect(computeReleaseCorrelationCounters(events)).toEqual(ZERO_COUNTERS)
+  })
+})
+
+describe('formatReleaseSummaryLine', () => {
+  it('the clean-run demo line: N released, N flips, 0 mismatches', () => {
+    expect(
+      formatReleaseSummaryLine({
+        ...ZERO_COUNTERS,
+        clears: 12,
+        clearsByBranch: { testid: 10, detached: 2, alreadyCleared: 0 },
+      }),
+    ).toBe('12 released · 12 flips · 0 mismatches')
+  })
+
+  it('flips excludes alreadyCleared — a verified no-op is not a flip', () => {
+    expect(
+      formatReleaseSummaryLine({
+        ...ZERO_COUNTERS,
+        clears: 5,
+        clearsByBranch: { testid: 2, detached: 0, alreadyCleared: 3 },
+      }),
+    ).toBe('5 released · 2 flips · 0 mismatches')
+  })
+
+  it('mismatches sums server-rejects, re-add fingerprints, and reappearances', () => {
+    expect(
+      formatReleaseSummaryLine({
+        ...ZERO_COUNTERS,
+        clears: 14,
+        clearsByBranch: { testid: 14, detached: 0, alreadyCleared: 0 },
+        serverRejects: 1,
+        reAddFingerprints: 1,
+        reappearances: 1,
+      }),
+    ).toBe('14 released · 14 flips · 3 mismatches')
+  })
+
+  it('singular "flip"/"mismatch" at exactly 1', () => {
+    expect(
+      formatReleaseSummaryLine({
+        ...ZERO_COUNTERS,
+        clears: 1,
+        clearsByBranch: { testid: 1, detached: 0, alreadyCleared: 0 },
+        reappearances: 1,
+      }),
+    ).toBe('1 released · 1 flip · 1 mismatch')
+  })
+
+  it('the true zero-state line reads 0 released · 0 flips · 0 mismatches', () => {
+    expect(formatReleaseSummaryLine(ZERO_COUNTERS)).toBe('0 released · 0 flips · 0 mismatches')
   })
 })

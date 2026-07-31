@@ -118,6 +118,31 @@ describe('unsupported-context headline balances instead of prettifying (spec §2
   })
 })
 
+describe('Release diagnostics summary (ticket #66)', () => {
+  it('gates on releaseDiagnostics INDEPENDENTLY of the monitor (metrics.total)', () => {
+    // The two must be two SEPARATE derived values, not one gating the other —
+    // a Release run's diagnostics can outlive its download batch.
+    expect(popupSource).toContain('const releaseSummary = metrics?.releaseDiagnostics ?? null')
+    expect(popupSource).toContain(
+      '{releaseSummary && <ReleaseSummaryZone summary={releaseSummary} />}',
+    )
+  })
+
+  it('all arithmetic is delegated to the unit-tested formatReleaseSummaryLine — the component only picks a color', () => {
+    const fnIdx = popupSource.indexOf('function ReleaseSummaryZone')
+    const nextFnIdx = popupSource.indexOf('function StageZone')
+    const component = popupSource.slice(fnIdx, nextFnIdx)
+    expect(component).toContain('formatReleaseSummaryLine(summary)')
+    expect(component).not.toMatch(/summary\.clears\s*\+/)
+  })
+
+  it('imports the formatter from the pure, gated correlate module', () => {
+    expect(popupSource).toContain(
+      "import { formatReleaseSummaryLine } from '@/packages/clear/correlate'",
+    )
+  })
+})
+
 describe('metrics polling cannot rearm or set state after unmount (react-doctor/effect-needs-cleanup)', () => {
   it('keeps the timer handle optional — cleanup is safe before the first timer', () => {
     expect(popupSource).toContain('let handle: ReturnType<typeof setTimeout> | undefined')

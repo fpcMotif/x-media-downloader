@@ -174,6 +174,26 @@ export const Settings = Schema.Struct({
 })
 export type Settings = typeof Settings.Type
 
+/** Release diagnostics summary (ticket #66) — the SAME shape
+ * `computeReleaseCorrelationCounters` (packages/clear/correlate.ts) returns, mirrored
+ * here as a schema so it can ride on `MetricsSnapshot` over the wire. Omitted from
+ * the snapshot entirely when every field is zero (see the `MetricsRequest` handler in
+ * background.ts) — the popup's zero-state renders exactly as it did before this
+ * field existed. */
+export const ReleaseDiagnosticsSummary = Schema.Struct({
+  clears: Schema.Number,
+  clearsByBranch: Schema.Struct({
+    testid: Schema.Number,
+    detached: Schema.Number,
+    alreadyCleared: Schema.Number,
+  }),
+  mutations: Schema.Number,
+  serverRejects: Schema.Number,
+  reAddFingerprints: Schema.Number,
+  reappearances: Schema.Number,
+})
+export type ReleaseDiagnosticsSummary = typeof ReleaseDiagnosticsSummary.Type
+
 /**
  * Download-efficiency snapshot (B). A pure projection of timestamped byte
  * samples + state transitions; `core/download/metrics.ts` produces it and the
@@ -192,6 +212,7 @@ export const MetricsSnapshot = Schema.Struct({
   etaSeconds: Schema.optional(Schema.Number),
   elapsedMs: Schema.Number,
   events: Schema.optional(Schema.Array(DownloadTraceEntry)),
+  releaseDiagnostics: Schema.optional(ReleaseDiagnosticsSummary),
 })
 export type MetricsSnapshot = typeof MetricsSnapshot.Type
 

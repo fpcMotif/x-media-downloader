@@ -320,14 +320,14 @@ describe('composeDiagnosticsExport', () => {
       source: 'clear',
       stage: 'clear-export-meta',
       t: now,
-      detail: `entries=2 evicted=137 appended=600 decodeDropped=2 cap=${RELEASE_DIAGNOSTICS_CAP} clears=0 mutations=0 serverRejects=0 reAddFingerprints=0`,
+      detail: `entries=2 evicted=137 appended=600 decodeDropped=2 cap=${RELEASE_DIAGNOSTICS_CAP} clears=0 clearsTestid=0 clearsDetached=0 clearsAlreadyCleared=0 mutations=0 serverRejects=0 reAddFingerprints=0 reappearances=0`,
     })
     // Nothing downstream may have to special-case the meta line: it must pass the
     // same predicate that admitted every other line into the log.
     expect(isReleaseDiagnosticsEvent(meta)).toBe(true)
   })
 
-  it('the meta line carries the ticket #65 mismatch counters, derived from the events in THIS export', () => {
+  it('the meta line carries the ticket #65/#66 mismatch counters, derived from the events in THIS export', () => {
     const events = [
       ev({ stage: 'clear-flip', tweetId: '1', detail: 'scope=bookmark arm=testid origin=settle' }),
       ev({
@@ -337,10 +337,11 @@ describe('composeDiagnosticsExport', () => {
       }),
       ev({ stage: 'clear-server-reject', tweetId: '1' }),
       ev({ stage: 'clear-re-add-fingerprint', tweetId: '2' }),
+      ev({ stage: 'clear-reappeared', tweetId: '1' }),
     ]
     const result = composeDiagnosticsExport(logOf(events), Date.parse('2026-07-05T12:34:56.000Z'))
     expect(result.text.split('\n')[0]).toContain(
-      'clears=1 mutations=1 serverRejects=1 reAddFingerprints=1',
+      'clears=1 clearsTestid=1 clearsDetached=0 clearsAlreadyCleared=0 mutations=1 serverRejects=1 reAddFingerprints=1 reappearances=1',
     )
   })
 

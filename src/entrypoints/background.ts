@@ -86,6 +86,7 @@ import {
   composeDiagnosticsExport,
 } from '@/packages/clear/diagnostics'
 import {
+  computeReleaseCorrelationCounters,
   correlateMutation,
   EMPTY_CORRELATION_STATE,
   formatCorrelationVerdict,
@@ -311,6 +312,27 @@ const bufferReleaseDiagnostics = (event: DownloadTraceEntry): void => {
     releaseDiagnosticsFlushTimer = undefined
     void flushReleaseDiagnostics()
   }, RELEASE_DIAGNOSTICS_FLUSH_MS)
+}
+
+/** The popup's Release summary (ticket #66): flushes first (so it reads the exact
+ *  same durable state `ExportDiagnosticsRequest` would, and can never disagree with
+ *  an export taken moments later), then derives counters via the SAME
+ *  `computeReleaseCorrelationCounters` the export's meta line uses. `undefined` when
+ *  every counter is zero — the field is `Schema.optional`, and the popup's zero-state
+ *  must render exactly as it did before this ticket. */
+const releaseDiagnosticsSummary = async (): Promise<MetricsSnapshot['releaseDiagnostics']> => {
+  await flushReleaseDiagnostics()
+  const log = await releaseDiagnosticsQueue.run(async () =>
+    decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue()),
+  )
+  const counters = computeReleaseCorrelationCounters(log.events)
+  const hasAny =
+    counters.clears > 0 ||
+    counters.mutations > 0 ||
+    counters.serverRejects > 0 ||
+    counters.reAddFingerprints > 0 ||
+    counters.reappearances > 0
+  return hasAny ? counters : undefined
 }
 
 const traceBackground = (
@@ -1360,7 +1382,11 @@ const messageHandlers: MessageHandlers = {
   DownloadRequest: handle<'DownloadRequest'>((msg, sender) =>
     Effect.runPromise(handleDownload(msg.items, undefined, msg.clearExpect, sender.tab?.id)),
   ),
-  MetricsRequest: async () => (await metricsItem.getValue()) ?? currentSnapshot(Date.now()),
+  MetricsRequest: async () => {
+    const base = (await metricsItem.getValue()) ?? currentSnapshot(Date.now())
+    const releaseDiagnostics = await releaseDiagnosticsSummary()
+    return releaseDiagnostics === undefined ? base : { ...base, releaseDiagnostics }
+  },
   // NOTE: this projection is an allowlist — a field added to `traceFields` but NOT
   // added here is silently dropped for every content-script event. `tabId` is taken
   // from `sender`, never from `msg`, so the page can't forge it (and the popup/options

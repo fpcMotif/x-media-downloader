@@ -205,24 +205,26 @@ function utcStamp(nowMs: number): string {
  * nothing was ever offered and quite another when hundreds of events were offered and
  * none of them stuck.
  *
- * The four mismatch counters (ticket #65) are DERIVED from `log.events` fresh on every
- * export — never separately persisted, so they can only ever agree with the events
- * that follow them in this same file (see `computeReleaseCorrelationCounters`'s own
- * docstring on why a parallel running total was deliberately not built).
+ * The mismatch counters (ticket #65, extended by #66 with the confirm-branch split
+ * and `reappearances`) are DERIVED from `log.events` fresh on every export — never
+ * separately persisted, so they can only ever agree with the events that follow them
+ * in this same file (see `computeReleaseCorrelationCounters`'s own docstring on why a
+ * parallel running total was deliberately not built). The SAME function feeds the
+ * popup's Release summary (`background.ts`'s `MetricsRequest` handler), so the two
+ * surfaces can never disagree with each other either.
  */
 export function composeDiagnosticsExport(
   log: ReleaseDiagnosticsLog,
   now: number,
 ): { ok: boolean; filename: string; text: string } {
   if (log.events.length === 0) return { ok: false, filename: '', text: '' }
-  const { clears, mutations, serverRejects, reAddFingerprints } = computeReleaseCorrelationCounters(
-    log.events,
-  )
+  const { clears, clearsByBranch, mutations, serverRejects, reAddFingerprints, reappearances } =
+    computeReleaseCorrelationCounters(log.events)
   const meta: DownloadTraceEntry = {
     source: 'clear',
     stage: 'clear-export-meta',
     t: now,
-    detail: `entries=${log.events.length} evicted=${log.evicted} appended=${log.appended} decodeDropped=${log.decodeDropped} cap=${RELEASE_DIAGNOSTICS_CAP} clears=${clears} mutations=${mutations} serverRejects=${serverRejects} reAddFingerprints=${reAddFingerprints}`,
+    detail: `entries=${log.events.length} evicted=${log.evicted} appended=${log.appended} decodeDropped=${log.decodeDropped} cap=${RELEASE_DIAGNOSTICS_CAP} clears=${clears} clearsTestid=${clearsByBranch.testid} clearsDetached=${clearsByBranch.detached} clearsAlreadyCleared=${clearsByBranch.alreadyCleared} mutations=${mutations} serverRejects=${serverRejects} reAddFingerprints=${reAddFingerprints} reappearances=${reappearances}`,
   }
   const text = [meta, ...log.events].map((e) => JSON.stringify(e)).join('\n') + '\n'
   return { ok: true, filename: `xmd-release-diagnostics-${utcStamp(now)}.jsonl`, text }
