@@ -40,7 +40,7 @@ import {
 import { makeDownloadQueueCore } from '@/packages/download/queue'
 import { makeSerialQueue } from '@/packages/kernel/serial-queue'
 import { isMessageAllowed } from '@/packages/kernel/sender-guard'
-import { planDownloads } from '@/packages/download/destination'
+import { planDownloads, partitionUsableIds } from '@/packages/download/destination'
 import { makeSizeProbe } from '@/packages/download/size-probe'
 import { type BudgetRecord } from '@/packages/download/daily-budget'
 import { type SkipReason } from '@/packages/download/admission'
@@ -1030,11 +1030,22 @@ const handleDownload = (
     // strategy): page-derived items may carry forged URLs; a mixed batch keeps
     // its valid items and reports the rejected ones as failures.
     const checked = partitionAllowedMediaItems(items)
-    const urlFailures = checked.rejected.map(({ itemId, reason }) => ({
-      itemId,
-      reason: `unsafe media URL: ${reason}`,
-    }))
-    const admission = yield* Effect.promise(() => admissionGate.admit(checked.allowed))
+    // Second fail-closed boundary, on the id rather than the URL: every map
+    // below is keyed by `item.id`, and `planDownloads` reserves `<id>.json` for
+    // sidecars, so a page-supplied `.json` id or a repeat inside one batch would
+    // cross-key `inFlight` / `requestMetaById` / transfers / history.
+    const idChecked = partitionUsableIds(checked.allowed)
+    const rejectFailures = [
+      ...checked.rejected.map(({ itemId, reason }) => ({
+        itemId,
+        reason: `unsafe media URL: ${reason}`,
+      })),
+      ...idChecked.rejected.map(({ itemId, reason }) => ({
+        itemId,
+        reason: `unusable: ${reason}`,
+      })),
+    ]
+    const admission = yield* Effect.promise(() => admissionGate.admit(idChecked.allowed))
     const skipped = summarizeSkipped(admission.skipped)
     const requests = admission.admitted
       .flatMap((item) =>
@@ -1064,16 +1075,16 @@ const handleDownload = (
     if (requests.length === 0) {
       traceBackground(traceStageForSweep('request-deduped', sweep), {
         detail: sweep
-          ? `scope=${sweep.scope} items=${items.length} admitted=${admission.admitted.length} skipped=${admission.skipped.length} urlRejected=${urlFailures.length}`
+          ? `scope=${sweep.scope} items=${items.length} admitted=${admission.admitted.length} skipped=${admission.skipped.length} rejected=${rejectFailures.length}`
           : `${admission.admitted.length} admitted, ${admission.skipped.length} skipped`,
       })
       yield* Effect.promise(() => persistSnapshot(Date.now()))
       return {
         _tag: 'QueueUpdate' as const,
         completed: 0,
-        total: urlFailures.length,
+        total: rejectFailures.length,
         skipped,
-        ...(urlFailures.length > 0 ? { failures: urlFailures } : {}),
+        ...(rejectFailures.length > 0 ? { failures: rejectFailures } : {}),
       }
     }
     const mediaById = new Map(admission.admitted.map((i) => [i.id, i]))
@@ -1141,7 +1152,7 @@ const handleDownload = (
     // Per-request start failures, WITH the strategy's own reason (a 403/network/
     // CDN error) — sent back in the reply so "why didn't this download?" is
     // answerable from the requesting tab's own console, not just the SW's.
-    const failures: { itemId: string; reason: string }[] = [...urlFailures]
+    const failures: { itemId: string; reason: string }[] = [...rejectFailures]
     // Terminal-at-enqueue outcomes (failed-to-start, aria2 hand-off) carry no
     // retry duty — no downloadId ever interrupts — so their retry meta is dead
     // the moment the outcome lands. Drop it here (and mirror below), or the
@@ -1242,7 +1253,7 @@ const handleDownload = (
     return {
       _tag: 'QueueUpdate' as const,
       completed: res.completed,
-      total: res.total + urlFailures.length,
+      total: res.total + rejectFailures.length,
       skipped,
       ...(failures.length > 0 ? { failures } : {}),
     }

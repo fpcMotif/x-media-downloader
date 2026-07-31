@@ -15,6 +15,59 @@ export interface SidecarContext {
 }
 
 /**
+ * The request-id suffix `planDownloads` reserves for generated sidecars. Lives
+ * here, next to the code that mints `${item.id}.json`, so the reservation and
+ * the guard enforcing it can never drift apart.
+ */
+export const SIDECAR_ID_SUFFIX = '.json'
+
+/** A page-supplied id the download path cannot safely key on. */
+export interface RejectedMediaItemId {
+  readonly itemId: string
+  readonly reason: 'reserved sidecar id' | 'duplicate id in batch'
+}
+
+/**
+ * Fail-closed id boundary, the sibling of the URL guard: MediaItems arrive from
+ * a content script reading a page we don't control, and every downstream map is
+ * keyed by `item.id` — `inFlight`, `requestMetaById`, `session:transfers`,
+ * `local:downloadHistory`.
+ *
+ * Two ids are unusable:
+ * - one ending in {@link SIDECAR_ID_SUFFIX}, because `planDownloads` mints the
+ *   sidecar for item `Y` as `Y.json`. A page-supplied item literally called
+ *   `Y.json` collides with it, and whichever download settles first resolves
+ *   the other's entry — a real media file marked done by a metadata blob;
+ * - one repeated inside a single batch, because `inFlight.add` and
+ *   `requestMetaById.set` would silently collapse the pair and one completion
+ *   would settle both.
+ *
+ * Partitions rather than rejecting the whole batch, matching
+ * `partitionAllowedMediaItems`: a Quick-Grab-all over a carousel should still
+ * save its good slides and report the rest.
+ */
+export function partitionUsableIds(items: ReadonlyArray<MediaItem>): {
+  readonly allowed: MediaItem[]
+  readonly rejected: RejectedMediaItemId[]
+} {
+  const allowed: MediaItem[] = []
+  const rejected: RejectedMediaItemId[] = []
+  const seen = new Set<string>()
+
+  for (const item of items) {
+    if (item.id.endsWith(SIDECAR_ID_SUFFIX)) {
+      rejected.push({ itemId: item.id, reason: 'reserved sidecar id' })
+    } else if (seen.has(item.id)) {
+      rejected.push({ itemId: item.id, reason: 'duplicate id in batch' })
+    } else {
+      seen.add(item.id)
+      allowed.push(item)
+    }
+  }
+  return { allowed, rejected }
+}
+
+/**
  * Turn a media filename into its `.json` sidecar sibling: replace the last
  * extension, or append `.json` when there is none. Subfolders are preserved.
  */
@@ -66,7 +119,7 @@ export function planDownloads(opts: {
   return [
     media,
     {
-      id: `${opts.item.id}.json`,
+      id: `${opts.item.id}${SIDECAR_ID_SUFFIX}`,
       url: sidecarDataUrl(buildSidecar(opts.item, opts.ctx)),
       filename: sidecarFilename(filename),
     },
