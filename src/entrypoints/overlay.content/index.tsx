@@ -1031,6 +1031,19 @@ export default defineContentScript({
       doc: document,
       pathname: () => location.pathname,
       hovered: () => (hoverMedia && hoverKey ? { media: hoverMedia, key: hoverKey } : null),
+      // Threads/IG `d d` fallback: resolve the media under the cursor WITHOUT
+      // the Quick Grab modifier — lastX/lastY are tracked on every mousemove
+      // regardless of modifier state, so a bare `d d` over a carousel still
+      // finds the post. Mirrors X's j/k cursor fallback for platforms with no
+      // native keyboard cursor.
+      cursorHovered: () => {
+        if (!pointerSeen) return null
+        const stack = document.elementsFromPoint(lastX, lastY)
+        const media = resolveHoverMedia(stack[0] ?? null, stack, lastX, lastY)
+        if (!media) return null
+        const key = previewKeyFromMedia(adapter, media, location.pathname)
+        return key ? { media, key } : null
+      },
       focusedArticle: () => focusedTweetArticle(document),
       tweetIdFromArticle,
       send: async (items) => (await sendTracked(items, forYouClearExpect(items))).ok,
@@ -1636,6 +1649,21 @@ export default defineContentScript({
     // — the tee's own classification is not proof of anything. Gated FIRST on the
     // setting (off ⇒ zero work, not just zero relay) and repeats the X-only gate
     // the tee itself already applies (defense in depth).
+    //
+    // Residual, ACCEPTED risk (adversarial-review finding, same class the existing
+    // `handleMediaResponse` comment already names for media): shape validation
+    // bounds what a forged event can inject — `op` to the 4-member enum,
+    // `tweetId` to a genuine numeric snowflake (`tweetIdFromMutationRequestBody`'s
+    // own `isClearableTweetId` guard) — but cannot verify TRUTHFULNESS. A
+    // compromised page (or another extension's content script sharing this
+    // document) can still fabricate a *plausible-shaped* mutation/timeline event,
+    // which would land in the durable diagnostics log as a false server-reject /
+    // re-add-fingerprint / ghost-vs-real reading. No account mutation is possible
+    // this way (the tee only ever OBSERVES; see inject.content.ts) — the exposure
+    // is confined to misleading DIAGNOSTIC output, never a click, retry, or
+    // network request this extension itself makes. Eliminating it fully would mean
+    // not trusting ANY MAIN-world-observed event's content, which the media tee
+    // already accepts the same tradeoff on; out of scope for this ticket chain.
     const handleMutationResponse = (event: Event): void => {
       if (!releaseMutationDiagnosticsOn || adapter.platform !== 'x') return
       const detail = (

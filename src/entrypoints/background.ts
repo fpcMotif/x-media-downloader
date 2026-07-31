@@ -277,6 +277,15 @@ const RELEASE_DIAGNOSTICS_FLUSH_AT = 32
 let releaseDiagnosticsBuffer: DownloadTraceEntry[] = []
 let releaseDiagnosticsFlushTimer: ReturnType<typeof setTimeout> | undefined
 
+// The popup's Release summary (ticket #66) is polled every 1-3s
+// (POLL_ACTIVE_MS/POLL_IDLE_MS) alongside the UNRELATED, latency-sensitive download
+// snapshot — memoized so a quiet popup (nothing new to report) never pays for a
+// flush + full log decode on every poll. Invalidated the instant a NEW
+// release-diagnostics event is buffered (below); recomputed lazily on the next
+// `releaseDiagnosticsSummary()` call, never eagerly.
+let releaseDiagnosticsSummaryCache: MetricsSnapshot['releaseDiagnostics']
+let releaseDiagnosticsSummaryDirty = true
+
 /** Drain the buffer into the durable log in ONE serialized read-modify-write.
  *  Awaitable so the export handler can flush before it reads — a user clicking
  *  "Export diagnostics" must never race the tail of their own Release run. */
@@ -303,6 +312,7 @@ const flushReleaseDiagnostics = async (): Promise<void> => {
 
 const bufferReleaseDiagnostics = (event: DownloadTraceEntry): void => {
   releaseDiagnosticsBuffer = [...releaseDiagnosticsBuffer, event]
+  releaseDiagnosticsSummaryDirty = true
   if (releaseDiagnosticsBuffer.length >= RELEASE_DIAGNOSTICS_FLUSH_AT) {
     void flushReleaseDiagnostics()
     return
@@ -314,13 +324,18 @@ const bufferReleaseDiagnostics = (event: DownloadTraceEntry): void => {
   }, RELEASE_DIAGNOSTICS_FLUSH_MS)
 }
 
-/** The popup's Release summary (ticket #66): flushes first (so it reads the exact
- *  same durable state `ExportDiagnosticsRequest` would, and can never disagree with
- *  an export taken moments later), then derives counters via the SAME
- *  `computeReleaseCorrelationCounters` the export's meta line uses. `undefined` when
- *  every counter is zero — the field is `Schema.optional`, and the popup's zero-state
- *  must render exactly as it did before this ticket. */
+/** The popup's Release summary (ticket #66): memoized (see
+ *  `releaseDiagnosticsSummaryDirty` above) — a quiet popup poll with nothing new
+ *  since the last call returns the cached value with ZERO storage I/O, adversarial-
+ *  review finding: this used to flush + decode the whole durable log on every
+ *  1-3s poll regardless of whether anything changed. On a cache miss it flushes
+ *  first (so it reads the exact same durable state `ExportDiagnosticsRequest`
+ *  would, and can never disagree with an export taken moments later), then derives
+ *  counters via the SAME `computeReleaseCorrelationCounters` the export's meta line
+ *  uses. `undefined` when every counter is zero — the field is `Schema.optional`,
+ *  and the popup's zero-state must render exactly as it did before this ticket. */
 const releaseDiagnosticsSummary = async (): Promise<MetricsSnapshot['releaseDiagnostics']> => {
+  if (!releaseDiagnosticsSummaryDirty) return releaseDiagnosticsSummaryCache
   await flushReleaseDiagnostics()
   const log = await releaseDiagnosticsQueue.run(async () =>
     decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue()),
@@ -332,7 +347,9 @@ const releaseDiagnosticsSummary = async (): Promise<MetricsSnapshot['releaseDiag
     counters.serverRejects > 0 ||
     counters.reAddFingerprints > 0 ||
     counters.reappearances > 0
-  return hasAny ? counters : undefined
+  releaseDiagnosticsSummaryCache = hasAny ? counters : undefined
+  releaseDiagnosticsSummaryDirty = false
+  return releaseDiagnosticsSummaryCache
 }
 
 const traceBackground = (
@@ -1490,7 +1507,7 @@ const messageHandlers: MessageHandlers = {
       ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
       detail: `op=${msg.op} status=${msg.status} error=${msg.error}`,
     })
-    return {}
+    return { _tag: 'ReleaseMutationAck' }
   }),
 }
 

@@ -91,6 +91,29 @@ describe('tweetIdFromMutationRequestBody', () => {
     expect(tweetIdFromMutationRequestBody('{"variables":{"tweet_id":12345}}')).toBe(undefined)
   })
 
+  // Adversarial-review finding: a bare `typeof === 'string'` check let ANY string
+  // through — including arbitrary attacker/page-supplied text — straight into the
+  // durable, user-exportable diagnostics log. `requestBody` crosses the MAIN-world
+  // tee's untrusted boundary (a page script, or another extension's content script
+  // sharing the same document, can dispatch a forged 'xmd:mutation-response' event —
+  // see inject.content.ts's docstring), so the shape MUST be validated here, not
+  // merely typed.
+  it('undefined when tweet_id is a non-numeric string (forged/arbitrary text, not a real snowflake id)', () => {
+    expect(tweetIdFromMutationRequestBody('{"variables":{"tweet_id":"not-a-real-id"}}')).toBe(
+      undefined,
+    )
+    expect(
+      tweetIdFromMutationRequestBody('{"variables":{"tweet_id":"<script>alert(1)</script>"}}'),
+    ).toBe(undefined)
+  })
+
+  it('undefined when tweet_id is an empty string or exceeds the 20-digit snowflake bound', () => {
+    expect(tweetIdFromMutationRequestBody('{"variables":{"tweet_id":""}}')).toBe(undefined)
+    expect(
+      tweetIdFromMutationRequestBody('{"variables":{"tweet_id":"123456789012345678901"}}'),
+    ).toBe(undefined)
+  })
+
   it('undefined (never throws) on unparseable or non-object bodies', () => {
     expect(tweetIdFromMutationRequestBody('not json')).toBe(undefined)
     expect(tweetIdFromMutationRequestBody('null')).toBe(undefined)

@@ -6,6 +6,7 @@
  * enter the media-detection pipeline (they carry no media, and mixing the two
  * channels is exactly the bug this file exists to avoid).
  */
+import { isClearableTweetId } from '@/packages/clear/clearer'
 const MUTATION_OPS = [
   'CreateBookmark',
   'DeleteBookmark',
@@ -65,8 +66,17 @@ export function bodyHasErrorSignal(body: string): boolean {
  * `variables.tweet_id` — X's GraphQL client sends it there for all four tracked
  * ops; it is NOT reliably present in the response body (a successful
  * `DeleteBookmark` response carries no tweet id at all). Fail-safe: `undefined`
- * on any parse failure or unexpected shape, never a thrown error — the tee must
- * keep tracing even when a future X client version changes this shape.
+ * on any parse failure, unexpected shape, OR a `tweet_id` that isn't a genuine
+ * numeric snowflake (`isClearableTweetId`, the same digit-only guard
+ * `clearer.ts` gates DOM-locating on) — never a thrown error, and never a bare
+ * `typeof === 'string'` pass-through. This value flows, unclicked and
+ * unmoderated, all the way into the durable, user-exportable diagnostics log
+ * (`background.ts`'s `traceBackground('clear-mutation', ...)`), and the
+ * request body it's read from crosses an untrusted trust boundary (the
+ * MAIN-world tee relays whatever the page's own network call carried — see
+ * `inject.content.ts`'s docstring) — an unbounded string here would let a
+ * forged or compromised page inject arbitrary text into a log the options
+ * panel promises holds only "ids, timings — no post content."
  */
 export function tweetIdFromMutationRequestBody(body: string): string | undefined {
   try {
@@ -76,7 +86,7 @@ export function tweetIdFromMutationRequestBody(body: string): string | undefined
     if (typeof variables !== 'object' || variables === null || !('tweet_id' in variables))
       return undefined
     const tweetId = (variables as { tweet_id: unknown }).tweet_id
-    return typeof tweetId === 'string' ? tweetId : undefined
+    return typeof tweetId === 'string' && isClearableTweetId(tweetId) ? tweetId : undefined
   } catch {
     return undefined
   }
