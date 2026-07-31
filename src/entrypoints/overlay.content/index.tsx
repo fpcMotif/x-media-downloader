@@ -4,7 +4,7 @@ import { adapterForHostname, ALL_ADAPTERS } from '../../core/adapters/registry'
 import { makeDetectionStore } from '../../core/adapters/detection-store'
 import { harvestTweets } from '@/packages/capture/harvest'
 import type { Source, TweetRecord } from '@/packages/capture/record'
-import { parseSyndicationTweet } from '../../core/adapters/x/syndication'
+import { classifyRecoveryReply } from '../../core/adapters/x/recovery-classify'
 import { focusedTweetArticle, tweetIdFromArticle } from '../../core/adapters/x'
 import {
   bodyHasErrorSignal,
@@ -756,13 +756,24 @@ export default defineContentScript({
             store.unmarkAttempted(tweetId)
             return
           }
-          const body = (out.reply as RecoverTweetMediaResponse | undefined)?.body
-          if (body === undefined) return
-          try {
-            if (store.addRecovered(parseSyndicationTweet(JSON.parse(body))).length > 0) rerender()
-          } catch {
-            /* ignore non-JSON / unexpected shapes */
+          // `markAttempted` above claimed this tweet's ONE recovery attempt, and
+          // only `unmarkAttempted` gives it back. Every non-recovery outcome used
+          // to return without releasing it — an undefined body, a non-JSON reply,
+          // a throw out of the resolver — so a single transient bad reply burned
+          // the tweet's recovery permanently. Classify instead: a reply that told
+          // us nothing about this tweet releases the claim; a reply that said
+          // "no media" keeps it, so we can't loop on it.
+          const verdict = classifyRecoveryReply(
+            tweetId,
+            (out.reply as RecoverTweetMediaResponse | undefined)?.body,
+          )
+          if (verdict.kind === 'retryable') {
+            traceQuickGrab('recovery-retryable', { detail: `${tweetId} ${verdict.reason}` })
+            store.unmarkAttempted(tweetId)
+            return
           }
+          if (verdict.kind === 'recovered' && store.addRecovered(verdict.items).length > 0)
+            rerender()
         })()
       }
     }
