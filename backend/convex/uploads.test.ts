@@ -66,6 +66,78 @@ describe('uploads:recordUploadJobs', () => {
     expect(rows[0]).toMatchObject({ status: 'succeeded', at: 5_000 })
   })
 
+  // Pins the in-batch dedup semantics introduced in #34, the counterpart of the
+  // `recordCaptures` block in captures.test.ts. Two same-`jobId` entries in ONE
+  // call collapse in memory under the same last-write-wins-by-`at` rule before
+  // any read, so the batch touches the row once and the concurrent reads can
+  // never race each other. `upserted` counts distinct rows written.
+  describe('same-batch duplicate jobId (in-memory dedup)', () => {
+    it('collapses to the newer `at` regardless of array order (1 upsert)', async () => {
+      for (const jobs of [
+        [job({ status: 'uploading', at: 1_000 }), job({ status: 'succeeded', at: 2_000 })],
+        [job({ status: 'succeeded', at: 2_000 }), job({ status: 'uploading', at: 1_000 })],
+      ]) {
+        const t = convexTest(schema, modules)
+        const res = await t.mutation(api.uploads.recordUploadJobs, { jobs, secret: SECRET })
+        expect(res).toEqual({ received: 2, upserted: 1 })
+
+        const rows = await t.run((ctx) => ctx.db.query('upload_jobs').collect())
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toMatchObject({ status: 'succeeded', at: 2_000 })
+      }
+    })
+
+    it('equal `at` (a tie): the later array entry wins (1 upsert)', async () => {
+      const t = convexTest(schema, modules)
+      const res = await t.mutation(api.uploads.recordUploadJobs, {
+        jobs: [job({ status: 'uploading', at: 1_000 }), job({ status: 'succeeded', at: 1_000 })],
+        secret: SECRET,
+      })
+      // The dedup tie-break is `j.at >= existing.at`, mirroring the DB compare.
+      expect(res).toEqual({ received: 2, upserted: 1 })
+
+      const rows = await t.run((ctx) => ctx.db.query('upload_jobs').collect())
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ status: 'succeeded' })
+    })
+
+    it('a same-batch duplicate that loses to the STORED row writes nothing', async () => {
+      const t = convexTest(schema, modules)
+      await t.mutation(api.uploads.recordUploadJobs, {
+        jobs: [job({ status: 'succeeded', at: 9_000 })],
+        secret: SECRET,
+      })
+      const res = await t.mutation(api.uploads.recordUploadJobs, {
+        jobs: [job({ status: 'pending', at: 1_000 }), job({ status: 'uploading', at: 2_000 })],
+        secret: SECRET,
+      })
+      // Dedup picks `at: 2_000`, which still loses the stored-row compare.
+      expect(res).toEqual({ received: 2, upserted: 0 })
+
+      const rows = await t.run((ctx) => ctx.db.query('upload_jobs').collect())
+      expect(rows[0]).toMatchObject({ status: 'succeeded', at: 9_000 })
+    })
+
+    it('distinct jobIds in one batch each write once (concurrent reads)', async () => {
+      const t = convexTest(schema, modules)
+      const res = await t.mutation(api.uploads.recordUploadJobs, {
+        jobs: [
+          job({ jobId: 'j1', at: 1_000 }),
+          job({ jobId: 'j2', at: 1_000 }),
+          job({ jobId: 'j1', at: 2_000 }),
+        ],
+        secret: SECRET,
+      })
+      expect(res).toEqual({ received: 3, upserted: 2 })
+
+      const rows = await t.run((ctx) => ctx.db.query('upload_jobs').collect())
+      expect(rows.map((r) => [r.jobId, r.at]).toSorted()).toEqual([
+        ['j1', 2_000],
+        ['j2', 1_000],
+      ])
+    })
+  })
+
   it('separates jobs per provider for the same media item', async () => {
     const t = convexTest(schema, modules)
     await t.mutation(api.uploads.recordUploadJobs, {
