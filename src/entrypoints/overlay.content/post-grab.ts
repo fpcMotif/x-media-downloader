@@ -32,24 +32,27 @@ export interface GrabUiState {
   readonly allCount?: number
 }
 
+/** Stable Meta post identity retained between Quick Grab focus and bare `d d`. */
+export interface PostGrabFocus {
+  readonly postCode: string
+}
+
 export interface PostGrabDeps {
   readonly adapter: PlatformAdapter
   readonly store: DetectionStore
   readonly doc: Document
   readonly pathname: () => string
-  /** Freshest pointer intent: the hovered media + its key, or null. */
+  /** X's modifier-active hover target. */
   readonly hovered: () => { media: HTMLImageElement | HTMLVideoElement; key: string } | null
-  /** Modifier-independent media under the cursor (Threads/IG `d d` fallback):
-   *  resolves the media at the last known pointer position WITHOUT requiring
-   *  the Quick Grab modifier to be held — mirroring X's j/k cursor fallback
-   *  for platforms that have no native keyboard cursor. Null when no pointer
-   *  position is known or no media is under it. */
+  /** Fresh media under the pointer for Meta's bare `d d` fallback. */
   readonly cursorHovered?: () => { media: HTMLImageElement | HTMLVideoElement; key: string } | null
-  /** Called when the DOM-shortcode → tee-postId chain came up empty and the
-   *  grab fell back to the hovered item's own post. On Threads/Instagram that
-   *  fallback IS the "grabbed 1 of 4 photos" bug shape, so the caller traces it
-   *  prod-visibly; `code` says which link broke — null = no shortcode from the
-   *  DOM at all, non-null = a shortcode the tee hasn't registered yet. */
+  /** Meta post code retained by the all-post Quick Grab gesture, if any. */
+  readonly focusedPost?: () => PostGrabFocus | null
+  /** Forget a retained Meta focus that no longer matches the live pointer target. */
+  readonly clearFocusedPost?: () => void
+  /** Called when the DOM-shortcode → tee-postId chain cannot prove a full post.
+   *  `code` distinguishes a missing DOM shortcode from one not yet registered
+   *  by passive capture. */
   readonly onWholePostFallback?: (info: {
     readonly item: MediaItem
     readonly code: string | null
@@ -65,6 +68,8 @@ export interface PostGrabDeps {
   readonly getUi: () => GrabUiState | null
   /** Fold keys into the Quick Grab grabbed-set (markAllGrabbed). */
   readonly markGrabbed: (keys: Iterable<string>) => void
+  /** Fold a rendered preview key and every resolved post key into one grab. */
+  readonly markWholePostGrabbed: (previewKey: string, postKeys: Iterable<string>) => void
   readonly rectOf: (el: Element) => {
     readonly top: number
     readonly left: number
@@ -74,33 +79,30 @@ export interface PostGrabDeps {
 }
 
 /**
- * The whole-post payload for a hovered element: resolve the WHOLE post from
- * the DOM post anchor, NOT the hovered media's own url key — an Instagram/
- * Threads photo's rendered `<img>` basename can differ from the tee's captured
- * basename, so the hovered item falls back to a placeholder whose `postId` is
- * its own media key (grouping nothing) — `valuesForTweet` on it would return
- * just itself. The post's DOM shortcode → the tee's real `postId` recovers the
- * whole detected set (all slides, best quality). Falls back to the hovered
- * item unioned with its own post's items when the tee hasn't linked/seen this
- * post yet.
+ * The whole-post payload for a hovered element. Meta Source Adapters prove the
+ * group through the DOM post code → tee post id bridge; a DOM-only photo
+ * fallback is one preview, never proof of an entire carousel. X has no
+ * post-code resolver, so it retains its existing item/post fallback.
  */
 export function wholePostItemsFor(
   deps: Pick<PostGrabDeps, 'adapter' | 'store' | 'pathname' | 'onWholePostFallback'>,
   media: Element,
   item: MediaItem,
 ): MediaItem[] {
-  const code = deps.adapter.postCodeFromElement?.(media, deps.pathname()) ?? null
+  const postCodeFromElement = deps.adapter.postCodeFromElement
+  const code = postCodeFromElement?.(media, deps.pathname()) ?? null
   const codePostId = code ? deps.store.postIdForCode(code) : undefined
   const teePost = codePostId ? deps.store.valuesForTweet(codePostId) : []
-  if (teePost.length === 0) deps.onWholePostFallback?.({ item, code })
-  return teePost.length > 0 ? teePost : postGrabItems(item, deps.store.valuesForTweet(item.postId))
+  if (teePost.length > 0) return teePost
+  deps.onWholePostFallback?.({ item, code })
+  return postCodeFromElement ? [] : postGrabItems(item, deps.store.valuesForTweet(item.postId))
 }
 
 /**
  * Fire the whole-post grab for the current post. Silent no-op (no ring, no
  * send) when nothing is targeted or nothing is resolvable — a total miss never
- * fakes a success. On fire: mark every key of the post grabbed (an immediate
- * modifier-hover then reads "Already queued"), show the `queued` ring with the
+ * fakes a success. On fire: mark the rendered preview and every key of the
+ * post grabbed (an immediate modifier-hover then reads "Already queued"), show
  * item count, hand off, settle to `saved`/`failed`, and self-clear after
  * {@link POST_GRAB_FLASH_MS} unless a newer grab owns the ring by then.
  */
@@ -109,12 +111,23 @@ export function fireCurrentPost(deps: PostGrabDeps): void {
   let rect: GrabUiState['rect']
   let items: MediaItem[]
 
-  // Priority 1: the modifier-active hover (freshest pointer intent, all
-  // platforms). Priority 2 (Threads/IG only): the media under the cursor even
-  // WITHOUT the modifier — `d d` pressed bare, mirroring X's j/k fallback
-  // below. Priority 3 (X only): the post under X's native j/k cursor.
-  const hover =
-    deps.hovered() ?? (deps.adapter.platform !== 'x' ? (deps.cursorHovered?.() ?? null) : null)
+  // A retained Meta focus is a post code, never a cached element. Re-hit-test
+  // the pointer at fire time; a mismatch must not fall through to another post.
+  const postCodeFromElement = deps.adapter.postCodeFromElement
+  const focusedPost = postCodeFromElement ? (deps.focusedPost?.() ?? null) : null
+  let hover: { media: HTMLImageElement | HTMLVideoElement; key: string } | null
+  if (focusedPost) {
+    hover = deps.cursorHovered?.() ?? null
+    const liveCode = hover ? (postCodeFromElement?.(hover.media, deps.pathname()) ?? null) : null
+    if (liveCode !== focusedPost.postCode) {
+      deps.clearFocusedPost?.()
+      return
+    }
+  } else if (deps.adapter.platform === 'x') {
+    hover = deps.hovered()
+  } else {
+    hover = deps.cursorHovered?.() ?? null
+  }
   if (hover) {
     const item = deps.adapter.resolveHoverItem(
       hover.media,
@@ -123,6 +136,7 @@ export function fireCurrentPost(deps: PostGrabDeps): void {
       deps.pathname(),
     )
     if (!item) {
+      if (focusedPost) deps.clearFocusedPost?.()
       if (import.meta.env.DEV)
         console.debug(
           `[XMD] whole-post grab · ABORT · hovered ${hover.media.tagName} key=${hover.key} resolved to no item (silent no-op, no ring)`,
@@ -130,11 +144,14 @@ export function fireCurrentPost(deps: PostGrabDeps): void {
       return
     }
     items = wholePostItemsFor(deps, hover.media, item)
+    if (items.length === 0) return
     if (import.meta.env.DEV)
       console.debug(
         `[XMD] whole-post grab · hovered ${hover.media.tagName} key=${hover.key} → item ${item.id} (post ${item.postId}) → whole post = ${items.length} item(s): [${items.map((i) => `${i.type}#${i.id}`).join(', ')}]`,
       )
-    uiKey = `dd:${item.postId}`
+    const [firstItem] = items
+    if (!firstItem) return
+    uiKey = `dd:${firstItem.postId}`
     rect = deps.rectOf(hover.media)
   } else if (deps.adapter.platform === 'x') {
     const article = deps.focusedArticle()
@@ -159,9 +176,11 @@ export function fireCurrentPost(deps: PostGrabDeps): void {
     return
   }
 
-  deps.markGrabbed(
-    [...new Set(items.map((i) => i.postId))].flatMap((id) => deps.store.keysForTweet(id)),
+  const postKeys = [...new Set(items.map((i) => i.postId))].flatMap((id) =>
+    deps.store.keysForTweet(id),
   )
+  if (hover) deps.markWholePostGrabbed(hover.key, postKeys)
+  else deps.markGrabbed(postKeys)
   deps.setUi({ key: uiKey, rect, phase: 'queued', all: true, allCount: items.length })
   void (async () => {
     const ok = await deps.send(items)

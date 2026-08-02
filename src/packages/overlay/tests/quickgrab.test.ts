@@ -13,6 +13,7 @@ import {
   allAugmentModifier,
   postGrabActive,
   markAllGrabbed,
+  markWholePostGrabbed,
 } from '../quickgrab'
 
 const flags = (over: Partial<Record<'altKey' | 'shiftKey' | 'ctrlKey' | 'metaKey', boolean>>) => ({
@@ -152,6 +153,25 @@ describe('markAllGrabbed', () => {
   it('is a no-op (same reference) for an empty key list', () => {
     const s = pressModifier(idleQuickGrab)
     expect(markAllGrabbed(s, [])).toBe(s)
+  })
+})
+
+describe('markWholePostGrabbed', () => {
+  it('marks a rendered preview key even when it differs from every captured key', () => {
+    const state = markWholePostGrabbed(pressModifier(idleQuickGrab), 'PREVIEW', ['ORIGINAL-A'])
+
+    expect(canGrab(state, 'PREVIEW')).toBe(false)
+    expect(canGrab(state, 'ORIGINAL-A')).toBe(false)
+    expect(canGrab(state, 'OTHER')).toBe(true)
+  })
+
+  it('carries keyboard whole-post keys into the next modifier press, then clears them on release', () => {
+    const primed = markWholePostGrabbed(idleQuickGrab, 'PREVIEW', ['ORIGINAL-A'])
+    const pressed = pressModifier(primed)
+
+    expect(canGrab(pressed, 'PREVIEW')).toBe(false)
+    expect(canGrab(pressed, 'ORIGINAL-A')).toBe(false)
+    expect(canGrab(pressModifier(releaseModifier()), 'PREVIEW')).toBe(true)
   })
 })
 

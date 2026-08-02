@@ -86,10 +86,10 @@ export function postGrabActive(
 }
 
 /**
- * Quick Grab arming state. `active` mirrors the held modifier; `grabbed` holds the
- * media keys already downloaded during the *current* press, so hovering one item
- * fires exactly once — the guard against a cursor sweep mass-downloading a grid.
- * Releasing the modifier forgets the set, so a fresh press can re-grab.
+ * Quick Grab arming state. `active` mirrors the held modifier; `grabbed` holds
+ * media keys already downloaded in the current press, plus a bare `d d`
+ * whole-post payload waiting for its next modifier press. Releasing the
+ * modifier forgets the set, so a fresh press can re-grab.
  */
 export interface QuickGrabState {
   readonly active: boolean
@@ -99,12 +99,11 @@ export interface QuickGrabState {
 export const idleQuickGrab: QuickGrabState = { active: false, grabbed: new Set() }
 
 /**
- * Enter grab mode. Idempotent across auto-repeat keydowns: only the first press
- * (when not already `active`) resets the grabbed set, so holding the key down
- * doesn't re-arm already-grabbed items.
+ * Enter grab mode. Idempotent across auto-repeat keydowns and preserves keys
+ * preseeded by a bare `d d` whole-post action until this modifier is released.
  */
 export function pressModifier(state: QuickGrabState): QuickGrabState {
-  return state.active ? state : { active: true, grabbed: new Set() }
+  return state.active ? state : { active: true, grabbed: state.grabbed }
 }
 
 /** Leave grab mode and forget what was grabbed this press. */
@@ -140,4 +139,16 @@ export function markAllGrabbed(state: QuickGrabState, keys: Iterable<string>): Q
   let next = state
   for (const key of keys) next = markGrabbed(next, key)
   return next
+}
+
+/**
+ * Record a whole-post Quick Grab: the rendered preview key plus every resolved
+ * Original-quality key. The preview can differ from the tee's captured keys.
+ */
+export function markWholePostGrabbed(
+  state: QuickGrabState,
+  previewKey: string,
+  keys: Iterable<string>,
+): QuickGrabState {
+  return markAllGrabbed(markGrabbed(state, previewKey), keys)
 }

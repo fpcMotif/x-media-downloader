@@ -31,6 +31,7 @@ import {
   allAugmentModifier,
   postGrabActive,
   markAllGrabbed,
+  markWholePostGrabbed,
   type GrabModifier,
   type ModifierFlags,
   type QuickGrabState,
@@ -658,6 +659,19 @@ export default defineContentScript({
     let hotkey = idlePostHotkey
     let hoverMedia: HoverMediaElement | null = null
     let hoverKey: string | null = null
+    // Meta's retained `d d` focus is post identity, never a potentially recycled
+    // hover element. It survives modifier release and is proven live by
+    // `cursorHovered` when the hotkey fires.
+    let metaFocusedPostCode: string | null = null
+    const clearMetaFocusedPost = (): void => {
+      metaFocusedPostCode = null
+    }
+    const rememberMetaFocusedPost = (media: HoverMediaElement | null): void => {
+      if (!postGrabArmed) return
+      metaFocusedPostCode = media
+        ? (adapter.postCodeFromElement?.(media, location.pathname) ?? null)
+        : null
+    }
     // Phases: charging (dwell running) → queued (background handoff pending) →
     // saved | failed; `noted` re-acknowledges an already-grabbed item.
     let grabUi: {
@@ -1063,12 +1077,10 @@ export default defineContentScript({
         const key = previewKeyFromMedia(adapter, media, location.pathname)
         return key ? { media, key } : null
       },
-      // Whole-post grab is Threads/Instagram-only — silently falling back to
-      // just the hovered item (instead of the whole carousel) is exactly the
-      // "grabbed 1 of 4 photos" bug shape. detail says which link in the chain
-      // came up empty: no DOM shortcode at all (post-anchor selector miss), or
-      // a shortcode the tee hasn't registered yet (postCodeFromElement raced
-      // ahead of the network tee).
+      focusedPost: () => (metaFocusedPostCode ? { postCode: metaFocusedPostCode } : null),
+      clearFocusedPost: clearMetaFocusedPost,
+      // A Meta bridge miss is an honest no-op: never queue one DOM-only slide
+      // while claiming a whole-post grab. Detail names the missing link.
       onWholePostFallback: ({ item, code }) =>
         traceQuickGrab('whole-post-fallback', {
           item,
@@ -1084,6 +1096,9 @@ export default defineContentScript({
       getUi: () => grabUi,
       markGrabbed: (keys) => {
         grab = markAllGrabbed(grab, keys)
+      },
+      markWholePostGrabbed: (previewKey, keys) => {
+        grab = markWholePostGrabbed(grab, previewKey, keys)
       },
       rectOf,
     }
@@ -1121,17 +1136,24 @@ export default defineContentScript({
         rerender()
         return
       }
-      grab = markGrabbed(grab, key)
       const all = postGrabArmed
       let items: MediaItem[] = [item]
       if (all) {
         items = wholePostItemsFor(postGrabDeps, media, item)
-        // Mark every key of the resolved post so a cursor sweep across sibling
-        // slides doesn't re-charge the ring (downstream the gate dedups anyway).
-        grab = markAllGrabbed(
+        if (items.length === 0) {
+          grabUi = null
+          rerender()
+          return
+        }
+        // Mark the rendered preview and every resolved key so a cursor sweep
+        // across sibling slides cannot re-charge the ring.
+        grab = markWholePostGrabbed(
           grab,
+          key,
           [...new Set(items.map((i) => i.postId))].flatMap((id) => store.keysForTweet(id)),
         )
+      } else {
+        grab = markGrabbed(grab, key)
       }
       // After the dwell completes, move out of the charge state immediately.
       // The background reply then confirms whether the browser/aria2 handoff started.
@@ -1169,6 +1191,7 @@ export default defineContentScript({
       clearDwell()
       hoverMedia = media
       hoverKey = key
+      rememberMetaFocusedPost(media)
       if (grab.active && media && key) {
         armHover(media, key)
       } else {
@@ -1188,7 +1211,7 @@ export default defineContentScript({
     }
 
     const releaseAll = (): void => {
-      if (!grab.active && grabUi === null) return
+      if (!grab.active && grabUi === null && grab.grabbed.size === 0) return
       grab = releaseModifier()
       clearDwell()
       setCursorActive(false)
@@ -1202,6 +1225,7 @@ export default defineContentScript({
     const refreshPostGrabArmed = (next: boolean): void => {
       if (next === postGrabArmed) return
       postGrabArmed = next
+      if (next) rememberMetaFocusedPost(hoverMedia)
       if (grabUi && (grabUi.phase === 'charging' || grabUi.phase === 'noted')) {
         grabUi = { ...grabUi, all: next }
         rerender()
@@ -1968,6 +1992,7 @@ export default defineContentScript({
         const key = previewKeyFromMedia(adapter, media, location.pathname)
         hoverMedia = media
         hoverKey = key
+        rememberMetaFocusedPost(media)
         if (media && key) armHover(media, key)
         else rerender() // keep the page quiet when the press lands off media
       }
@@ -1984,6 +2009,7 @@ export default defineContentScript({
     ctx.addEventListener(window, 'blur', () => {
       mouseHitTest.clear()
       releaseAll()
+      clearMetaFocusedPost()
     })
     // The Cmd augment (grab whole post): update all-mode even without a mousemove
     // and re-label a live ring. `allAugmentModifier(qgModifier)` is read fresh each
@@ -2023,6 +2049,7 @@ export default defineContentScript({
     ctx.addEventListener(document, 'mouseleave', () => {
       mouseHitTest.clear()
       focusHover(null, null)
+      clearMetaFocusedPost()
       focusBadge(null, null)
     })
 
@@ -2032,6 +2059,7 @@ export default defineContentScript({
       releaseAll()
       resetBadge()
       focusHover(null, null)
+      clearMetaFocusedPost()
       // "Download this page" must never inherit media detected on a previous SPA
       // route. Without this reset, visiting Tweet Detail/Likes before Bookmarks
       // makes Release enqueue those stale posts against the Bookmarks drain.
@@ -2129,6 +2157,7 @@ export default defineContentScript({
       setCursorActive(false)
       grab = idleQuickGrab
       grabUi = null
+      clearMetaFocusedPost()
       resetBadge()
       clearLauncherRevert()
       clearRescanSpin()
