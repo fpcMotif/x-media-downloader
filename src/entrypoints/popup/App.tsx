@@ -943,18 +943,21 @@ export function App() {
 
       <Footer cloudSyncEnabled={settings.cloudSyncEnabled} onOpenOptions={openOptions} />
 
-      <div
+      <output
         aria-live="polite"
+        aria-atomic="true"
         className={cn(
           'pointer-events-none fixed right-3 bottom-3 transition-[opacity,transform] ease-[var(--xmd-ease)]',
           saved ? 'translate-y-0 opacity-100 duration-200' : 'translate-y-1 opacity-0 duration-150',
         )}
       >
-        <span className="flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-2.5 py-1 text-xs font-medium text-success">
-          <CheckIcon className="size-3" />
-          Saved
-        </span>
-      </div>
+        {saved && (
+          <span className="flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-2.5 py-1 text-xs font-medium text-success">
+            <CheckIcon className="size-3" />
+            Saved
+          </span>
+        )}
+      </output>
     </div>
   )
 }

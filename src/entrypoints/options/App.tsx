@@ -117,18 +117,21 @@ export function App() {
         </div>
       </main>
 
-      <div
+      <output
         aria-live="polite"
+        aria-atomic="true"
         className={cn(
           'pointer-events-none fixed right-5 bottom-5 transition-[opacity,transform] ease-[var(--xmd-ease)]',
           saved ? 'translate-y-0 opacity-100 duration-200' : 'translate-y-1 opacity-0 duration-150',
         )}
       >
-        <span className="flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-3 py-1.5 text-[13px] font-medium text-success">
-          <CheckIcon className="size-3.5" />
-          All changes saved
-        </span>
-      </div>
+        {saved && (
+          <span className="flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-3 py-1.5 text-[13px] font-medium text-success">
+            <CheckIcon className="size-3.5" />
+            All changes saved
+          </span>
+        )}
+      </output>
     </div>
   )
 }

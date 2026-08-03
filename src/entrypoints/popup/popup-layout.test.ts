@@ -20,11 +20,14 @@ const ruleBody = (selector: string): string => {
   return popupCss.slice(bodyStart + 1, bodyEnd)
 }
 
-describe('popup layout CSS — content-driven height (spec §2.9)', () => {
-  it('lets the popup render its content height: min 360 / max 600, scroll beyond', () => {
+describe('popup layout CSS — content-driven height and bubble-safe 320px reflow', () => {
+  it('lets the popup render content height min 360 / max 600 and reflow down to 320px without root 100vw collapse', () => {
     const popupRule = ruleBody('.xmd-popup')
 
-    expect(popupRule).toContain('width: min(380px, 100vw);')
+    expect(popupRule).toContain('min-width: 320px;')
+    expect(popupRule).toContain('max-width: 100%;')
+    expect(popupRule).toContain('box-sizing: border-box;')
+    expect(popupRule).toContain('overflow-x: hidden;')
     expect(popupRule).toContain('min-height: 360px;')
     expect(popupRule).toContain('max-height: 600px;')
     expect(popupRule).toContain('overflow-y: auto;')
@@ -53,6 +56,14 @@ describe('popup layout CSS — content-driven height (spec §2.9)', () => {
     expect(popupHtml).not.toContain('height: 600px')
     expect(popupHtml).toContain('class="xmd-boot-fallback"')
     expect(popupHtml).toContain('Loading...')
+  })
+})
+describe('popup save-status toast live region (a11y announcement)', () => {
+  it('uses semantic output tag, aria-atomic="true", and conditionally renders saved text', () => {
+    expect(popupSource).toContain('<output')
+    expect(popupSource).toContain('aria-live="polite"')
+    expect(popupSource).toContain('aria-atomic="true"')
+    expect(popupSource).toContain('{saved &&')
   })
 })
 

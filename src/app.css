@@ -156,7 +156,11 @@ body,
    Content-driven height: min 360 / max 600 (Chrome caps action popups at
    600×800), scroll beyond the cap. */
 .xmd-popup {
-  width: min(380px, 100vw);
+  width: 380px;
+  max-width: 100%;
+  min-width: 320px;
+  box-sizing: border-box;
+  overflow-x: hidden;
   min-height: 360px;
   max-height: 600px;
   overflow-y: auto;

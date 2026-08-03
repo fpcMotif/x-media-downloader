@@ -93,3 +93,11 @@ describe('sidebar navigation landmarks are named by their visible labels', () =>
     expect(sidebar).not.toContain('sr-only')
   })
 })
+describe('save-status toast live region (a11y announcement)', () => {
+  it('uses semantic output tag, aria-atomic="true", and conditionally renders saved text', () => {
+    expect(appSource).toContain('<output')
+    expect(appSource).toContain('aria-live="polite"')
+    expect(appSource).toContain('aria-atomic="true"')
+    expect(appSource).toContain('{saved &&')
+  })
+})
