@@ -17,7 +17,7 @@ was landed and reverted (it broke the action-popup bubble — see the plan);
 | [008](008-support-320px-popup-reflow.md) | MEDIUM | REVERTED (broke the action bubble) | — | Let the popup reflow to 320 CSS px. |
 | [009](009-replace-stale-feedback-timers.md) | LOW | DONE | 004 first | Cancel old feedback timers before rearming. |
 | [010](010-name-sidebar-navigation.md) | LOW | DONE | 009 first | Name the Settings and Library navigation landmarks. |
-| [011](011-extension-a11y-audit-and-reflow.md) | MEDIUM | IN PROGRESS | — | Fix save-status live regions and bubble-safe 320px popup reflow. |
+| [011](011-extension-a11y-audit-and-reflow.md) | MEDIUM | DONE | — | Fix save-status live regions, WCAG 2.5.3 label matching, and bubble-safe popup shell. |
 
 ## Recommended order
 
