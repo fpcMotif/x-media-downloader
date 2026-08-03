@@ -24,4 +24,8 @@ describe('CaptureQuickActions stays mounted while an erase flash is pending (Bat
   it('unmount cancels the pending flash timer', () => {
     expect(source).toContain('return () => clearTimeout(statusTimer.current)')
   })
+
+  it('mounts the live region output node in the persistent container outside the open conditional', () => {
+    expect(source).toContain('}\n\n      <output\n        aria-live="polite"')
+  })
 })

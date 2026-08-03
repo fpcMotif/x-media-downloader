@@ -198,15 +198,16 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
             </ConfirmStrip>
           </div>
 
-          <output
-            aria-live="polite"
-            aria-atomic="true"
-            className="block text-pretty text-xs leading-snug text-muted-foreground"
-          >
-            {statusMsg}
-          </output>
         </div>
       )}
+
+      <output
+        aria-live="polite"
+        aria-atomic="true"
+        className="block text-pretty text-xs leading-snug text-muted-foreground"
+      >
+        {statusMsg}
+      </output>
     </div>
   )
 }
