@@ -86,6 +86,7 @@
       <h3>HTML and Component Architecture</h3>
       <ul>
         <li><strong>Live Regions (<code>&lt;output&gt;</code>)</strong>: Replaced conditional <code>&lt;div aria-live="polite"&gt;</code> and <code>&lt;p aria-live="polite"&gt;</code> containers with continuously mounted <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> elements across <code>App.tsx</code>, <code>archive.tsx</code>, <code>release.tsx</code>, <code>capture-quick-actions.tsx</code>, and <code>confirm-strip.tsx</code>.</li>
+        <li><strong>ConfirmStrip Idle Mounting</strong>: Updated <code>confirm-strip.tsx</code> so that when idle (<code>armedAt === null</code>), the <code>&lt;output aria-live="polite" aria-atomic="true" className="sr-only" /&gt;</code> node is continuously mounted in the DOM alongside <code>children(arm)</code>. On <code>arm()</code>, the persistent node mutates from empty text to <code>Press ${confirmLabel} to continue, or Cancel.</code>.</li>
         <li><strong>Phrasing Content Validity</strong>: Removed block-level <code>&lt;FieldDescription&gt;</code> (<code>&lt;p&gt;</code>) tags from inside <code>&lt;output&gt;</code> containers. Placed plain text or <code>&lt;span&gt;</code> nodes inside <code>&lt;output&gt;</code>.</li>
         <li><strong>Label Matching (WCAG 2.5.3)</strong>: Removed redundant and conflicting <code>aria-label</code> overrides on controls in <code>saving.tsx</code>, <code>capture.tsx</code>, <code>history.tsx</code>, <code>release.tsx</code>, and <code>sync.tsx</code> where <code>&lt;FieldLabel htmlFor="..."&gt;</code> already links the visual label to the control ID.</li>
       </ul>
@@ -99,10 +100,10 @@
       <h2>2. Technical Analysis for Beginners</h2>
 
       <div class="card">
-        <h3>A. Live Region Announcements</h3>
+        <h3>A. Live Region Announcements & Lifecycle (ConfirmStrip Precedent)</h3>
         <ul>
-          <li><strong>Why the old code was wrong</strong>: The previous code mounted <code>&lt;div aria-live="polite"&gt;</code> or <code>&lt;p aria-live="polite"&gt;</code> only when <code>saved</code> or <code>statusMsg</code> became true. When a live region and its text enter the DOM simultaneously, screen readers do not register a change event inside an existing region and often skip speech output.</li>
-          <li><strong>Why the new code is correct</strong>: The <code>&lt;output&gt;</code> container remains in the DOM continuously from page load. Only the inner text updates from empty to non-empty (<code>{statusMsg}</code>). Screen readers detect the text insertion inside the persistent live region and reliably announce the update.</li>
+          <li><strong>Why the old code was wrong</strong>: The previous code mounted <code>&lt;div aria-live="polite"&gt;</code> or <code>&lt;p aria-live="polite"&gt;</code> only when <code>saved</code> or <code>statusMsg</code> became true. In <code>confirm-strip.tsx</code>, when <code>armedAt === null</code>, the component returned early with <code>children(arm)</code> and mounted <code>&lt;output&gt;</code> only <em>after</em> arming with full text. When a live region and its text enter the DOM simultaneously, screen readers do not register a change event inside an existing region and often skip speech output.</li>
+          <li><strong>Why the new code is correct</strong>: The <code>&lt;output&gt;</code> container remains in the DOM continuously from page load (including <code>ConfirmStrip</code> idle state). Only the inner text updates from empty to non-empty (<code>{statusMsg}</code> or <code>Press ${confirmLabel}...</code>). Screen readers detect the text insertion inside the persistent live region and reliably announce the update.</li>
           <li><strong>HTML semantics</strong>: HTML rules prohibit block elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside phrasing elements (<code>&lt;output&gt;</code>). Replacing <code>&lt;p&gt;</code> with <code>&lt;span&gt;</code> or direct text node children ensures valid HTML parsing.</li>
         </ul>
       </div>
@@ -132,7 +133,7 @@
 
       <h2>4. Best Practices Checklist</h2>
       <ul>
-        <li><strong>Keep live regions persistent</strong>: Mount <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> on initial render; update only its inner text content.</li>
+        <li><strong>Keep live regions persistent</strong>: Mount <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> on initial render (including idle states); update only its inner text content.</li>
         <li><strong>Respect HTML content models</strong>: Do not place block-level elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside phrasing elements (<code>&lt;output&gt;</code>).</li>
         <li><strong>Fix root dimensions for extension popups</strong>: Use explicit pixel dimensions (<code>width: 380px; min-width: 380px;</code>) on <code>html, body</code> for extension action popups to avoid bubble collapse.</li>
         <li><strong>Match visible labels to accessible names</strong>: Rely on <code>&lt;label htmlFor="..."&gt;</code> for form controls. Do not override visual text with different <code>aria-label</code> strings.</li>

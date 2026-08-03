@@ -9,6 +9,7 @@
 
 ### HTML and Component Architecture
 - **Live Regions (`<output>`)**: Replaced conditional `<div aria-live="polite">` and `<p aria-live="polite">` containers with continuously mounted `<output aria-live="polite" aria-atomic="true">` elements across `App.tsx`, `archive.tsx`, `release.tsx`, `capture-quick-actions.tsx`, and `confirm-strip.tsx`.
+- **ConfirmStrip Idle Mounting**: Updated `confirm-strip.tsx` so that when idle (`armedAt === null`), the `<output aria-live="polite" aria-atomic="true" className="sr-only" />` node is continuously mounted in the DOM alongside `children(arm)`. On `arm()`, the persistent node mutates from empty text to ``Press ${confirmLabel} to continue, or Cancel.``.
 - **Phrasing Content Validity**: Removed block-level `<FieldDescription>` (`<p>`) tags from inside `<output>` containers. Placed plain text or `<span>` nodes inside `<output>`.
 - **Label Matching (WCAG 2.5.3)**: Removed redundant and conflicting `aria-label` overrides on controls in `saving.tsx`, `capture.tsx`, `history.tsx`, `release.tsx`, and `sync.tsx` where `<FieldLabel htmlFor="...">` already links the visual label to the control ID.
 
@@ -20,9 +21,9 @@
 
 ## 2. Technical Analysis for Beginners
 
-### A. Live Region Announcements
-- **Why the old code was wrong**: The previous code mounted `<div aria-live="polite">` or `<p aria-live="polite">` only when `saved` or `statusMsg` became true. When a live region and its text enter the DOM simultaneously, screen readers do not register a change event inside an existing region and often skip speech output.
-- **Why the new code is correct**: The `<output>` container remains in the DOM continuously from page load. Only the inner text updates from empty to non-empty (`{statusMsg}`). Screen readers detect the text insertion inside the persistent live region and reliably announce the update.
+### A. Live Region Announcements & Lifecycle (ConfirmStrip Precedent)
+- **Why the old code was wrong**: The previous code mounted `<div aria-live="polite">` or `<p aria-live="polite">` only when `saved` or `statusMsg` became true. In `confirm-strip.tsx`, when `armedAt === null`, the component returned early with `children(arm)` and mounted `<output>` only *after* arming with full text. When a live region and its text enter the DOM simultaneously, screen readers do not register a change event inside an existing region and often skip speech output.
+- **Why the new code is correct**: The `<output>` container remains in the DOM continuously from page load (including `ConfirmStrip` idle state). Only the inner text updates from empty to non-empty (`{statusMsg}` or ``Press ${confirmLabel}...``). Screen readers detect the text insertion inside the persistent live region and reliably announce the update.
 - **HTML semantics**: HTML rules prohibit block elements (`<p>`, `<div>`) inside phrasing elements (`<output>`). Replacing `<p>` with `<span>` or direct text node children ensures valid HTML parsing.
 
 ### B. Chrome Extension Action Popup Sizing (Plan 008 Context)
@@ -45,7 +46,7 @@
 
 ## 4. Best Practices Checklist
 
-- **Keep live regions persistent**: Mount `<output aria-live="polite" aria-atomic="true">` on initial render; update only its inner text content.
+- **Keep live regions persistent**: Mount `<output aria-live="polite" aria-atomic="true">` on initial render (including idle states); update only its inner text content.
 - **Respect HTML content models**: Do not place block-level elements (`<p>`, `<div>`) inside phrasing elements (`<output>`).
 - **Fix root dimensions for extension popups**: Use explicit pixel dimensions (`width: 380px; min-width: 380px;`) on `html, body` for extension action popups to avoid bubble collapse.
 - **Match visible labels to accessible names**: Rely on `<label htmlFor="...">` for form controls. Do not override visual text with different `aria-label` strings.
