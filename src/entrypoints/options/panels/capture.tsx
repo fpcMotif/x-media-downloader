@@ -33,7 +33,6 @@ export function CapturePanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="captureEnabled"
-            aria-label="Capture tweets"
             checked={settings.captureEnabled}
             onCheckedChange={(checked: boolean) => void update({ captureEnabled: checked })}
           />
@@ -48,7 +47,6 @@ export function CapturePanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="captureAllScrolled"
-            aria-label="Everything you scroll"
             disabled={!settings.captureEnabled}
             checked={settings.captureAllScrolled}
             onCheckedChange={(checked: boolean) => void update({ captureAllScrolled: checked })}
@@ -77,7 +75,6 @@ export function CapturePanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="captureMirrorEnabled"
-            aria-label="Mirror to Convex"
             disabled={!syncConfigured}
             checked={settings.captureMirrorEnabled}
             onCheckedChange={(checked: boolean) => void update({ captureMirrorEnabled: checked })}

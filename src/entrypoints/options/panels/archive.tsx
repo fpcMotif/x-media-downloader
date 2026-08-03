@@ -222,8 +222,8 @@ export function ArchivePanel() {
           )}
         </ConfirmStrip>
 
-        <output aria-live="polite" aria-atomic="true" className="block">
-          {statusMsg && <FieldDescription>{statusMsg}</FieldDescription>}
+        <output aria-live="polite" aria-atomic="true" className="block text-pretty text-sm text-muted-foreground">
+          {statusMsg}
         </output>
       </Section>
     </>

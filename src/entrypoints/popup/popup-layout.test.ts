@@ -26,7 +26,6 @@ describe('popup layout CSS — content-driven height and bubble-safe 320px reflo
 
     expect(popupRule).toContain('width: 380px;')
     expect(popupRule).toContain('max-width: 100%;')
-    expect(popupRule).toContain('min-width: 0;')
     expect(popupRule).toContain('box-sizing: border-box;')
     expect(popupRule).toContain('min-height: 360px;')
     expect(popupRule).toContain('max-height: 600px;')
@@ -34,14 +33,12 @@ describe('popup layout CSS — content-driven height and bubble-safe 320px reflo
     expect(popupRule).not.toMatch(/(?<!max-)(?<!min-)height: 600px;/u)
   })
 
-  it('supports 320px reflow on document shell with max-width: 100% and min-width: 0', () => {
+  it('pins 380px min-width on document shell for Chrome action popup bubble safety', () => {
     const documentRule = ruleBody('html,\nbody,\n#app')
 
     expect(documentRule).toContain('width: 380px;')
-    expect(documentRule).toContain('max-width: 100%;')
-    expect(documentRule).toContain('min-width: 0;')
+    expect(documentRule).toContain('min-width: 380px;')
     expect(documentRule).toContain('margin: 0;')
-    expect(documentRule).not.toContain('min-width: 380px;')
     expect(documentRule).not.toContain('height:')
     expect(documentRule).not.toContain('max-height:')
     expect(documentRule).not.toContain('overflow: hidden;')

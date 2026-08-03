@@ -102,7 +102,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="quickGrabEnabled"
-            aria-label="Quick Grab"
             checked={settings.quickGrabEnabled}
             onCheckedChange={(checked: boolean) => void update({ quickGrabEnabled: checked })}
           />
@@ -123,11 +122,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 void update({ quickGrabModifier: value as Settings['quickGrabModifier'] })
               }
             >
-              <SelectTrigger
-                id="quickGrabModifier"
-                aria-label="Quick grab modifier"
-                className="w-44 min-h-10"
-              >
+              <SelectTrigger id="quickGrabModifier" className="w-44 min-h-10">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper">
@@ -152,7 +147,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="keyboardNavEnabled"
-            aria-label="Keyboard navigation"
             checked={settings.keyboardNavEnabled}
             onCheckedChange={(checked: boolean) => void update({ keyboardNavEnabled: checked })}
           />
@@ -167,7 +161,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="downloadBadgeEnabled"
-            aria-label="Download badge"
             checked={settings.downloadBadgeEnabled}
             onCheckedChange={(checked: boolean) => void update({ downloadBadgeEnabled: checked })}
           />
@@ -182,7 +175,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="downloadDockEnabled"
-            aria-label="Download dock"
             checked={settings.downloadDockEnabled}
             onCheckedChange={(checked: boolean) => void update({ downloadDockEnabled: checked })}
           />
@@ -196,7 +188,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             </FieldContent>
             <Switch
               id="dockGlassEnabled"
-              aria-label="Liquid glass dock"
               checked={settings.dockGlassEnabled}
               onCheckedChange={(checked: boolean) => void update({ dockGlassEnabled: checked })}
             />
@@ -212,7 +203,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           <FieldLabel htmlFor="filenameTemplate">Filename template</FieldLabel>
           <Input
             id="filenameTemplate"
-            aria-label="Filename template"
             value={settings.filenameTemplate}
             onChange={(e: Event) =>
               void update({ filenameTemplate: (e.target as HTMLInputElement).value })
@@ -231,7 +221,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="sidecarMetadata"
-            aria-label="Save metadata sidecar"
             checked={settings.sidecarMetadata}
             onCheckedChange={(checked: boolean) => void update({ sidecarMetadata: checked })}
           />
@@ -253,7 +242,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             min={1}
             max={10}
             className="w-20 text-center font-mono tabular-nums"
-            aria-label="Concurrent downloads"
             value={settings.downloadConcurrency}
             onChange={(e: Event) =>
               void update({
@@ -284,7 +272,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             <ToggleGroupItem
               key={option.value}
               value={option.value}
-              aria-label={`Download mode: ${option.label}`}
               className="h-10 flex-1"
             >
               {option.label}
@@ -305,7 +292,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 min={1}
                 max={16}
                 className="w-20 text-center font-mono tabular-nums"
-                aria-label="aria2 split"
                 value={settings.aria2Split}
                 onChange={(e: Event) =>
                   void update({ aria2Split: Number((e.target as HTMLInputElement).value) || 1 })
@@ -316,7 +302,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
               <FieldLabel htmlFor="aria2RpcUrl">RPC URL</FieldLabel>
               <Input
                 id="aria2RpcUrl"
-                aria-label="aria2 RPC URL"
                 value={settings.aria2RpcUrl}
                 onChange={(e: Event) =>
                   void update({ aria2RpcUrl: (e.target as HTMLInputElement).value })
@@ -328,7 +313,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
               <Input
                 id="aria2Secret"
                 type="password"
-                aria-label="aria2 RPC secret"
                 value={settings.aria2Secret}
                 onChange={(e: Event) =>
                   void update({ aria2Secret: (e.target as HTMLInputElement).value })
@@ -339,7 +323,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
               <FieldLabel htmlFor="aria2Dir">Download directory</FieldLabel>
               <Input
                 id="aria2Dir"
-                aria-label="aria2 download directory"
                 placeholder="aria2 default"
                 value={settings.aria2Dir}
                 onChange={(e: Event) =>
@@ -372,7 +355,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="preventDuplicateDownloads"
-            aria-label="Prevent duplicate downloads"
             checked={settings.preventDuplicateDownloads}
             onCheckedChange={(checked: boolean) => void update(dedupeToggleDelta(checked))}
           />
@@ -391,7 +373,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             </FieldContent>
             <Switch
               id={`skipType-${filter.value}`}
-              aria-label={`Skip ${filter.label}`}
               checked={settings.skipTypes.includes(filter.value)}
               onCheckedChange={(checked: boolean) =>
                 void update({ skipTypes: toggleType(settings.skipTypes, filter.value, checked) })
@@ -410,7 +391,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             type="number"
             min={0}
             className="w-24 text-center font-mono tabular-nums"
-            aria-label="Minimum width"
             value={settings.minWidth}
             onChange={(e: Event) =>
               void update({ minWidth: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -428,7 +408,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             type="number"
             min={0}
             className="w-24 text-center font-mono tabular-nums"
-            aria-label="Minimum height"
             value={settings.minHeight}
             onChange={(e: Event) =>
               void update({ minHeight: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -446,7 +425,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             type="number"
             min={0}
             className="w-24 text-center font-mono tabular-nums"
-            aria-label="Max file size in MB"
             value={settings.maxFileSizeMB}
             onChange={(e: Event) =>
               void update({ maxFileSizeMB: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -469,7 +447,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             type="number"
             min={0}
             className="w-24 text-center font-mono tabular-nums"
-            aria-label="Daily size cap in MB"
             value={settings.dailyMaxMB}
             onChange={(e: Event) =>
               void update({ dailyMaxMB: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -487,7 +464,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
             type="number"
             min={0}
             className="w-24 text-center font-mono tabular-nums"
-            aria-label="Daily file cap"
             value={settings.dailyMaxCount}
             onChange={(e: Event) =>
               void update({ dailyMaxCount: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -530,7 +506,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="autoRevealSensitiveEnabled"
-            aria-label="Auto-reveal sensitive media"
             checked={settings.autoRevealSensitiveEnabled}
             onCheckedChange={(checked: boolean) =>
               void update({ autoRevealSensitiveEnabled: checked })
@@ -547,7 +522,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="authFallbackEnabled"
-            aria-label="Authenticated fallback"
             checked={settings.authFallbackEnabled}
             onCheckedChange={(checked: boolean) => void update({ authFallbackEnabled: checked })}
           />
@@ -562,7 +536,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="showSavedStatus"
-            aria-label="Show Saved status on already-downloaded posts"
             checked={settings.showSavedStatus}
             onCheckedChange={(checked: boolean) => void update({ showSavedStatus: checked })}
           />

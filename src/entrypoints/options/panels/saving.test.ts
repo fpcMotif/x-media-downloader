@@ -88,7 +88,7 @@ describe('Saving panel: nothing dropped from General + Downloads + Filters', () 
 describe('settings controls live on the options page (General → Saving)', () => {
   it('hosts the download badge toggle alongside the Quick Grab controls', () => {
     expect(source).toContain('checked={settings.quickGrabEnabled}')
-    expect(source).toContain('aria-label="Download badge"')
+    expect(source).toContain('id="downloadBadgeEnabled"')
     expect(source).toContain('Show download badge on media')
     expect(source).toContain('checked={settings.downloadBadgeEnabled}')
     expect(source).toContain('downloadBadgeEnabled: checked')
