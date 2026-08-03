@@ -99,7 +99,7 @@
           <li><strong>Cause:</strong> Live regions were created only when messages appeared.</li>
           <li><strong>Problem:</strong> Screen readers did not announce the text because the live region was not already in the DOM.</li>
           <li><strong>Fix:</strong> Keep one <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> element in the DOM at all times. Update only its inner text.</li>
-          <li><strong>Result:</strong> Screen readers announce every status message correctly.</li>
+          <li><strong>Result:</strong> Gives assistive technology an existing region whose text mutation can be announced.</li>
         </ul>
       </div>
 
@@ -117,9 +117,9 @@
         <h3>C. Persistent Output Nodes in ConfirmStrip and CaptureQuickActions</h3>
         <ul>
           <li><strong>Cause:</strong> <code>ConfirmStrip</code> returned a Fragment (<code>&lt;&gt;</code>) when idle and a <code>&lt;div&gt;</code> when active. <code>CaptureQuickActions</code> placed its status <code>&lt;output&gt;</code> inside the <code>{open &amp;&amp; (...)}</code> disclosure conditional.</li>
-          <li><strong>Problem:</strong> React reconciliation destroyed the old DOM node and created a new one when components switched states or collapsed. The live region was lost during disclosure toggles.</li>
-          <li><strong>Fix:</strong> Move the <code>&lt;output key="confirm-strip-output"&gt;</code> element in <code>ConfirmStrip</code> to the top level outside the condition. Move the status <code>&lt;output&gt;</code> in <code>CaptureQuickActions</code> outside the <code>open</code> conditional into its root container.</li>
-          <li><strong>Result:</strong> React keeps the <code>&lt;output&gt;</code> element mounted in <code>ConfirmStrip</code> across idle and armed states, and in <code>CaptureQuickActions</code> across disclosure open/close states and while status flashes are active.</li>
+          <li><strong>Problem:</strong> React reconciliation destroyed the old DOM node and created a new one when component element types or parent containers changed. The live region was lost during state switches.</li>
+          <li><strong>Fix:</strong> In <code>ConfirmStrip</code>, place <code>&lt;output&gt;</code> at index 0 under the top-level Fragment outside the <code>{armedAt === null ? ...}</code> branch so its element type (<code>&lt;output&gt;</code>) and sibling index (0) remain stable. In <code>CaptureQuickActions</code>, move status <code>&lt;output&gt;</code> outside the <code>open</code> conditional into its root container.</li>
+          <li><strong>Result:</strong> React retains the DOM node across state transitions because its element type and sibling index remain stable.</li>
         </ul>
       </div>
 
@@ -128,7 +128,7 @@
         <ul>
           <li><strong>Cause:</strong> Form controls had custom <code>aria-label</code> attributes that differed from their visible labels.</li>
           <li><strong>Problem:</strong> Speech software failed when users spoke the visible label text.</li>
-          <li><strong>Fix:</strong> Remove <code>aria-label</code> overrides when <code>&lt;label htmlFor="..."&gt;</code> already connects the visible label to the control ID.</li>
+          <li><strong>Fix:</strong> Remove <code>aria-label</code> overrides when <code>&lt;label htmlFor="..."&gt;</code> already connects the visual label to the control ID.</li>
           <li><strong>Result:</strong> The programmatic name matches the visible label text exactly.</li>
         </ul>
       </div>
@@ -163,7 +163,7 @@
       <ul>
         <li><strong>Keep live regions persistent:</strong> Mount <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> on initial render outside conditional branches. Change only its text.</li>
         <li><strong>Use valid HTML nesting:</strong> Do not place block elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside <code>&lt;output&gt;</code> tags.</li>
-        <li><strong>Preserve React DOM nodes:</strong> Keep live regions outside conditional disclosure branches (<code>open</code>, <code>armedAt</code>) so React reconciliation retains the DOM node across state transitions.</li>
+        <li><strong>Preserve React DOM nodes:</strong> Maintain stable element types and sibling positions for live regions so React reconciliation retains the DOM node across state transitions.</li>
         <li><strong>Match visible labels to accessible names:</strong> Rely on <code>&lt;label htmlFor="..."&gt;</code> for form inputs. Do not override visual text with different <code>aria-label</code> strings.</li>
         <li><strong>Test in real extension popups:</strong> Verify popup behavior in real extension popup windows via CDP (<code>--cdp 9222</code>), not in browser tabs.</li>
       </ul>

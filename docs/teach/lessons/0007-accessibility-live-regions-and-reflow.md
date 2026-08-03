@@ -23,7 +23,7 @@ Before you read this lesson, learn these five key terms:
 - **Cause:** Live regions were created only when messages appeared.
 - **Problem:** Screen readers did not announce the text because the live region was not already in the DOM.
 - **Fix:** Keep one `<output aria-live="polite" aria-atomic="true">` element in the DOM at all times. Update only its inner text.
-- **Result:** Screen readers announce every status message correctly.
+- **Result:** Gives assistive technology an existing region whose text mutation can be announced.
 
 ### B. Valid HTML Inside Output Elements
 - **Cause:** Paragraph tags (`<p>`) were placed inside `<output>` elements.
@@ -33,9 +33,9 @@ Before you read this lesson, learn these five key terms:
 
 ### C. Persistent Output Nodes in ConfirmStrip and CaptureQuickActions
 - **Cause:** `ConfirmStrip` returned a Fragment (`<>`) when idle and a `<div>` when active. `CaptureQuickActions` placed its status `<output>` inside the `{open && (...)}` disclosure conditional.
-- **Problem:** React reconciliation destroyed the old DOM node and created a new one when components switched states or collapsed. The live region was lost during disclosure toggles.
-- **Fix:** Move the `<output key="confirm-strip-output">` element in `ConfirmStrip` to the top level outside the condition. Move the status `<output>` in `CaptureQuickActions` outside the `open` conditional into its root container.
-- **Result:** React keeps the `<output>` element mounted in `ConfirmStrip` across idle and armed states, and in `CaptureQuickActions` across disclosure open/close states and while status flashes are active.
+- **Problem:** React reconciliation destroyed the old DOM node and created a new one when component element types or parent containers changed. The live region was lost during state switches.
+- **Fix:** In `ConfirmStrip`, place `<output>` at index 0 under the top-level Fragment outside the `{armedAt === null ? ...}` branch so its element type (`<output>`) and sibling index (0) remain stable. In `CaptureQuickActions`, move status `<output>` outside the `open` conditional into its root container.
+- **Result:** React retains the DOM node across state transitions because its element type and sibling index remain stable.
 
 ### D. Label Matching (WCAG 2.5.3)
 - **Cause:** Form controls had custom `aria-label` attributes that differed from their visible labels.
@@ -67,7 +67,7 @@ Before you read this lesson, learn these five key terms:
 ## 4. Best Practices Checklist
 
 - **Keep live regions persistent:** Mount `<output aria-live="polite" aria-atomic="true">` on initial render outside conditional branches. Change only its text.
-- **Use valid HTML nesting:** Do not place block elements (`<p>`, `<div>`) inside `<output>` tags.
-- **Preserve React DOM nodes:** Keep live regions outside conditional disclosure branches (`open`, `armedAt`) so React reconciliation retains the DOM node across state transitions.
+- **Respect HTML content models:** Do not place block elements (`<p>`, `<div>`) inside `<output>` tags.
+- **Preserve React DOM nodes:** Maintain stable element types and sibling positions for live regions so React reconciliation retains the DOM node across state transitions.
 - **Match visible labels to accessible names:** Rely on `<label htmlFor="...">` for form inputs. Do not override visual text with different `aria-label` strings.
 - **Test in real extension popups:** Verify popup behavior in real extension popup windows via CDP (`--cdp 9222`), not in browser tabs.
