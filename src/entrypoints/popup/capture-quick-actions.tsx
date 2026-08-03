@@ -134,6 +134,7 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
                       <button
                         type="button"
                         data-slot="button"
+                        aria-label={`Export conversation by @${c.rootHandle} as JSON`}
                         className={cn('text-primary hover:underline', LINK_SLOP)}
                         onClick={() => void exportConversation('tree', c.conversationId)}
                       >
@@ -145,6 +146,7 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
                       <button
                         type="button"
                         data-slot="button"
+                        aria-label={`Export conversation by @${c.rootHandle} as Markdown`}
                         className={cn('text-primary hover:underline', LINK_SLOP)}
                         onClick={() => void exportConversation('markdown', c.conversationId)}
                       >
@@ -197,12 +199,13 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
           </div>
 
           {statusMsg && (
-            <p
+            <output
               aria-live="polite"
-              className="text-pretty text-xs leading-snug text-muted-foreground"
+              aria-atomic="true"
+              className="block text-pretty text-xs leading-snug text-muted-foreground"
             >
               {statusMsg}
-            </p>
+            </output>
           )}
         </div>
       )}

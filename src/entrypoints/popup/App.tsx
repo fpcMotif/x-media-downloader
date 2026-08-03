@@ -336,9 +336,13 @@ function StageZone({
         )}
 
         {downloadMsg && (
-          <p aria-live="polite" className="text-pretty text-xs leading-snug text-muted-foreground">
+          <output
+            aria-live="polite"
+            aria-atomic="true"
+            className="block text-pretty text-xs leading-snug text-muted-foreground"
+          >
             {downloadMsg}
-          </p>
+          </output>
         )}
       </section>
     )
@@ -498,9 +502,13 @@ function ReleaseCluster({
       )}
 
       {releaseMsg && (
-        <p aria-live="polite" className="text-pretty text-xs leading-snug text-muted-foreground">
+        <output
+          aria-live="polite"
+          aria-atomic="true"
+          className="block text-pretty text-xs leading-snug text-muted-foreground"
+        >
           {releaseMsg}
-        </p>
+        </output>
       )}
     </section>
   )
