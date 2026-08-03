@@ -43,7 +43,8 @@ describe('ConfirmStrip source', () => {
     expect(source).not.toContain('>Confirm<')
   })
 
-  it('mounts the live region output node continuously in idle state before arming', () => {
-    expect(source).toContain('<output aria-live="polite" aria-atomic="true" className="sr-only" />')
+  it('mounts a single keyed live-region output node outside the idle/armed conditional', () => {
+    expect(source).toContain('key="confirm-strip-output"')
+    expect(source).toContain('const announceText = armedAt !== null')
   })
 })

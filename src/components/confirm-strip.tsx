@@ -123,23 +123,14 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
     return () => document.removeEventListener('mousedown', onPointerDown)
   }, [armedAt, disarm])
 
-  if (armedAt === null) {
-    return (
-      <>
-        {children(arm)}
-        <output aria-live="polite" aria-atomic="true" className="sr-only" />
-      </>
-    )
-  }
-
-  const startedAt = armedAt
-  const guardElapsed = isGuardElapsed(startedAt, now, kind)
+  const startedAt = armedAt ?? Date.now()
+  const guardElapsed = armedAt !== null && isGuardElapsed(startedAt, now, kind)
   const guardWindowMs = guardMs(kind)
   const guardProgress = Math.min(1, Math.max(0, (now - startedAt) / guardWindowMs))
   const guardOpacity = guardElapsed ? 1 : 0.4 + 0.6 * guardProgress
 
   const underlineStartsAt = underlineStart(startedAt)
-  const showUnderline = now >= underlineStartsAt && !prefersReducedMotion()
+  const showUnderline = armedAt !== null && now >= underlineStartsAt && !prefersReducedMotion()
   const underlineRemaining = showUnderline
     ? Math.max(
         0,
@@ -151,28 +142,32 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
   const confirmInert = !guardElapsed || !wordOk
 
   const preCommitted = kind === 'pre-committed'
+  const announceText = armedAt !== null ? `Press ${confirmLabel} to continue, or Cancel.` : ''
 
   return (
-    <div
-      ref={stripRef}
-      className={cn(
-        'animate-in fade-in grid gap-2 rounded-[var(--xmd-radius-3)] p-3 duration-[180ms] ease-[var(--xmd-ease)]',
-        preCommitted ? 'bg-muted' : 'bg-destructive/8',
-      )}
-    >
-      <p
-        className={cn(
-          'text-pretty text-[13px]',
-          preCommitted ? 'text-foreground' : 'text-destructive',
-        )}
-      >
-        {sentence}
-      </p>
-
-      <output aria-live="polite" aria-atomic="true" className="sr-only">
-        {`Press ${confirmLabel} to continue, or Cancel.`}
+    <>
+      <output key="confirm-strip-output" aria-live="polite" aria-atomic="true" className="sr-only">
+        {announceText}
       </output>
 
+      {armedAt === null ? (
+        children(arm)
+      ) : (
+        <div
+          ref={stripRef}
+          className={cn(
+            'animate-in fade-in grid gap-2 rounded-[var(--xmd-radius-3)] p-3 duration-[180ms] ease-[var(--xmd-ease)]',
+            preCommitted ? 'bg-muted' : 'bg-destructive/8',
+          )}
+        >
+          <p
+            className={cn(
+              'text-pretty text-[13px]',
+              preCommitted ? 'text-foreground' : 'text-destructive',
+            )}
+          >
+            {sentence}
+          </p>
       {typedWord !== undefined && (
         <label className="grid min-h-10 gap-1 text-xs text-muted-foreground">
           Type {typedWord.toUpperCase()} to continue
@@ -231,6 +226,8 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
           />
         </div>
       )}
-    </div>
+        </div>
+      )}
+    </>
   )
 }

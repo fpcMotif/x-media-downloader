@@ -9,7 +9,7 @@
 
 ### HTML and Component Architecture
 - **Live Regions (`<output>`)**: Replaced conditional `<div aria-live="polite">` and `<p aria-live="polite">` containers with continuously mounted `<output aria-live="polite" aria-atomic="true">` elements across `App.tsx`, `archive.tsx`, `release.tsx`, `capture-quick-actions.tsx`, and `confirm-strip.tsx`.
-- **ConfirmStrip Idle Mounting**: Updated `confirm-strip.tsx` so that when idle (`armedAt === null`), the `<output aria-live="polite" aria-atomic="true" className="sr-only" />` node is continuously mounted in the DOM alongside `children(arm)`. On `arm()`, the persistent node mutates from empty text to ``Press ${confirmLabel} to continue, or Cancel.``.
+- **ConfirmStrip React DOM Preservation**: Updated `confirm-strip.tsx` so the top-level return is wrapped in a `<>` Fragment, with a single `<output key="confirm-strip-output" aria-live="polite" aria-atomic="true" className="sr-only">{announceText}</output>` at index 0 outside the `{armedAt === null ? children(arm) : <div ...>...</div>}` conditional. React's keying algorithm preserves the exact same DOM node across idle and armed states, mutating `announceText` from `''` to ``Press ${confirmLabel} to continue, or Cancel.``.
 - **Phrasing Content Validity**: Removed block-level `<FieldDescription>` (`<p>`) tags from inside `<output>` containers. Placed plain text or `<span>` nodes inside `<output>`.
 - **Label Matching (WCAG 2.5.3)**: Removed redundant and conflicting `aria-label` overrides on controls in `saving.tsx`, `capture.tsx`, `history.tsx`, `release.tsx`, and `sync.tsx` where `<FieldLabel htmlFor="...">` already links the visual label to the control ID.
 
@@ -21,9 +21,9 @@
 
 ## 2. Technical Analysis for Beginners
 
-### A. Live Region Announcements & Lifecycle (ConfirmStrip Precedent)
-- **Why the old code was wrong**: The previous code mounted `<div aria-live="polite">` or `<p aria-live="polite">` only when `saved` or `statusMsg` became true. In `confirm-strip.tsx`, when `armedAt === null`, the component returned early with `children(arm)` and mounted `<output>` only *after* arming with full text. When a live region and its text enter the DOM simultaneously, screen readers do not register a change event inside an existing region and often skip speech output.
-- **Why the new code is correct**: The `<output>` container remains in the DOM continuously from page load (including `ConfirmStrip` idle state). Only the inner text updates from empty to non-empty (`{statusMsg}` or ``Press ${confirmLabel}...``). Screen readers detect the text insertion inside the persistent live region and reliably announce the update.
+### A. Live Region Announcements & React Reconciliation (ConfirmStrip Precedent)
+- **Why changing root node types destroys live regions**: If a component returns `<> <output /> </>` when idle but `<div ...> <output /> </div>` when armed, React's diffing algorithm unmounts the entire `<React.Fragment>` DOM tree (destroying the old `<output>` element) and mounts a brand-new `<div>` tree with a new `<output>` element created already containing text. Screen readers miss the announcement because the element was newly mounted with text rather than mutated from empty within a persistent region.
+- **Why top-level keyed `<output>` is correct**: Wrapping the component in `<>` and placing `<output key="confirm-strip-output" ...>{announceText}</output>` outside the idle/armed conditional ensures React preserves the exact same `<output>` DOM node across state transitions. When `armedAt` changes, React mutates the text node inside the existing live region from `''` to ``Press ${confirmLabel}...``, triggering reliable speech output.
 - **HTML semantics**: HTML rules prohibit block elements (`<p>`, `<div>`) inside phrasing elements (`<output>`). Replacing `<p>` with `<span>` or direct text node children ensures valid HTML parsing.
 
 ### B. Chrome Extension Action Popup Sizing (Plan 008 Context)
@@ -38,7 +38,7 @@
 
 ## 3. Why Junior Developers Make These Errors
 
-1. **Visual Bias**: Junior developers often test software solely by visual inspection. Toggling CSS opacity (`opacity-0` to `opacity-100`) makes text appear visually, leading developers to assume screen readers announce it. Screen readers track DOM text nodes, not CSS opacity transitions.
+1. **Visual Bias & Subtree Swapping**: Junior developers often test software solely by visual inspection. Returning a `<div>` in one state and a `Fragment` in another looks identical visually, but destroys DOM node persistence required by accessibility APIs.
 2. **Testing Environment Mismatch**: Junior developers test popup pages by opening `popup.html` directly in a browser tab. Standard browser tabs have fixed window dimensions where `100vw` equals screen width, hiding extension popup window collapse bugs.
 3. **Redundant ARIA Attributes**: Junior developers frequently add `aria-label` to every control without realizing that `<label htmlFor="...">` already provides the accessible name, or that mismatched strings violate WCAG 2.5.3 speech navigation rules.
 
@@ -46,7 +46,7 @@
 
 ## 4. Best Practices Checklist
 
-- **Keep live regions persistent**: Mount `<output aria-live="polite" aria-atomic="true">` on initial render (including idle states); update only its inner text content.
+- **Keep live regions persistent across state transitions**: Place `<output aria-live="polite" aria-atomic="true">` outside state-based component branches under a top-level Fragment so React DOM reconciliation retains the same DOM element.
 - **Respect HTML content models**: Do not place block-level elements (`<p>`, `<div>`) inside phrasing elements (`<output>`).
 - **Fix root dimensions for extension popups**: Use explicit pixel dimensions (`width: 380px; min-width: 380px;`) on `html, body` for extension action popups to avoid bubble collapse.
 - **Match visible labels to accessible names**: Rely on `<label htmlFor="...">` for form controls. Do not override visual text with different `aria-label` strings.
