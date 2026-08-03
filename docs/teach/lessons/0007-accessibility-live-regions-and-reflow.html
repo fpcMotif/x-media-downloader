@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lesson 0007: Accessibility Live Regions, Root Sizing, and WCAG 2.5.3</title>
+    <style>
+      :root {
+        --bg: #fcfcfd;
+        --ink: #1e293b;
+        --muted: #64748b;
+        --border: #e2e8f0;
+        --accent: #2563eb;
+        --code-bg: #f1f5f9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f172a;
+          --ink: #f8fafc;
+          --muted: #94a3b8;
+          --border: #334155;
+          --accent: #3b82f6;
+          --code-bg: #1e293b;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 2rem 1rem;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.6;
+      }
+      main {
+        max-width: 800px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.875rem;
+        margin-bottom: 0.5rem;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 0.875rem;
+        margin-bottom: 2rem;
+      }
+      h2 {
+        font-size: 1.35rem;
+        margin-top: 2rem;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 0.4rem;
+      }
+      h3 {
+        font-size: 1.1rem;
+        margin-top: 1.5rem;
+      }
+      ul {
+        padding-left: 1.5rem;
+      }
+      li {
+        margin-bottom: 0.5rem;
+      }
+      code {
+        background: var(--code-bg);
+        padding: 0.15rem 0.35rem;
+        border-radius: 4px;
+        font-size: 0.9em;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+        margin: 1rem 0;
+        background: var(--code-bg);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Lesson 0007: Accessibility Live Regions, Root Sizing, and WCAG 2.5.3</h1>
+      <div class="meta">Date: 2026-08-03 · Category: Accessibility (a11y) & UI Architecture</div>
+
+      <h2>1. Summary of Changes</h2>
+
+      <h3>HTML and Component Architecture</h3>
+      <ul>
+        <li><strong>Live Regions (<code>&lt;output&gt;</code>)</strong>: Replaced conditional <code>&lt;div aria-live="polite"&gt;</code> and <code>&lt;p aria-live="polite"&gt;</code> containers with continuously mounted <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> elements across <code>App.tsx</code>, <code>archive.tsx</code>, <code>release.tsx</code>, <code>capture-quick-actions.tsx</code>, and <code>confirm-strip.tsx</code>.</li>
+        <li><strong>Phrasing Content Validity</strong>: Removed block-level <code>&lt;FieldDescription&gt;</code> (<code>&lt;p&gt;</code>) tags from inside <code>&lt;output&gt;</code> containers. Placed plain text or <code>&lt;span&gt;</code> nodes inside <code>&lt;output&gt;</code>.</li>
+        <li><strong>Label Matching (WCAG 2.5.3)</strong>: Removed redundant <code>aria-label</code> overrides on controls in <code>saving.tsx</code>, <code>capture.tsx</code>, <code>history.tsx</code>,  impulse/<code>release.tsx</code>, and <code>sync.tsx</code> where <code>&lt;FieldLabel htmlFor="..."&gt;</code> already links the visual label to the control ID.</li>
+      </ul>
+
+      <h3>CSS and Responsive Sizing</h3>
+      <ul>
+        <li><strong>Bubble-Safe Sizing</strong>: Re-established explicit <code>width: 380px; min-width: 380px;</code> rules on root elements (<code>html, body, #app</code>) in <code>src/app.css</code> and <code>src/entrypoints/popup/index.html</code>.</li>
+        <li><strong>Inner Container Reflow</strong>: Maintained <code>max-width: 100%; box-sizing: border-box;</code> on <code>.xmd-popup</code> to allow 320px content reflow without breaking Chrome popup window measurement.</li>
+        <li><strong>Options Layout</strong>: Added responsive breakpoint classes (<code>flex-col sm:flex-row</code>) in <code>src/entrypoints/options/App.tsx</code> so sidebar and main panels stack cleanly on narrow viewports without horizontal scrolling.</li>
+      </ul>
+
+      <h2>2. Technical Analysis for Beginners</h2>
+
+      <div class="card">
+        <h3>A. Live Region Announcements</h3>
+        <ul>
+          <li><strong>Why the old code was wrong</strong>: The previous code mounted <code>&lt;div aria-live="polite"&gt;</code> only when <code>saved</code> or <code>statusMsg</code> became true. When a live region and its text enter the DOM simultaneously, screen readers do not register a change event inside an existing region and often skip speech output.</li>
+          <li><strong>Why the new code is correct</strong>: The <code>&lt;output&gt;</code> container remains in the DOM continuously from page load. Only the inner text updates from empty to non-empty (<code>{statusMsg}</code>). Screen readers detect the text insertion inside the persistent live region and reliably announce the update.</li>
+          <li><strong>HTML semantics</strong>: HTML rules prohibit block elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside phrasing elements (<code>&lt;output&gt;</code>). Replacing <code>&lt;p&gt;</code> with <code>&lt;span&gt;</code> or direct text node children ensures valid HTML parsing.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>B. Chrome Extension Action Popup Sizing</h3>
+        <ul>
+          <li><strong>Why the old code was wrong</strong>: The old code used <code>width: min(380px, 100vw)</code> or <code>max-width: 100%</code> directly on <code>html, body</code>. When Chrome opens an extension action popup bubble, it measures the un-sized iframe container. If the root element width depends on container percentages (<code>100vw</code> or <code>100%</code>), a circular layout dependency occurs and Chrome collapses the popup window to a thin strip.</li>
+          <li><strong>Why the new code is correct</strong>: Root elements (<code>html, body, #app</code>) specify <code>width: 380px; min-width: 380px;</code>. Chrome reads these explicit pixel values and allocates a 380px popup bubble. Inner containers (<code>.xmd-popup</code>) use <code>max-width: 100%;</code> so content reflows down to 320px when rendered in narrower frames.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>C. Label in Name (WCAG 2.5.3)</h3>
+        <ul>
+          <li><strong>Why the old code was wrong</strong>: Controls had visual labels (such as "Hover quick grab") linked via <code>&lt;FieldLabel htmlFor="id"&gt;</code>, but also carried different <code>aria-label="Quick Grab"</code> attributes. Under accessibility specifications, <code>aria-label</code> overrides the visual text in the accessible name calculation. Speech control users saying "Click Hover quick grab" experienced failures because the programmatic name was "Quick Grab".</li>
+          <li><strong>Why the new code is correct</strong>: Removing the conflicting <code>aria-label</code> allows the browser to compute the accessible name directly from the visual <code>&lt;FieldLabel&gt;</code>. The programmatic accessible name now matches the visible text exactly.</li>
+        </ul>
+      </div>
+
+      <h2>3. Why Junior Developers Make These Errors</h2>
+      <ol>
+        <li><strong>Visual Bias</strong>: Junior developers often test software solely by visual inspection. Toggling CSS opacity (<code>opacity-0</code> to <code>opacity-100</code>) makes text appear visually, leading developers to assume screen readers announce it. Screen readers track DOM text nodes, not CSS opacity transitions.</li>
+        <li><strong>Testing Environment Mismatch</strong>: Junior developers test popup pages by opening <code>popup.html</code> directly in a browser tab. Standard browser tabs have fixed window dimensions where <code>100vw</code> equals screen width, hiding extension popup window collapse bugs.</li>
+        <li><strong>Redundant ARIA Attributes</strong>: Junior developers frequently add <code>aria-label</code> to every control without realizing that <code>&lt;label htmlFor="..."&gt;</code> already provides the accessible name, or that mismatched strings violate speech navigation rules.</li>
+      </ol>
+
+      <h2>4. Best Practices Checklist</h2>
+      <ul>
+        <li><strong>Keep live regions persistent</strong>: Mount <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> on initial render; update only its inner text content.</li>
+        <li><strong>Respect HTML content models</strong>: Do not place block-level elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside phrasing elements (<code>&lt;output&gt;</code>).</li>
+        <li><strong>Fix root dimensions for extension popups</strong>: Use explicit pixel dimensions (<code>width: 380px; min-width: 380px;</code>) on <code>html, body</code> for extension action popups.</li>
+        <li><strong>Match visible labels to accessible names</strong>: Rely on <code>&lt;label htmlFor="..."&gt;</code> for form controls. Do not override visual text with different <code>aria-label</code> strings.</li>
+        <li><strong>Verify in real target environments</strong>: Test extension popups inside actual extension popup frames via CDP (<code>--cdp 9222</code>) rather than in browser tabs.</li>
+      </ul>
+    </main>
+  </body>
+</html>
