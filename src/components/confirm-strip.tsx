@@ -162,9 +162,9 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
         {sentence}
       </p>
 
-      <div aria-live="polite" className="sr-only">
+      <output aria-live="polite" aria-atomic="true" className="sr-only">
         {`Press ${confirmLabel} to continue, or Cancel.`}
-      </div>
+      </output>
 
       {typedWord !== undefined && (
         <label className="grid min-h-10 gap-1 text-xs text-muted-foreground">

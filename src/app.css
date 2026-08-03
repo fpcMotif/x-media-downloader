@@ -144,7 +144,8 @@ html,
 body,
 #app {
   width: 380px;
-  min-width: 380px;
+  max-width: 100%;
+  min-width: 0;
   margin: 0;
   background: var(--xmd-bg);
 }
@@ -158,9 +159,8 @@ body,
 .xmd-popup {
   width: 380px;
   max-width: 100%;
-  min-width: 320px;
+  min-width: 0;
   box-sizing: border-box;
-  overflow-x: hidden;
   min-height: 360px;
   max-height: 600px;
   overflow-y: auto;

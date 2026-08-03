@@ -108,11 +108,11 @@ export function App() {
   const ActivePanel = active.Panel
 
   return (
-    <div className="xmd-options-root flex min-h-screen w-full bg-background text-foreground">
+    <div className="xmd-options-root flex flex-col sm:flex-row min-h-screen w-full bg-background text-foreground">
       <SettingsSidebar sections={SECTIONS} active={section} onSelect={select} />
 
       <main className="min-w-0 flex-1">
-        <div className="mx-auto flex max-w-2xl flex-col gap-8 px-10 py-12">
+        <div className="mx-auto flex max-w-2xl flex-col gap-8 px-4 sm:px-10 py-6 sm:py-12">
           {settings ? <ActivePanel settings={settings} update={update} reload={reload} /> : null}
         </div>
       </main>
@@ -149,7 +149,7 @@ function SettingsSidebar({
   const librarySections = sections.filter((s) => s.group === 'library')
 
   return (
-    <aside className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col gap-1 border-r border-border px-3 py-5">
+    <aside className="sm:sticky top-0 flex sm:h-screen w-full sm:w-[220px] shrink-0 flex-col gap-1 border-b sm:border-b-0 sm:border-r border-border px-3 py-4 sm:py-5">
       <div className="px-2 pb-4">
         <span className="block text-sm leading-tight font-semibold tracking-tight">
           X Media Downloader

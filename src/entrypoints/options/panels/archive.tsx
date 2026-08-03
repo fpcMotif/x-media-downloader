@@ -143,6 +143,7 @@ export function ArchivePanel() {
                 <div className="flex shrink-0 items-center gap-1.5 text-xs">
                   <button
                     type="button"
+                    aria-label={`Export conversation by @${c.rootHandle} as JSON`}
                     className={`text-primary hover:underline ${LINK_FOCUS}`}
                     onClick={() => void doExport('tree', c.conversationId)}
                   >
@@ -153,6 +154,7 @@ export function ArchivePanel() {
                   </span>
                   <button
                     type="button"
+                    aria-label={`Export conversation by @${c.rootHandle} as Markdown`}
                     className={`text-primary hover:underline ${LINK_FOCUS}`}
                     onClick={() => void doExport('markdown', c.conversationId)}
                   >
@@ -220,9 +222,9 @@ export function ArchivePanel() {
           )}
         </ConfirmStrip>
 
-        <div aria-live="polite">
+        <output aria-live="polite" aria-atomic="true" className="block">
           {statusMsg && <FieldDescription>{statusMsg}</FieldDescription>}
-        </div>
+        </output>
       </Section>
     </>
   )

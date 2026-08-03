@@ -24,22 +24,24 @@ describe('popup layout CSS — content-driven height and bubble-safe 320px reflo
   it('lets the popup render content height min 360 / max 600 and reflow down to 320px without root 100vw collapse', () => {
     const popupRule = ruleBody('.xmd-popup')
 
-    expect(popupRule).toContain('min-width: 320px;')
+    expect(popupRule).toContain('width: 380px;')
     expect(popupRule).toContain('max-width: 100%;')
+    expect(popupRule).toContain('min-width: 0;')
     expect(popupRule).toContain('box-sizing: border-box;')
-    expect(popupRule).toContain('overflow-x: hidden;')
     expect(popupRule).toContain('min-height: 360px;')
     expect(popupRule).toContain('max-height: 600px;')
     expect(popupRule).toContain('overflow-y: auto;')
     expect(popupRule).not.toMatch(/(?<!max-)(?<!min-)height: 600px;/u)
   })
 
-  it('does not pin a fixed height on the document shell', () => {
+  it('supports 320px reflow on document shell with max-width: 100% and min-width: 0', () => {
     const documentRule = ruleBody('html,\nbody,\n#app')
 
     expect(documentRule).toContain('width: 380px;')
-    expect(documentRule).toContain('min-width: 380px;')
+    expect(documentRule).toContain('max-width: 100%;')
+    expect(documentRule).toContain('min-width: 0;')
     expect(documentRule).toContain('margin: 0;')
+    expect(documentRule).not.toContain('min-width: 380px;')
     expect(documentRule).not.toContain('height:')
     expect(documentRule).not.toContain('max-height:')
     expect(documentRule).not.toContain('overflow: hidden;')

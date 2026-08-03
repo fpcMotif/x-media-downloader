@@ -220,9 +220,9 @@ export function ReleasePanel({ settings, update }: PanelProps) {
           Export diagnostics
         </Button>
 
-        <div aria-live="polite">
+        <output aria-live="polite" aria-atomic="true" className="block">
           {diagStatus && <FieldDescription>{diagStatus}</FieldDescription>}
-        </div>
+        </output>
       </Section>
     </>
   )
