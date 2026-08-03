@@ -54,7 +54,7 @@
         font-size: 1.1rem;
         margin-top: 1.5rem;
       }
-      ul {
+      ul, ol {
         padding-left: 1.5rem;
       }
       li {
@@ -81,63 +81,91 @@
       <h1>Lesson 0007: Accessibility Live Regions, Fixed Action Popup Sizing, and WCAG 2.5.3</h1>
       <div class="meta">Date: 2026-08-03 · Category: Accessibility (a11y) & UI Architecture</div>
 
-      <h2>1. Summary of Changes</h2>
-
-      <h3>HTML and Component Architecture</h3>
+      <h2>1. Important Terms for Beginners</h2>
+      <p>Before you read this lesson, learn these five key terms:</p>
       <ul>
-        <li><strong>Live Regions (<code>&lt;output&gt;</code>)</strong>: Replaced conditional <code>&lt;div aria-live="polite"&gt;</code> and <code>&lt;p aria-live="polite"&gt;</code> containers with continuously mounted <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> elements across <code>App.tsx</code>, <code>archive.tsx</code>, <code>release.tsx</code>, <code>capture-quick-actions.tsx</code>, and <code>confirm-strip.tsx</code>.</li>
-        <li><strong>ConfirmStrip React DOM Preservation</strong>: Updated <code>confirm-strip.tsx</code> so the top-level return is wrapped in a <code>&lt;&gt;</code> Fragment, with a single <code>&lt;output key="confirm-strip-output" aria-live="polite" aria-atomic="true" className="sr-only"&gt;{announceText}&lt;/output&gt;</code> at index 0 outside the <code>{armedAt === null ? children(arm) : &lt;div ...&gt;...&lt;/div&gt;}</code> conditional. React's keying algorithm preserves the exact same DOM node across idle and armed states, mutating <code>announceText</code> from <code>''</code> to <code>Press ${confirmLabel} to continue, or Cancel.</code>.</li>
-        <li><strong>Phrasing Content Validity</strong>: Removed block-level <code>&lt;FieldDescription&gt;</code> (<code>&lt;p&gt;</code>) tags from inside <code>&lt;output&gt;</code> containers. Placed plain text or <code>&lt;span&gt;</code> nodes inside <code>&lt;output&gt;</code>.</li>
-        <li><strong>Label Matching (WCAG 2.5.3)</strong>: Removed redundant and conflicting <code>aria-label</code> overrides on controls in <code>saving.tsx</code>, <code>capture.tsx</code>, <code>history.tsx</code>, <code>release.tsx</code>, and <code>sync.tsx</code> where <code>&lt;FieldLabel htmlFor="..."&gt;</code> already links the visual label to the control ID.</li>
+        <li><strong>DOM (Document Object Model):</strong> The tree of elements (buttons, text, inputs) that the browser creates to render a web page.</li>
+        <li><strong>Live Region:</strong> An HTML element with <code>aria-live</code> that tells screen readers to announce new text aloud when it appears.</li>
+        <li><strong>ARIA (Accessible Rich Internet Applications):</strong> Attributes that give screen readers extra information about web elements.</li>
+        <li><strong>WCAG (Web Content Accessibility Guidelines):</strong> The official international standards for accessible software design.</li>
+        <li><strong>Reconciliation:</strong> The process React uses to compare old and new components and decide which DOM elements to keep, update, or remove.</li>
       </ul>
 
-      <h3>CSS and Layout Architecture</h3>
-      <ul>
-        <li><strong>Fixed Bubble-Safe Popup Shell</strong>: Maintained explicit <code>width: 380px; min-width: 380px;</code> rules on root elements (<code>html, body, #app</code>) in <code>src/app.css</code> and <code>src/entrypoints/popup/index.html</code>. 320px popup reflow remains explicitly unsupported and reverted (per Plan 008) to prevent Chrome action popup bubble collapse.</li>
-        <li><strong>Options Layout Reflow</strong>: Added responsive breakpoint classes (<code>flex-col sm:flex-row</code>) in <code>src/entrypoints/options/App.tsx</code> so sidebar and main panels stack cleanly on narrow viewports down to 320px without horizontal scrolling.</li>
-      </ul>
-
-      <h2>2. Technical Analysis for Beginners</h2>
+      <h2>2. Summary of Changes</h2>
 
       <div class="card">
-        <h3>A. Live Region Announcements & React Reconciliation (ConfirmStrip Precedent)</h3>
+        <h3>A. Live Region Fixes (<code>&lt;output&gt;</code>)</h3>
         <ul>
-          <li><strong>Why changing root node types destroys live regions</strong>: If a component returns <code>&lt;&gt; &lt;output /&gt; &lt;/&gt;</code> when idle but <code>&lt;div ...&gt; &lt;output /&gt; &lt;/div&gt;</code> when armed, React's diffing algorithm unmounts the entire <code>&lt;React.Fragment&gt;</code> DOM tree (destroying the old <code>&lt;output&gt;</code> element) and mounts a brand-new <code>&lt;div&gt;</code> tree with a new <code>&lt;output&gt;</code> element created already containing text. Screen readers miss the announcement because the element was newly mounted with text rather than mutated from empty within a persistent region.</li>
-          <li><strong>Why top-level keyed <code>&lt;output&gt;</code> is correct</strong>: Wrapping the component in <code>&lt;&gt;</code> and placing <code>&lt;output key="confirm-strip-output" ...&gt;{announceText}&lt;/output&gt;</code> outside the idle/armed conditional ensures React preserves the exact same <code>&lt;output&gt;</code> DOM node across state transitions. When <code>armedAt</code> changes, React mutates the text node inside the existing live region from <code>''</code> to <code>Press ${confirmLabel}...</code>, triggering reliable speech output.</li>
-          <li><strong>HTML semantics</strong>: HTML rules prohibit block elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside phrasing elements (<code>&lt;output&gt;</code>). Replacing <code>&lt;p&gt;</code> with <code>&lt;span&gt;</code> or direct text node children ensures valid HTML parsing.</li>
+          <li><strong>Cause:</strong> Live regions were created only when messages appeared.</li>
+          <li><strong>Problem:</strong> Screen readers did not announce the text because the live region was not already in the DOM.</li>
+          <li><strong>Fix:</strong> Keep one <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> element in the DOM at all times. Update only its inner text.</li>
+          <li><strong>Result:</strong> Screen readers announce every status message correctly.</li>
         </ul>
       </div>
 
       <div class="card">
-        <h3>B. Chrome Extension Action Popup Sizing (Plan 008 Context)</h3>
+        <h3>B. Valid HTML Inside Output Elements</h3>
         <ul>
-          <li><strong>Why the root requires a fixed 380px width</strong>: When Chrome opens an extension action popup bubble, it measures the un-sized iframe container. If the root element width depends on container percentages (<code>100vw</code> or <code>max-width: 100%</code> on root), a circular layout dependency occurs and Chrome collapses the popup window to a thin strip.</li>
-          <li><strong>Why 320px popup reflow is unsupported</strong>: Root elements (<code>html, body, #app</code>) specify <code>width: 380px; min-width: 380px;</code> so Chrome allocates a fixed 380px popup bubble. <code>max-width: 100%</code> on inner child <code>.xmd-popup</code> cannot shrink below its ancestor's 380px minimum. Responsive 320px reflow applies to the Options page (<code>options.html</code>), while the Action Popup stays fixed at 380px for bubble safety.</li>
+          <li><strong>Cause:</strong> Paragraph tags (<code>&lt;p&gt;</code>) were placed inside <code>&lt;output&gt;</code> elements.</li>
+          <li><strong>Problem:</strong> HTML rules do not allow paragraph tags inside output tags.</li>
+          <li><strong>Fix:</strong> Replace paragraph tags with text or <code>&lt;span&gt;</code> elements.</li>
+          <li><strong>Result:</strong> The web page uses clean, valid HTML.</li>
         </ul>
       </div>
 
       <div class="card">
-        <h3>C. Label in Name (WCAG 2.5.3)</h3>
+        <h3>C. Persistent Output Node in ConfirmStrip</h3>
         <ul>
-          <li><strong>Why the old code was wrong</strong>: Controls had visual labels (such as "Hover quick grab", "Upload media to cloud", "Sync secret (required)") linked via <code>&lt;FieldLabel htmlFor="id"&gt;</code>, but also carried different <code>aria-label</code> attributes (such as <code>"Quick Grab"</code>, <code>"Cloud upload"</code>, <code>"Convex sync secret"</code>). Under accessibility specifications, <code>aria-label</code> overrides the visual text in the accessible name calculation. Speech control users saying "Click Upload media to cloud" experienced failures because the programmatic name was "Cloud upload".</li>
-          <li><strong>Why the new code is correct</strong>: Removing the conflicting <code>aria-label</code> attributes allows the browser to compute accessible names directly from visual <code>&lt;FieldLabel htmlFor="..."&gt;</code> elements. The programmatic accessible name now matches the visible text exactly across all panel controls.</li>
+          <li><strong>Cause:</strong> <code>ConfirmStrip</code> returned a Fragment (<code>&lt;&gt;</code>) when idle and a <code>&lt;div&gt;</code> when active.</li>
+          <li><strong>Problem:</strong> React reconciliation destroyed the old DOM node and created a new one. The live region was lost during the switch.</li>
+          <li><strong>Fix:</strong> Move the <code>&lt;output key="confirm-strip-output"&gt;</code> element to the top level outside the condition.</li>
+          <li><strong>Result:</strong> React keeps the same <code>&lt;output&gt;</code> element in the DOM when the component activates.</li>
         </ul>
       </div>
 
-      <h2>3. Why Junior Developers Make These Errors</h2>
+      <div class="card">
+        <h3>D. Label Matching (WCAG 2.5.3)</h3>
+        <ul>
+          <li><strong>Cause:</strong> Form controls had custom <code>aria-label</code> attributes that differed from their visible labels.</li>
+          <li><strong>Problem:</strong> Speech software failed when users spoke the visible label text.</li>
+          <li><strong>Fix:</strong> Remove <code>aria-label</code> overrides when <code>&lt;label htmlFor="..."&gt;</code> already connects the visible label to the control ID.</li>
+          <li><strong>Result:</strong> The programmatic name matches the visible label text exactly.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>E. Fixed Popup Sizing and Options Reflow</h3>
+        <ul>
+          <li><strong>Cause:</strong> Extension popup windows need explicit pixel dimensions to open correctly.</li>
+          <li><strong>Problem:</strong> Using percentage widths on root elements causes Chrome popup bubbles to collapse.</li>
+          <li><strong>Fix:</strong> Keep <code>width: 380px; min-width: 380px;</code> on root elements for popup windows. Add responsive flex classes to the Options page.</li>
+          <li><strong>Result:</strong> Popup windows remain stable at 380px width, while the Options page reflows on small screens down to 320px.</li>
+        </ul>
+      </div>
+
+      <h2>3. Understandable Misconceptions by Junior Developers</h2>
       <ol>
-        <li><strong>Visual Bias & Subtree Swapping</strong>: Junior developers often test software solely by visual inspection. Returning a <code>&lt;div&gt;</code> in one state and a <code>Fragment</code> in another looks identical visually, but destroys DOM node persistence required by accessibility APIs.</li>
-        <li><strong>Testing Environment Mismatch</strong>: Junior developers test popup pages by opening <code>popup.html</code> directly in a browser tab. Standard browser tabs have fixed window dimensions where <code>100vw</code> equals screen width, hiding extension popup window collapse bugs.</li>
-        <li><strong>Redundant ARIA Attributes</strong>: Junior developers frequently add <code>aria-label</code> to every control without realizing that <code>&lt;label htmlFor="..."&gt;</code> already provides the accessible name, or that mismatched strings violate WCAG 2.5.3 speech navigation rules.</li>
+        <li>
+          <strong>Testing only by visual inspection:</strong>
+          A developer might toggle CSS opacity (<code>opacity-0</code> to <code>opacity-100</code>) to show text. The text appears on screen, so the developer assumes screen readers announce it. Screen readers track DOM text changes, not CSS opacity.
+        </li>
+        <li>
+          <strong>Testing popups in browser tabs:</strong>
+          A developer might test <code>popup.html</code> by opening it in a regular browser tab. Standard tabs have wide viewports, which hides bugs that collapse extension popup windows.
+        </li>
+        <li>
+          <strong>Overusing ARIA attributes:</strong>
+          A developer might add <code>aria-label</code> to every input control. If the <code>aria-label</code> text differs from the visual label, it breaks speech recognition tools.
+        </li>
       </ol>
 
       <h2>4. Best Practices Checklist</h2>
       <ul>
-        <li><strong>Keep live regions persistent across state transitions</strong>: Place <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> outside state-based component branches under a top-level Fragment so React DOM reconciliation retains the same DOM element.</li>
-        <li><strong>Respect HTML content models</strong>: Do not place block-level elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside phrasing elements (<code>&lt;output&gt;</code>).</li>
-        <li><strong>Fix root dimensions for extension popups</strong>: Use explicit pixel dimensions (<code>width: 380px; min-width: 380px;</code>) on <code>html, body</code> for extension action popups to avoid bubble collapse.</li>
-        <li><strong>Match visible labels to accessible names</strong>: Rely on <code>&lt;label htmlFor="..."&gt;</code> for form controls. Do not override visual text with different <code>aria-label</code> strings.</li>
-        <li><strong>Verify in real target environments</strong>: Test extension popups inside actual extension popup frames via CDP (<code>--cdp 9222</code>) rather than in browser tabs.</li>
+        <li><strong>Keep live regions persistent:</strong> Mount <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> on initial render. Change only its text.</li>
+        <li><strong>Use valid HTML nesting:</strong> Do not place block elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside <code>&lt;output&gt;</code> tags.</li>
+        <li><strong>Preserve React DOM nodes:</strong> Keep live regions outside conditional branches so React reconciliation retains the DOM node.</li>
+        <li><strong>Match visible labels to accessible names:</strong> Rely on <code>&lt;label htmlFor="..."&gt;</code> for form inputs. Do not override visual text with different <code>aria-label</code> strings.</li>
+        <li><strong>Test in real extension popups:</strong> Verify popup behavior in real extension popup windows via CDP (<code>--cdp 9222</code>), not in browser tabs.</li>
       </ul>
     </main>
   </body>
