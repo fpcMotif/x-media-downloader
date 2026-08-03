@@ -335,15 +335,13 @@ function StageZone({
           <p className="text-pretty text-[11px] text-muted-foreground">{ARIA2_CAVEAT}</p>
         )}
 
-        {downloadMsg && (
-          <output
-            aria-live="polite"
-            aria-atomic="true"
-            className="block text-pretty text-xs leading-snug text-muted-foreground"
-          >
-            {downloadMsg}
-          </output>
-        )}
+        <output
+          aria-live="polite"
+          aria-atomic="true"
+          className="block text-pretty text-xs leading-snug text-muted-foreground"
+        >
+          {downloadMsg}
+        </output>
       </section>
     )
   }
@@ -501,15 +499,13 @@ function ReleaseCluster({
         </div>
       )}
 
-      {releaseMsg && (
-        <output
-          aria-live="polite"
-          aria-atomic="true"
-          className="block text-pretty text-xs leading-snug text-muted-foreground"
-        >
-          {releaseMsg}
-        </output>
-      )}
+      <output
+        aria-live="polite"
+        aria-atomic="true"
+        className="block text-pretty text-xs leading-snug text-muted-foreground"
+      >
+        {releaseMsg}
+      </output>
     </section>
   )
 }

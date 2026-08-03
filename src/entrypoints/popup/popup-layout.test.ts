@@ -60,11 +60,13 @@ describe('popup layout CSS — content-driven height and bubble-safe 320px reflo
     expect(popupHtml).toContain('Loading...')
   })
 })
-describe('popup save-status toast live region (a11y announcement)', () => {
-  it('uses semantic output tag, aria-atomic="true", and conditionally renders saved text', () => {
+describe('popup live regions (a11y announcement contract)', () => {
+  it('mounts output live regions continuously and conditions only inner text contents', () => {
     expect(popupSource).toContain('<output')
     expect(popupSource).toContain('aria-live="polite"')
     expect(popupSource).toContain('aria-atomic="true"')
+    expect(popupSource).not.toContain('{downloadMsg && (\n          <output')
+    expect(popupSource).not.toContain('{releaseMsg && (\n          <output')
     expect(popupSource).toContain('{saved &&')
   })
 })
