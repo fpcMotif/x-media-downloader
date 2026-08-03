@@ -33,9 +33,9 @@ Before you read this lesson, learn these five key terms:
 
 ### C. Persistent Output Nodes in ConfirmStrip and CaptureQuickActions
 - **Cause:** `ConfirmStrip` returned a Fragment (`<>`) when idle and a `<div>` when active. `CaptureQuickActions` placed its status `<output>` inside the `{open && (...)}` disclosure conditional.
-- **Problem:** React reconciliation destroyed the old DOM node and created a new one when components switched states or collapsed. The live region was lost during the switch.
-- **Fix:** Move the `<output key="confirm-strip-output">` element in `ConfirmStrip` to the top level outside the condition. Move the status `<output>` in `CaptureQuickActions` outside the `open` conditional into the persistent root container.
-- **Result:** React keeps the same `<output>` element in the DOM continuously across all component states.
+- **Problem:** React reconciliation destroyed the old DOM node and created a new one when components switched states or collapsed. The live region was lost during disclosure toggles.
+- **Fix:** Move the `<output key="confirm-strip-output">` element in `ConfirmStrip` to the top level outside the condition. Move the status `<output>` in `CaptureQuickActions` outside the `open` conditional into its root container.
+- **Result:** React keeps the `<output>` element mounted in `ConfirmStrip` across idle and armed states, and in `CaptureQuickActions` across disclosure open/close states and while status flashes are active.
 
 ### D. Label Matching (WCAG 2.5.3)
 - **Cause:** Form controls had custom `aria-label` attributes that differed from their visible labels.
@@ -68,6 +68,6 @@ Before you read this lesson, learn these five key terms:
 
 - **Keep live regions persistent:** Mount `<output aria-live="polite" aria-atomic="true">` on initial render outside conditional branches. Change only its text.
 - **Use valid HTML nesting:** Do not place block elements (`<p>`, `<div>`) inside `<output>` tags.
-- **Preserve React DOM nodes:** Keep live regions outside conditional disclosure branches (`open`, `armedAt`) so React reconciliation retains the DOM node.
+- **Preserve React DOM nodes:** Keep live regions outside conditional disclosure branches (`open`, `armedAt`) so React reconciliation retains the DOM node across state transitions.
 - **Match visible labels to accessible names:** Rely on `<label htmlFor="...">` for form inputs. Do not override visual text with different `aria-label` strings.
 - **Test in real extension popups:** Verify popup behavior in real extension popup windows via CDP (`--cdp 9222`), not in browser tabs.
