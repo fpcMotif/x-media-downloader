@@ -42,4 +42,8 @@ describe('ConfirmStrip source', () => {
   it('never renders the bare word "Confirm" as a button label', () => {
     expect(source).not.toContain('>Confirm<')
   })
+
+  it('mounts the live region output node continuously in idle state before arming', () => {
+    expect(source).toContain('<output aria-live="polite" aria-atomic="true" className="sr-only" />')
+  })
 })

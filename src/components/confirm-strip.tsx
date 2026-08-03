@@ -123,7 +123,14 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
     return () => document.removeEventListener('mousedown', onPointerDown)
   }, [armedAt, disarm])
 
-  if (armedAt === null) return children(arm)
+  if (armedAt === null) {
+    return (
+      <>
+        {children(arm)}
+        <output aria-live="polite" aria-atomic="true" className="sr-only" />
+      </>
+    )
+  }
 
   const startedAt = armedAt
   const guardElapsed = isGuardElapsed(startedAt, now, kind)
