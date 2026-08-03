@@ -42,7 +42,6 @@ export function HistoryPanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="downloadHistoryEnabled"
-            aria-label="Keep download history"
             checked={settings.downloadHistoryEnabled}
             onCheckedChange={(checked: boolean) => void update({ downloadHistoryEnabled: checked })}
           />

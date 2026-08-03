@@ -142,7 +142,6 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
           </FieldContent>
           <Switch
             id="cloudSyncEnabled"
-            aria-label="Cloud sync"
             checked={settings.cloudSyncEnabled}
             onCheckedChange={(checked: boolean) =>
               void update({
@@ -161,7 +160,6 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               <FieldLabel htmlFor="convexUrl">Convex deployment URL</FieldLabel>
               <Input
                 id="convexUrl"
-                aria-label="Convex deployment URL"
                 placeholder="https://<deployment>.convex.cloud"
                 value={settings.convexUrl}
                 onChange={(e: Event) =>
@@ -174,7 +172,6 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               <Input
                 id="convexSyncSecret"
                 type="password"
-                aria-label="Convex sync secret"
                 placeholder="must match the deployment's SYNC_SHARED_SECRET"
                 value={settings.convexSyncSecret}
                 onChange={(e: Event) =>
@@ -235,7 +232,6 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
           </FieldContent>
           <Switch
             id="cloudUploadEnabled"
-            aria-label="Cloud upload"
             checked={settings.cloudUploadEnabled}
             onCheckedChange={(checked: boolean) => void update({ cloudUploadEnabled: checked })}
           />
@@ -351,7 +347,6 @@ function CloudProviderRow({
         <FieldLabel htmlFor={`${provider}ClientId`}>{idLabel}</FieldLabel>
         <Input
           id={`${provider}ClientId`}
-          aria-label={`${label} ${idLabel}`}
           placeholder={provider === 'gdrive' ? 'xxxx.apps.googleusercontent.com' : 'your app key'}
           value={draft}
           onChange={(e: Event) => setDraft((e.target as HTMLInputElement).value)}

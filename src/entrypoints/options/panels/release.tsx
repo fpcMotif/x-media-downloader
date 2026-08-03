@@ -84,7 +84,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
               </FieldContent>
               <Switch
                 id="clearOnSave"
-                aria-label="Release after download"
                 checked={settings.clearOnSave}
                 onCheckedChange={(checked: boolean) => {
                   if (checked) arm()
@@ -107,7 +106,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
               </FieldContent>
               <Switch
                 id="autoUnbookmarkOnSave"
-                aria-label="Un-bookmark on save"
                 checked={settings.autoUnbookmarkOnSave}
                 onCheckedChange={(checked: boolean) =>
                   void update({ autoUnbookmarkOnSave: checked })
@@ -121,7 +119,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
               </FieldContent>
               <Switch
                 id="autoUnlikeOnSave"
-                aria-label="Un-like on save"
                 checked={settings.autoUnlikeOnSave}
                 onCheckedChange={(checked: boolean) => void update({ autoUnlikeOnSave: checked })}
               />
@@ -136,7 +133,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
               </FieldContent>
               <Switch
                 id="autoNotInterestedOnSave"
-                aria-label="Not interested on save"
                 checked={settings.autoNotInterestedOnSave}
                 onCheckedChange={(checked: boolean) =>
                   void update({ autoNotInterestedOnSave: checked })
@@ -154,7 +150,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
               </FieldContent>
               <Switch
                 id="clearAllListsOnSave"
-                aria-label="Release from every list"
                 checked={settings.clearAllListsOnSave}
                 onCheckedChange={(checked: boolean) =>
                   void update({ clearAllListsOnSave: checked })
@@ -202,7 +197,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
           </FieldContent>
           <Switch
             id="releaseMutationDiagnosticsEnabled"
-            aria-label="Observe bookmark/like mutations"
             checked={settings.releaseMutationDiagnosticsEnabled}
             onCheckedChange={(checked: boolean) =>
               void update({ releaseMutationDiagnosticsEnabled: checked })
