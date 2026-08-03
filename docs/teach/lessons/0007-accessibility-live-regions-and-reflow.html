@@ -114,12 +114,12 @@
       </div>
 
       <div class="card">
-        <h3>C. Persistent Output Node in ConfirmStrip</h3>
+        <h3>C. Persistent Output Nodes in ConfirmStrip and CaptureQuickActions</h3>
         <ul>
-          <li><strong>Cause:</strong> <code>ConfirmStrip</code> returned a Fragment (<code>&lt;&gt;</code>) when idle and a <code>&lt;div&gt;</code> when active.</li>
-          <li><strong>Problem:</strong> React reconciliation destroyed the old DOM node and created a new one. The live region was lost during the switch.</li>
-          <li><strong>Fix:</strong> Move the <code>&lt;output key="confirm-strip-output"&gt;</code> element to the top level outside the condition.</li>
-          <li><strong>Result:</strong> React keeps the same <code>&lt;output&gt;</code> element in the DOM when the component activates.</li>
+          <li><strong>Cause:</strong> <code>ConfirmStrip</code> returned a Fragment (<code>&lt;&gt;</code>) when idle and a <code>&lt;div&gt;</code> when active. <code>CaptureQuickActions</code> placed its status <code>&lt;output&gt;</code> inside the <code>{open &amp;&amp; (...)}</code> disclosure conditional.</li>
+          <li><strong>Problem:</strong> React reconciliation destroyed the old DOM node and created a new one when components switched states or collapsed. The live region was lost during the switch.</li>
+          <li><strong>Fix:</strong> Move the <code>&lt;output key="confirm-strip-output"&gt;</code> element in <code>ConfirmStrip</code> to the top level outside the condition. Move the status <code>&lt;output&gt;</code> in <code>CaptureQuickActions</code> outside the <code>open</code> conditional into the persistent root container.</li>
+          <li><strong>Result:</strong> React keeps the same <code>&lt;output&gt;</code> element in the DOM continuously across all component states.</li>
         </ul>
       </div>
 
@@ -161,9 +161,9 @@
 
       <h2>4. Best Practices Checklist</h2>
       <ul>
-        <li><strong>Keep live regions persistent:</strong> Mount <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> on initial render. Change only its text.</li>
+        <li><strong>Keep live regions persistent:</strong> Mount <code>&lt;output aria-live="polite" aria-atomic="true"&gt;</code> on initial render outside conditional branches. Change only its text.</li>
         <li><strong>Use valid HTML nesting:</strong> Do not place block elements (<code>&lt;p&gt;</code>, <code>&lt;div&gt;</code>) inside <code>&lt;output&gt;</code> tags.</li>
-        <li><strong>Preserve React DOM nodes:</strong> Keep live regions outside conditional branches so React reconciliation retains the DOM node.</li>
+        <li><strong>Preserve React DOM nodes:</strong> Keep live regions outside conditional disclosure branches (<code>open</code>, <code>armedAt</code>) so React reconciliation retains the DOM node.</li>
         <li><strong>Match visible labels to accessible names:</strong> Rely on <code>&lt;label htmlFor="..."&gt;</code> for form inputs. Do not override visual text with different <code>aria-label</code> strings.</li>
         <li><strong>Test in real extension popups:</strong> Verify popup behavior in real extension popup windows via CDP (<code>--cdp 9222</code>), not in browser tabs.</li>
       </ul>
