@@ -48,6 +48,12 @@ describe('clearer — isClearableTweetId (DOM-locatable id guard)', () => {
     expect(isClearableTweetId('123abc')).toBe(false)
     expect(isClearableTweetId('12 34')).toBe(false)
     expect(isClearableTweetId('123456789012345678901')).toBe(false)
+    // Captured junk that decodes OUTSIDE [Twitter epoch, now+1d]: the live
+    // 2026-08-23 case — X 404s this permalink forever, so seeding it only burns
+    // the release leg's poll budget.
+    expect(isClearableTweetId('3969701833668148185')).toBe(false)
+    // A genuine 2026-era snowflake decodes inside the window.
+    expect(isClearableTweetId('2082647370886690000')).toBe(true)
   })
 })
 

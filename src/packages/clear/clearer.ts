@@ -170,16 +170,24 @@ export function tweetIdOfArticle(article: Element): Option.Option<string> {
   return Option.none()
 }
 
+/** Twitter's snowflake epoch (2010-11-04T01:42:54.657Z): every genuine status id
+ *  decodes to `(id >> 22) + EPOCH`. */
+const SNOWFLAKE_EPOCH_MS = 1_288_834_974_657
+
 /** Can the Clear even LOCATE this post? `findArticle` matches a tweet ONLY by its
- *  numeric `/status/{id}` permalink, so a tweetId that isn't X's numeric snowflake
+ *  numeric `/status/{id}` permalink, so a tweetId that isn't a PLAUSIBLE snowflake
  *  can never match a mounted article — it would defer-then-drop on every tab and
  *  silently leave the post in its lists ("not mounted"). That happens for the
  *  media-key fallback the X adapter uses when a photo's tweet context can't be
- *  resolved (`tweetId ?? key` — e.g. a quote-card image, whose id belongs to a
- *  DIFFERENT post and must NOT be cleared). Gate clear seeding on this so such items
- *  are skipped honestly up front, never seeded into a clear that can only fail. */
+ *  resolved (`tweetId ?? key`) AND for captured junk ids (live 2026-08-23:
+ *  `3969701833668148185`, which decodes to year 2040 — X 404s that permalink
+ *  forever while the release leg burns its whole poll budget). Gate clear seeding
+ *  on digit shape AND decodable time inside [Twitter epoch, now + 1 day], so such
+ *  items are skipped honestly up front, never seeded into a clear that can only fail. */
 export function isClearableTweetId(tweetId: string): boolean {
-  return /^[0-9]{1,20}$/.test(tweetId)
+  if (!/^[0-9]{1,20}$/.test(tweetId)) return false
+  const createdAtMs = Number(BigInt(tweetId) >> 22n) + SNOWFLAKE_EPOCH_MS
+  return createdAtMs >= SNOWFLAKE_EPOCH_MS && createdAtMs <= Date.now() + 86_400_000
 }
 
 /** The mounted `<article>` whose resolved tweetId matches — the id-match guard
