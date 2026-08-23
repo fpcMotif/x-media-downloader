@@ -299,7 +299,7 @@ and `downloads.search` are spies; settings pre-seeded via `fakeBrowser.storage.l
 | BG-N15 | `onChanged` for unknown downloadId, or before any batch (`live === null`) | no `search` call, no persistence |
 | BG-N16 | `downloads.search` throwing | swallowed; the terminal outcome is still processed |
 | BG-N17 | `MetricsRequest`: persisted snapshot returned verbatim; nothing persisted → ZERO snapshot (with trace events when present) | both branches |
-| BG-N18 | 15 `DownloadTraceEvent`s | ring buffer holds the **last 12**; optional fields included only when present; each reply `{ok:true}` |
+| BG-N18 | `MAX_TRACE_EVENTS + 3` `DownloadTraceEvent`s | ring buffer holds the **last `MAX_TRACE_EVENTS`** (assert against the constant, never a literal — it was raised 12 → 300 for issue #91 and will move again); optional fields included only when present; each reply `{ok:true}` |
 | BG-N19 | `ClearDownloadMonitorRequest` while `active > 0` | `{ok:false, reason:'active-downloads'}`, nothing cleared |
 | BG-N20 | `ClearDownloadMonitorRequest` when idle with stale locks | clears `live`/locks/maps/trace, `session:metrics` set `null`, `clearedLocks` = stale count; the request's `clearStaleLocks` field is **ignored** — pin; → BC-10 |
 | BG-N21 | trace label assembly (console spy) | `elapsedMs:0` renders `'0ms'` (string is truthy); absent fields omitted from the label |

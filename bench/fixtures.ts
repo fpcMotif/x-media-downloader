@@ -260,7 +260,7 @@ export class FakeXWorld {
   /** Server-side membership truth: `true` iff a REAL optimistic flip fired. DOM
    * detachment/recycling NEVER touches it. */
   private readonly truth = new Map<string, boolean>()
-  private readonly tabs: { id: number; pathname: string; win: Window }[] = []
+  private readonly tabs: { id: number; pathname: string; win: Window; dead: boolean }[] = []
   /** Tweet ids whose ok-verdict armed the recheck watchdog (via the clearer's
    * onFlip port) — the deferred-verification contract for 'gone' detachments. */
   private readonly armed = new Set<string>()
@@ -288,6 +288,20 @@ export class FakeXWorld {
       id,
       pathname,
       win: makeListWindow(pathname, specs, this.clock, this.recordFlip),
+      dead: false,
+    })
+    return id
+  }
+
+  /** A tab whose content script never answers — the orphaned-overlay case that
+   * spec Part D's skip list exists for. */
+  addOrphanTab(pathname: string): number {
+    const id = this.nextId++
+    this.tabs.push({
+      id,
+      pathname,
+      win: makeListWindow(pathname, [], this.clock, this.recordFlip),
+      dead: true,
     })
     return id
   }
@@ -305,15 +319,6 @@ export class FakeXWorld {
     return this.tabs.find((t) => t.id === tabId)?.win
   }
 
-  broadcaster() {
-    return makeTabBroadcaster(this.port(), {
-      clock: this.clock,
-      trace: (stage, detail, tweetId) => {
-        this.trace.push({ stage, detail, ...(tweetId === undefined ? {} : { tweetId }) })
-      },
-    })
-  }
-
   /** Page-state evidence exactly as the real content script computes it. */
   private pageEvidence(win: Window): ClearTweetResponse['page'] {
     const doc = asDom<Document>(win.document)
@@ -323,6 +328,15 @@ export class FakeXWorld {
       ready: 'complete' as const,
       error: doc.querySelector('[data-testid="error-detail"]') !== null,
     }
+  }
+
+  broadcaster() {
+    return makeTabBroadcaster(this.port(), {
+      clock: this.clock,
+      trace: (stage, detail, tweetId) => {
+        this.trace.push({ stage, detail, ...(tweetId === undefined ? {} : { tweetId }) })
+      },
+    })
   }
 
   private port(): TabsPort {
@@ -336,6 +350,10 @@ export class FakeXWorld {
         }
         const tab = this.tabs.find((t) => t.id === tabId)
         if (!tab) throw new Error(`no receiver ${tabId}`)
+        // Orphaned content script: the port-level rejection the broadcaster's
+        // compactReason folds into `no-receiver`.
+        if (tab.dead)
+          throw new Error('Could not establish connection. Receiving end does not exist.')
         return this.handleClear(tab.pathname, tab.win, req)
       },
       getTabUrl: async (tabId) => {

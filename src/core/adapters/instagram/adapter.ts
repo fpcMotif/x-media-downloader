@@ -49,6 +49,45 @@ export function postCodeFromPathname(pathname: string): string | null {
   return code === 'audio' ? null : code
 }
 
+/**
+ * The post shortcode named by an `<a href>` ANYWHERE in the path, not just at
+ * its start: both the bare `/p/{code}/` feed form and the profile-prefixed
+ * `/{username}/p/{code}/` (or `/{username}/reel/{code}/`) form Instagram uses
+ * for the "More posts from {author}" thumbnails rendered below a permalink.
+ * Deliberately NOT `INSTAGRAM_PERMALINK_PATTERN`/`INSTAGRAM_POST_LINK_PATTERN`,
+ * both of which anchor at `^` and therefore miss the prefixed shape — that miss
+ * is exactly what let a suggested thumbnail fall through to the page's own
+ * pathname (see {@link ownPostCodeFromLink}).
+ */
+const INSTAGRAM_ANY_POST_HREF_PATTERN = /(?:^|\/)(?:p|reels?)\/([A-Za-z0-9_-]+)/
+
+/**
+ * The post an element belongs to BY ITS OWN LINK, or null when it carries none.
+ *
+ * LIVE-VERIFIED 2026-08-23 (logged-in Chrome via CDP) on two real permalink
+ * pages — instagram.com/p/DcGBaq9AKSa/ (photo carousel) and
+ * instagram.com/p/DcXoDCCMd6H/ (single video): every "More posts" thumbnail is
+ * an `<img>` wrapped in its own post's profile-prefixed link, while the page's
+ * own hero media carries no ancestor post link at all. That asymmetry is the
+ * signal separating "this element IS the page's post" from "this element is a
+ * DIFFERENT post rendered on the page", and it must be consulted before any
+ * pathname fallback: on that second page, 6 of 6 suggested thumbnails otherwise
+ * resolved to the hero post's code, so a whole-post grab aimed at a thumbnail
+ * queued the hero post's media instead — a silent wrong-content download.
+ *
+ * `closest` (ancestor-or-self) takes the INNERMOST wrapping link, which is the
+ * thumbnail's own, not some outer section-level link.
+ *
+ * Reuses `postCodeFromPathname`'s reserved-segment rule: `/reels/audio/{id}/`
+ * is a real page shape whose "code" would otherwise be the literal "audio".
+ */
+function ownPostCodeFromLink(el: Element): string | null {
+  const href = el.closest('a[href]')?.getAttribute('href')
+  if (!href) return null
+  const code = INSTAGRAM_ANY_POST_HREF_PATTERN.exec(href)?.[1] ?? null
+  return code === 'audio' ? null : code
+}
+
 /** Visible-in-viewport area of a DOMRect-like box against a `{width,height}`
  *  viewport — clips the box to the viewport bounds on all four sides before
  *  multiplying, so a box partially or fully off-screen (negative coordinates,
@@ -148,6 +187,24 @@ function isViewportDominantVideo(video: Element, root: Document | DocumentFragme
 function postIdFromDom(el: Element, pathname: string): string | null {
   const container = findPostContainer(el, INSTAGRAM_POST_SELECTOR)
   if (container) return postCodeFromContainer(container, 'a[href]', INSTAGRAM_POST_LINK_PATTERN)
+  // No <article>: either the permalink page's own hero content, or a
+  // suggested-content thumbnail rendered on it. A thumbnail carries its OWN
+  // post's link, and that link — never the page's pathname — is its identity.
+  // Checked before ANY pathname fallback below; see `ownPostCodeFromLink` for
+  // the live evidence and the wrong-post download this prevents.
+  const ownCode = ownPostCodeFromLink(el)
+  if (ownCode) return ownCode
+  // A PHOTO has nothing to disambiguate — the permalink pathname names its post
+  // outright, and the element is now known to carry no competing own-link. The
+  // video-count/dominance machinery below exists solely to answer "which of
+  // several mounted videos is the reels player actually showing"; applying it to
+  // a photo made resolution depend on an unrelated element's presence.
+  // LIVE-VERIFIED 2026-08-23: 7/7 photos on a real photo-carousel permalink
+  // resolved to no code at all (single-item Quick Grab worked, whole-post grab
+  // silently did nothing), and injecting one empty off-screen <video> flipped
+  // the same carousel from 0 resolved items to all 8 — a second one broke it
+  // again.
+  if (!(el instanceof HTMLVideoElement)) return postCodeFromPathname(pathname)
   // `getRootNode()` resolves to the live `document` on a real page (every
   // mounted video lives there), but to the nearest detached fragment root in
   // a test that never attaches its scratch `<div>` to `document.body` —
@@ -159,9 +216,9 @@ function postIdFromDom(el: Element, pathname: string): string | null {
   const root = el.getRootNode() as Document | DocumentFragment
   const videos = root.querySelectorAll('video')
   if (videos.length === 1) return postCodeFromPathname(pathname)
-  if (el instanceof HTMLVideoElement && isViewportDominantVideo(el, root)) {
-    return postCodeFromPathname(pathname)
-  }
+  // `el` is necessarily an HTMLVideoElement here — the photo branch above
+  // already returned — so the dominance gate is the only question left.
+  if (isViewportDominantVideo(el, root)) return postCodeFromPathname(pathname)
   return null
 }
 

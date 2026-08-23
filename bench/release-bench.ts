@@ -2,26 +2,29 @@
  * Release-bench — the deterministic autoresearch workload for the Release flow.
  *
  * Drives the REAL dispatch machinery (`background/tab-broadcaster.sendClearToTabs`
- * fan-out → release-tab permalink leg) against fixture replicas of X's surfaces,
+ * fan-out → release-tab permalink leg) and the REAL seed composition
+ * (`packages/clear/seed.planClearSeed`) against fixture replicas of X's surfaces,
  * with the content-script side running the real `packages/clear` decision stack
  * (see fixtures.ts). Reproduces, offline and byte-identically, the failure families
  * observed live over CDP on 2026-08-23 (x.com moved Bookmarks/Likes into
  * `/i/history`):
  *
- *   1. Permalink pages that never mount (`articles=0` on all 30 polls — incl. a
+ *   1. Permalink pages that never mount (`articles=0` across the budget — incl. a
  *      seeded garbage id whose snowflake decodes to year 2040 ⇒ "page doesn't
- *      exist" forever) burn the full poll budget before reporting a fabricated
- *      failure.  → `wasted_poll_ms`, `exhausted_dispatches`
- *   2. The detach-as-proof confirm rule records a flip when the article node is
+ *      exist" forever).  → `wasted_poll_ms`, `exhausted_dispatches`, `doomed_seeds`
+ *   2. The detach-as-proof confirm rule recording a flip when the article node is
  *      recycled mid-poll while the post is still bookmarked/liked server-side
  *      (diagnosis doc cause #1).  → `release_success_rate`, `fabricated_flip_count`
  *
  * Emits one `METRIC <name>=<value>` line per metric; exit 0 iff every scenario ran
- * to a verdict. Leg verdicts are DATA, not assertions: baseline legs that fail are
- * exactly what the optimization loop must fix.
+ * to a verdict. Leg verdicts are DATA, not assertions: failing legs are exactly
+ * what the optimization loop must fix.
  */
+import { Schema } from 'effect'
 import { VirtualClock, drive, FakeXWorld, type TweetSpec } from './fixtures'
 import type { MembershipScope } from '@/packages/clear/clearer'
+import { planClearSeed } from '@/packages/clear/seed'
+import { Settings as SettingsSchema } from '@/packages/schema'
 
 interface LegResult {
   readonly name: string
@@ -33,8 +36,14 @@ interface LegResult {
   /** Set when the leg's success claim is DEFERRED-verified (recheck watchdog must
    * be armed) rather than truth-proven at click time — the 'gone' detach contract. */
   readonly deferred?: { readonly id: string; readonly scope: MembershipScope }
+  /** The leg's `ok` IS the full assertion (pure-integration legs without a fixture
+   * world) — honesty scoring defers to it wholesale. */
+  readonly selfAsserted?: boolean
   readonly actualOk: boolean
 }
+
+/** The live-measured junk capture (snowflake decodes to year 2040). */
+const GARBAGE_ID = '3969701833668148185'
 
 const ID = (n: number): string => `208264737088669${String(n).padStart(4, '0')}`
 const PIN = (scope: MembershipScope) => ({ source: 'consented', scope }) as const
@@ -143,8 +152,8 @@ export async function runBench(): Promise<void> {
   )
 
   // S5 — permalink NEVER mounts (the live garbage-id / not-found shell): every
-  // release attempt finds `articles=0` until the budget exhausts. Ground truth
-  // demands an honest FAIL; its whole burn counts as waste.
+  // release attempt finds an error block until reload+backoff ends the leg.
+  // Ground truth demands an honest FAIL; its burn counts as waste.
   const s5 = await score(
     (clock) => new FakeXWorld(clock, () => ({ state: 'notfound' })),
     'permalink-never-mounts',
@@ -197,7 +206,6 @@ export async function runBench(): Promise<void> {
       const cell = win?.document.querySelector('[data-testid="cellInnerDiv"]')
       world.clock.at(400, () => {
         cell?.remove()
-        // Recycle: X re-mounts the SAME post in a fresh cell (still bookmarked).
         if (!win) return
         const col = win.document.querySelector('[data-testid="primaryColumn"]')
         const fresh = win.document.createElement('div')
@@ -220,7 +228,84 @@ export async function runBench(): Promise<void> {
     },
   )
 
-  const legs = [s1, s2, s3, s4, s5, s6, s7]
+  // S9 — orphan-tab skip (spec Part D): a tab whose content script rejects on
+  // TWO consecutive dispatches is skipped thereafter (skipped=/stale= tokens),
+  // while the healthy tab keeps clearing. Guards the dead-tab tax on every
+  // dispatch.
+  const s9 = await score(
+    (clock) => new FakeXWorld(clock, () => ({ state: 'notfound' })),
+    'orphan-tab-skipped-after-two-misses',
+    true,
+    async (world) => {
+      world.addOrphanTab('/i/history')
+      world.addListTab('/i/history', [{ id: ID(60), bookmark: 'member' }])
+      const broadcaster = world.broadcaster()
+      await broadcaster.sendClearToTabs(ID(60), ['bookmark'], undefined, false, PIN('bookmark'))
+      await broadcaster.sendClearToTabs(ID(60), ['bookmark'], undefined, false, PIN('bookmark'))
+      const third = await broadcaster.sendClearToTabs(
+        ID(60),
+        ['bookmark'],
+        undefined,
+        false,
+        PIN('bookmark'),
+      )
+      const lastDispatch = [...world.trace].reverse().find((t) => t.stage === 'clear-dispatch')
+      const orphanWasSkipped = lastDispatch?.detail.includes('skipped=1') === true
+      return {
+        ok: third.every((r) => r.ok) && orphanWasSkipped,
+        truth: { id: ID(60), scope: 'bookmark' as const },
+      }
+    },
+  )
+
+  // S8 — seed-time gate INTEGRATION: the real `planClearSeed` must refuse the
+  // live garbage id while seeding the genuine snowflake — this failure class
+  // never reaches a dispatch at all.
+  const seedSettings = Schema.decodeUnknownSync(SettingsSchema)({
+    clearOnSave: true,
+    autoUnbookmarkOnSave: true,
+  })
+  const mediaItem = (id: string, postId: string) => ({
+    id,
+    platform: 'x' as const,
+    postId,
+    author: 'alice',
+    type: 'photo' as const,
+    url: `https://pbs.twimg.com/media/${id}.jpg`,
+    ext: 'jpg',
+    index: 0,
+  })
+  const mediaById = new Map(
+    [mediaItem('m-garbage', GARBAGE_ID), mediaItem('m-good', ID(50))].map((item) => [
+      item.id,
+      item,
+    ]),
+  )
+  const seedVerdict = planClearSeed({
+    requests: [
+      { id: 'm-garbage', url: 'https://x/m-garbage', filename: 'm-garbage.jpg' },
+      { id: 'm-good', url: 'https://x/m-good', filename: 'm-good.jpg' },
+    ],
+    mediaById,
+    settings: seedSettings,
+  })
+  const doomedSeeds =
+    seedVerdict.decision === 'seed'
+      ? [...seedVerdict.byTweet.keys()].filter((id) => id === GARBAGE_ID).length
+      : -1
+  const s8ok =
+    seedVerdict.decision === 'seed' &&
+    seedVerdict.unclearableCount === 1 &&
+    doomedSeeds === 0 &&
+    seedVerdict.byTweet.get(ID(50))?.length === 1
+
+  const legs: Array<LegResult & Partial<{ world: FakeXWorld }>> = [s1, s2, s3, s4, s5, s6, s7, s9]
+  legs.push({
+    name: 'seed-gate-refuses-garbage-id',
+    expectOk: true,
+    selfAsserted: true,
+    actualOk: s8ok,
+  })
 
   let wastedPollMs = 0
   let fabricatedFlips = 0
@@ -228,7 +313,7 @@ export async function runBench(): Promise<void> {
   let correct = 0
 
   for (const leg of legs) {
-    for (const line of leg.world.trace) {
+    for (const line of leg.world?.trace ?? []) {
       if (line.stage === 'clear-flip-fabricated') fabricatedFlips++
       if (line.stage === 'clear-release-poll') {
         const elapsed = Number(/elapsedMs=(\d+)/.exec(line.detail)?.[1] ?? '0')
@@ -242,11 +327,14 @@ export async function runBench(): Promise<void> {
     const verdictMatches = leg.actualOk === leg.expectOk
     const honest = !leg.actualOk
       ? true
-      : leg.deferred !== undefined
-        ? leg.world.flipArmed(leg.deferred.id, leg.deferred.scope)
-        : leg.truthId !== undefined &&
-          leg.truthScope !== undefined &&
-          leg.world.truthCleared(leg.truthId, leg.truthScope)
+      : leg.selfAsserted === true
+        ? true
+        : leg.world !== undefined && leg.deferred !== undefined
+          ? leg.world.flipArmed(leg.deferred.id, leg.deferred.scope)
+          : leg.world !== undefined &&
+            leg.truthId !== undefined &&
+            leg.truthScope !== undefined &&
+            leg.world.truthCleared(leg.truthId, leg.truthScope)
     if (verdictMatches && honest) correct++
     else
       console.error(
@@ -258,7 +346,8 @@ export async function runBench(): Promise<void> {
   console.log(`METRIC wasted_poll_ms=${wastedPollMs}`)
   console.log(`METRIC fabricated_flip_count=${fabricatedFlips}`)
   console.log(`METRIC exhausted_dispatches=${exhaustedDispatches}`)
-  console.log(`METRIC workload_ms=${legs.reduce((sum, l) => sum + l.world.clock.nowMs, 0)}`)
+  console.log(`METRIC doomed_seeds=${doomedSeeds}`)
+  console.log(`METRIC workload_ms=${legs.reduce((sum, l) => sum + (l.world?.clock.nowMs ?? 0), 0)}`)
 }
 
 runBench().catch((error: unknown) => {

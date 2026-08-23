@@ -534,6 +534,123 @@ describe('instagramAdapter', () => {
     })
   })
 
+  describe('permalink page (no <article>): hero content vs suggested-content thumbnails', () => {
+    // LIVE-VERIFIED 2026-08-23 (logged-in Chrome, CDP) against two real
+    // permalink pages, instagram.com/p/DcGBaq9AKSa/ (photo carousel) and
+    // instagram.com/p/DcXoDCCMd6H/ (single video). A permalink page has ZERO
+    // <article> elements, so `postIdFromDom` falls past its container branch.
+    // Two facts observed on both pages:
+    //
+    //   1. Every "More posts from {author}" thumbnail is an <img> wrapped in
+    //      its OWN post's link, in the profile-prefixed form
+    //      `/{username}/p/{code}/` (or `/{username}/reel/{code}/`) — a shape
+    //      INSTAGRAM_POST_LINK_PATTERN's `^/p/` anchor does not match.
+    //   2. The page's own hero media carries NO ancestor post link at all.
+    //
+    // Those two facts are what separates "this element belongs to the page's
+    // own post" from "this element is a different post rendered on the page",
+    // and the pathname fallback must respect the distinction.
+    it('a suggested thumbnail resolves to ITS OWN post code, never the page pathname (6/6 mis-attributed live, hero code returned for other posts)', () => {
+      // Before the fix, with exactly one <video> mounted (an everyday
+      // single-video permalink) this returned the PAGE's code, so a whole-post
+      // grab on a suggested thumbnail queued the hero post's media instead —
+      // a silent wrong-content download, worse than doing nothing.
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <div><video></video></div>
+        <a href="/code.architects/p/OTHERCODE/"><img src="https://scontent.cdninstagram.com/v/t51.82787-15/thumb.jpg" /></a>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/p/PAGECODE/')).toBe('OTHERCODE')
+    })
+
+    it('a suggested REEL thumbnail resolves to its own reel code', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <div><video></video></div>
+        <a href="/code.architects/reel/REELCODE/"><img src="https://scontent.cdninstagram.com/v/t51.82787-15/thumb.jpg" /></a>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/p/PAGECODE/')).toBe('REELCODE')
+    })
+
+    it('a suggested thumbnail is still attributed to its own post when NO video is mounted', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<a href="/code.architects/p/OTHERCODE/"><img src="https://scontent.cdninstagram.com/v/t51.82787-15/thumb.jpg" /></a>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/p/PAGECODE/')).toBe('OTHERCODE')
+    })
+
+    it('an /reels/audio/{id}/ ancestor link is not read as a post code (same reserved segment postCodeFromPathname rejects)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<a href="/reels/audio/27270650159276600/"><img src="https://scontent.cdninstagram.com/v/t51.82787-15/thumb.jpg" /></a>`
+      const img = root.querySelector('img')!
+      // No own post link ⇒ falls through to the page's own pathname, which is
+      // the correct answer for hero content, never the bogus code "audio".
+      expect(instagramAdapter.postCodeFromElement?.(img, '/p/PAGECODE/')).toBe('PAGECODE')
+    })
+
+    it('an ancestor link that is NOT a post link (an author-profile link) does not block the pathname fallback', () => {
+      // Hero media is commonly wrapped in the author's own profile link. That
+      // names no post, so it must not be mistaken for an own-post link and must
+      // not suppress the permalink pathname the hero legitimately belongs to.
+      const root = document.createElement('div')
+      root.innerHTML = `<a href="/code.architects/"><img src="https://scontent.cdninstagram.com/v/t51.82787-15/hero.jpg" /></a>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/p/PAGECODE/')).toBe('PAGECODE')
+    })
+
+    it('a hero photo with NO videos mounted resolves to the pathname code (the reported "Alt works, Cmd+Alt does nothing" case)', () => {
+      // LIVE-VERIFIED 2026-08-23: 7/7 photos on instagram.com/p/DcGBaq9AKSa/
+      // resolved to no post code at all, so single-item Quick Grab downloaded
+      // the photo while whole-post grab returned an empty payload and silently
+      // did nothing. A photo has nothing to disambiguate — the permalink
+      // pathname names its post unambiguously.
+      const root = document.createElement('div')
+      root.innerHTML = `<div><img src="https://scontent.cdninstagram.com/v/t51.82787-15/hero.jpg" /></div>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/p/PAGECODE/')).toBe('PAGECODE')
+    })
+
+    it('a hero photo resolves to the pathname code regardless of how many videos are mounted', () => {
+      // The video-count gate exists to disambiguate WHICH of several mounted
+      // videos the reels player is showing. It has no meaning for a photo, and
+      // gating a photo on it made whole-post grab depend on an unrelated
+      // element: live, injecting one empty off-screen <video> flipped a
+      // carousel from 0 resolved items to all 8, and a second broke it again.
+      for (const videos of [0, 1, 2, 5]) {
+        const root = document.createElement('div')
+        root.innerHTML = `${'<div><video></video></div>'.repeat(videos)}<div><img src="https://scontent.cdninstagram.com/v/t51.82787-15/hero.jpg" /></div>`
+        const img = root.querySelector('img')!
+        expect(instagramAdapter.postCodeFromElement?.(img, '/p/PAGECODE/')).toBe('PAGECODE')
+      }
+    })
+
+    it('a hero photo on a non-permalink pathname still resolves to null', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<div><img src="https://scontent.cdninstagram.com/v/t51.82787-15/hero.jpg" /></div>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/')).toBeNull()
+    })
+
+    it('an <article> ancestor still wins over both the own-link and the pathname (feed behaviour unchanged)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `<article><a href="/p/ARTICLECODE/">link</a><a href="/someone/p/OTHERCODE/"><img src="https://scontent.cdninstagram.com/v/t51.82787-15/x.jpg" /></a></article>`
+      const img = root.querySelector('img')!
+      expect(instagramAdapter.postCodeFromElement?.(img, '/p/PAGECODE/')).toBe('ARTICLECODE')
+    })
+
+    it('a hero VIDEO keeps the viewport-dominance gate (multi-video reels player unchanged)', () => {
+      const root = document.createElement('div')
+      root.innerHTML = `
+        <div><video></video></div>
+        <div><video></video></div>`
+      const [dominant, smaller] = [...root.querySelectorAll('video')]
+      dominant!.getBoundingClientRect = rect(0, 0, 1024, 768)
+      smaller!.getBoundingClientRect = rect(0, 0, 200, 200)
+      expect(instagramAdapter.postCodeFromElement?.(dominant!, '/reels/CODE_A/')).toBe('CODE_A')
+      expect(instagramAdapter.postCodeFromElement?.(smaller!, '/reels/CODE_A/')).toBeNull()
+    })
+  })
+
   describe('postCodeFromPathname: /reels/audio/ hardening', () => {
     // LIVE-OBSERVED: instagram.com/reels/audio/{id}/ is a real, distinct page
     // (an audio-track's own reels listing) whose pathname shape otherwise

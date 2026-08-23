@@ -137,7 +137,17 @@ const ZERO_SNAPSHOT: MetricsSnapshot = {
   elapsedMs: 0,
 }
 
-const MAX_TRACE_EVENTS = 12
+// The live trace ring's capacity. Sized to hold a WHOLE realistic interaction, not
+// the tail of one: this ring is shared by every tab, so the ~4 events a failing
+// Instagram hover emits used to be flushed within seconds by unrelated `clear-*`
+// traces from other open X tabs, and reading it right after the interaction was a
+// race the diagnostician usually lost (issue #91). A few hundred spans a Release
+// leg, and both costs it drives are flat at this size: `recordTrace`'s O(cap) copy
+// measures 0.26 µs/event (0.2 ms across an entire ~600-event Release run — never
+// hot), and the projected snapshot below is ~65 KB, 0.6% of session storage's 10 MB
+// quota, costing ~0.16 ms to serialize per write. Both scale linearly with the cap,
+// so this is the knob to reconsider if the snapshot write ever shows up in a profile.
+const MAX_TRACE_EVENTS = 300
 
 // Live monitoring accumulator. In-SW memory: best-effort and resets on SW
 // recycle; the persisted snapshot is the popup's source of truth. Rehydrating
@@ -233,6 +243,14 @@ const clearInterruptRetryState = (id: string): void => {
   if (requestMetaById.delete(id)) persistRequestMeta()
 }
 
+// Projects the WHOLE ring, deliberately — not a smaller tail of it. The persisted
+// snapshot is the only surface a live diagnosis can actually read: the in-memory ring
+// dies with the SW, and the `console.info` line per event dies with the SW console.
+// A projection shorter than `MAX_TRACE_EVENTS` would therefore not save a reader
+// anything, it would only make the ring look smaller than it is at exactly the moment
+// someone is counting on its depth (issue #91). The popup polls this every 1-3s and
+// never renders `events`, so the cost of the extra length is the ~0.16 ms serialize
+// measured above, twice — once to session storage, once over the message channel.
 const withTraceEvents = (snap: MetricsSnapshot): MetricsSnapshot =>
   traceEvents.length === 0 ? snap : { ...snap, events: traceEvents }
 
