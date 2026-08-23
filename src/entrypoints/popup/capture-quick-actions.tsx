@@ -197,7 +197,6 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
               )}
             </ConfirmStrip>
           </div>
-
         </div>
       )}
 

@@ -269,11 +269,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
           }}
         >
           {DOWNLOAD_MODES.map((option) => (
-            <ToggleGroupItem
-              key={option.value}
-              value={option.value}
-              className="h-10 flex-1"
-            >
+            <ToggleGroupItem key={option.value} value={option.value} className="h-10 flex-1">
               {option.label}
             </ToggleGroupItem>
           ))}
