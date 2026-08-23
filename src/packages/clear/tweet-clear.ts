@@ -227,12 +227,23 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
     // oxlint-disable no-await-in-loop -- sequential poll with a fixed cap
     for (let i = 1; i <= FLIP_POLL_ATTEMPTS; i++) {
       await clock.sleep(FLIP_POLL_INTERVAL_MS)
-      if (flipConfirmed(article.value, scope)) {
-        if (log) log(scope, `→ flip confirmed after ${i * FLIP_POLL_INTERVAL_MS}ms`)
-        traceFlip(article.value, tweetId, scope, i, targetKind, disabled, origin)
-        if (onFlip) onFlip(tweetId, scope, origin)
-        return true
-      }
+      if (!flipConfirmed(article.value, scope)) continue
+      if (log) log(scope, `→ flip confirmed after ${i * FLIP_POLL_INTERVAL_MS}ms`)
+      const { arm, reresolved } = classifyFlip(document, article.value, tweetId, scope)
+      traceFlip(article.value, tweetId, scope, i, targetKind, disabled, origin)
+      // Discriminated flip-confirm (#62): detachment alone is not proof. The
+      // virtualizer detaches the captured node of a post that is STILL a member
+      // when a sibling release re-renders the list (diagnosis cause #1) — the
+      // fresh re-resolve splits the worlds: `member`/`ambiguous` refuse (fail-
+      // closed, latch stays re-claimable); `gone` stays deferred to the recheck
+      // watchdog that onFlip arms; `cleared` is a genuine flip on a fresh node.
+      if (
+        arm === 'detached' &&
+        (reresolved === 'member' || reresolved === 'ambiguous')
+      )
+        return false
+      if (onFlip) onFlip(tweetId, scope, origin)
+      return true
     }
     // oxlint-enable no-await-in-loop
     if (log)
