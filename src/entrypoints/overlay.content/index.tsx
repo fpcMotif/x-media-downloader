@@ -1247,6 +1247,15 @@ export default defineContentScript({
       }
       grab = next
       setCursorActive(true)
+      // A fresh press must re-arm whatever is under the pointer, even the same
+      // media the previous press ended on: `releaseAll` (keyup, window blur)
+      // keeps the last hover identity, and `focusHover` dedups against it — so
+      // without this reset a grab interrupted mid-dwell (LIVE-VERIFIED
+      // 2026-08-23 on Threads: a window blur during the dwell) stayed silent
+      // until the cursor moved to a different image. The keydown path already
+      // overwrites the hover from the live pointer; this is its pointer twin.
+      hoverMedia = null
+      hoverKey = null
       return true
     }
 

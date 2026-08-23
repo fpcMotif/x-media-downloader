@@ -260,7 +260,9 @@ export class FakeXWorld {
    * detachment/recycling NEVER touches it. */
   private readonly truth = new Map<string, boolean>()
   private readonly tabs: { id: number; pathname: string; win: Window }[] = []
-  private releaseUrl: string | null = null
+  /** Tweet ids whose ok-verdict armed the recheck watchdog (via the clearer's
+   * onFlip port) — the deferred-verification contract for 'gone' detachments. */
+  private readonly armed = new Set<string>()
   private releaseWin: Window | null = null
   private nextId = 101
 
@@ -286,6 +288,10 @@ export class FakeXWorld {
       win: makeListWindow(pathname, specs, this.clock, this.recordFlip),
     })
     return id
+  }
+
+  flipArmed(tweetId: string, scope: MembershipScope): boolean {
+    return this.armed.has(truthKey(tweetId, scope))
   }
 
   truthCleared(tweetId: string, scope: MembershipScope): boolean {
@@ -380,6 +386,9 @@ export class FakeXWorld {
     const clearer = makeTweetClearer({
       document: doc,
       clock: this.clock,
+      onFlip: (tweetId, scope) => {
+        this.armed.add(truthKey(tweetId, scope))
+      },
       trace: (stage, detail, tweetId) => {
         this.trace.push({ stage, detail, ...(tweetId === undefined ? {} : { tweetId }) })
       },

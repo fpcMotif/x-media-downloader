@@ -30,6 +30,9 @@ interface LegResult {
   /** Set whenever success is claimed — scored against fixture truth. */
   readonly truthId?: string
   readonly truthScope?: MembershipScope
+  /** Set when the leg's success claim is DEFERRED-verified (recheck watchdog must
+   * be armed) rather than truth-proven at click time — the 'gone' detach contract. */
+  readonly deferred?: { readonly id: string; readonly scope: MembershipScope }
   readonly actualOk: boolean
 }
 
@@ -42,7 +45,11 @@ async function score(
   expectOk: boolean,
   run: (
     world: FakeXWorld,
-  ) => Promise<{ ok: boolean; truth?: { id: string; scope: MembershipScope } }>,
+  ) => Promise<{
+    ok: boolean
+    truth?: { id: string; scope: MembershipScope }
+    deferred?: { id: string; scope: MembershipScope }
+  }>,
 ): Promise<LegResult & { world: FakeXWorld }> {
   const clock = new VirtualClock()
   const world = makeWorld(clock)
@@ -52,6 +59,7 @@ async function score(
     expectOk,
     actualOk: out.ok,
     ...(out.truth === undefined ? {} : { truthId: out.truth.id, truthScope: out.truth.scope }),
+    ...(out.deferred === undefined ? {} : { deferred: out.deferred }),
     world,
   }
 }
@@ -149,12 +157,14 @@ export async function runBench(): Promise<void> {
   )
 
   // S6 — click never takes + node recycled mid-poll with the id ABSENT afterwards
-  // (diagnosis cause #1): the detach-as-proof rule records a flip while the post is
-  // still a server-side member. Ground truth demands FAIL.
+  // ('gone'): no synchronous DOM signal can separate recycle from server-side
+  // removal, so the contract is DEFERRED verification — the verdict may read ok,
+  // but ONLY with the recheck watchdog armed via onFlip. Ground truth never shows
+  // cleared; a later sweep must be what honestly noops it.
   const s6 = await score(
     (clock) => new FakeXWorld(clock, () => ({ state: 'notfound' })),
-    'detach-midpoll-id-absent',
-    false,
+    'detach-midpoll-gone-deferred-to-recheck',
+    true,
     async (world) => {
       const tabId = world.addListTab('/i/history', [
         { id: ID(40), bookmark: 'member', inert: true },
@@ -164,9 +174,10 @@ export async function runBench(): Promise<void> {
       const results = await world
         .broadcaster()
         .sendClearToTabs(ID(40), ['bookmark'], undefined, false, PIN('bookmark'))
+      const ok = results.every((r) => r.ok) && world.flipArmed(ID(40), 'bookmark')
       return {
-        ok: results.every((r) => r.ok),
-        truth: { id: ID(40), scope: 'bookmark' as const },
+        ok,
+        deferred: { id: ID(40), scope: 'bookmark' as const },
       }
     },
   )
@@ -228,15 +239,17 @@ export async function runBench(): Promise<void> {
       }
     }
     const verdictMatches = leg.actualOk === leg.expectOk
-    const truthHonest =
-      !leg.actualOk ||
-      (leg.truthId !== undefined &&
-        leg.truthScope !== undefined &&
-        leg.world.truthCleared(leg.truthId, leg.truthScope))
-    if (verdictMatches && truthHonest) correct++
+    const honest = !leg.actualOk
+      ? true
+      : leg.deferred !== undefined
+        ? leg.world.flipArmed(leg.deferred.id, leg.deferred.scope)
+        : leg.truthId !== undefined &&
+          leg.truthScope !== undefined &&
+          leg.world.truthCleared(leg.truthId, leg.truthScope)
+    if (verdictMatches && honest) correct++
     else
       console.error(
-        `LEG ${leg.name}: actualOk=${leg.actualOk} expectOk=${leg.expectOk} truthCleared=${!leg.actualOk ? 'n/a' : leg.world.truthCleared(leg.truthId ?? '', leg.truthScope ?? 'bookmark')}`,
+        `LEG ${leg.name}: actualOk=${leg.actualOk} expectOk=${leg.expectOk} honest=${honest}`,
       )
   }
 
