@@ -119,7 +119,7 @@ describe('sendClearToTabs — clear targeting', () => {
       pinned(),
     )
     expect(res).toEqual([{ scope: 'bookmark', ok: false }])
-    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2, ...Array(16).fill(RELEASE_TAB_ID)])
+    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2, ...Array(30).fill(RELEASE_TAB_ID)])
   })
 
   it('falls through past an open-but-empty origin tab to a later mounted tab', async () => {
@@ -644,7 +644,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
       {
         stage: 'clear-tab-error',
         tweetId: 't1',
-        detail: `tab=${RELEASE_TAB_ID} phase=release-poll reason=exhausted attempts=16`,
+        detail: `tab=${RELEASE_TAB_ID} phase=release-poll reason=exhausted attempts=30`,
       },
     ])
     expect(t.dispatch()[0]!.detail).toBe(

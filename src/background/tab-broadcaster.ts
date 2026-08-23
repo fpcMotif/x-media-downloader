@@ -152,7 +152,7 @@ const pinnedScope = (pin: ReleaseScopePin | undefined): MembershipScope | undefi
 // throws (no receiver) or returns mounted:false. The FIRST mounted answer
 // performs the clear itself, so the poll never double-clicks. ~10s worst case.
 const RELEASE_POLL_INTERVAL_MS = 600
-const RELEASE_POLL_ATTEMPTS = 16
+const RELEASE_POLL_ATTEMPTS = 30
 
 /** What a tab's `ClearTweetResponse` actually told us, for the folded dispatch line.
  * `mounted-failed` is retryable through another tab or the release tab; `no-receiver`
