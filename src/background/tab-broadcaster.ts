@@ -623,7 +623,7 @@ export const makeTabBroadcaster = (
       const due =
         record?.skippedSince !== undefined &&
         (clock.now() - record.skippedSince >= ORPHAN_REPROBE_MS ||
-          (record.skippedDispatches >= ORPHAN_REPROBE_DISPATCHES ? (() => { throw new Error('MUTATION-PROBE-skippedDispatches') })() : false))
+          record.skippedDispatches >= ORPHAN_REPROBE_DISPATCHES)
       if (record?.skippedSince !== undefined && !due) {
         record.skippedDispatches++
         skippedCount++
