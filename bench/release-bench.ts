@@ -20,7 +20,7 @@
  * to a verdict. Leg verdicts are DATA, not assertions: baseline legs that fail are
  * exactly what the optimization loop must fix.
  */
-import { VirtualClock, drive, FakeXWorld } from './fixtures'
+import { VirtualClock, drive, FakeXWorld, type TweetSpec } from './fixtures'
 import type { MembershipScope } from '@/packages/clear/clearer'
 
 interface LegResult {
@@ -43,9 +43,7 @@ async function score(
   makeWorld: (clock: VirtualClock) => FakeXWorld,
   name: string,
   expectOk: boolean,
-  run: (
-    world: FakeXWorld,
-  ) => Promise<{
+  run: (world: FakeXWorld) => Promise<{
     ok: boolean
     truth?: { id: string; scope: MembershipScope }
     deferred?: { id: string; scope: MembershipScope }
@@ -72,10 +70,12 @@ export async function runBench(): Promise<void> {
     'history-bookmarks-list-sweep',
     true,
     async (world) => {
-      world.addListTab('/i/history', [
-        ...Array.from({ length: 5 }, (_, i) => ({ id: ID(i), bookmark: 'member' as const })),
-        { id: ID(99), bookmark: 'cleared' as const },
-      ])
+      const specs: TweetSpec[] = Array.from({ length: 5 }, (_, i) => ({
+        id: ID(i),
+        bookmark: 'member' as const,
+      }))
+      specs.push({ id: ID(99), bookmark: 'cleared' as const })
+      world.addListTab('/i/history', specs)
       const results = await world
         .broadcaster()
         .sendClearToTabs(ID(0), ['bookmark'], undefined, false, PIN('bookmark'))
@@ -92,9 +92,10 @@ export async function runBench(): Promise<void> {
     'history-likes-list-sweep',
     true,
     async (world) => {
-      world.addListTab('/i/history/likes', [
-        ...Array.from({ length: 4 }, (_, i) => ({ id: ID(10 + i), like: 'member' as const })),
-      ])
+      world.addListTab(
+        '/i/history/likes',
+        Array.from({ length: 4 }, (_, i) => ({ id: ID(10 + i), like: 'member' as const })),
+      )
       const results = await world
         .broadcaster()
         .sendClearToTabs(ID(10), ['like'], undefined, false, PIN('like'))

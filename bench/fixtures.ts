@@ -25,7 +25,7 @@ import {
 } from '@/packages/clear/clearer'
 import { makeTweetClearer } from '@/packages/clear/tweet-clear'
 import { makeTabBroadcaster, type TabsPort } from '@/background/tab-broadcaster'
-import type { ClearTweetRequest, ClearTweetResponse } from '@/packages/schema'
+import type { ClearScope, ClearTweetRequest, ClearTweetResponse } from '@/packages/schema'
 
 /** happy-dom → lib-DOM boundary (runtime-compatible, compile-time distinct). */
 const asDom = <T>(value: unknown): T => value as T
@@ -110,11 +110,11 @@ export type Membership = 'member' | 'cleared' | 'none'
 
 export interface TweetSpec {
   readonly id: string
-  readonly bookmark?: Membership
-  readonly like?: Membership
+  readonly bookmark?: Membership | undefined
+  readonly like?: Membership | undefined
   /** An active control whose click does NOTHING (X ignored the synthetic click /
    * reverted before re-render) — the node can then only leave by recycling. */
-  readonly inert?: boolean
+  readonly inert?: boolean | undefined
 }
 
 const ACTIVE_TESTID: Record<MembershipScope, string> = {
@@ -248,7 +248,8 @@ export interface TraceLine {
 }
 
 const RELEASE_TAB_ID = 900_001
-const truthKey = (tweetId: string, scope: MembershipScope): string => `${tweetId}:${scope}`
+const truthKey = (tweetId: string, scope: MembershipScope | ClearScope): string =>
+  `${tweetId}:${scope}`
 
 /** The browser seams `makeTabBroadcaster` takes, backed by fixture windows. The
  * receiving side runs the REAL content-script decision stack — `findArticle`,
@@ -263,6 +264,7 @@ export class FakeXWorld {
   /** Tweet ids whose ok-verdict armed the recheck watchdog (via the clearer's
    * onFlip port) — the deferred-verification contract for 'gone' detachments. */
   private readonly armed = new Set<string>()
+  private releaseUrl: string | null = null
   private releaseWin: Window | null = null
   private nextId = 101
 

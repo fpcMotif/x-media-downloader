@@ -95,6 +95,21 @@ describe('cluster status lines auto-clear after 6s unless persistent (spec §2.6
   })
 })
 
+describe('the stale-tabs advisory <output> stays mounted, mirroring releaseMsg (lesson 0007 §C)', () => {
+  it('never wraps the <output> element itself in the staleTabs conditional', () => {
+    // The releaseMsg live region a few lines above is always mounted and only its
+    // children toggle — a fresh `{cond && <output>...}</output>}` would insert an
+    // already-populated node that assistive tech never announces.
+    expect(popupSource).not.toContain('staleTabs > 0 && (\n        <output')
+  })
+
+  it('keeps the conditional inside the children, ternary to null at zero/undefined', () => {
+    expect(popupSource).toContain(
+      '{staleTabs !== undefined && staleTabs > 0 ? staleTabsAdvisory(staleTabs) : null}',
+    )
+  })
+})
+
 describe('zone hairlines never stack (spec §2.9 adjacent-zone fix)', () => {
   it('ContextStrip supplies its separator as a shadow, not a border-b', () => {
     const headerIdx = popupSource.indexOf('function ContextStrip')

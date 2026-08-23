@@ -510,11 +510,9 @@ function ReleaseCluster({
         {releaseMsg}
       </output>
 
-      {staleTabs !== undefined && staleTabs > 0 && (
-        <output className="block text-pretty text-xs leading-snug text-muted-foreground">
-          {staleTabsAdvisory(staleTabs)}
-        </output>
-      )}
+      <output className="block text-pretty text-xs leading-snug text-muted-foreground">
+        {staleTabs !== undefined && staleTabs > 0 ? staleTabsAdvisory(staleTabs) : null}
+      </output>
     </section>
   )
 }

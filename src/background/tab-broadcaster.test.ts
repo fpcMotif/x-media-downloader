@@ -862,6 +862,15 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
         detail: 'phase=release-nav reason=cannot-create',
       },
     ])
+    expect(t.releasePoll()).toEqual([
+      {
+        stage: 'clear-release-poll',
+        tweetId: 't1',
+        detail:
+          'tab=none probes=0 threw=0 unmounted=0 lastArticles=none lastCells=none ' +
+          'lastReady=none lastError=none reloaded=false elapsedMs=0 reason=nav-failed',
+      },
+    ])
     expect(t.dispatch()[0]!.detail).toBe(
       'tabs=1 prefer=none preferHonored=false tried=1 answered=1:unmounted ' +
         'release=none outcome=release-failed fabricated=true excluded=none skipped=0 stale=0',

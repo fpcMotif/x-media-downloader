@@ -237,10 +237,7 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
       // fresh re-resolve splits the worlds: `member`/`ambiguous` refuse (fail-
       // closed, latch stays re-claimable); `gone` stays deferred to the recheck
       // watchdog that onFlip arms; `cleared` is a genuine flip on a fresh node.
-      if (
-        arm === 'detached' &&
-        (reresolved === 'member' || reresolved === 'ambiguous')
-      )
+      if (arm === 'detached' && (reresolved === 'member' || reresolved === 'ambiguous'))
         return false
       if (onFlip) onFlip(tweetId, scope, origin)
       return true
