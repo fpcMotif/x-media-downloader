@@ -229,3 +229,23 @@ export function composeDiagnosticsExport(
   const text = [meta, ...log.events].map((e) => JSON.stringify(e)).join('\n') + '\n'
   return { ok: true, filename: `xmd-release-diagnostics-${utcStamp(now)}.jsonl`, text }
 }
+
+/**
+ * Console label for a trace entry: `stage type itemId tab=<tabId> post=<tweetId>
+ * <elapsedMs>ms detail`, absent fields dropped so the line never carries an empty
+ * token. Shared by `recordTrace` (`entrypoints/background.ts`) so every SW console
+ * line names which tab and which post a trace event belongs to.
+ */
+export function formatTraceLabel(entry: DownloadTraceEntry): string {
+  return [
+    entry.stage,
+    entry.type,
+    entry.itemId,
+    entry.tabId === undefined ? null : `tab=${entry.tabId}`,
+    entry.tweetId === undefined ? null : `post=${entry.tweetId}`,
+    entry.elapsedMs === undefined ? null : `${entry.elapsedMs}ms`,
+    entry.detail,
+  ]
+    .filter(Boolean)
+    .join(' ')
+}

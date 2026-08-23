@@ -8,7 +8,7 @@ diagnostic line to the specific root cause it confirms or eliminates.
 1. **Rebuild and reload the extension**, then **reload the X tab.** A content script
    orphaned by a rebuild behaves exactly like the old code, and is itself one of the
    causes below — so a stale overlay makes the run meaningless.
-2. Open `/i/bookmarks`. Make sure **Release after download** and **Un-bookmark on save**
+2. Open `/i/history`. Make sure **Release after download** and **Un-bookmark on save**
    are on (Options → Release).
 3. Run **“One by one”** from the toolbar popup (the durable sweep — this is the path that
    downloads then releases). Let it finish.
@@ -110,7 +110,7 @@ clear-sweep-skipped   scope=bookmark skipped=11 ids=1234,5678,…
 ```
 
 Any id here that is **still on screen and still bookmarked** is direct evidence of cause
-1 or 2 from an *earlier* run: the durable worklist believes it is cleared, so it will
+1 or 2 from an _earlier_ run: the durable worklist believes it is cleared, so it will
 never be retried. Diff against `clear-sweep-candidates`. This is the reason “Release did
 nothing” on a second run.
 

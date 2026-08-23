@@ -25,6 +25,7 @@ import {
   releaseListConfirm,
   releasedPageResult,
   releasedListResult,
+  staleTabsAdvisory,
   turnOnReleaseConfirm,
   drainResult,
   type DrainResult,
@@ -409,6 +410,7 @@ function ReleaseCluster({
   releaseListBusy,
   onReleasePage,
   onReleaseList,
+  staleTabs,
 }: {
   onListPage: boolean
   releaseMsg: string | null
@@ -416,6 +418,7 @@ function ReleaseCluster({
   releaseListBusy: boolean
   onReleasePage: () => void
   onReleaseList: () => void
+  staleTabs: number | undefined
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -506,6 +509,12 @@ function ReleaseCluster({
       >
         {releaseMsg}
       </output>
+
+      {staleTabs !== undefined && staleTabs > 0 && (
+        <output className="block text-pretty text-xs leading-snug text-muted-foreground">
+          {staleTabsAdvisory(staleTabs)}
+        </output>
+      )}
     </section>
   )
 }
@@ -928,6 +937,7 @@ export function App() {
           releaseListBusy={releaseList.busy}
           onReleasePage={() => void releasePage.run()}
           onReleaseList={() => void releaseList.run()}
+          staleTabs={metrics?.staleTabs}
         />
       )}
 

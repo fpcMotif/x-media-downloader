@@ -42,6 +42,8 @@ the spec + ADR-0016):
 - Real `data-testid`s for un-bookmark / un-like + the "…" caret menu.
 - How X virtualizes the list (mount/unmount cadence) and whether tweetId resolution from
   a recycled `<article>` stays stable (the wrong-id guard in §4.4).
-- Whether bookmarks/likes merged into a "history" surface.
+- ~~Whether bookmarks/likes merged into a "history" surface.~~ Yes — `/i/history` (Bookmarks)
+  and `/i/history/likes` (Likes); `pageScope` recognizes both, legacy `/i/bookmarks` and
+  `/{handle}/likes` still redirect there and are kept as alternatives.
 - The MV3 persistence/reconcile behavior (storage.local + downloads.search on SW wake) —
   that's integration, not pure logic.

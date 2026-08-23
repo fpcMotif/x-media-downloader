@@ -8,6 +8,7 @@ import {
   releaseListConfirm,
   releasedPageResult,
   releasedListResult,
+  staleTabsAdvisory,
   turnOnReleaseConfirm,
   drainResult,
   sweepResult,
@@ -63,7 +64,7 @@ describe('release cluster copy', () => {
 
   it('releasedPageResult: not-list reason — a refusal, never a success-shaped count', () => {
     expect(releasedPageResult({ reason: 'not-list-page' })).toBe(
-      'Open a Likes or Bookmarks list — "Release this page" only runs on a list.',
+      'Open your Bookmarks or Likes (x.com/i/history) — "Release this page" only runs on a list.',
     )
   })
 
@@ -81,7 +82,7 @@ describe('release cluster copy', () => {
 
   it('releasedListResult: not-list reason', () => {
     expect(releasedListResult({ reason: 'not-list-page' })).toBe(
-      'Open a Likes or Bookmarks list to release it.',
+      'Open your Bookmarks or Likes (x.com/i/history) to release it.',
     )
   })
 
@@ -107,6 +108,20 @@ describe('release cluster copy', () => {
     [42, 'Released 42 posts across the list.'],
   ])('releasedListResult: n=%i', (cleared, expected) => {
     expect(releasedListResult({ cleared })).toBe(expected)
+  })
+})
+
+describe('staleTabsAdvisory', () => {
+  it('singular', () => {
+    expect(staleTabsAdvisory(1)).toBe(
+      '1 open X tab runs a stale copy of the extension — refresh it so Release can use it.',
+    )
+  })
+
+  it('plural', () => {
+    expect(staleTabsAdvisory(3)).toBe(
+      '3 open X tabs run a stale copy of the extension — refresh them so Release can use them.',
+    )
   })
 })
 
@@ -205,7 +220,7 @@ describe('drainResult', () => {
 describe('sweepResult', () => {
   it('not-list-page reason', () => {
     expect(sweepResult({ reason: 'not-list-page' }, false)).toBe(
-      'Open a Likes or Bookmarks page — the sweep only runs on a list.',
+      'Open your Bookmarks or Likes (x.com/i/history) — the sweep only runs on a list.',
     )
   })
 

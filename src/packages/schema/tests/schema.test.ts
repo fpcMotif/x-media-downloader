@@ -13,6 +13,7 @@ import {
   TabMessage,
   RefreshMediaUrlRequest,
   ClearTweetRequest,
+  ClearTweetResponse,
   ClearDrainRequest,
   ClearVisibleRequest,
   ClearWholeListRequest,
@@ -293,6 +294,60 @@ describe('TabMessage schema', () => {
       scopes: ['like'],
     })
     expect(req.asPageScope).toBeUndefined()
+  })
+
+  it('decodes a release-leg probe attempt (attempts ≥ 2 of releaseViaStatusTab)', () => {
+    const req = Schema.decodeUnknownSync(ClearTweetRequest)({
+      _tag: 'ClearTweetRequest',
+      tweetId: 't99',
+      scopes: ['bookmark'],
+      probe: true,
+    })
+    expect(req.probe).toBe(true)
+  })
+
+  it('leaves probe absent on the ordinary fan-out literal', () => {
+    const req = Schema.decodeUnknownSync(ClearTweetRequest)({
+      _tag: 'ClearTweetRequest',
+      tweetId: 't99',
+      scopes: ['bookmark'],
+    })
+    expect(req.probe).toBeUndefined()
+  })
+
+  it('decodes an unmounted ClearTweetResponse carrying page-state evidence', () => {
+    const res = Schema.decodeUnknownSync(ClearTweetResponse)({
+      _tag: 'ClearTweetResponse',
+      mounted: false,
+      drainEligible: false,
+      results: [],
+      page: { articles: 0, cells: 0, ready: 'complete', error: true },
+    })
+    expect(res.page).toEqual({ articles: 0, cells: 0, ready: 'complete', error: true })
+  })
+
+  it('leaves page absent on a mounted ClearTweetResponse', () => {
+    const res = Schema.decodeUnknownSync(ClearTweetResponse)({
+      _tag: 'ClearTweetResponse',
+      mounted: true,
+      drainEligible: false,
+      results: [],
+    })
+    expect(res.page).toBeUndefined()
+  })
+
+  it('rejects a page.ready value outside the DocumentReadyState literal', () => {
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(ClearTweetResponse)({
+          _tag: 'ClearTweetResponse',
+          mounted: false,
+          drainEligible: false,
+          results: [],
+          page: { articles: 0, cells: 0, ready: 'idle', error: false },
+        }),
+      ),
+    ).toBe(true)
   })
 
   it('rejects notInterested as a page scope — a permalink page is never the For You feed', () => {

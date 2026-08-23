@@ -263,30 +263,60 @@ describe('previewKeyFromMedia', () => {
 describe('mediaStillUnderPointer', () => {
   it('is true when the media is directly in the stack', () => {
     const img = el('<img>') as HTMLImageElement
-    expect(mediaStillUnderPointer(img, [img])).toBe(true)
+    expect(mediaStillUnderPointer(img, [img], 0, 0)).toBe(true)
   })
 
   it('is false for a non-video not present in the stack', () => {
     const img = el('<img>') as HTMLImageElement
-    expect(mediaStillUnderPointer(img, [el('<div></div>')])).toBe(false)
+    expect(mediaStillUnderPointer(img, [el('<div></div>')], 0, 0)).toBe(false)
   })
 
   it('is false for a video with no player container that is absent from the stack', () => {
     const video = el('<video></video>') as HTMLVideoElement
-    expect(mediaStillUnderPointer(video, [el('<div></div>')])).toBe(false)
+    expect(mediaStillUnderPointer(video, [el('<div></div>')], 0, 0)).toBe(false)
   })
 
   it('is true for a hidden video whose player container holds a stack element', () => {
     const player = el('<div data-testid="videoPlayer"><div class="hit"></div><video></video></div>')
     const hit = player.querySelector('.hit')!
     const video = player.querySelector('video')! as HTMLVideoElement
-    expect(mediaStillUnderPointer(video, [hit])).toBe(true)
+    expect(mediaStillUnderPointer(video, [hit], 0, 0)).toBe(true)
   })
 
   it('is false when the player container holds nothing in the stack', () => {
     const player = el('<div data-testid="videoPlayer"><video></video></div>')
     const video = player.querySelector('video')! as HTMLVideoElement
-    expect(mediaStillUnderPointer(video, [el('<div></div>')])).toBe(false)
+    expect(mediaStillUnderPointer(video, [el('<div></div>')], 0, 0)).toBe(false)
+  })
+
+  // Regression (LIVE-VERIFIED 2026-08-23, threads.com/@uiuxandrii/post/DcVelsgCBu2):
+  // Threads' carousel <img> is position:absolute; pointer-events:none, so it is
+  // NEVER in elementsFromPoint — the arm path reaches it via nonInteractiveMediaAt,
+  // but the fire-time holdsKey check then saw `stack.includes(img) === false` and
+  // dropped every dwell as 'grab-target-stale' (ring charged, nothing downloaded),
+  // while the badge click (which never asks "still under pointer") kept working.
+  it('is true for a pointer-events:none img whose wrapper is in the stack and whose rect covers the point', () => {
+    const wrapper = mount(el('<div><img></div>'))
+    const img = wrapper.querySelector('img')!
+    img.style.pointerEvents = 'none'
+    img.getBoundingClientRect = rect(0, 0, 100, 100)
+    expect(mediaStillUnderPointer(img, [wrapper], 50, 50)).toBe(true)
+  })
+
+  it('is false for a pointer-events:none img whose rect no longer covers the point', () => {
+    const wrapper = mount(el('<div><img></div>'))
+    const img = wrapper.querySelector('img')!
+    img.style.pointerEvents = 'none'
+    img.getBoundingClientRect = rect(0, 0, 100, 100)
+    expect(mediaStillUnderPointer(img, [wrapper], 150, 50)).toBe(false)
+  })
+
+  it('is false for a pointer-events:none img when no stack element contains it', () => {
+    const wrapper = mount(el('<div><img></div>'))
+    const img = wrapper.querySelector('img')!
+    img.style.pointerEvents = 'none'
+    img.getBoundingClientRect = rect(0, 0, 100, 100)
+    expect(mediaStillUnderPointer(img, [mount(el('<div></div>'))], 50, 50)).toBe(false)
   })
 })
 

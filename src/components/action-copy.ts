@@ -38,7 +38,7 @@ export const releasedPageResult = (res: ReleasePageResult | null): string => {
   // refusal has to read as a refusal. A count-only line ("Released 0 posts on
   // this page.") is success-shaped and made the dead trigger unfalsifiable.
   if (res?.reason === 'not-list-page')
-    return 'Open a Likes or Bookmarks list — "Release this page" only runs on a list.'
+    return 'Open your Bookmarks or Likes (x.com/i/history) — "Release this page" only runs on a list.'
   return `Released ${plural(res?.cleared ?? 0, 'post')} on this page.`
 }
 
@@ -48,7 +48,8 @@ export interface ReleaseListResult {
 }
 
 export const releasedListResult = (res: ReleaseListResult | null): string => {
-  if (res?.reason === 'not-list-page') return 'Open a Likes or Bookmarks list to release it.'
+  if (res?.reason === 'not-list-page')
+    return 'Open your Bookmarks or Likes (x.com/i/history) to release it.'
   const n = res?.cleared ?? 0
   // A run the page navigated out from under stops early (list-clear's `scope-changed`).
   // Its count is a PARTIAL, so it must never render as the "across the list" sentence —
@@ -58,6 +59,15 @@ export const releasedListResult = (res: ReleaseListResult | null): string => {
   return n === 0
     ? 'No posts to release on this list.'
     : `Released ${plural(n, 'post')} across the list.`
+}
+
+/** The Release cluster's stale-tab advisory (tab-broadcaster.ts Part D orphan
+ *  policy) — informational, never a blocker, so it never joins
+ *  `PERSISTENT_STATUS_MESSAGES` below. The caller renders it only when `n > 0`. */
+export const staleTabsAdvisory = (n: number): string => {
+  const verb = n === 1 ? 'runs' : 'run'
+  const pronoun = n === 1 ? 'it' : 'them'
+  return `${plural(n, 'open X tab')} ${verb} a stale copy of the extension — refresh ${pronoun} so Release can use ${pronoun}.`
 }
 
 // ── Preferences zone — Release-after-download toggle-ON gate (§2.3, §3.3) ──
@@ -125,7 +135,7 @@ export interface SweepResult {
 
 export const sweepResult = (res: SweepResult | null, willClear: boolean): string => {
   if (res?.reason === 'not-list-page')
-    return 'Open a Likes or Bookmarks page — the sweep only runs on a list.'
+    return 'Open your Bookmarks or Likes (x.com/i/history) — the sweep only runs on a list.'
   if (res?.reason === 'context') return SWEEP_STALE_CONTEXT
   if (res?.reason === 'malformed-reply') return SWEEP_REQUEST_FAILED
   const q = res?.queued ?? 0

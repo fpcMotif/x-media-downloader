@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { fakeBrowser } from 'wxt/testing'
-import { makeTabBroadcaster, type TabsPort } from './tab-broadcaster'
+import {
+  makeTabBroadcaster,
+  RELEASE_BACKOFF_MS,
+  ORPHAN_REPROBE_MS,
+  type TabsPort,
+} from './tab-broadcaster'
 import { allAdapterHostMatch } from '../core/adapters/registry'
 
 // The tab-broadcaster SHELL through an injected TabsPort. Pins the irreversible-clear
@@ -20,8 +25,17 @@ const messageTag = (message: unknown): string | undefined => {
 const RELEASE_TAB_ID = 77
 
 /** Instant readiness-poll clock — a never-mounting fake page would otherwise cost
- *  the real poll budget (~10s) per test. */
-const instantClock = { sleep: () => Promise.resolve() }
+ *  the real poll budget (12s) per test. `now` advances by the poll interval on
+ *  every `sleep`, exactly like the real clock, so the leg's wall-clock math
+ *  (elapsed, the unreachable/stuck thresholds) runs for real without costing any
+ *  actual wall time. Shared across tests — every leg computes `elapsed` relative
+ *  to its OWN start, so a monotonically climbing `now` never leaks state between
+ *  cases. */
+let now = 0
+const instantClock = {
+  sleep: async () => void (now += 600),
+  now: () => now,
+}
 
 /** The page-scope pin the ledger entry was seeded with. With all-lists OFF (the
  *  shipped default) a permalink page can click nothing else, so a leg whose pin
@@ -41,13 +55,24 @@ const NO_PIN = { source: 'none' } as const
 function fakeTabs(
   ids: number[],
   responses: Record<number, unknown> = {},
-  opts: { navigateError?: Error; urls?: Record<number, string> } = {},
+  opts: {
+    navigateError?: Error
+    urls?: Record<number, string>
+    releaseTabId?: number
+  } = {},
 ) {
   const sent: Array<{ tabId: number; message: unknown }> = []
   const navigated: string[] = []
+  const reloaded: number[] = []
+  // Mirrors the real port: `releaseTabId()` answers `undefined` until the first
+  // successful `navigateReleaseTab`, then the reused id for the life of this fake.
+  // `opts.releaseTabId` seeds a REUSED tab from an earlier dispatch — the fan-out
+  // exclusion tests need one already in place before `sendClearToTabs` ever runs.
+  let currentReleaseTabId: number | undefined = opts.releaseTabId
   return {
     sent,
     navigated,
+    reloaded,
     queryXTabs: vi.fn<TabsPort['queryXTabs']>(async () => ids),
     sendTabMessage: vi.fn<TabsPort['sendTabMessage']>(async (tabId, message) => {
       sent.push({ tabId, message })
@@ -63,8 +88,13 @@ function fakeTabs(
     navigateReleaseTab: vi.fn<TabsPort['navigateReleaseTab']>(async (url) => {
       if (opts.navigateError !== undefined) throw opts.navigateError
       navigated.push(url)
+      currentReleaseTabId = RELEASE_TAB_ID
       return RELEASE_TAB_ID
     }),
+    reloadReleaseTab: vi.fn<TabsPort['reloadReleaseTab']>(async (tabId) => {
+      reloaded.push(tabId)
+    }),
+    releaseTabId: vi.fn<TabsPort['releaseTabId']>(() => currentReleaseTabId),
   }
 }
 
@@ -74,6 +104,23 @@ const clearResp = (...scopes: ReadonlyArray<'bookmark' | 'like' | 'notInterested
   drainEligible: true,
   results: scopes.map((scope) => ({ scope, ok: true })),
 })
+
+/** A release-tab unmounted answer carrying page evidence (Part B) — what the
+ *  leg's stuck/error checks actually read. */
+const unmountedPage = (page: {
+  articles: number
+  cells: number
+  ready: string
+  error: boolean
+}) => ({
+  mounted: false,
+  drainEligible: false,
+  results: [],
+  page,
+})
+
+const stuckPage = unmountedPage({ articles: 0, cells: 0, ready: 'complete', error: false })
+const errorPage = unmountedPage({ articles: 0, cells: 0, ready: 'complete', error: true })
 
 const unmounted = (drainEligible: boolean) => ({
   mounted: false,
@@ -119,7 +166,8 @@ describe('sendClearToTabs — clear targeting', () => {
       pinned(),
     )
     expect(res).toEqual([{ scope: 'bookmark', ok: false }])
-    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2, ...Array(30).fill(RELEASE_TAB_ID)])
+    // Budget, not attempt count: 12000ms / 600ms interval = 20 probes.
+    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, 2, ...Array(20).fill(RELEASE_TAB_ID)])
   })
 
   it('falls through past an open-but-empty origin tab to a later mounted tab', async () => {
@@ -391,12 +439,149 @@ describe('sendClearToTabs — clear targeting', () => {
   })
 })
 
+// ── The release leg's poll: wall-clock budget, early exits, reload, backoff ──
+//
+// `tabs=[]` throughout: these are about the LEG mechanics on top of `pinned()`, not
+// the fan-out that precedes it (already covered above) — an empty query list means
+// every message below is a release-tab probe.
+describe('releaseViaStatusTab — poll leg mechanics', () => {
+  it('gives up unreachable once every probe has thrown for RELEASE_UNREACHABLE_MS, well short of the budget', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([], { [RELEASE_TAB_ID]: new Error('no content script') })
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: false }])
+    // RELEASE_UNREACHABLE_MS(4000) / RELEASE_POLL_INTERVAL_MS(600): elapsed first
+    // reaches 4000 on probe 7 (4200ms) — well short of the 20-probe budget.
+    expect(tabs.sent.filter((s) => s.tabId === RELEASE_TAB_ID)).toHaveLength(7)
+    expect(t.releasePoll()).toEqual([
+      {
+        stage: 'clear-release-poll',
+        tweetId: 't1',
+        detail:
+          `tab=${RELEASE_TAB_ID} probes=7 threw=7 unmounted=0 lastArticles=none ` +
+          'lastCells=none lastReady=none lastError=none reloaded=false elapsedMs=4200 ' +
+          'reason=unreachable',
+      },
+    ])
+  })
+
+  it('reloads once on a stuck permalink (articles=0 cells=0 ready=complete) and still exhausts the budget', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([], { [RELEASE_TAB_ID]: stuckPage })
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.reloaded).toEqual([RELEASE_TAB_ID]) // exactly one reload, never a second
+    expect(tabs.sent.filter((s) => s.tabId === RELEASE_TAB_ID)).toHaveLength(20) // still pays the full budget
+    expect(t.releasePoll()).toEqual([
+      {
+        stage: 'clear-release-poll',
+        tweetId: 't1',
+        detail:
+          `tab=${RELEASE_TAB_ID} probes=20 threw=0 unmounted=20 lastArticles=0 lastCells=0 ` +
+          'lastReady=complete lastError=false reloaded=true elapsedMs=12000 reason=exhausted',
+      },
+    ])
+  })
+
+  it('reloads once on X error, backs off after the second, then recovers after RELEASE_BACKOFF_MS', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([], { [RELEASE_TAB_ID]: errorPage })
+    const broadcaster = makeTabBroadcaster(tabs, { trace: t.trace, clock: instantClock })
+
+    const first = await broadcaster.sendClearToTabs(
+      't1',
+      ['bookmark'],
+      undefined,
+      undefined,
+      pinned(),
+    )
+    expect(first).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.reloaded).toEqual([RELEASE_TAB_ID]) // the FIRST error reloads once
+    expect(t.releasePoll().at(-1)!.detail).toContain('reason=page-error')
+    expect(t.releasePoll().at(-1)!.detail).toContain('reloaded=true')
+    expect(tabs.navigateReleaseTab).toHaveBeenCalledTimes(1)
+
+    // The breaker: the very next leg fails fast, no navigation at all.
+    const second = await broadcaster.sendClearToTabs(
+      't1',
+      ['bookmark'],
+      undefined,
+      undefined,
+      pinned(),
+    )
+    expect(second).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.navigateReleaseTab).toHaveBeenCalledTimes(1) // still just the first leg's
+    expect(tabs.reloaded).toEqual([RELEASE_TAB_ID]) // no second reload — the leg never ran
+    expect(t.releasePoll().at(-1)!.detail).toBe(
+      'tab=none probes=0 threw=0 unmounted=0 lastArticles=none lastCells=none lastReady=none ' +
+        'lastError=none reloaded=false elapsedMs=0 reason=backoff',
+    )
+
+    // Past RELEASE_BACKOFF_MS the breaker clears and the leg navigates again.
+    now += RELEASE_BACKOFF_MS
+    const third = await broadcaster.sendClearToTabs(
+      't1',
+      ['bookmark'],
+      undefined,
+      undefined,
+      pinned(),
+    )
+    expect(third).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.navigateReleaseTab).toHaveBeenCalledTimes(2)
+  })
+
+  it('mounts on probe 3: reason=mounted, first request bare, later ones carry probe:true', async () => {
+    const t = traceSpy()
+    let calls = 0
+    const tabs = fakeTabs([], {
+      [RELEASE_TAB_ID]: () => {
+        calls++
+        return calls < 3 ? unmounted(false) : clearResp('bookmark')
+      },
+    })
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    const releaseSent = tabs.sent.filter((s) => s.tabId === RELEASE_TAB_ID)
+    expect(releaseSent).toHaveLength(3)
+    expect(releaseSent.map((s) => (s.message as { probe?: boolean }).probe)).toEqual([
+      undefined,
+      true,
+      true,
+    ])
+    expect(t.releasePoll()).toEqual([
+      {
+        stage: 'clear-release-poll',
+        tweetId: 't1',
+        detail:
+          `tab=${RELEASE_TAB_ID} probes=3 threw=0 unmounted=2 lastArticles=none lastCells=none ` +
+          'lastReady=none lastError=none reloaded=false elapsedMs=1800 reason=mounted',
+      },
+    ])
+  })
+})
+
 // ── R5: a leg that can click nothing is not worth a tab ──
 //
 // With all-lists off (the shipped default) a permalink page's own `clearableScope` is
 // null, so the pin is the ONLY thing `shouldClickScope` can match. When it matches
 // nothing claimed, navigating is a GUARANTEED no-op that still costs a background tab
-// plus the whole readiness poll (~9.6s), serialized ahead of every release behind it.
+// plus the whole readiness poll (up to RELEASE_POLL_BUDGET_MS), serialized ahead of
+// every release behind it.
 describe('sendClearToTabs — guaranteed-noop release leg', () => {
   it('skips the leg — and says why — when nothing was pinned', async () => {
     const t = traceSpy()
@@ -505,6 +690,7 @@ function traceSpy() {
     dispatch: () => lines.filter((l) => l.stage === 'clear-dispatch'),
     errors: () => lines.filter((l) => l.stage === 'clear-tab-error'),
     releaseScope: () => lines.filter((l) => l.stage === 'clear-release-scope'),
+    releasePoll: () => lines.filter((l) => l.stage === 'clear-release-poll'),
   }
 }
 
@@ -523,7 +709,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
         tweetId: 't1',
         detail:
           'tabs=2 prefer=2 preferHonored=true tried=2 answered=2:mounted release=none ' +
-          'outcome=mounted fabricated=false',
+          'outcome=mounted fabricated=false excluded=none skipped=0 stale=0',
       },
     ])
     expect(t.errors()).toEqual([]) // zero tab-errors on the happy path
@@ -546,7 +732,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     expect(tabs.navigateReleaseTab).not.toHaveBeenCalled()
     expect(t.dispatch()[0]!.detail).toBe(
       'tabs=2 prefer=none preferHonored=false tried=1,2 answered=1:mounted-noop,2:mounted ' +
-        'release=none outcome=mounted fabricated=false',
+        'release=none outcome=mounted fabricated=false excluded=none skipped=0 stale=0',
     )
   })
 
@@ -566,7 +752,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     )
     expect(t.dispatch()[0]!.detail).toBe(
       'tabs=2 prefer=none preferHonored=false tried=1,2 answered=1:unmounted,2:unmounted ' +
-        `release=${RELEASE_TAB_ID} outcome=release-tab fabricated=false`,
+        `release=${RELEASE_TAB_ID} outcome=release-tab fabricated=false excluded=none skipped=0 stale=0`,
     )
   })
 
@@ -624,7 +810,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
         tweetId: 't1',
         detail:
           'tabs=1 prefer=none preferHonored=false tried=1 answered=1:unmounted ' +
-          `release=${RELEASE_TAB_ID} outcome=release-tab fabricated=false`,
+          `release=${RELEASE_TAB_ID} outcome=release-tab fabricated=false excluded=none skipped=0 stale=0`,
       },
     ])
   })
@@ -640,16 +826,20 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
       clock: instantClock,
     }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
     expect(res).toEqual([{ scope: 'bookmark', ok: false }]) // the fabricated tail
-    expect(t.errors()).toEqual([
+    expect(t.errors()).toEqual([]) // no per-probe clear-tab-error line any more
+    expect(t.releasePoll()).toEqual([
       {
-        stage: 'clear-tab-error',
+        stage: 'clear-release-poll',
         tweetId: 't1',
-        detail: `tab=${RELEASE_TAB_ID} phase=release-poll reason=exhausted attempts=30`,
+        detail:
+          `tab=${RELEASE_TAB_ID} probes=20 threw=0 unmounted=20 lastArticles=none ` +
+          'lastCells=none lastReady=none lastError=none reloaded=false elapsedMs=12000 ' +
+          'reason=exhausted',
       },
     ])
     expect(t.dispatch()[0]!.detail).toBe(
       'tabs=1 prefer=none preferHonored=false tried=1 answered=1:unmounted ' +
-        `release=${RELEASE_TAB_ID} outcome=release-failed fabricated=true`,
+        `release=${RELEASE_TAB_ID} outcome=release-failed fabricated=true excluded=none skipped=0 stale=0`,
     )
   })
 
@@ -674,7 +864,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     ])
     expect(t.dispatch()[0]!.detail).toBe(
       'tabs=1 prefer=none preferHonored=false tried=1 answered=1:unmounted ' +
-        'release=none outcome=release-failed fabricated=true',
+        'release=none outcome=release-failed fabricated=true excluded=none skipped=0 stale=0',
     )
   })
 
@@ -693,7 +883,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     expect(tabs.navigateReleaseTab).not.toHaveBeenCalled()
     expect(t.dispatch()[0]!.detail).toBe(
       'tabs=1 prefer=none preferHonored=false tried=1 answered=1:mounted-noop release=none ' +
-        'outcome=noop-only fabricated=true',
+        'outcome=noop-only fabricated=true excluded=none skipped=0 stale=0',
     )
   })
 
@@ -711,7 +901,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     await makeTabBroadcaster(tabs, { trace: t.trace }).sendClearToTabs('t1', ['notInterested'])
     expect(t.dispatch()[0]!.detail).toBe(
       'tabs=0 prefer=none preferHonored=false tried=none answered=none release=none ' +
-        'outcome=exhausted fabricated=true',
+        'outcome=exhausted fabricated=true excluded=none skipped=0 stale=0',
     )
   })
 
@@ -727,7 +917,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     expect(res).toEqual([{ scope: 'bookmark', ok: true }])
     expect(t.dispatch()[0]!.detail).toBe(
       'tabs=0 prefer=none preferHonored=false tried=none answered=none ' +
-        `release=${RELEASE_TAB_ID} outcome=release-tab fabricated=false`,
+        `release=${RELEASE_TAB_ID} outcome=release-tab fabricated=false excluded=none skipped=0 stale=0`,
     )
   })
 
@@ -841,6 +1031,58 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     ).resolves.toEqual(traced)
     expect(withTrace.lines.length).toBeGreaterThan(0) // the traced run really did emit
     expect(plainTabs.sent).toEqual(tabs.sent) // identical fan-out, no extra messages
+  })
+})
+
+// ── Part D: exclude the release tab from fan-out, skip proven-dead tabs ──
+describe('sendClearToTabs — Part D: fan-out exclusion and orphan skip', () => {
+  it('excludes an already-reused release tab from the immediate fan-out, but the leg still uses it', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs(
+      [1, RELEASE_TAB_ID], // the release tab is open and matches queryXTabs' host pattern
+      { 1: unmounted(true), [RELEASE_TAB_ID]: clearResp('bookmark') },
+      { releaseTabId: RELEASE_TAB_ID }, // …and already reused from an earlier dispatch
+    )
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(tabs.sent.map((s) => s.tabId)).toEqual([1, RELEASE_TAB_ID]) // fan-out tried only 1
+    expect(tabs.navigated).toEqual(['https://x.com/i/web/status/t1']) // the leg still uses it
+    expect(t.dispatch()[0]!.detail).toContain(`excluded=${RELEASE_TAB_ID}`)
+    expect(t.dispatch()[0]!.detail).toContain('tried=1 ')
+  })
+
+  it('skips a tab after 2 consecutive no-receiver dispatches and re-probes it after 30s', async () => {
+    const t = traceSpy()
+    let calls = 0
+    const tabs = fakeTabs([3], {
+      3: () => {
+        calls++
+        return calls <= 2 ? new Error('no content script') : clearResp('notInterested')
+      },
+    })
+    const b = makeTabBroadcaster(tabs, { trace: t.trace, clock: instantClock })
+
+    await b.sendClearToTabs('t1', ['notInterested']) // dispatch 1: miss #1
+    await b.sendClearToTabs('t2', ['notInterested']) // dispatch 2: miss #2 → skipped
+    expect(tabs.sendTabMessage).toHaveBeenCalledTimes(2)
+    expect(b.staleTabCount()).toBe(1)
+
+    await b.sendClearToTabs('t3', ['notInterested']) // dispatch 3: skipped, not re-probed yet
+    expect(tabs.sendTabMessage).toHaveBeenCalledTimes(2) // no third send
+    expect(t.dispatch().at(-1)!.detail).toContain('skipped=1')
+    expect(t.dispatch().at(-1)!.detail).toContain('stale=1')
+
+    now += ORPHAN_REPROBE_MS
+    await b.sendClearToTabs('t4', ['notInterested']) // dispatch 4: due for re-probe
+    expect(tabs.sendTabMessage).toHaveBeenCalledTimes(3) // probed again
+    expect(t.dispatch().at(-1)!.detail).toContain('skipped=0')
+    expect(t.dispatch().at(-1)!.detail).toContain('stale=0') // success cleared the record
+    expect(b.staleTabCount()).toBe(0)
   })
 })
 

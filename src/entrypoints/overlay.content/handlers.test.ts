@@ -77,11 +77,13 @@ const run = (
     scopes: string[]
     allLists?: boolean
     asPageScope?: 'bookmark' | 'like'
+    probe?: boolean
   },
 ): Promise<{
   mounted: boolean
   drainEligible: boolean
   results: { scope: string; ok: boolean; noop?: boolean }[]
+  page?: { articles: number; cells: number; ready: string; error: boolean }
 }> =>
   new Promise((resolve) => {
     handleClearTweet(message, deps, (r) => resolve(r as never))
@@ -187,6 +189,7 @@ describe('handleClearTweet — scope wiring', () => {
       mounted: false,
       drainEligible: true,
       results: [],
+      page: { articles: 0, cells: 0, ready: document.readyState, error: false },
     })
     expect(runDrain).not.toHaveBeenCalled()
   })
@@ -288,6 +291,46 @@ describe('handleClearTweet — Release diagnostics', () => {
         '999',
       ],
       ['clear-tweet-not-mounted', 'pageScope=like articles=0 drainEligible=true', '999'],
+    ])
+  })
+
+  it('a quiet probe (probe:true, unmounted) emits neither request nor not-mounted, but still carries page evidence', async () => {
+    document.body.append(tweetArticle({ tweetId: '1', bookmarked: true }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const res = await run(
+      makeDeps({ clearScope: async () => true, pathname: '/jack/likes', reportClear }),
+      { tweetId: '999', scopes: ['bookmark', 'like'], allLists: true, probe: true },
+    )
+
+    expect(res.mounted).toBe(false)
+    expect(reportClear).not.toHaveBeenCalled()
+    expect(res.page).toEqual({ articles: 1, cells: 0, ready: document.readyState, error: false })
+  })
+
+  it('a mounted answer on a probe behaves exactly like a non-probe request: it clicks and reports', async () => {
+    document.body.append(tweetArticle({ tweetId: '105', liked: true }))
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async () => true)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const res = await run(makeDeps({ clearScope, pathname: '/jack/likes', reportClear }), {
+      tweetId: '105',
+      scopes: ['like'],
+      allLists: false,
+      probe: true,
+    })
+
+    expect(res.results).toEqual([{ scope: 'like', ok: true }])
+    expect(res.page).toBeUndefined()
+    expect(reportClear.mock.calls).toEqual([
+      [
+        'clear-tweet-request',
+        'pageScope=like scopes=like allLists=false drainEligible=true',
+        '105',
+      ],
+      [
+        'clear-tweet-result',
+        'pageScope=like mounted=true drainEligible=true results=like:ok',
+        '105',
+      ],
     ])
   })
 
@@ -521,7 +564,7 @@ describe('handleClearVisible — platform gate', () => {
     document.body.append(tweetArticle({ tweetId: '201', bookmarked: true }))
     const deps = {
       adapter: { platform: 'instagram' },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
     } as unknown as HandlerDeps
     const querySpy = vi.spyOn(document, 'querySelectorAll')
@@ -547,7 +590,7 @@ describe('handleClearWholeList — platform gate', () => {
     document.body.append(tweetArticle({ tweetId: '202', bookmarked: true }))
     const deps = {
       adapter: { platform: 'threads' },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       document,
       clearLog: () => {},
     } as unknown as HandlerDeps
@@ -584,7 +627,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       reportClear,
     } as unknown as HandlerDeps
@@ -616,7 +659,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       reportClear,
     } as unknown as HandlerDeps
@@ -637,7 +680,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       reportClear,
     } as unknown as HandlerDeps
@@ -665,7 +708,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       reportClear,
     } as unknown as HandlerDeps
@@ -731,7 +774,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       reportClear,
     } as unknown as HandlerDeps
     const sendResponse = vi.fn<(r: unknown) => void>()
@@ -795,7 +838,7 @@ describe('handleDrainPage — Release diagnostics', () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
       store: { values: () => items },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       sendTracked,
       reportClear,
@@ -953,7 +996,7 @@ describe('handleDrainPage — Release diagnostics', () => {
     }))
     const deps = {
       store: { values: () => [] },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       sendTracked,
       reportClear: vi.fn<HandlerDeps['reportClear']>(),
@@ -1020,7 +1063,7 @@ describe('handleSweepPage — Release diagnostics', () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       store: {
         valuesForTweet: (tweetId: string) =>
           tweetId === '601' ? items601 : tweetId === '602' ? items602 : [],
@@ -1062,7 +1105,7 @@ describe('handleSweepPage — Release diagnostics', () => {
     const notifyContextLost = vi.fn<HandlerDeps['notifyContextLost']>()
     const deps = {
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       store: { valuesForTweet: () => items603 },
       clearLog: () => {},
       notifyContextLost,
@@ -1103,7 +1146,7 @@ describe('handleSweepPage — Release diagnostics', () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       store: { valuesForTweet: () => items604 },
       clearLog: () => {},
       notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
@@ -1139,7 +1182,7 @@ describe('handleSweepPage — Release diagnostics', () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       store: { valuesForTweet: () => [mediaItem('m605', '605')] },
       clearLog: () => {},
       notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
@@ -1367,7 +1410,7 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     const raw = { _tag: 'ClearVisibleRequest' }
     const deps = {
       adapter: { platform: 'threads' },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
     } as unknown as HandlerDeps
     const sendResponse = vi.fn<(r: unknown) => void>()
@@ -1383,7 +1426,7 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     const raw = { _tag: 'ClearWholeListRequest' }
     const deps = {
       adapter: { platform: 'threads' },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       document,
       clearLog: () => {},
     } as unknown as HandlerDeps

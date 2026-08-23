@@ -26,6 +26,7 @@ import {
   findArticle,
   flipConfirmed,
   isMember,
+  pageEvidence,
   pageScope,
   shouldClickScope,
   tweetIdOfArticle,
@@ -779,6 +780,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
     scopes: ClearScope[]
     allLists?: boolean
     asPageScope?: MembershipScope
+    probe?: boolean
   }
   const allLists = req.allLists === true
   const onList = pageScope(deps.location.pathname)
@@ -790,31 +792,43 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
     Option.isSome(onList) &&
     membershipScopes.length > 0 &&
     (allLists || membershipScopes.includes(onList.value))
-  deps.reportClear(
-    'clear-tweet-request',
-    `pageScope=${pageScopeDetail} scopes=${scopesDetail(req.scopes)} allLists=${allLists} drainEligible=${drainEligible}` +
-      // Appended only when present (like `clearErrors=` on clear-dispatch) so every
-      // ordinary in-page clear keeps the exact detail string it has today.
-      (req.asPageScope === undefined ? '' : ` asPageScope=${req.asPageScope}`),
-    req.tweetId,
-  )
+  // Resolved before any trace line so a release-leg poll attempt (`req.probe ===
+  // true`, attempts ≥ 2 — the first attempt reaches the tab bare) that lands on a
+  // still-unmounted post can skip BOTH the request and not-mounted lines: the leg's
+  // one folded `clear-release-poll` line is the evidence for the whole poll, not a
+  // request/not-mounted pair per probe. A mounted answer on a probe is never quiet
+  // — it clicks and reports exactly like today.
+  const article = findArticle(deps.document, req.tweetId)
+  const quietProbe = req.probe === true && Option.isNone(article)
+  if (!quietProbe) {
+    deps.reportClear(
+      'clear-tweet-request',
+      `pageScope=${pageScopeDetail} scopes=${scopesDetail(req.scopes)} allLists=${allLists} drainEligible=${drainEligible}` +
+        // Appended only when present (like `clearErrors=` on clear-dispatch) so every
+        // ordinary in-page clear keeps the exact detail string it has today.
+        (req.asPageScope === undefined ? '' : ` asPageScope=${req.asPageScope}`),
+      req.tweetId,
+    )
+  }
   if (import.meta.env.DEV)
     deps.clearLog('request', req.tweetId, req.scopes, allLists ? '· all-lists' : '')
   void (async () => {
-    const article = findArticle(deps.document, req.tweetId)
     if (Option.isNone(article)) {
-      const n = deps.document.querySelectorAll('article[data-testid="tweet"]').length
-      if (import.meta.env.DEV) deps.clearLog('not mounted.', n, 'articles on page')
-      deps.reportClear(
-        'clear-tweet-not-mounted',
-        `pageScope=${pageScopeDetail} articles=${n} drainEligible=${drainEligible}`,
-        req.tweetId,
-      )
+      const page = pageEvidence(deps.document)
+      if (!quietProbe) {
+        if (import.meta.env.DEV) deps.clearLog('not mounted.', page.articles, 'articles on page')
+        deps.reportClear(
+          'clear-tweet-not-mounted',
+          `pageScope=${pageScopeDetail} articles=${page.articles} drainEligible=${drainEligible}`,
+          req.tweetId,
+        )
+      }
       sendResponse({
         _tag: 'ClearTweetResponse',
         mounted: false,
         drainEligible,
         results: [],
+        page,
       })
       return
     }

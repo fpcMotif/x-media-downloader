@@ -968,6 +968,7 @@ export default defineContentScript({
 
     const clearDwell = (): void => {
       if (dwell !== null) {
+        console.debug('[DEBUG-7c1e] clearDwell (dwell was running)', new Error().stack?.split('\n').slice(2, 5).join(' | '))
         clearTimeout(dwell)
         dwell = null
       }
@@ -986,12 +987,13 @@ export default defineContentScript({
     }
 
     // Whether `m` is still the armed media at fire-time: attached, the same
-    // twimg key, and under the pointer. A hidden X `<video>` is matched via its
-    // player container by `mediaStillUnderPointer`.
+    // key, and under the pointer. A hidden X `<video>` is matched via its
+    // player container, and a Threads `pointer-events:none` `<img>` via its
+    // wrapper + own rect, both inside `mediaStillUnderPointer`.
     const holdsKey = (m: HoverMediaElement, key: string): boolean =>
       m.isConnected &&
       previewKeyFromMedia(adapter, m, location.pathname) === key &&
-      mediaStillUnderPointer(m, document.elementsFromPoint(lastX, lastY))
+      mediaStillUnderPointer(m, document.elementsFromPoint(lastX, lastY), lastX, lastY)
 
     // The media to grab once the dwell elapses. Prefer the armed node, but X's
     // timeline is virtualized: it can recycle that exact node out from under the
@@ -1105,7 +1107,9 @@ export default defineContentScript({
 
     const fireGrab = (armed: HoverMediaElement, key: string): void => {
       dwell = null
+      console.debug('[DEBUG-7c1e] fireGrab enter', key, 'armedConnected=', armed.isConnected)
       const media = liveGrabTarget(armed, key)
+      console.debug('[DEBUG-7c1e] fireGrab liveGrabTarget →', media ? media.tagName : null)
       if (media === null) {
         // The dwell completed but the armed node went stale AND the re-resolved
         // live media at the pointer either doesn't exist or no longer carries the
@@ -1188,6 +1192,7 @@ export default defineContentScript({
     /** Move the hover focus to `media`/`key` (either may be null), re-arming as needed. */
     const focusHover = (media: HoverMediaElement | null, key: string | null): void => {
       if (key === hoverKey && media === hoverMedia) return
+      console.debug('[DEBUG-7c1e] focusHover change', JSON.stringify({ key, media: media?.tagName ?? null, sameNode: media === hoverMedia, sameKey: key === hoverKey, prevKey: hoverKey, prevConnected: hoverMedia?.isConnected ?? null, grabActive: grab.active }))
       clearDwell()
       hoverMedia = media
       hoverKey = key
@@ -1212,6 +1217,7 @@ export default defineContentScript({
 
     const releaseAll = (): void => {
       if (!grab.active && grabUi === null && grab.grabbed.size === 0) return
+      console.debug('[DEBUG-7c1e] releaseAll', new Error().stack?.split('\n').slice(2, 5).join(' | '))
       grab = releaseModifier()
       clearDwell()
       setCursorActive(false)
@@ -1881,6 +1887,7 @@ export default defineContentScript({
       const stack = document.elementsFromPoint(sample.clientX, sample.clientY)
       const media = resolveHoverMedia(target, stack, sample.clientX, sample.clientY)
       const key = previewKeyFromMedia(adapter, media, location.pathname)
+      if (grabbing) console.debug('[DEBUG-7c1e] mouse hit-test', JSON.stringify({ x: sample.clientX, y: sample.clientY, target: target?.tagName, stack0: stack[0]?.tagName, media: media?.tagName ?? null, key, sameAsHover: media === hoverMedia, alt: sample.altKey, meta: sample.metaKey, visible: document.visibilityState, focus: document.hasFocus() }))
       if (grabbing) focusHover(media, key)
       focusBadge(media, key)
     }

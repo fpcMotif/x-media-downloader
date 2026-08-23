@@ -213,6 +213,10 @@ export const MetricsSnapshot = Schema.Struct({
   elapsedMs: Schema.Number,
   events: Schema.optional(Schema.Array(DownloadTraceEntry)),
   releaseDiagnostics: Schema.optional(ReleaseDiagnosticsSummary),
+  // Count of tabs the fan-out has proven dead and stopped probing (tab-broadcaster.ts
+  // Part D orphan policy). Omitted at 0 — the popup only shows the advisory when it
+  // has something to say.
+  staleTabs: Schema.optional(Schema.Number),
 })
 export type MetricsSnapshot = typeof MetricsSnapshot.Type
 
@@ -391,6 +395,11 @@ export const ClearTweetRequest = Schema.TaggedStruct('ClearTweetRequest', {
   scopes: Schema.Array(ClearScope),
   allLists: Schema.optional(Schema.Boolean),
   asPageScope: Schema.optional(SweepScope),
+  // Release-leg poll attempts ≥ 2 (background/tab-broadcaster.ts): the tab already
+  // proved reachable on attempt 1, so an unmounted answer here is expected noise,
+  // not evidence — the receiver skips its own request/not-mounted trace lines and
+  // lets the leg's one folded `clear-release-poll` line speak for the whole poll.
+  probe: Schema.optional(Schema.Boolean),
 })
 export type ClearTweetRequest = typeof ClearTweetRequest.Type
 
@@ -400,14 +409,28 @@ const ClearResult = Schema.Struct({
   noop: Schema.optional(Schema.Boolean),
 })
 
+/** Page-state evidence the content script can read even when the target tweet
+ *  never mounted — what a release leg polling a dead permalink actually saw,
+ *  so it can tell "still loading" from "X served an error block" from "this
+ *  page will never mount that post" without guessing off silence. */
+const ClearPageEvidence = Schema.Struct({
+  articles: Schema.Number, // article[data-testid="tweet"] count
+  cells: Schema.Number, // [data-testid="cellInnerDiv"] count — 0 ⇒ nothing rendered at all
+  ready: Schema.Literals(['loading', 'interactive', 'complete']),
+  error: Schema.Boolean, // [data-testid="error-detail"] present (X's own error block)
+})
+
 /** Per-scope outcome, returned via `sendResponse` (not the decoded union).
  *  `noop: true` marks an off-list scope the content script did NOT click (it
  *  reports ok:true only so the in-memory ledger can settle) — the durable sweep
- *  flag must exclude these, treating only a real verified flip as cleared. */
+ *  flag must exclude these, treating only a real verified flip as cleared.
+ *  `page` is present only on an UNMOUNTED answer — the release leg's only window
+ *  into why a permalink never mounted the post. */
 export const ClearTweetResponse = Schema.TaggedStruct('ClearTweetResponse', {
   mounted: Schema.Boolean,
   drainEligible: Schema.Boolean,
   results: Schema.Array(ClearResult),
+  page: Schema.optional(ClearPageEvidence),
 })
 export type ClearTweetResponse = typeof ClearTweetResponse.Type
 

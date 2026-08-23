@@ -84,6 +84,7 @@ import {
   appendManyReleaseDiagnostics,
   decodeReleaseDiagnostics,
   composeDiagnosticsExport,
+  formatTraceLabel,
 } from '@/packages/clear/diagnostics'
 import {
   computeReleaseCorrelationCounters,
@@ -198,7 +199,8 @@ const tabBroadcaster = makeTabBroadcaster(undefined, {
   trace: (stage, detail, tweetId) =>
     traceBackground(stage, { detail, ...(tweetId === undefined ? {} : { tweetId }) }),
 })
-const { reportTransferOutcome, sendClearToTabs, resolveTabListScope } = tabBroadcaster
+const { reportTransferOutcome, sendClearToTabs, resolveTabListScope, staleTabCount } =
+  tabBroadcaster
 
 /** Re-resolve a CDN url from an open tab before an interrupt retry. Despite the
  *  name (a holdover from the X-only original), this asks whichever open tab's
@@ -261,16 +263,7 @@ function recordTrace(event: DownloadTraceEntry): void {
       traceBackground(stage, { tweetId: mutationEvent.tweetId, detail })
     }
   }
-  const label = [
-    event.stage,
-    event.type,
-    event.itemId,
-    event.elapsedMs === undefined ? null : `${event.elapsedMs}ms`,
-    event.detail,
-  ]
-    .filter(Boolean)
-    .join(' ')
-  console.info(`[XMD] ${event.source} ${label}`)
+  console.info(`[XMD] ${event.source} ${formatTraceLabel(event)}`)
   // Release diagnostics: mirror the subset of trace events belonging to a Release run
   // into the durable capped log — BUFFERED, never one write per event. `recordTrace`
   // runs on EVERY download/clear trace event, so its synchronous callers must never be
@@ -1441,7 +1434,10 @@ const messageHandlers: MessageHandlers = {
   MetricsRequest: async () => {
     const base = (await metricsItem.getValue()) ?? currentSnapshot(Date.now())
     const releaseDiagnostics = await releaseDiagnosticsSummary()
-    return releaseDiagnostics === undefined ? base : { ...base, releaseDiagnostics }
+    const withDiagnostics =
+      releaseDiagnostics === undefined ? base : { ...base, releaseDiagnostics }
+    const staleTabs = staleTabCount()
+    return staleTabs > 0 ? { ...withDiagnostics, staleTabs } : withDiagnostics
   },
   // NOTE: this projection is an allowlist — a field added to `traceFields` but NOT
   // added here is silently dropped for every content-script event. `tabId` is taken
