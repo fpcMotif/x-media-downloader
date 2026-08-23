@@ -15,6 +15,7 @@ study/
 coverage/
 .claude/tmp/
 .impeccable/
+/*.png
 droid-wiki/
 
 # Local git worktrees
