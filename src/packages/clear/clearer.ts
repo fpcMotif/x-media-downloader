@@ -423,13 +423,18 @@ export interface PageEvidence {
 }
 
 export function pageEvidence(
-  document: Pick<Document, 'querySelectorAll' | 'querySelector' | 'readyState'>,
+  document: Pick<Document, 'querySelectorAll' | 'readyState'>,
 ): PageEvidence {
   return {
     articles: document.querySelectorAll(TWEET_ARTICLE_SEL).length,
     cells: document.querySelectorAll(CELL_SEL).length,
     ready: document.readyState,
-    error: document.querySelector('[data-testid="error-detail"]') !== null,
+    // X's own sidebar widgets ("What's happening"/Trending) render their own
+    // error-detail independent of the conversation column — only one OUTSIDE
+    // sidebarColumn means the permalink itself failed.
+    error: [...document.querySelectorAll('[data-testid="error-detail"]')].some(
+      (el) => el.closest('[data-testid="sidebarColumn"]') === null,
+    ),
   }
 }
 

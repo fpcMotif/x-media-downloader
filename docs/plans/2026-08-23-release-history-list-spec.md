@@ -134,8 +134,8 @@ Leg algorithm (`releaseViaStatusTab`):
    - threw → `threw++`. If `threw === probes && elapsed ≥ RELEASE_UNREACHABLE_MS` → exit `unreachable`.
    - `mounted:true` → exit `mounted` with results (clears the breaker).
    - unmounted → `unmounted++`, remember `page`.
-     - `page.error` → if not yet reloaded: reload, `reloaded=true`, continue; else exit `page-error`
-       and set `backoffUntil = now() + RELEASE_BACKOFF_MS`.
+     - Two consecutive `page.error` answers → if not yet reloaded: reload, `reloaded=true`, continue;
+       else exit `page-error` and set `backoffUntil = now() + RELEASE_BACKOFF_MS`.
      - `page.articles===0 && page.cells===0 && page.ready==='complete'` continuously for
        `≥ RELEASE_STUCK_MS` and not yet reloaded → reload, `reloaded=true`, continue.
 4. Budget end → `exhausted` if anything answered, else `unreachable`.

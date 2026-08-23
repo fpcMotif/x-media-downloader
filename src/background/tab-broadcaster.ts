@@ -454,6 +454,10 @@ export const makeTabBroadcaster = (
     let unmounted = 0
     let lastPage: ReleasePageEvidence | undefined
     let reloaded = false
+    // The first probe after `tabs.update` can still be answered by the OLD
+    // document before the navigation commits, so a lone error answer proves
+    // nothing about the NEW page — only two CONSECUTIVE error answers act.
+    let errorStreak = 0
     let stuckSince: number | undefined
     let elapsed = 0
     // oxlint-disable no-await-in-loop -- bounded readiness poll; the first mounted answer performs the clear
@@ -526,33 +530,39 @@ export const makeTabBroadcaster = (
       }
       unmounted++
       lastPage = res?.page ?? lastPage
-      if (lastPage?.error === true) {
-        if (!reloaded) {
-          try {
-            await tabs.reloadReleaseTab(tabId)
-          } catch {
-            /* tab gone — the next probe throws and the loop degrades to unreachable/exhausted */
+      const erroring = res?.page?.error === true
+      errorStreak = erroring ? errorStreak + 1 : 0
+      if (erroring) {
+        if (errorStreak >= 2) {
+          if (!reloaded) {
+            try {
+              await tabs.reloadReleaseTab(tabId)
+            } catch {
+              /* tab gone — the next probe throws and the loop degrades to unreachable/exhausted */
+            }
+            reloaded = true
+            errorStreak = 0
+            stuckSince = undefined
+            continue
           }
-          reloaded = true
-          stuckSince = undefined
-          continue
+          backoffUntil = clock.now() + RELEASE_BACKOFF_MS
+          trace(
+            'clear-release-poll',
+            formatReleasePoll(
+              tabId,
+              probes,
+              threw,
+              unmounted,
+              lastPage,
+              reloaded,
+              elapsed,
+              'page-error',
+            ),
+            tweetId,
+          )
+          return { ok: false, tabId }
         }
-        backoffUntil = clock.now() + RELEASE_BACKOFF_MS
-        trace(
-          'clear-release-poll',
-          formatReleasePoll(
-            tabId,
-            probes,
-            threw,
-            unmounted,
-            lastPage,
-            reloaded,
-            elapsed,
-            'page-error',
-          ),
-          tweetId,
-        )
-        return { ok: false, tabId }
+        continue
       }
       const stuck =
         lastPage !== undefined &&
@@ -619,6 +629,14 @@ export const makeTabBroadcaster = (
     const probeIds: number[] = []
     let skippedCount = 0
     for (const id of candidates) {
+      // The origin tab is exempt from the skip filter: `preferTabId` is the whole
+      // reason the origin-first short-circuit exists, and a transient orphan miss
+      // must not cost it that guarantee — probed every dispatch, skip state or
+      // not, and its record still updates from THIS probe like any other tab's.
+      if (id === preferTabId) {
+        probeIds.push(id)
+        continue
+      }
       const record = orphanRecords.get(id)
       const due =
         record?.skippedSince !== undefined &&

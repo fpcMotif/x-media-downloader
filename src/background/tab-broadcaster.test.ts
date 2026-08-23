@@ -121,6 +121,7 @@ const unmountedPage = (page: {
 
 const stuckPage = unmountedPage({ articles: 0, cells: 0, ready: 'complete', error: false })
 const errorPage = unmountedPage({ articles: 0, cells: 0, ready: 'complete', error: true })
+const loadingPage = unmountedPage({ articles: 0, cells: 0, ready: 'loading', error: false })
 
 const unmounted = (drainEligible: boolean) => ({
   mounted: false,
@@ -493,7 +494,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
     ])
   })
 
-  it('reloads once on X error, backs off after the second, then recovers after RELEASE_BACKOFF_MS', async () => {
+  it('reloads once after two consecutive X error answers, backs off after the next pair, then recovers after RELEASE_BACKOFF_MS', async () => {
     const t = traceSpy()
     const tabs = fakeTabs([], { [RELEASE_TAB_ID]: errorPage })
     const broadcaster = makeTabBroadcaster(tabs, { trace: t.trace, clock: instantClock })
@@ -506,10 +507,19 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
       pinned(),
     )
     expect(first).toEqual([{ scope: 'bookmark', ok: false }])
-    expect(tabs.reloaded).toEqual([RELEASE_TAB_ID]) // the FIRST error reloads once
-    expect(t.releasePoll().at(-1)!.detail).toContain('reason=page-error')
-    expect(t.releasePoll().at(-1)!.detail).toContain('reloaded=true')
+    expect(tabs.reloaded).toEqual([RELEASE_TAB_ID]) // the FIRST error pair reloads once
     expect(tabs.navigateReleaseTab).toHaveBeenCalledTimes(1)
+    // Probe 1+2 error (reload), probe 3+4 error again (backoff) — 4 probes total,
+    // never fewer: a single error answer is never actionable on its own.
+    expect(t.releasePoll()).toEqual([
+      {
+        stage: 'clear-release-poll',
+        tweetId: 't1',
+        detail:
+          `tab=${RELEASE_TAB_ID} probes=4 threw=0 unmounted=4 lastArticles=0 lastCells=0 ` +
+          'lastReady=complete lastError=true reloaded=true elapsedMs=2400 reason=page-error',
+      },
+    ])
 
     // The breaker: the very next leg fails fast, no navigation at all.
     const second = await broadcaster.sendClearToTabs(
@@ -538,6 +548,35 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
     )
     expect(third).toEqual([{ scope: 'bookmark', ok: false }])
     expect(tabs.navigateReleaseTab).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not reload or exit on a single error answer followed by a normal one — the OLD document can answer once before the navigation commits', async () => {
+    const t = traceSpy()
+    let calls = 0
+    const tabs = fakeTabs([], {
+      [RELEASE_TAB_ID]: () => {
+        calls++
+        return calls === 1 ? errorPage : loadingPage
+      },
+    })
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.reloaded).toEqual([]) // never reloaded
+    expect(tabs.navigateReleaseTab).toHaveBeenCalledTimes(1) // only the initial navigation
+    expect(t.releasePoll()).toEqual([
+      {
+        stage: 'clear-release-poll',
+        tweetId: 't1',
+        detail:
+          `tab=${RELEASE_TAB_ID} probes=20 threw=0 unmounted=20 lastArticles=0 lastCells=0 ` +
+          'lastReady=loading lastError=false reloaded=false elapsedMs=12000 reason=exhausted',
+      },
+    ])
   })
 
   it('mounts on probe 3: reason=mounted, first request bare, later ones carry probe:true', async () => {
@@ -1092,6 +1131,100 @@ describe('sendClearToTabs — Part D: fan-out exclusion and orphan skip', () => 
     expect(t.dispatch().at(-1)!.detail).toContain('skipped=0')
     expect(t.dispatch().at(-1)!.detail).toContain('stale=0') // success cleared the record
     expect(b.staleTabCount()).toBe(0)
+  })
+
+  it('never orphan-skips the origin tab: probed first mid skip-window, and its own record updates from that probe', async () => {
+    const t = traceSpy()
+    let calls = 0
+    const tabs = fakeTabs([10], {
+      10: () => {
+        calls++
+        return calls <= 2 ? new Error('no content script') : clearResp('bookmark')
+      },
+    })
+    const b = makeTabBroadcaster(tabs, { trace: t.trace, clock: instantClock })
+
+    await b.sendClearToTabs('t1', ['bookmark'], 10) // dispatch 1: miss #1
+    await b.sendClearToTabs('t2', ['bookmark'], 10) // dispatch 2: miss #2 → skip state
+    expect(b.staleTabCount()).toBe(1)
+
+    // Dispatch 3: tab 10 is STILL in skip state, but it's preferTabId — exempt.
+    const res = await b.sendClearToTabs('t3', ['bookmark'], 10)
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(tabs.sendTabMessage).toHaveBeenCalledTimes(3) // probed despite skip state
+    expect(tabs.sent[2]!.tabId).toBe(10) // probed FIRST (only candidate here)
+    expect(t.dispatch().at(-1)!.detail).toContain('preferHonored=true')
+    expect(t.dispatch().at(-1)!.detail).toContain('tried=10')
+    expect(b.staleTabCount()).toBe(0) // its own successful probe cleared the record
+  })
+
+  it('still skips a NON-preferred tab in skip state on the very dispatch the origin tab is exempted', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([10, 20], {
+      20: () => new Error('no content script'), // always dead, never the preferred tab
+    })
+    const b = makeTabBroadcaster(tabs, { trace: t.trace, clock: instantClock })
+
+    await b.sendClearToTabs('t1', ['bookmark']) // dispatch 1: tab 20 miss #1
+    await b.sendClearToTabs('t2', ['bookmark']) // dispatch 2: tab 20 miss #2 → skip state
+    expect(b.staleTabCount()).toBe(1)
+    const missesSoFar = tabs.sent.filter((s) => s.tabId === 20).length
+    expect(missesSoFar).toBe(2)
+
+    // Dispatch 3: tab 10 is preferTabId (exempt, probed); tab 20 stays skipped.
+    await b.sendClearToTabs('t3', ['bookmark'], 10)
+    expect(tabs.sent.filter((s) => s.tabId === 20)).toHaveLength(2) // no third probe
+    expect(t.dispatch().at(-1)!.detail).not.toContain('tried=10,20')
+    expect(t.dispatch().at(-1)!.detail).toContain('tried=10')
+    expect(t.dispatch().at(-1)!.detail).toContain('skipped=1')
+    expect(t.dispatch().at(-1)!.detail).toContain('stale=1')
+  })
+
+  it('re-probes a skipped tab after ORPHAN_REPROBE_DISPATCHES skipped dispatches even with the clock frozen', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([5], { 5: new Error('no content script') }) // always dead
+    const b = makeTabBroadcaster(tabs, { trace: t.trace, clock: instantClock })
+
+    await b.sendClearToTabs('t1', ['notInterested']) // dispatch 1: miss #1
+    await b.sendClearToTabs('t2', ['notInterested']) // dispatch 2: miss #2 → skip state
+    expect(b.staleTabCount()).toBe(1)
+
+    // Dispatches 3..12 (10 of them): skipped every time by COUNT alone — the
+    // clock never advances, so the wall-clock reprobe condition never fires.
+    // oxlint-disable no-await-in-loop -- sequential dispatch simulation
+    for (let n = 3; n <= 12; n++) {
+      await b.sendClearToTabs(`t${n}`, ['notInterested'])
+      expect(t.dispatch().at(-1)!.detail).toContain('tried=none')
+    }
+    // oxlint-enable no-await-in-loop
+    expect(tabs.sendTabMessage).toHaveBeenCalledTimes(2) // still just the first two misses
+
+    // Dispatch 13: skippedDispatches reached ORPHAN_REPROBE_DISPATCHES — re-probed.
+    await b.sendClearToTabs('t13', ['notInterested'])
+    expect(t.dispatch().at(-1)!.detail).toContain('tried=5')
+    expect(tabs.sendTabMessage).toHaveBeenCalledTimes(3)
+  })
+
+  it('restarts the skip window when a re-probed tab throws again', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([5], { 5: new Error('no content script') }) // always dead
+    const b = makeTabBroadcaster(tabs, { trace: t.trace, clock: instantClock })
+
+    await b.sendClearToTabs('t1', ['notInterested']) // miss #1
+    await b.sendClearToTabs('t2', ['notInterested']) // miss #2 → skip state
+    // oxlint-disable no-await-in-loop -- sequential dispatch simulation
+    for (let n = 3; n <= 12; n++) {
+      await b.sendClearToTabs(`t${n}`, ['notInterested'])
+    }
+    // oxlint-enable no-await-in-loop
+    await b.sendClearToTabs('t13', ['notInterested']) // due — re-probed, throws again
+    expect(t.dispatch().at(-1)!.detail).toContain('tried=5')
+
+    // The very next dispatch: the re-probe miss restarted the skip window, so
+    // the tab is skipped again immediately rather than needing 2 fresh misses.
+    await b.sendClearToTabs('t14', ['notInterested'])
+    expect(t.dispatch().at(-1)!.detail).toContain('tried=none')
+    expect(t.dispatch().at(-1)!.detail).toContain('skipped=1')
   })
 })
 

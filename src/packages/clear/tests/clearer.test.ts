@@ -142,6 +142,36 @@ describe('clearer DOM helpers', () => {
     expect(evidence.ready).toBe(document.readyState)
   })
 
+  it("pageEvidence ignores an error-detail confined to X's own sidebar widgets", () => {
+    document.body.innerHTML = `
+      <div data-testid="sidebarColumn">
+        <div data-testid="error-detail">Something went wrong. Try reloading.</div>
+      </div>
+    `
+    expect(pageEvidence(document).error).toBe(false)
+  })
+
+  it('pageEvidence flags an error-detail in the primary column', () => {
+    document.body.innerHTML = `
+      <div data-testid="primaryColumn">
+        <div data-testid="error-detail">Something went wrong. Try reloading.</div>
+      </div>
+    `
+    expect(pageEvidence(document).error).toBe(true)
+  })
+
+  it('pageEvidence flags true when both the sidebar and the primary column error', () => {
+    document.body.innerHTML = `
+      <div data-testid="sidebarColumn">
+        <div data-testid="error-detail"></div>
+      </div>
+      <div data-testid="primaryColumn">
+        <div data-testid="error-detail"></div>
+      </div>
+    `
+    expect(pageEvidence(document).error).toBe(true)
+  })
+
   it('pageEvidence reports zero counts and no error on an empty page', () => {
     expect(pageEvidence(document)).toEqual({
       articles: 0,
