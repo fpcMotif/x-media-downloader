@@ -26,6 +26,7 @@ import {
   findArticle,
   flipConfirmed,
   isMember,
+  pageEvidence,
   pageScope,
   shouldClickScope,
   tweetIdOfArticle,
@@ -367,25 +368,29 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
   return true
 }
 
+/** Consecutive manual-sweep no-flips after which an id is ghost-skipped. One
+ *  failure can be X lag; two in a row on the same mounted row is the ghost
+ *  shape: the post was already cleared from another tab, the stale list row
+ *  still renders the active control, and every click is a server-side no-op
+ *  the flip-confirm honestly refuses (LIVE 2026-08-23: post 2085341199993565645
+ *  failed every pass after its release-tab success). */
+export const GHOST_NOFLIP_LIMIT = 2
+
+/** Per-page-session ghost memo shared by both sweep arms. Module scope IS the
+ *  content script's lifetime; a reload (fresh list, fresh truth) resets it. */
+const sweepGhosts = new Map<string, number>()
+
 /** Click the clear control on every mounted post that is a clearable member of
- *  `scope`, paced one click at a time so X registers each. Returns how many were
- *  clicked. Shared by the one-shot visible clear and the whole-list scroll sweep —
- *  the manual, unledgered click path (spec #59 H5), so `origin=manual` on every
- *  trace line below.
- *
- *  Unlike settle/drain's `tweet-clear.ts`, this loop does NOT poll — "Release the
- *  whole list…" is already the extension's slowest bulk action, and a per-click
- *  poll (up to 1.2s) would make it materially slower. Instead it takes exactly ONE
- *  read at the pace boundary it already waits for (`paceMs`, unchanged), reusing
- *  the SAME `classifyFlip`/`flipConfirmed` vocabulary settle/drain's polled confirm
- *  uses so a `clear-flip`/`clear-attempt-fail` line from `origin=manual` reads
- *  exactly like one from `origin=settle`|`drain` — just with `attempt=1` (an honest
- *  count: only one look was taken, never a claim of six). */
+ *  the given scope — the manual, unledgered path (spec #59 H5). `ghosts`, when
+ *  supplied, memoizes consecutive no-flips per tweetId so a stale row that can
+ *  never flip (see {@link GHOST_NOFLIP_LIMIT}) stops costing a click per pass;
+ *  a real flip deletes its memo entry. */
 export async function clearMountedForScope(
   document: Document,
   scope: MembershipScope,
   paceMs: number,
   trace: (stage: string, detail: string, tweetId?: string) => void,
+  ghosts?: Map<string, number>,
 ): Promise<number> {
   let cleared = 0
   // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
@@ -400,6 +405,13 @@ export async function clearMountedForScope(
     // Resolved BEFORE the click, same as tweet-clear.ts's pre-click snapshot — the
     // node the trace line is ABOUT, not whatever `document` shows a tick later.
     const tweetId = Option.getOrNull(tweetIdOfArticle(article))
+    if (tweetId !== null && ghosts !== undefined) {
+      const noFlips = ghosts.get(tweetId) ?? 0
+      if (noFlips >= GHOST_NOFLIP_LIMIT) {
+        trace('clear-ghost-skip', `scope=${scope} noFlips=${noFlips} origin=manual`, tweetId)
+        continue
+      }
+    }
     target.click()
     cleared++
     await new Promise((r) => setTimeout(r, paceMs))
@@ -407,6 +419,7 @@ export async function clearMountedForScope(
     // permalink) ⇒ nothing to tag the trace line with; still counts as clicked.
     if (tweetId === null) continue
     if (flipConfirmed(article, scope)) {
+      ghosts?.delete(tweetId)
       const { arm, reresolved } = classifyFlip(document, article, tweetId, scope)
       const detail = `scope=${scope} arm=${arm} attempt=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} reresolved=${reresolved} origin=manual`
       trace('clear-flip', detail, tweetId)
@@ -416,6 +429,7 @@ export async function clearMountedForScope(
       if (arm === 'detached' && reresolved === 'member')
         trace('clear-flip-fabricated', detail, tweetId)
     } else {
+      ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
       trace(
         'clear-attempt-fail',
         `scope=${scope} reason=no-flip attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
@@ -463,7 +477,13 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0, reason: 'not-list-page' })
       return
     }
-    const cleared = await clearMountedForScope(deps.document, scope.value, 350, deps.reportClear)
+    const cleared = await clearMountedForScope(
+      deps.document,
+      scope.value,
+      350,
+      deps.reportClear,
+      sweepGhosts,
+    )
     if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
     deps.reportClear('clear-visible-end', `cleared ${cleared} ${scope.value}`)
     sendResponse({ _tag: 'ClearVisibleResponse', cleared })
@@ -514,7 +534,7 @@ export const handleClearWholeList: MessageHandler = (_message, deps, sendRespons
     clearVisibleForPage: async () => {
       const live = pageScope(deps.location.pathname)
       if (Option.isNone(live) || live.value !== scope.value) return 0
-      return clearMountedForScope(deps.document, live.value, 350, deps.reportClear)
+      return clearMountedForScope(deps.document, live.value, 350, deps.reportClear, sweepGhosts)
     },
     report: (stage, detail) => deps.reportClear(stage, detail),
   })
@@ -779,6 +799,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
     scopes: ClearScope[]
     allLists?: boolean
     asPageScope?: MembershipScope
+    probe?: boolean
   }
   const allLists = req.allLists === true
   const onList = pageScope(deps.location.pathname)
@@ -790,31 +811,43 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
     Option.isSome(onList) &&
     membershipScopes.length > 0 &&
     (allLists || membershipScopes.includes(onList.value))
-  deps.reportClear(
-    'clear-tweet-request',
-    `pageScope=${pageScopeDetail} scopes=${scopesDetail(req.scopes)} allLists=${allLists} drainEligible=${drainEligible}` +
-      // Appended only when present (like `clearErrors=` on clear-dispatch) so every
-      // ordinary in-page clear keeps the exact detail string it has today.
-      (req.asPageScope === undefined ? '' : ` asPageScope=${req.asPageScope}`),
-    req.tweetId,
-  )
+  // Resolved before any trace line so a release-leg poll attempt (`req.probe ===
+  // true`, attempts ≥ 2 — the first attempt reaches the tab bare) that lands on a
+  // still-unmounted post can skip BOTH the request and not-mounted lines: the leg's
+  // one folded `clear-release-poll` line is the evidence for the whole poll, not a
+  // request/not-mounted pair per probe. A mounted answer on a probe is never quiet
+  // — it clicks and reports exactly like today.
+  const article = findArticle(deps.document, req.tweetId)
+  const quietProbe = req.probe === true && Option.isNone(article)
+  if (!quietProbe) {
+    deps.reportClear(
+      'clear-tweet-request',
+      `pageScope=${pageScopeDetail} scopes=${scopesDetail(req.scopes)} allLists=${allLists} drainEligible=${drainEligible}` +
+        // Appended only when present (like `clearErrors=` on clear-dispatch) so every
+        // ordinary in-page clear keeps the exact detail string it has today.
+        (req.asPageScope === undefined ? '' : ` asPageScope=${req.asPageScope}`),
+      req.tweetId,
+    )
+  }
   if (import.meta.env.DEV)
     deps.clearLog('request', req.tweetId, req.scopes, allLists ? '· all-lists' : '')
   void (async () => {
-    const article = findArticle(deps.document, req.tweetId)
     if (Option.isNone(article)) {
-      const n = deps.document.querySelectorAll('article[data-testid="tweet"]').length
-      if (import.meta.env.DEV) deps.clearLog('not mounted.', n, 'articles on page')
-      deps.reportClear(
-        'clear-tweet-not-mounted',
-        `pageScope=${pageScopeDetail} articles=${n} drainEligible=${drainEligible}`,
-        req.tweetId,
-      )
+      const page = pageEvidence(deps.document)
+      if (!quietProbe) {
+        if (import.meta.env.DEV) deps.clearLog('not mounted.', page.articles, 'articles on page')
+        deps.reportClear(
+          'clear-tweet-not-mounted',
+          `pageScope=${pageScopeDetail} articles=${page.articles} drainEligible=${drainEligible}`,
+          req.tweetId,
+        )
+      }
       sendResponse({
         _tag: 'ClearTweetResponse',
         mounted: false,
         drainEligible,
         results: [],
+        page,
       })
       return
     }

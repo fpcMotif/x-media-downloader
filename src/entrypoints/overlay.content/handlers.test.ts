@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Option } from 'effect'
 import {
+  GHOST_NOFLIP_LIMIT,
+  clearMountedForScope,
   handleClearTweet,
   handleClearDrain,
   handleClearVisible,
@@ -77,11 +79,13 @@ const run = (
     scopes: string[]
     allLists?: boolean
     asPageScope?: 'bookmark' | 'like'
+    probe?: boolean
   },
 ): Promise<{
   mounted: boolean
   drainEligible: boolean
   results: { scope: string; ok: boolean; noop?: boolean }[]
+  page?: { articles: number; cells: number; ready: string; error: boolean }
 }> =>
   new Promise((resolve) => {
     handleClearTweet(message, deps, (r) => resolve(r as never))
@@ -187,6 +191,7 @@ describe('handleClearTweet — scope wiring', () => {
       mounted: false,
       drainEligible: true,
       results: [],
+      page: { articles: 0, cells: 0, ready: document.readyState, error: false },
     })
     expect(runDrain).not.toHaveBeenCalled()
   })
@@ -288,6 +293,46 @@ describe('handleClearTweet — Release diagnostics', () => {
         '999',
       ],
       ['clear-tweet-not-mounted', 'pageScope=like articles=0 drainEligible=true', '999'],
+    ])
+  })
+
+  it('a quiet probe (probe:true, unmounted) emits neither request nor not-mounted, but still carries page evidence', async () => {
+    document.body.append(tweetArticle({ tweetId: '1', bookmarked: true }))
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const res = await run(
+      makeDeps({ clearScope: async () => true, pathname: '/jack/likes', reportClear }),
+      { tweetId: '999', scopes: ['bookmark', 'like'], allLists: true, probe: true },
+    )
+
+    expect(res.mounted).toBe(false)
+    expect(reportClear).not.toHaveBeenCalled()
+    expect(res.page).toEqual({ articles: 1, cells: 0, ready: document.readyState, error: false })
+  })
+
+  it('a mounted answer on a probe behaves exactly like a non-probe request: it clicks and reports', async () => {
+    document.body.append(tweetArticle({ tweetId: '105', liked: true }))
+    const clearScope = vi.fn<HandlerDeps['clearScope']>(async () => true)
+    const reportClear = vi.fn<HandlerDeps['reportClear']>()
+    const res = await run(makeDeps({ clearScope, pathname: '/jack/likes', reportClear }), {
+      tweetId: '105',
+      scopes: ['like'],
+      allLists: false,
+      probe: true,
+    })
+
+    expect(res.results).toEqual([{ scope: 'like', ok: true }])
+    expect(res.page).toBeUndefined()
+    expect(reportClear.mock.calls).toEqual([
+      [
+        'clear-tweet-request',
+        'pageScope=like scopes=like allLists=false drainEligible=true',
+        '105',
+      ],
+      [
+        'clear-tweet-result',
+        'pageScope=like mounted=true drainEligible=true results=like:ok',
+        '105',
+      ],
     ])
   })
 
@@ -521,7 +566,7 @@ describe('handleClearVisible — platform gate', () => {
     document.body.append(tweetArticle({ tweetId: '201', bookmarked: true }))
     const deps = {
       adapter: { platform: 'instagram' },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
     } as unknown as HandlerDeps
     const querySpy = vi.spyOn(document, 'querySelectorAll')
@@ -547,7 +592,7 @@ describe('handleClearWholeList — platform gate', () => {
     document.body.append(tweetArticle({ tweetId: '202', bookmarked: true }))
     const deps = {
       adapter: { platform: 'threads' },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       document,
       clearLog: () => {},
     } as unknown as HandlerDeps
@@ -584,7 +629,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       reportClear,
     } as unknown as HandlerDeps
@@ -616,7 +661,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       reportClear,
     } as unknown as HandlerDeps
@@ -637,7 +682,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       reportClear,
     } as unknown as HandlerDeps
@@ -665,7 +710,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       reportClear,
     } as unknown as HandlerDeps
@@ -731,7 +776,7 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     const deps = {
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       reportClear,
     } as unknown as HandlerDeps
     const sendResponse = vi.fn<(r: unknown) => void>()
@@ -795,7 +840,7 @@ describe('handleDrainPage — Release diagnostics', () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
       store: { values: () => items },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       sendTracked,
       reportClear,
@@ -953,7 +998,7 @@ describe('handleDrainPage — Release diagnostics', () => {
     }))
     const deps = {
       store: { values: () => [] },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
       sendTracked,
       reportClear: vi.fn<HandlerDeps['reportClear']>(),
@@ -1020,7 +1065,7 @@ describe('handleSweepPage — Release diagnostics', () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       store: {
         valuesForTweet: (tweetId: string) =>
           tweetId === '601' ? items601 : tweetId === '602' ? items602 : [],
@@ -1062,7 +1107,7 @@ describe('handleSweepPage — Release diagnostics', () => {
     const notifyContextLost = vi.fn<HandlerDeps['notifyContextLost']>()
     const deps = {
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       store: { valuesForTweet: () => items603 },
       clearLog: () => {},
       notifyContextLost,
@@ -1103,7 +1148,7 @@ describe('handleSweepPage — Release diagnostics', () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       store: { valuesForTweet: () => items604 },
       clearLog: () => {},
       notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
@@ -1139,7 +1184,7 @@ describe('handleSweepPage — Release diagnostics', () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const deps = {
       document,
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       store: { valuesForTweet: () => [mediaItem('m605', '605')] },
       clearLog: () => {},
       notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
@@ -1367,7 +1412,7 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     const raw = { _tag: 'ClearVisibleRequest' }
     const deps = {
       adapter: { platform: 'threads' },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       clearLog: () => {},
     } as unknown as HandlerDeps
     const sendResponse = vi.fn<(r: unknown) => void>()
@@ -1383,7 +1428,7 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     const raw = { _tag: 'ClearWholeListRequest' }
     const deps = {
       adapter: { platform: 'threads' },
-      location: { pathname: '/jack/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' } as Location,
       document,
       clearLog: () => {},
     } as unknown as HandlerDeps
@@ -1492,5 +1537,70 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
     expect(sendResponse).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalledTimes(1)
     warn.mockRestore()
+  })
+})
+
+// The manual sweep's ghost memo (#92-adjacent, live 2026-08-23): a row whose post
+// was already cleared from another tab keeps rendering `removeBookmark` on the
+// stale list; every pass re-clicked it, X no-op'd, and the log filled with
+// honest-but-useless `no-flip` failures. After GHOST_NOFLIP_LIMIT consecutive
+// failures the sweep skips the id (and says so) until a flip succeeds.
+describe('clearMountedForScope — ghost-row skip', () => {
+  const mountedPost = (id: string): HTMLElement => {
+    const art = document.createElement('article')
+    art.setAttribute('data-testid', 'tweet')
+    art.innerHTML = `<a href="/u/status/${id}"><time></time></a><button data-testid="removeBookmark"></button>`
+    document.body.appendChild(art)
+    return art
+  }
+  const trackClicks = (art: HTMLElement): (() => number) => {
+    let n = 0
+    art.querySelector('button')!.addEventListener('click', () => {
+      n++
+    })
+    return () => n
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it(`skips an id after ${'GHOST_NOFLIP_LIMIT'} consecutive no-flips and says so`, async () => {
+    const art = mountedPost('2085341199993565645')
+    const ghosts = new Map<string, number>()
+    const lines: Array<{ stage: string; tweetId?: string }> = []
+    const trace = (stage: string, _detail: string, tweetId?: string) =>
+      lines.push({ stage, ...(tweetId === undefined ? {} : { tweetId }) })
+
+    for (let pass = 0; pass < GHOST_NOFLIP_LIMIT; pass++) {
+      await clearMountedForScope(document, 'bookmark', 0, trace, ghosts)
+    }
+    expect(ghosts.get('2085341199993565645')).toBe(GHOST_NOFLIP_LIMIT)
+
+    const clicksGhost = trackClicks(art)
+    await clearMountedForScope(document, 'bookmark', 0, trace, ghosts)
+    expect(clicksGhost()).toBe(0) // no third click on the ghost
+    expect(lines.at(-1)?.stage).toBe('clear-ghost-skip')
+    expect(lines.at(-1)?.tweetId).toBe('2085341199993565645')
+  })
+
+  it('still clears other posts in the same pass as a skipped ghost', async () => {
+    const ghost = mountedPost('111')
+    const fresh = mountedPost('222')
+    const ghosts = new Map<string, number>()
+    ghosts.set('111', GHOST_NOFLIP_LIMIT)
+    const clicksGhost = trackClicks(ghost)
+    const clicksFresh = trackClicks(fresh)
+    const cleared = await clearMountedForScope(document, 'bookmark', 0, () => {}, ghosts)
+    expect(clicksGhost()).toBe(0)
+    expect(clicksFresh()).toBe(1)
+    expect(cleared).toBe(1)
+  })
+
+  it('is inert without a ghosts map — prior callers unchanged', async () => {
+    const art = mountedPost('333')
+    const clicksArt = trackClicks(art)
+    await clearMountedForScope(document, 'bookmark', 0, () => {})
+    expect(clicksArt()).toBe(1)
   })
 })

@@ -328,14 +328,12 @@ describe('makeTweetClearer diagnostics ports', () => {
     expect(onFlip.mock.calls).toEqual([['1', 'bookmark', 'drain']])
   })
 
-  it('detached node but the post is STILL a member ⇒ reresolved=member, PLUS a distinct loud clear-flip-fabricated line', async () => {
+  it('detached node but the post is STILL a member ⇒ REFUSED (reresolved=member), clear-flip-fabricated still traced', async () => {
     // The suspected Bookmarks root cause, measured: removing a row re-renders its
     // siblings, so the virtualizer detaches the node we captured while the post itself is
-    // still in the list. `flipConfirmed` says yes on the `detached` arm and we return TRUE
-    // — the fresh re-resolve is the only thing that exposes it. This is the false-positive
-    // smoking gun, so it earns its OWN stage (in addition to the ordinary `clear-flip`
-    // line every confirmed flip gets) — a diagnostician can grep `clear-flip-fabricated`
-    // without parsing `arm=`/`reresolved=` tokens out of every `clear-flip` line.
+    // still in the list. The detach arm alone used to return TRUE — the #62 fix makes
+    // `reresolved=member` refuse (fail-closed, latch stays re-claimable) while the
+    // ordinary + fabricated trace lines still fire so diagnosis keeps its evidence.
     const captured = tweet('1', BOOKMARKED)
     const rerendered = tweet('1', BOOKMARKED)
     document.body.append(captured, rerendered)
@@ -343,13 +341,13 @@ describe('makeTweetClearer diagnostics ports', () => {
     onTick((n) => {
       if (n === 1) captured.remove()
     })
-    expect(await make(clock).clearScope('1', 'bookmark', 'settle')).toBe(true)
+    expect(await make(clock).clearScope('1', 'bookmark', 'settle')).toBe(false)
     expect(trace).toHaveBeenCalledTimes(2)
     const expectedDetail =
       'scope=bookmark arm=detached attempt=1 elapsedMs=200 target=button disabled=false reresolved=member origin=settle'
     expect(trace.mock.calls[0]).toEqual(['clear-flip', expectedDetail, '1'])
     expect(trace.mock.calls[1]).toEqual(['clear-flip-fabricated', expectedDetail, '1'])
-    expect(onFlip).toHaveBeenCalledTimes(1)
+    expect(onFlip).not.toHaveBeenCalled()
   })
 
   it('active control vanishes with no cleared twin ⇒ reresolved=ambiguous (other scope)', async () => {

@@ -9,6 +9,7 @@ import {
   appendManyReleaseDiagnostics,
   decodeReleaseDiagnostics,
   composeDiagnosticsExport,
+  formatTraceLabel,
 } from '../diagnostics'
 
 const ev = (over: Partial<DownloadTraceEntry> & { stage: string }): DownloadTraceEntry => ({
@@ -369,5 +370,40 @@ describe('composeDiagnosticsExport', () => {
       Date.parse('2026-01-01T00:05:00.000Z'),
     )
     expect(result.filename).toBe('xmd-release-diagnostics-2026-01-01-0005.jsonl')
+  })
+})
+
+describe('formatTraceLabel', () => {
+  it('renders tab= and post= tokens when tabId and tweetId are present', () => {
+    const label = formatTraceLabel(ev({ stage: 'clear-release-poll', tabId: 77, tweetId: '12345' }))
+    expect(label).toContain('tab=77')
+    expect(label).toContain('post=12345')
+  })
+
+  it('gains no empty token when tabId and tweetId are absent', () => {
+    const label = formatTraceLabel(ev({ stage: 'clear-claim' }))
+    expect(label).not.toMatch(/tab=/)
+    expect(label).not.toMatch(/post=/)
+    expect(label).not.toMatch(/ {2}/)
+  })
+
+  it('renders elapsedMs as `<n>ms` only when defined', () => {
+    expect(formatTraceLabel(ev({ stage: 'clear-claim', elapsedMs: 42 }))).toContain('42ms')
+    expect(formatTraceLabel(ev({ stage: 'clear-claim' }))).not.toMatch(/ms/)
+  })
+
+  it('orders fields as [stage, type, itemId, tab=, post=, elapsedMs, detail]', () => {
+    const label = formatTraceLabel(
+      ev({
+        stage: 'clear-release-poll',
+        type: 'photo',
+        itemId: 'item-1',
+        tabId: 5,
+        tweetId: '999',
+        elapsedMs: 10,
+        detail: 'reason=mounted',
+      }),
+    )
+    expect(label).toBe('clear-release-poll photo item-1 tab=5 post=999 10ms reason=mounted')
   })
 })

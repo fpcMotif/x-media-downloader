@@ -19,6 +19,7 @@ import {
   isForYouHome,
   isMember,
   notInterestedConfirmed,
+  pageEvidence,
   pageScope,
   shouldClickScope,
   tweetIdOfArticle,
@@ -113,13 +114,80 @@ describe('clearer DOM helpers', () => {
     expect(Option.getOrNull(pageScope('/lambda_functor/likes'))).toBe('like')
     expect(Option.getOrNull(pageScope('/i/bookmarks'))).toBe('bookmark')
     expect(Option.getOrNull(pageScope('/i/bookmarks/all'))).toBe('bookmark')
-    expect(Option.getOrNull(pageScope('/i/history/bookmarks'))).toBe('bookmark')
-    expect(Option.getOrNull(pageScope('/i/history/likes'))).toBe('like')
-    expect(Option.getOrNull(pageScope('/i/history?tab=likes'))).toBe('like')
-    expect(Option.getOrNull(pageScope('/i/history?tab=bookmarks'))).toBe('bookmark')
     expect(Option.getOrNull(pageScope('/i/history'))).toBe('bookmark')
+    expect(Option.getOrNull(pageScope('/i/history/'))).toBe('bookmark')
+    expect(Option.getOrNull(pageScope('/i/history/likes'))).toBe('like')
+    expect(Option.getOrNull(pageScope('/i/history/likes/'))).toBe('like')
+    expect(Option.getOrNull(pageScope('/i/history/bookmarks'))).toBe('bookmark')
+    expect(Option.getOrNull(pageScope('/i/historyx'))).toBe(null)
+    expect(Option.getOrNull(pageScope('/someone/history'))).toBe(null)
+    expect(Option.getOrNull(pageScope('/i/likes'))).toBe(null)
     expect(Option.getOrNull(pageScope('/home'))).toBe(null)
     expect(Option.getOrNull(pageScope('/jack/status/123'))).toBe(null)
+  })
+
+  it("pageEvidence counts articles/cells and flags X's own error-detail block", () => {
+    document.body.innerHTML = `
+      <article data-testid="tweet"></article>
+      <article data-testid="tweet"></article>
+      <div data-testid="cellInnerDiv"></div>
+      <div data-testid="cellInnerDiv"></div>
+      <div data-testid="cellInnerDiv"></div>
+      <div data-testid="error-detail">Something went wrong. Try reloading.</div>
+    `
+    const evidence = pageEvidence(document)
+    expect(evidence.articles).toBe(2)
+    expect(evidence.cells).toBe(3)
+    expect(evidence.error).toBe(true)
+    expect(evidence.ready).toBe(document.readyState)
+  })
+
+  it("pageEvidence ignores an error-detail confined to X's own sidebar widgets", () => {
+    document.body.innerHTML = `
+      <div data-testid="sidebarColumn">
+        <div data-testid="error-detail">Something went wrong. Try reloading.</div>
+      </div>
+    `
+    expect(pageEvidence(document).error).toBe(false)
+  })
+
+  it('pageEvidence flags an error-detail in the primary column', () => {
+    document.body.innerHTML = `
+      <div data-testid="primaryColumn">
+        <div data-testid="error-detail">Something went wrong. Try reloading.</div>
+      </div>
+    `
+    expect(pageEvidence(document).error).toBe(true)
+  })
+
+  it('pageEvidence flags true when both the sidebar and the primary column error', () => {
+    document.body.innerHTML = `
+      <div data-testid="sidebarColumn">
+        <div data-testid="error-detail"></div>
+      </div>
+      <div data-testid="primaryColumn">
+        <div data-testid="error-detail"></div>
+      </div>
+    `
+    expect(pageEvidence(document).error).toBe(true)
+  })
+
+  it('pageEvidence reports zero counts and no error on an empty page', () => {
+    expect(pageEvidence(document)).toEqual({
+      articles: 0,
+      cells: 0,
+      ready: document.readyState,
+      error: false,
+    })
+  })
+
+  it('pageEvidence passes readyState through unchanged for every DocumentReadyState', () => {
+    const fake = {
+      readyState: 'loading',
+      querySelectorAll: () => [],
+      querySelector: () => null,
+    } as unknown as Document
+    expect(pageEvidence(fake).ready).toBe('loading')
   })
 
   it('prefers the timestamp permalink over a bare status anchor', () => {

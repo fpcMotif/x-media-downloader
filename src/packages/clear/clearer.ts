@@ -45,20 +45,24 @@ export const TWEET_ARTICLE_SEL = 'article[data-testid="tweet"]'
  *  Clearing is list-scoped so a post is only ever removed from the list you're
  *  viewing — never un-liked AND un-bookmarked in one action. This drives the
  *  manual Drain/Sweep buttons, which are list-only; the download hook uses the
- *  wider `clearableScope` (which also recognizes the For You feed). */
+ *  wider `clearableScope` (which also recognizes the For You feed).
+ *
+ *  X now serves both lists off a single History surface (`/i/history` = Bookmarks,
+ *  `/i/history/likes` = Likes); `/i/bookmarks` and `/{handle}/likes` still 302 there
+ *  and are kept as legacy alternatives. `pathname` is `location.pathname` — never a
+ *  full URL — so there is no query string to match; likes is checked FIRST so
+ *  `/i/history/likes` can't fall through to the unqualified `/i/history` bookmark
+ *  match. The legacy handle pattern excludes the `i` segment (`/i/likes` ⇒ none) —
+ *  `/i/` is X's own route namespace, never a real handle, and every other `/i/...`
+ *  path here is matched explicitly. */
 export function pageScope(pathname: string): Option.Option<MembershipScope> {
   if (
-    /\/likes(\/|$|\?)/.test(pathname) ||
-    /[?&]tab=likes\b/.test(pathname) ||
-    /\/history\/likes\b/.test(pathname)
+    /^\/i\/history\/likes(\/|$)/.test(pathname) ||
+    /^\/(?!i\/)[A-Za-z0-9_]{1,15}\/likes(\/|$)/.test(pathname)
   ) {
     return Option.some('like')
   }
-  if (
-    /\/bookmarks(\/|$|\?)/.test(pathname) ||
-    /[?&]tab=bookmarks\b/.test(pathname) ||
-    /\/history(\/|$|\?)/.test(pathname)
-  ) {
+  if (/^\/i\/history(\/|$)/.test(pathname) || /^\/i\/bookmarks(\/|$)/.test(pathname)) {
     return Option.some('bookmark')
   }
   return Option.none()
@@ -406,6 +410,33 @@ export function isClearedStub(cell: Element): boolean {
  *  X's virtualization (the xtimelinefilter/ADR-0010 principle). */
 export const CLEARED_STUB_ATTR = 'data-xmd-cleared'
 export const CLEARED_STUB_CSS = `${CELL_SEL}[${CLEARED_STUB_ATTR}] > *{display:none !important}`
+
+/** What a Release leg polling a permalink actually saw when the target tweet
+ *  never mounted — the only window into WHY (still loading vs. X's own
+ *  `error-detail` block vs. a genuinely empty page) the release-tab dispatch
+ *  otherwise can't see. Read fresh on every poll; never cached. */
+export interface PageEvidence {
+  readonly articles: number
+  readonly cells: number
+  readonly ready: DocumentReadyState
+  readonly error: boolean
+}
+
+export function pageEvidence(
+  document: Pick<Document, 'querySelectorAll' | 'readyState'>,
+): PageEvidence {
+  return {
+    articles: document.querySelectorAll(TWEET_ARTICLE_SEL).length,
+    cells: document.querySelectorAll(CELL_SEL).length,
+    ready: document.readyState,
+    // X's own sidebar widgets ("What's happening"/Trending) render their own
+    // error-detail independent of the conversation column — only one OUTSIDE
+    // sidebarColumn means the permalink itself failed.
+    error: [...document.querySelectorAll('[data-testid="error-detail"]')].some(
+      (el) => el.closest('[data-testid="sidebarColumn"]') === null,
+    ),
+  }
+}
 
 /** Mark/unmark every cell under `root` for collapse based on whether it is a
  *  cleared-post feedback stub right now. Re-runnable + recycling-safe (re-decides
