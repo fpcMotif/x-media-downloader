@@ -13,21 +13,21 @@
         "lucide-react": "^0.469.0",
         "preact": "^10.29.2",
         "tailwind-merge": "^3.6.0",
-        "varlock": "^1.16.0",
       },
       "devDependencies": {
-        "@effect/language-service": "^0.86.2",
         "@preact/preset-vite": "^2.10.5",
         "@tailwindcss/vite": "^4.3.1",
         "@typescript/native-preview": "^7.0.0-dev.20260618.1",
         "@vitest/coverage-v8": "4.1.9",
         "dependency-cruiser": "^18.1.0",
+        "fast-check": "4.8.0",
         "happy-dom": "^20.10.6",
         "oxfmt": "^0.55.0",
         "oxlint": "^1.70.0",
         "tailwindcss": "^4.3.1",
         "tw-animate-css": "^1.4.0",
         "typescript": "^6.0.3",
+        "varlock": "^1.16.0",
         "vitest": "^4.1.9",
         "wxt": "^0.20.26",
       },
@@ -93,8 +93,6 @@
     "@devicefarmer/adbkit-logcat": ["@devicefarmer/adbkit-logcat@2.1.3", "", {}, "sha512-yeaGFjNBc/6+svbDeul1tNHtNChw6h8pSHAt5D+JsedUrMTN7tla7B15WLDyekxsuS2XlZHRxpuC6m92wiwCNw=="],
 
     "@devicefarmer/adbkit-monkey": ["@devicefarmer/adbkit-monkey@1.2.1", "", {}, "sha512-ZzZY/b66W2Jd6NHbAhLyDWOEIBWC11VizGFk7Wx7M61JZRz7HR9Cq5P+65RKWUU7u6wgsE8Lmh9nE4Mz+U2eTg=="],
-
-    "@effect/language-service": ["@effect/language-service@0.86.2", "", { "bin": { "effect-language-service": "cli.js" } }, "sha512-SaPln+8srOqDJDUwNTDmP5e+IYpEDr9+1epGznnsLqu8xvo6VnxyWARdeLpqvZJlb0Pgy9ca7ppqvvdWbHPXAg=="],
 
     "@emnapi/core": ["@emnapi/core@1.11.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ=="],
 

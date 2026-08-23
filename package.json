@@ -42,6 +42,7 @@
     "@typescript/native-preview": "^7.0.0-dev.20260618.1",
     "@vitest/coverage-v8": "4.1.9",
     "dependency-cruiser": "^18.1.0",
+    "fast-check": "4.8.0",
     "happy-dom": "^20.10.6",
     "oxfmt": "^0.55.0",
     "oxlint": "^1.70.0",

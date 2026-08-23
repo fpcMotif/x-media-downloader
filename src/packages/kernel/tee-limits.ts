@@ -31,6 +31,19 @@ export const MAX_TEE_CAPTURES_IN_FLIGHT = 4
  *  bodies is exactly the case worth refusing. */
 export const MAX_TEE_BYTES_IN_FLIGHT = MAX_TEE_BODY_BYTES * 2
 
+/** CustomEvent channel MAIN → ISOLATED for the tee's OWN budget refusals. The
+ *  isolated content script relays each as a production-visible
+ *  DownloadTraceEvent (`capture` / `tee-drop`, detail `${platform} ${cap}`), so
+ *  a whole feed batch missing from the Detected Media Set is diagnosable from
+ *  the Monitor snapshot without a dev build (#92 follow-up). */
+export const TEE_DROP_EVENT = 'xmd:tee-drop'
+
+/** Which ceiling refused the capture — the `tee-drop` detail vocabulary.
+ *  `in-flight-cap`: no free clone slot (`MAX_TEE_CAPTURES_IN_FLIGHT`).
+ *  `byte-cap`: body over `MAX_TEE_BODY_BYTES`. */
+export const TEE_DROP_CAPS = ['in-flight-cap', 'byte-cap'] as const
+export type TeeDropCap = (typeof TEE_DROP_CAPS)[number]
+
 /** One capture's claim on the shared budget. Always `release()` — in a `finally`,
  *  on every path including the refusal paths — or the slot leaks for the life of
  *  the page. */

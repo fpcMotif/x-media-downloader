@@ -7,7 +7,16 @@ export { MediaItem, MediaType, Platform } from './media'
 export const DownloadStrategyName = Schema.Literals(['direct', 'fetched', 'aria2'])
 export const Theme = Schema.Literals(['light', 'dark', 'system'])
 export const QuickGrabModifier = Schema.Literals(['alt', 'shift', 'ctrl', 'meta'])
-export const DownloadTraceSource = Schema.Literals(['quickgrab', 'badge', 'background', 'clear'])
+/** `capture`: the MAIN-world passive tee reporting its OWN budget refusals
+ *  (`tee-drop`) — a whole feed batch missing from the Detected Media Set is
+ *  diagnosable from the Monitor snapshot without a dev build (#92 follow-up). */
+export const DownloadTraceSource = Schema.Literals([
+  'quickgrab',
+  'badge',
+  'background',
+  'clear',
+  'capture',
+])
 
 const traceFields = {
   source: DownloadTraceSource,

@@ -5,6 +5,8 @@ import {
   readBoundedUtf8Response,
   utf8ByteLengthAtMost,
   MAX_TEE_BODY_BYTES,
+  TEE_DROP_EVENT,
+  type TeeDropCap,
 } from '@/packages/kernel/tee-limits'
 
 /**
@@ -43,11 +45,18 @@ export default defineContentScript({
     // it, so those paths take the byte cap alone.
     const teeBudget = makeTeeBudget()
 
+    /** Production-visible drop notice (#92 follow-up): the ISOLATED content
+     *  script relays this as a `capture`/`tee-drop` DownloadTraceEvent. */
+    const emitDrop = (cap: TeeDropCap): void => {
+      document.dispatchEvent(new CustomEvent(TEE_DROP_EVENT, { detail: { cap } }))
+    }
+
     /** Bounded read of a fetch response, or null when it must be dropped. Always
      *  releases its slot, including on the refusal paths. */
     const readTeeBody = async (res: Response): Promise<string | null> => {
       const lease = teeBudget.acquire()
       if (!lease) {
+        emitDrop('in-flight-cap')
         if (import.meta.env.DEV)
           console.debug(`[XMD] tee drop · ${adapter.platform} · captures in flight`)
         return null
@@ -63,6 +72,7 @@ export default defineContentScript({
      *  plausible partial media, and under-reporting is worse than not reporting. */
     const withinTeeBudget = (body: string, what: string): boolean => {
       if (utf8ByteLengthAtMost(body, MAX_TEE_BODY_BYTES)) return true
+      emitDrop('byte-cap')
       if (import.meta.env.DEV)
         console.debug(`[XMD] tee drop · ${adapter.platform} · ${what} over ${MAX_TEE_BODY_BYTES}B`)
       return false

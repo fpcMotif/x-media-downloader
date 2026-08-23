@@ -323,7 +323,7 @@ for the 500 ms dwell; `fakeBrowser.runtime.sendMessage` spied for replies.
 | OV-N3 | happy path: settings on → alt-hover media → `charging` ring with media rect → advance 500 ms → `DownloadRequest` sent with the byKey item → reply `{completed:1,total:1}` → phase `saved` | full lifecycle with fake timers |
 | OV-N4 | reply mismatch (`completed:0,total:1`) and `sendMessage` rejection | phase `failed`; rejection swallowed |
 | OV-N5 | pointer leaves media at 400 ms | dwell cancelled, nothing sent |
-| OV-N6 | dwell-expiry guards: media detached; `src` swapped (key mismatch); `elementsFromPoint` no longer contains media (scrolled away) | each → grabUi cleared, nothing sent |
+| OV-N6 | dwell-expiry guards: media detached; `src` swapped (key mismatch); pointer no longer over the media. Corrected (#92): `elementsFromPoint` missing the media is NOT by itself stale — a `pointer-events:none` `<img>` reached through its wrapper at arm time stays held while a stack element contains it and its own rect covers the cursor (`staleWhy`/`holdsKey`; docs/testing/2026-08-23-hover-arm-fire-invariant.md) | each → grabUi cleared, nothing sent |
 | OV-N7 | hover key not in `byKey`, not DOM-resolvable (video poster without tee data) | `no-item-for-hover` trace sent, no DownloadRequest |
 | OV-N8 | second hover of the same key during one press | `noted` badge, no send; after keyup→keydown, grabbable again |
 | OV-N9 | keydown auto-repeat while held | grabbed set not reset, no re-arm |

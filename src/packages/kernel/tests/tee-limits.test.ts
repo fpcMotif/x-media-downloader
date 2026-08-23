@@ -7,6 +7,8 @@ import {
   MAX_TEE_BODY_BYTES,
   MAX_TEE_BYTES_IN_FLIGHT,
   MAX_TEE_CAPTURES_IN_FLIGHT,
+  TEE_DROP_EVENT,
+  TEE_DROP_CAPS,
   type TeeLease,
 } from '../tee-limits'
 
@@ -179,5 +181,15 @@ describe('readBoundedUtf8Response', () => {
       },
     } as unknown as Response
     await expect(readBoundedUtf8Response(hostile, openLease(), 1024)).resolves.toBeNull()
+  })
+})
+
+// The MAIN↔ISOLATED drop contract (#92): the injected tee dispatches this event
+// with one of these caps; the content script relays it as a `capture`/`tee-drop`
+// trace. Pinned so a rename on one side can't silently orphan the other.
+describe('tee-drop vocabulary', () => {
+  it('names the CustomEvent channel and both budget ceilings', () => {
+    expect(TEE_DROP_EVENT).toBe('xmd:tee-drop')
+    expect(TEE_DROP_CAPS).toEqual(['in-flight-cap', 'byte-cap'])
   })
 })

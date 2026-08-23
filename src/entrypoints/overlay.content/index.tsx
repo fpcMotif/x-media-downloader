@@ -13,11 +13,12 @@ import {
 } from '../../core/adapters/x/tracked-mutation'
 import { VIDEO_PREVIEW_SECTIONS } from '../../core/adapters/x/dom'
 import {
-  mediaStillUnderPointer,
   previewKeyFromMedia,
   resolveHoverMedia,
   type HoverMediaElement,
 } from '../../core/adapters/hover-resolve'
+import { TEE_DROP_CAPS, TEE_DROP_EVENT, type TeeDropCap } from '../../packages/kernel/tee-limits'
+import { focusAfterActivation, focusTransition, liveGrabTarget, type HoverProbe } from './hover'
 import {
   idleQuickGrab,
   pressModifier,
@@ -985,25 +986,15 @@ export default defineContentScript({
       }
     }
 
-    // Whether `m` is still the armed media at fire-time: attached, the same
-    // twimg key, and under the pointer. A hidden X `<video>` is matched via its
-    // player container by `mediaStillUnderPointer`.
-    const holdsKey = (m: HoverMediaElement, key: string): boolean =>
-      m.isConnected &&
-      previewKeyFromMedia(adapter, m, location.pathname) === key &&
-      mediaStillUnderPointer(m, document.elementsFromPoint(lastX, lastY))
-
-    // The media to grab once the dwell elapses. Prefer the armed node, but X's
-    // timeline is virtualized: it can recycle that exact node out from under the
-    // pointer mid-dwell. So if the armed node went stale, re-resolve the LIVE media
-    // at the pointer once — a fresh node showing the same image at the same spot is
-    // still the grab the user asked for — and accept it only if its key still
-    // matches. Null ⇒ the media truly moved on; drop the grab.
-    const liveGrabTarget = (armed: HoverMediaElement, key: string): HoverMediaElement | null => {
-      if (holdsKey(armed, key)) return armed
-      const stack = document.elementsFromPoint(lastX, lastY)
-      const live = resolveHoverMedia(stack[0] ?? null, stack, lastX, lastY)
-      return live && holdsKey(live, key) ? live : null
+    // The fire-time guard (`holdsKey` / `liveGrabTarget`) lives in hover.ts
+    // behind this probe, so its matrix is unit-tested (hover.test.ts) instead
+    // of closed over here. Every read is live: the pointer and the hit-test
+    // stack are sampled at call time, never cached.
+    const hoverProbe: HoverProbe = {
+      adapter,
+      pathname: () => location.pathname,
+      point: () => ({ x: lastX, y: lastY }),
+      stackAt: (x, y) => document.elementsFromPoint(x, y),
     }
 
     // For You: tag a download with the post's FULL detected media set, so the
@@ -1105,19 +1096,21 @@ export default defineContentScript({
 
     const fireGrab = (armed: HoverMediaElement, key: string): void => {
       dwell = null
-      const media = liveGrabTarget(armed, key)
-      if (media === null) {
+      const grabbed = liveGrabTarget(hoverProbe, armed, key)
+      if (grabbed.target === null) {
         // The dwell completed but the armed node went stale AND the re-resolved
         // live media at the pointer either doesn't exist or no longer carries the
         // same key — the single "hold, wait, nothing happens" shape this dwell
         // window exists to protect against. `liveGrabTarget`'s own doc names
         // Threads' virtualized timeline as the confirmed cause (a mounted node
-        // recycled to different content mid-dwell); previously silent.
-        traceQuickGrab('grab-target-stale', { key })
+        // recycled to different content mid-dwell); previously silent. The
+        // detail names WHICH rule refused (#92 vocabulary).
+        traceQuickGrab('grab-target-stale', { key, detail: grabbed.why })
         grabUi = null
         rerender()
         return
       }
+      const media = grabbed.target
       const item = adapter.resolveHoverItem(media, key, store.keyIndex(), location.pathname)
       if (!item) {
         // detail distinguishes the two ways this can happen: the tee HAS this key
@@ -1187,12 +1180,17 @@ export default defineContentScript({
 
     /** Move the hover focus to `media`/`key` (either may be null), re-arming as needed. */
     const focusHover = (media: HoverMediaElement | null, key: string | null): void => {
-      if (key === hoverKey && media === hoverMedia) return
+      const next = focusTransition(
+        { media: hoverMedia, key: hoverKey },
+        { media, key },
+        grab.active,
+      )
+      if (next.verdict === 'unchanged') return
       clearDwell()
-      hoverMedia = media
-      hoverKey = key
+      hoverMedia = next.focus.media
+      hoverKey = next.focus.key
       rememberMetaFocusedPost(media)
-      if (grab.active && media && key) {
+      if (next.verdict === 'arm' && media && key) {
         armHover(media, key)
       } else {
         // A real media element resolved under the cursor (`resolveHoverMedia`
@@ -1241,6 +1239,9 @@ export default defineContentScript({
       }
       grab = next
       setCursorActive(true)
+      // Forget the hover so the next sample re-arms even the same media — see
+      // `focusAfterActivation` in hover.ts for the live-verified failure.
+      ;({ media: hoverMedia, key: hoverKey } = focusAfterActivation())
       return true
     }
 
@@ -1821,6 +1822,32 @@ export default defineContentScript({
     }
     document.addEventListener('xmd:mutation-response', handleMutationResponse)
 
+    // Tee drop visibility (#92 follow-up): the MAIN-world tee's budget refusals
+    // (clone-slot cap, byte cap) become production-visible `capture`/`tee-drop`
+    // traces, so a whole feed batch missing from the Detected Media Set is
+    // diagnosable from the Monitor snapshot without a dev build. Page scripts
+    // can forge this event (same posture as both listeners above), so: validate
+    // `cap` against the vocabulary, and coalesce to one trace per cap per
+    // second — a drop storm still reads as "still dropping", while a flood
+    // costs at most two messages.
+    const lastTeeDropByCap = new Map<string, number>()
+    const handleTeeDrop = (event: Event): void => {
+      const detail = (event as CustomEvent<{ cap?: unknown }>).detail
+      const cap = detail?.cap
+      if (typeof cap !== 'string' || !TEE_DROP_CAPS.includes(cap as TeeDropCap)) return
+      const now = Date.now()
+      if (now - (lastTeeDropByCap.get(cap) ?? 0) < 1000) return
+      lastTeeDropByCap.set(cap, now)
+      postEvent({
+        _tag: 'DownloadTraceEvent',
+        source: 'capture',
+        stage: 'tee-drop',
+        t: now,
+        detail: `${adapter.platform} ${cap}`,
+      })
+    }
+    document.addEventListener(TEE_DROP_EVENT, handleTeeDrop)
+
     // Cold-navigation blind spot: on a direct navigation to a reel/post URL,
     // the MAIN-world XHR/fetch tee above sees nothing for the first item —
     // its data arrives server-embedded in an inline <script>, not over the
@@ -2193,7 +2220,7 @@ export default defineContentScript({
       // `browser.runtime` is already undefined once the context is invalidated.
       browser.runtime?.onMessage?.removeListener(handleRuntimeMessage)
       document.removeEventListener('xmd:media-response', handleMediaResponse)
-      document.removeEventListener('xmd:mutation-response', handleMutationResponse)
+      document.removeEventListener(TEE_DROP_EVENT, handleTeeDrop)
     })
   },
 })

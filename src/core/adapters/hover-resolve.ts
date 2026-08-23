@@ -39,8 +39,7 @@ export function nonInteractiveMediaAt(
     /* v8 ignore next -- querySelectorAll('img,video') only yields IMG/VIDEO, so this narrowing guard never continues */
     if (!isImageElement(el) && !isVideoElement(el)) continue
     if (getComputedStyle(el).pointerEvents !== 'none') continue
-    const r = el.getBoundingClientRect()
-    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return el
+    if (rectCovers(el, x, y)) return el
   }
   return null
 }
@@ -174,14 +173,51 @@ export function previewKeyFromMedia(
   return isVideoElement(media) ? (adapter.postKeyFromVideoElement?.(media, pathname) ?? null) : null
 }
 
+/** Does `el`'s own rect cover the point? The one geometry read shared by the
+ *  arm-time reach ({@link nonInteractiveMediaAt}) and the fire-time re-check
+ *  ({@link mediaStillUnderPointer}), so both answer "is this pointer-events:none
+ *  media under the cursor" the same way. */
+function rectCovers(el: Element, x: number, y: number): boolean {
+  const r = el.getBoundingClientRect()
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
+}
+
+/** Why {@link mediaStillUnderPointer} refuses — the `grab-target-stale` detail
+ *  vocabulary (#92), so the SW log says which rule failed instead of a bare
+ *  boolean: `detached` (node left the document), `rect-miss` (cloaked, but its
+ *  own rect no longer covers the cursor — the pointer left during the dwell),
+ *  `not-in-stack` (no hit-test path reaches it). Null = still held. */
+export type StaleWhy = 'detached' | 'not-in-stack' | 'rect-miss'
+
 /** Is `media` still under the pointer? A hidden X `<video>` is never in
- *  `elementsFromPoint`, so accept when the cursor is still over its player. */
+ *  `elementsFromPoint`, so accept when the cursor is still over its player. A
+ *  `pointer-events:none` `<img>` (Threads — see {@link nonInteractiveMediaAt})
+ *  is never in the stack either: accept it when a stack element still contains
+ *  it and its own rect covers `(x, y)` — the exact condition the arm path
+ *  reached it by. Without this, every Threads carousel dwell charged the ring
+ *  and then died as `grab-target-stale` (LIVE-VERIFIED 2026-08-23). */
 export function mediaStillUnderPointer(
   media: HoverMediaElement,
   stack: readonly Element[],
+  x: number,
+  y: number,
 ): boolean {
-  if (stack.includes(media)) return true
-  if (!isVideoElement(media)) return false
-  const container = media.closest(VIDEO_PLAYER_SEL)
-  return !!container && stack.some((el) => container.contains(el))
+  return staleWhy(media, stack, x, y) === null
+}
+
+export function staleWhy(
+  media: HoverMediaElement,
+  stack: readonly Element[],
+  x: number,
+  y: number,
+): StaleWhy | null {
+  if (!media.isConnected) return 'detached'
+  if (stack.includes(media)) return null
+  if (isVideoElement(media)) {
+    const container = media.closest(VIDEO_PLAYER_SEL)
+    if (container && stack.some((el) => container.contains(el))) return null
+  }
+  if (getComputedStyle(media).pointerEvents !== 'none') return 'not-in-stack'
+  if (!rectCovers(media, x, y)) return 'rect-miss'
+  return stack.some((el) => el.contains(media)) ? null : 'not-in-stack'
 }

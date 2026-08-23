@@ -206,6 +206,20 @@ describe('Message schema', () => {
     expect(entry.source).toBe('quickgrab')
     expect(entry.elapsedMs).toBe(501)
   })
+
+  it('decodes a capture-sourced tee-drop trace (#92 follow-up)', () => {
+    // The MAIN-world passive tee's budget drops surface as production-visible
+    // traces so a missing feed batch is diagnosable without a dev build.
+    const drop = Schema.decodeUnknownSync(DownloadTraceEntry)({
+      _tag: 'DownloadTraceEvent',
+      source: 'capture',
+      stage: 'tee-drop',
+      t: 1234,
+      detail: 'threads in-flight-cap',
+    })
+    expect(drop.source).toBe('capture')
+    expect(drop.stage).toBe('tee-drop')
+  })
 })
 
 // TabMessage rides `browser.tabs.sendMessage` (popup/background → content
