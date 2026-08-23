@@ -24,7 +24,7 @@ beforeEach(() => {
 describe('SettingsService', () => {
   it('returns defaults on first run', async () => {
     const s = await run(getViaService)
-    expect(s.downloadConcurrency).toBe(3)
+    expect(s.downloadConcurrency).toBe(5)
     expect(s.authFallbackEnabled).toBe(false)
     expect(s.downloadStrategy).toBe('direct')
   })
@@ -43,7 +43,7 @@ describe('SettingsService', () => {
   it('falls back to defaults when stored data is corrupt', async () => {
     await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 'not-a-number' } })
     const s = await run(getViaService)
-    expect(s.downloadConcurrency).toBe(3)
+    expect(s.downloadConcurrency).toBe(5)
   })
 
   it('defaults cloud sync off — local-only posture (ADR-0009)', async () => {
@@ -129,7 +129,7 @@ describe('watchSettings', () => {
     const seen: number[] = []
     const unwatch = watchSettings((s) => seen.push(s.downloadConcurrency))
     await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 'nope' } })
-    expect(seen).toEqual([3])
+    expect(seen).toEqual([5])
     unwatch()
   })
 

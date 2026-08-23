@@ -37,7 +37,7 @@ export const Settings = Schema.Struct({
   filenameTemplate: Schema.String.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(CURRENT_DEFAULT_TEMPLATE)),
   ),
-  downloadConcurrency: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(3))),
+  downloadConcurrency: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(5))),
   authFallbackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   downloadStrategy: DownloadStrategyName.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed('direct' as const)),
