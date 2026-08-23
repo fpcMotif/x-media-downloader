@@ -47,8 +47,20 @@ export const TWEET_ARTICLE_SEL = 'article[data-testid="tweet"]'
  *  manual Drain/Sweep buttons, which are list-only; the download hook uses the
  *  wider `clearableScope` (which also recognizes the For You feed). */
 export function pageScope(pathname: string): Option.Option<MembershipScope> {
-  if (/\/likes\/?$/.test(pathname)) return Option.some('like')
-  if (/\/bookmarks(\/|$)/.test(pathname)) return Option.some('bookmark')
+  if (
+    /\/likes(\/|$|\?)/.test(pathname) ||
+    /[?&]tab=likes\b/.test(pathname) ||
+    /\/history\/likes\b/.test(pathname)
+  ) {
+    return Option.some('like')
+  }
+  if (
+    /\/bookmarks(\/|$|\?)/.test(pathname) ||
+    /[?&]tab=bookmarks\b/.test(pathname) ||
+    /\/history(\/|$|\?)/.test(pathname)
+  ) {
+    return Option.some('bookmark')
+  }
   return Option.none()
 }
 
