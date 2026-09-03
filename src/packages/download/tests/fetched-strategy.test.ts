@@ -386,15 +386,16 @@ describe('makePermissionsPort', () => {
   })
 
   it('delegates contains/request to browser.permissions with offscreen + twimg origins', async () => {
-    // SAFETY: `contains`/`request` are overloaded (Promise-returning vs a legacy
-    // callback form whose overload resolves to `void`) — TS's `Parameters`
+    // `contains`/`request` are overloaded (Promise-returning vs a legacy
+    // callback form whose overload resolves to `void`) — TS's `ReturnType`
     // inference for an overloaded function uses the LAST signature, so
-    // `mockResolvedValue` sees `void` as the resolved-value type regardless of
-    // which overload actually runs. `never` is assignable to that `void`
-    // without lying about a real value's shape.
-    const contains = vi.spyOn(browser.permissions, 'contains').mockResolvedValue(true as never)
-    // SAFETY: same overload-resolves-to-`void` reason as `contains` above.
-    const request = vi.spyOn(browser.permissions, 'request').mockResolvedValue(false as never)
+    // `mockResolvedValue` would see `void` as the resolved-value type
+    // regardless of which overload actually runs. `mockImplementation` sidesteps
+    // that: a function returning `Promise<boolean>` is assignable to the
+    // `void`-returning signature (TS's callback-return-is-ignored rule), so no
+    // cast is needed to make it resolve `true`/`false` here.
+    const contains = vi.spyOn(browser.permissions, 'contains').mockImplementation(async () => true)
+    const request = vi.spyOn(browser.permissions, 'request').mockImplementation(async () => false)
 
     const port = makePermissionsPort()
     await expect(port.contains({})).resolves.toBe(true)

@@ -209,7 +209,7 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
   // confirm-strip-logic.ts's module doc for why that matters under
   // prefers-reduced-motion.
   useEffect(() => {
-    if (armedAt === null) return
+    if (armedAt === null) return undefined
     const id = setInterval(() => setNow(Date.now()), TICK_MS)
     return () => clearInterval(id)
   }, [armedAt])
@@ -227,7 +227,7 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
   }, [armedAt])
 
   useEffect(() => {
-    if (armedAt === null) return
+    if (armedAt === null) return undefined
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         disarm()
@@ -239,7 +239,7 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
   }, [armedAt, disarm])
 
   useEffect(() => {
-    if (armedAt === null) return
+    if (armedAt === null) return undefined
     const onPointerDown = (e: MouseEvent): void => {
       if (!outsideClickArmed(armedAt, Date.now())) return
       if (stripRef.current && e.target instanceof Node && stripRef.current.contains(e.target))

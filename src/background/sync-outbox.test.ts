@@ -7,7 +7,13 @@ import {
   type SyncOutboxDeps,
 } from './sync-outbox'
 import type { ConvexPort } from './convex-port'
-import { Settings as SettingsSchema, type JsonValue, type Settings } from '@/packages/schema'
+import {
+  Settings as SettingsSchema,
+  isJsonObject,
+  type JsonObject,
+  type JsonValue,
+  type Settings,
+} from '@/packages/schema'
 import { append, decodeOutbox, emptyOutbox, type OutboxState } from '@/packages/sync/outbox'
 import { outcomeEvent } from '@/packages/sync/events'
 import type { SyncStatus } from '@/packages/sync/status'
@@ -33,6 +39,11 @@ const configured = (over: Partial<Settings> = {}): Settings => ({
 
 const evt = (id: string) => outcomeEvent(id, 'completed', 'dev-1', NOW)
 
+/** Narrow a parsed JSON node to one carrying a string `requestId`, as every
+ *  `SyncEvent` does. */
+const hasRequestId = (value: JsonObject): value is JsonObject & { requestId: string } =>
+  typeof value.requestId === 'string'
+
 /** A ready outbox state (nextAttemptAt 0) holding the given pending events. */
 const seededOutbox = (...ids: string[]): OutboxState => append(emptyOutbox, ids.map(evt))
 
@@ -57,14 +68,17 @@ function fakeStore<T>(initial: T, opts: { delay?: boolean } = {}) {
   return box
 }
 
-const okPort = (): ConvexPort => ({ mutation: vi.fn<ConvexPort['mutation']>(async () => ({})) })
-const grant = (v: boolean): PermissionsPort => ({
-  contains: vi.fn<PermissionsPort['contains']>(async () => v),
-})
-const fakeAlarms = (): AlarmPort => ({
-  create: vi.fn<AlarmPort['create']>(async () => {}),
-  clear: vi.fn<AlarmPort['clear']>(async () => {}),
-})
+const okPort = () =>
+  ({ mutation: vi.fn<ConvexPort['mutation']>(async () => ({})) }) satisfies ConvexPort
+const grant = (v: boolean) =>
+  ({
+    contains: vi.fn<PermissionsPort['contains']>(async () => v),
+  }) satisfies PermissionsPort
+const fakeAlarms = () =>
+  ({
+    create: vi.fn<AlarmPort['create']>(async () => {}),
+    clear: vi.fn<AlarmPort['clear']>(async () => {}),
+  }) satisfies AlarmPort
 // SAFETY: `fetchImpl` is only ever forwarded to `defaultConnect`, which every
 // test here overrides via `connect` — this stub is never actually called, so
 // its shape only needs to satisfy `typeof fetch`'s type, not its full contract.
@@ -254,11 +268,12 @@ describe('recordSync — gating', () => {
     const outbox = fakeStore<JsonValue>(null, { delay: true })
     const sent: string[] = []
     const mutation = vi.fn<ConvexPort['mutation']>(async (_name, args) => {
-      // SAFETY: this mock only ever answers the `recordSync` path under test, whose
+      // This mock only ever answers the `recordSync` path under test, whose
       // `sync:recordEvents` call always sends `{ events: SyncEvent[], secret }` —
       // asserted by the two interleaved `recordSync` calls below, never arbitrary JSON.
-      for (const e of (args as { events: ReadonlyArray<{ requestId: string }> }).events)
-        sent.push(e.requestId)
+      const { events } = args
+      if (Array.isArray(events))
+        for (const e of events) if (isJsonObject(e) && hasRequestId(e)) sent.push(e.requestId)
       return {}
     })
     const so = makeSO({ outbox, connect: () => ({ mutation }) })

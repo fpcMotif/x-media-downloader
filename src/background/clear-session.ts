@@ -250,20 +250,20 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     // path, so this costs zero events on a Release that proceeds.
     if (entry === undefined) {
       trace('clear-not-attempted', { tweetId, detail: 'reason=no-entry' })
-      return
+      return undefined
     }
     if (!isTrulyComplete(entry)) {
       trace('clear-not-attempted', {
         tweetId,
         detail: `reason=not-truly-complete done=${entry.done.size}/${entry.expected.size} inFlight=${entry.inProgress.size} failed=${entry.failed.size}`,
       })
-      return
+      return undefined
     }
     // The "Clear after download" option gates EVERY clear, re-checked here (not
     // just at seed time) so a mid-flight toggle-off blocks it.
     if (!settings.clearOnSave) {
       trace('clear-not-attempted', { tweetId, detail: 'reason=clear-off' })
-      return
+      return undefined
     }
     const enabled = enabledScopesFor(entry, settings)
     const { entry: e, claimed } = claimEnabledScopes(entry, enabled)
@@ -281,7 +281,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
           .map((scope) => `${scope}:${e.clear[scope]}`)
           .join(' ')} enabled=${[...enabled].join('+') || 'none'}`,
       })
-      return
+      return undefined
     }
     trace('clear-claim', { tweetId, detail: `sending ${claimed.join('+')} to X tabs` })
     const origin = clearOriginTab.get(tweetId)

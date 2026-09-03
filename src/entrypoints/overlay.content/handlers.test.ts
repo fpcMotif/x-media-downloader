@@ -37,13 +37,14 @@ type HandlerDepsOverrides = Partial<
   readonly getBadge?: () => Partial<BadgeState>
 }
 
-/** Build a `HandlerDeps` test double from only the fields a scenario needs.
- *  SAFETY: every field left unset here is simply never read by the handler(s)
- *  exercised in this suite — each call site (or the shared `makeDeps`/`depsWith`
- *  helpers below) documents which fields matter for its path, same contract the
- *  old per-call-site `as unknown as HandlerDeps` casts asserted individually. */
-const makeHandlerDeps = (overrides: HandlerDepsOverrides = {}): HandlerDeps =>
-  overrides as HandlerDeps
+/** Build a `HandlerDeps` test double from only the fields a scenario needs. */
+const makeHandlerDeps = (overrides: HandlerDepsOverrides = {}): HandlerDeps => {
+  // SAFETY: every field left unset here is simply never read by the handler(s)
+  // exercised in this suite — each call site (or the shared `makeDeps`/`depsWith`
+  // helpers below) documents which fields matter for its path, same contract the
+  // old per-call-site `as unknown as HandlerDeps` casts asserted individually.
+  return overrides as HandlerDeps
+}
 
 // handleClearTweet is the (previously untested) wiring that decides WHICH scopes
 // actually click on a clear: page-scoped by default, membership-driven under
@@ -95,6 +96,12 @@ const makeDeps = (over: {
     runDrain: over.runDrain ?? (async () => []),
   })
 
+/** Narrows a `SendResponse` reply down to `ClearTweetResponse` by its `_tag` —
+ *  handleClearTweet only ever answers its sendResponse with this shape (see every
+ *  `sendResponse({ _tag: 'ClearTweetResponse', ... })` call in its implementation). */
+const isClearTweetResponse = (r: Parameters<SendResponse>[0]): r is ClearTweetResponse =>
+  r._tag === 'ClearTweetResponse'
+
 /** Drive the handler to completion (it returns true sync, then resolves async). */
 const run = (
   deps: HandlerDeps,
@@ -107,11 +114,17 @@ const run = (
   },
 ): Promise<ClearTweetResponse> =>
   new Promise((resolve) => {
-    // SAFETY: handleClearTweet only ever answers its sendResponse with a
-    // ClearTweetResponse (see every `sendResponse({ _tag: 'ClearTweetResponse', ... })`
-    // call in its implementation) — this helper exists solely to await that one
-    // handler's async reply for the tests below.
-    handleClearTweet(message, deps, (r) => resolve(r as ClearTweetResponse))
+    // This helper exists solely to await handleClearTweet's one async reply for
+    // the tests below. handleClearTweet only ever answers with a ClearTweetResponse
+    // (see every `sendResponse({ _tag: 'ClearTweetResponse', ... })` call in its
+    // implementation) — a mismatched tag throws instead of leaving this Promise to
+    // hang forever, so a future regression fails the test fast, not on a timeout.
+    handleClearTweet(message, deps, (r) => {
+      if (!isClearTweetResponse(r)) {
+        throw new Error(`run: expected ClearTweetResponse, got ${r._tag}`)
+      }
+      resolve(r)
+    })
   })
 
 const ALL: string[] = ['bookmark', 'like', 'notInterested']

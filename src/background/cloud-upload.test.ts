@@ -167,7 +167,8 @@ describe('cloudUploadStatus', () => {
 describe('drainUploadJobs — disconnect mid-flight', () => {
   it('fails the job without uploading and records why', async () => {
     const ledger = fakeLedger(seedJobs(1))
-    const runtime = fakeRuntime()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
     const cu = makeCU({
       getSettings: async () => connected({ [gd.refreshToken]: '' }), // gdrive no longer connected
       ledger,
@@ -175,7 +176,7 @@ describe('drainUploadJobs — disconnect mid-flight', () => {
     })
     await cu.drainUploadJobs()
     expect(decodeLedger(ledger.value)[0]?.status).toBe('failed')
-    expect(runtime.uploadDrive).not.toHaveBeenCalled()
+    expect(uploadDrive).not.toHaveBeenCalled()
     expect((await cu.cloudUploadStatus()).lastError).toBe('Google Drive is not connected.')
   })
 })
@@ -207,10 +208,11 @@ describe('drainUploadJobs — drain cap re-kick', () => {
     // on a fresh serialized task — else the 3rd job is stranded. (The cap is injected
     // only to exercise this without seeding a thousand jobs; prod uses 1000.)
     const ledger = fakeLedger(seedJobs(3))
-    const runtime = fakeRuntime()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
     const cu = makeCU({ ledger, runtime, maxDrainPerPass: 2 })
     await cu.drainUploadJobs()
-    await vi.waitFor(() => expect(runtime.uploadDrive).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(uploadDrive).toHaveBeenCalledTimes(3))
     expect(readyJobs(decodeLedger(ledger.value), NOW)).toHaveLength(0)
   })
 })
@@ -218,7 +220,9 @@ describe('drainUploadJobs — drain cap re-kick', () => {
 describe('drainUploadJobs — backoff-wake gating', () => {
   it('arms a wake-up alarm at the soonest backoff deadline after a failure', async () => {
     const ledger = fakeLedger(seedJobs(1))
-    const alarms = fakeAlarms()
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
     const runtime = fakeRuntime({
       uploadDrive: vi.fn<CloudRuntimePort['uploadDrive']>(async () => ({
         kind: 'failure',
@@ -228,16 +232,18 @@ describe('drainUploadJobs — backoff-wake gating', () => {
     const cu = makeCU({ ledger, runtime, alarms })
     await cu.drainUploadJobs()
     // one failure → nextAttemptAt = NOW + backoff(1) = NOW + 5000; the alarm fires there.
-    expect(alarms.create).toHaveBeenCalledWith(cu.uploadAlarm, NOW + 5000)
-    expect(alarms.clear).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledWith(cu.uploadAlarm, NOW + 5000)
+    expect(clear).not.toHaveBeenCalled()
   })
 
   it('clears the alarm when nothing is left to retry', async () => {
-    const alarms = fakeAlarms()
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
     const cu = makeCU({ ledger: fakeLedger(null), alarms })
     await cu.drainUploadJobs()
-    expect(alarms.clear).toHaveBeenCalledWith(cu.uploadAlarm)
-    expect(alarms.create).not.toHaveBeenCalled()
+    expect(clear).toHaveBeenCalledWith(cu.uploadAlarm)
+    expect(create).not.toHaveBeenCalled()
   })
 })
 
@@ -279,7 +285,12 @@ describe('drainUploadJobs — cap then best-effort mirror', () => {
 describe('drainUploadJobs — token refresh on expiry', () => {
   it('refreshes and persists an expired access token before uploading', async () => {
     const ledger = fakeLedger(seedJobs(1))
-    const runtime = fakeRuntime()
+    const refreshAccessToken = vi.fn<CloudRuntimePort['refreshAccessToken']>(async () => ({
+      accessToken: 'fresh-access',
+      expiresAt: NOW + 3_600_000,
+    }))
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ refreshAccessToken, uploadDrive })
     const setSettings = vi.fn<NonNullable<CloudUploadDeps['setSettings']>>(async (patch) =>
       connected(patch),
     )
@@ -290,12 +301,12 @@ describe('drainUploadJobs — token refresh on expiry', () => {
       setSettings,
     })
     await cu.drainUploadJobs()
-    expect(runtime.refreshAccessToken).toHaveBeenCalledTimes(1)
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1)
     expect(setSettings).toHaveBeenCalledWith(
       expect.objectContaining({ [gd.accessToken]: 'fresh-access' }),
     )
     // The REFRESHED token (not the stale one) must reach the uploader.
-    expect(runtime.uploadDrive).toHaveBeenCalledWith(
+    expect(uploadDrive).toHaveBeenCalledWith(
       expect.objectContaining({ accessToken: 'fresh-access' }),
       expect.anything(),
     )
@@ -303,11 +314,16 @@ describe('drainUploadJobs — token refresh on expiry', () => {
 
   it('skips refresh when the token is still valid', async () => {
     const ledger = fakeLedger(seedJobs(1))
-    const runtime = fakeRuntime()
+    const refreshAccessToken = vi.fn<CloudRuntimePort['refreshAccessToken']>(async () => ({
+      accessToken: 'fresh-access',
+      expiresAt: NOW + 3_600_000,
+    }))
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ refreshAccessToken, uploadDrive })
     const cu = makeCU({ ledger, runtime }) // connected() default → far-future expiry
     await cu.drainUploadJobs()
-    expect(runtime.refreshAccessToken).not.toHaveBeenCalled()
-    expect(runtime.uploadDrive).toHaveBeenCalledTimes(1)
+    expect(refreshAccessToken).not.toHaveBeenCalled()
+    expect(uploadDrive).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -317,7 +333,13 @@ describe('runOAuthConnect — wiring (NOT the consent popup)', () => {
   // It does NOT exercise the real browser.identity consent handshake, which stays
   // genuinely browser-bound and must be verified manually. Do not delete that coverage.
   it('parses the redirect, exchanges the code, and persists the tokens', async () => {
-    const runtime = fakeRuntime()
+    const exchangeCode = vi.fn<CloudRuntimePort['exchangeCode']>(async () => ({
+      accessToken: 'x-access',
+      refreshToken: 'x-refresh',
+      expiresAt: NOW + 3_600_000,
+      account: 'alice@example.com',
+    }))
+    const runtime = fakeRuntime({ exchangeCode })
     const setSettings = vi.fn<NonNullable<CloudUploadDeps['setSettings']>>(async (patch) =>
       connected(patch),
     )
@@ -330,7 +352,7 @@ describe('runOAuthConnect — wiring (NOT the consent popup)', () => {
     const res = await cu.runOAuthConnect('gdrive', 'typed-client-id')
     expect(res.ok).toBe(true)
     expect(res.account).toBe('alice@example.com')
-    expect(runtime.exchangeCode).toHaveBeenCalledWith(
+    expect(exchangeCode).toHaveBeenCalledWith(
       expect.objectContaining({ code: 'auth-code-xyz', clientId: 'typed-client-id' }),
     )
     expect(setSettings).toHaveBeenCalledWith(
@@ -418,9 +440,8 @@ describe('disconnectProvider', () => {
   it('revokes at the provider BEFORE wiping local tokens', async () => {
     const order: string[] = []
     const fetchImpl = vi.fn<typeof fetch>(async (url) => {
-      // SAFETY: `revokeViaRecipe` (the only caller here) always builds its request
-      // from a plain string endpoint URL, never a `Request`/`URL` object.
-      order.push(`revoke:${url as string}`)
+      const endpoint = url instanceof URL ? url.href : url instanceof Request ? url.url : url
+      order.push(`revoke:${endpoint}`)
       return new Response()
     })
     const setSettings = vi.fn<NonNullable<CloudUploadDeps['setSettings']>>(async (patch) => {
@@ -449,18 +470,20 @@ describe('retryDeadUploads', () => {
   it('re-arms a dead job to pending and drains it', async () => {
     const dead = { ...seedJobs(1)[0]!, status: 'dead' as const, attempts: 5, error: 'boom' }
     const ledger = fakeLedger([dead])
-    const runtime = fakeRuntime()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
     const cu = makeCU({ ledger, runtime })
     await cu.retryDeadUploads()
     await vi.waitFor(() => expect(decodeLedger(ledger.value)[0]?.status).toBe('succeeded'))
-    expect(runtime.uploadDrive).toHaveBeenCalledTimes(1)
+    expect(uploadDrive).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('backfillCloudUploads', () => {
   it('enqueues past downloads from history and drains them', async () => {
     const ledger = fakeLedger(null)
-    const runtime = fakeRuntime()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
     const cu = makeCU({
       ledger,
       runtime,
@@ -475,7 +498,7 @@ describe('backfillCloudUploads', () => {
     const res = await cu.backfillCloudUploads()
     expect(res.ok).toBe(true)
     expect(res.queued).toBe(1)
-    await vi.waitFor(() => expect(runtime.uploadDrive).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(uploadDrive).toHaveBeenCalledTimes(1))
   })
 
   it('reports when there are no past downloads to back-fill', async () => {
@@ -489,18 +512,21 @@ describe('backfillCloudUploads', () => {
 describe('resumeOnBoot', () => {
   it('compacts the ledger and drains pending uploads on boot', async () => {
     const ledger = fakeLedger(seedJobs(1))
-    const runtime = fakeRuntime()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
     const cu = makeCU({ ledger, runtime })
     cu.resumeOnBoot()
     await vi.waitFor(() => expect(decodeLedger(ledger.value)[0]?.status).toBe('succeeded'))
-    expect(runtime.uploadDrive).toHaveBeenCalledTimes(1)
+    expect(uploadDrive).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('drainUploadJobs — sourceGone (link-rot, never a fake save)', () => {
   it('marks the job skipped without arming a retry or recording an error', async () => {
     const ledger = fakeLedger(seedJobs(1))
-    const alarms = fakeAlarms()
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
     const runtime = fakeRuntime({
       uploadDrive: vi.fn<CloudRuntimePort['uploadDrive']>(async () => ({
         kind: 'sourceGone',
@@ -511,8 +537,8 @@ describe('drainUploadJobs — sourceGone (link-rot, never a fake save)', () => {
     await cu.drainUploadJobs()
     // 'skipped' is terminal and honest — distinct from a retryable failure.
     expect(decodeLedger(ledger.value)[0]?.status).toBe('skipped')
-    expect(alarms.create).not.toHaveBeenCalled()
-    expect(alarms.clear).toHaveBeenCalledWith(cu.uploadAlarm)
+    expect(create).not.toHaveBeenCalled()
+    expect(clear).toHaveBeenCalledWith(cu.uploadAlarm)
     // The sourceGone arm never sets lastUploadError (unlike the failure arm).
     expect((await cu.cloudUploadStatus()).lastError).toBeNull()
   })
@@ -521,17 +547,21 @@ describe('drainUploadJobs — sourceGone (link-rot, never a fake save)', () => {
 describe('drainUploadJobs — Drive root folder resolution', () => {
   it('resolves and persists the Drive root once when unset, passing it to the upload', async () => {
     const ledger = fakeLedger(seedJobs(1))
-    const runtime = fakeRuntime()
+    const resolveDriveRoot = vi.fn<CloudRuntimePort['resolveDriveRoot']>(
+      async () => 'drive-root-id',
+    )
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ resolveDriveRoot, uploadDrive })
     const setSettings = vi.fn<NonNullable<CloudUploadDeps['setSettings']>>(async (patch) =>
       connected(patch),
     )
     const cu = makeCU({ ledger, runtime, setSettings }) // connected(): gdriveFolderId is ''
     await cu.drainUploadJobs()
-    expect(runtime.resolveDriveRoot).toHaveBeenCalledTimes(1)
+    expect(resolveDriveRoot).toHaveBeenCalledTimes(1)
     expect(setSettings).toHaveBeenCalledWith(
       expect.objectContaining({ gdriveFolderId: 'drive-root-id' }),
     )
-    expect(runtime.uploadDrive).toHaveBeenCalledWith(
+    expect(uploadDrive).toHaveBeenCalledWith(
       expect.objectContaining({ rootFolderId: 'drive-root-id' }),
       expect.anything(),
     )
@@ -539,15 +569,19 @@ describe('drainUploadJobs — Drive root folder resolution', () => {
 
   it('reuses a stored Drive root without re-resolving', async () => {
     const ledger = fakeLedger(seedJobs(1))
-    const runtime = fakeRuntime()
+    const resolveDriveRoot = vi.fn<CloudRuntimePort['resolveDriveRoot']>(
+      async () => 'drive-root-id',
+    )
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ resolveDriveRoot, uploadDrive })
     const cu = makeCU({
       ledger,
       runtime,
       getSettings: async () => connected({ gdriveFolderId: 'pre-resolved' }),
     })
     await cu.drainUploadJobs()
-    expect(runtime.resolveDriveRoot).not.toHaveBeenCalled()
-    expect(runtime.uploadDrive).toHaveBeenCalledWith(
+    expect(resolveDriveRoot).not.toHaveBeenCalled()
+    expect(uploadDrive).toHaveBeenCalledWith(
       expect.objectContaining({ rootFolderId: 'pre-resolved' }),
       expect.anything(),
     )
@@ -563,11 +597,13 @@ describe('drainUploadJobs — Dropbox provider', () => {
         NOW,
       ),
     )
-    const runtime = fakeRuntime()
+    const uploadDropbox = vi.fn<CloudRuntimePort['uploadDropbox']>(async () => ok())
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDropbox, uploadDrive })
     const cu = makeCU({ getSettings: async () => connectedDropbox(), ledger, runtime })
     await cu.drainUploadJobs()
-    expect(runtime.uploadDropbox).toHaveBeenCalledTimes(1)
-    expect(runtime.uploadDrive).not.toHaveBeenCalled()
+    expect(uploadDropbox).toHaveBeenCalledTimes(1)
+    expect(uploadDrive).not.toHaveBeenCalled()
     expect(decodeLedger(ledger.value)[0]?.status).toBe('succeeded')
   })
 })
@@ -580,12 +616,13 @@ describe('recordCloudUploads — gating (no side effects)', () => {
 
   it('does nothing when Cloud upload is disabled', async () => {
     const ledger = fakeLedger()
-    const runtime = fakeRuntime()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
     makeCU({ ledger, runtime }).recordCloudUploads(connected({ cloudUploadEnabled: false }), [item])
     await tick()
     expect(ledger.gets).toBe(0)
     expect(ledger.sets).toBe(0)
-    expect(runtime.uploadDrive).not.toHaveBeenCalled()
+    expect(uploadDrive).not.toHaveBeenCalled()
   })
 
   it('does nothing for an empty item batch', async () => {
@@ -616,29 +653,34 @@ describe('drainUploadJobs — exhausted claim', () => {
       leaseSeq: 3,
     }
     const ledger = fakeLedger([crashed])
-    const runtime = fakeRuntime()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
     const cu = makeCU({ ledger, runtime })
     await cu.drainUploadJobs()
     expect(decodeLedger(ledger.value)[0]?.status).toBe('dead')
-    expect(runtime.uploadDrive).not.toHaveBeenCalled()
+    expect(uploadDrive).not.toHaveBeenCalled()
     expect(readyJobs(decodeLedger(ledger.value), NOW)).toHaveLength(0)
   })
 })
 
 describe('badge', () => {
   it('clearUploadBadge clears the toolbar text', async () => {
-    const badge = fakeBadge()
+    const set = vi.fn<BadgePort['set']>(async () => {})
+    const setColor = vi.fn<BadgePort['setColor']>(async () => {})
+    const badge: BadgePort = { set, setColor }
     makeCU({ badge }).clearUploadBadge()
     await tick()
-    expect(badge.set).toHaveBeenCalledWith('')
+    expect(set).toHaveBeenCalledWith('')
   })
 
   it('reflects the permanently-dead count after a drain', async () => {
-    const badge = fakeBadge()
+    const set = vi.fn<BadgePort['set']>(async () => {})
+    const setColor = vi.fn<BadgePort['setColor']>(async () => {})
+    const badge: BadgePort = { set, setColor }
     const dead = { ...seedJobs(1)[0]!, status: 'dead' as const, attempts: 5, error: 'boom' }
     const cu = makeCU({ ledger: fakeLedger([dead]), badge })
     await cu.drainUploadJobs()
-    expect(badge.set).toHaveBeenCalledWith('1')
-    expect(badge.setColor).toHaveBeenCalledWith('#dc2626')
+    expect(set).toHaveBeenCalledWith('1')
+    expect(setColor).toHaveBeenCalledWith('#dc2626')
   })
 })

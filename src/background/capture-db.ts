@@ -72,6 +72,27 @@ function promisify<T>(request: IDBRequest<T>): Promise<T> {
   })
 }
 
+/** `IDBObjectStore.get` is typed `IDBRequest<any>` by lib.dom. This store is
+ *  written to exclusively via `store.put(winner)` in `upsert` below, so every
+ *  row is a `TweetRecord` (or absent) — retyped here at the source instead of
+ *  cast at each read site. */
+function getTweetRecord(
+  store: IDBObjectStore,
+  key: IDBValidKey,
+): IDBRequest<TweetRecord | undefined> {
+  return store.get(key)
+}
+
+/** `IDBCursorWithValue.value` is typed `any` by lib.dom; narrowed for the same
+ *  reason as {@link getTweetRecord} — every row in this store is a `TweetRecord`. */
+interface TweetCursor extends IDBCursorWithValue {
+  readonly value: TweetRecord
+}
+
+function openTweetCursor(store: IDBObjectStore): IDBRequest<TweetCursor | null> {
+  return store.openCursor()
+}
+
 function makeIndexedDbStore(): CaptureStore {
   let dbPromise: Promise<IDBDatabase> | undefined
 
@@ -98,12 +119,9 @@ function makeIndexedDbStore(): CaptureStore {
             const tx = db.transaction(STORE, 'readwrite')
             const store = tx.objectStore(STORE)
             for (const incoming of records) {
-              const get = store.get(incoming.tweetId)
+              const get = getTweetRecord(store, incoming.tweetId)
               get.addEventListener('success', () => {
-                // SAFETY: this object store is written to exclusively via
-                // `store.put(winner)` below with a `TweetRecord`, so any existing
-                // value under a `tweetId` key is always a `TweetRecord` (or absent).
-                const existing = get.result as TweetRecord | undefined
+                const existing = get.result
                 const winner = merge(existing, incoming)
                 if (winner !== existing) store.put(winner)
               })
@@ -120,7 +138,7 @@ function makeIndexedDbStore(): CaptureStore {
     },
     async fold(init, step) {
       const db = await openDb()
-      const request = db.transaction(STORE, 'readonly').objectStore(STORE).openCursor()
+      const request = openTweetCursor(db.transaction(STORE, 'readonly').objectStore(STORE))
       let acc = init
       return new Promise((resolve, reject) => {
         request.addEventListener('success', () => {
@@ -129,9 +147,7 @@ function makeIndexedDbStore(): CaptureStore {
             resolve(acc)
             return
           }
-          // SAFETY: this object store is written to exclusively with `TweetRecord`
-          // values (see `upsert` above), so every cursor value is a `TweetRecord`.
-          acc = step(acc, cursor.value as TweetRecord)
+          acc = step(acc, cursor.value)
           cursor.continue()
         })
         request.addEventListener('error', () => reject(request.error))

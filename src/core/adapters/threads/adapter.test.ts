@@ -335,7 +335,7 @@ describe('threadsAdapter', () => {
   })
 
   it('does not implement findMediaNeedingRecovery (no public/no-auth fallback exists)', () => {
-    expect(threadsAdapter.findMediaNeedingRecovery).toBeUndefined()
+    expect('findMediaNeedingRecovery' in threadsAdapter).toBe(false)
   })
 
   describe('postKeyFromVideoElement', () => {

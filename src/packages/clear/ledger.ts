@@ -139,6 +139,8 @@ export function reduce(e: LedgerEntry, a: Action): LedgerEntry {
       if (e.clear[a.scope] !== 'clearing') return e
       return { ...e, clear: { ...e.clear, [a.scope]: a.ok ? 'cleared' : 'failed' } }
   }
+  const unreachable: never = a
+  throw new Error(`unhandled: ${JSON.stringify(unreachable)}`)
 }
 
 // ── derived predicates ──

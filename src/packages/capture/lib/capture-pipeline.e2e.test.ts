@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { isJsonObject, type JsonValue } from '@/packages/schema/json'
 import richThread from '@/test/fixtures/tweet-detail-thread.json'
 import { toJsonl, toMarkdown } from './export'
 import { harvestTweets } from '../harvest'
@@ -129,6 +130,24 @@ const thinTimeline = {
   },
 }
 
+/** One JSONL line, narrowed to just the fields this suite reads off it. A type
+ *  alias (not an interface) so it keeps the implicit index signature that makes
+ *  it assignable to `JsonValue` — the predicate below narrows a `JsonValue`, and
+ *  a type predicate's type must be assignable to its parameter's type. */
+type JsonlRow = {
+  readonly id: string
+  readonly text: string
+  readonly kind: string
+}
+
+/** Narrow a parsed JSONL line to {@link JsonlRow} by checking each field this
+ *  suite reads, rather than trusting `toJsonl`'s shape via an assertion. */
+const isJsonlRow = (value: JsonValue): value is JsonlRow =>
+  isJsonObject(value) &&
+  typeof value.id === 'string' &&
+  typeof value.text === 'string' &&
+  typeof value.kind === 'string'
+
 /** Read-merge-write each record into a tweetId-keyed map via the §6.4 rule, then
  *  return the merged set. */
 const mergeAll = (batches: ReadonlyArray<TweetRecord[]>): TweetRecord[] => {
@@ -176,10 +195,10 @@ describe('capture pipeline e2e (harvest → merge → tree → export)', () => {
   it('exports the RICH thread for the re-served tweet, not the thin sighting', () => {
     expect(markdown).toContain('root tweet of the thread')
     expect(markdown).not.toContain('THIN sighting')
-    // SAFETY: toJsonl(records) produces JSONL where each line is {id, text, kind} record; records contain the expected root tweet
     const rootLine = jsonl
       .split('\n')
-      .map((l) => JSON.parse(l) as { id: string; text: string; kind: string })
+      .map((l): JsonValue => JSON.parse(l))
+      .filter(isJsonlRow)
       .find((r) => r.id === '2001')!
     expect(rootLine.text).toBe('root tweet of the thread')
     expect(rootLine.kind).toBe('tweet')

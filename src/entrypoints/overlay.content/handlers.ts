@@ -619,7 +619,7 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
   // Release cluster only on an X tab, so this arm is defence in depth, not copy.
   if (deps.adapter.platform !== 'x') {
     sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0, reason: 'not-x' })
-    return
+    return undefined
   }
   // List-scoped: only ever clear the list you're ON — Likes page un-likes,
   // Bookmarks page un-bookmarks. Never both at once.

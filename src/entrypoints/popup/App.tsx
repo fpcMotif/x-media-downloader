@@ -898,13 +898,13 @@ export function App() {
   // that same cluster starts (already handled: usePageAction's `run()` clears
   // its own slot on start via `config.setMsg(null)`).
   useEffect(() => {
-    if (downloadMsg === null || isPersistentStatus(downloadMsg)) return
+    if (downloadMsg === null || isPersistentStatus(downloadMsg)) return undefined
     const timer = setTimeout(() => setDownloadMsg(null), 6000)
     return () => clearTimeout(timer)
   }, [downloadMsg])
 
   useEffect(() => {
-    if (releaseMsg === null || isPersistentStatus(releaseMsg)) return
+    if (releaseMsg === null || isPersistentStatus(releaseMsg)) return undefined
     const timer = setTimeout(() => setReleaseMsg(null), 6000)
     return () => clearTimeout(timer)
   }, [releaseMsg])

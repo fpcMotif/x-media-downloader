@@ -1,5 +1,6 @@
 import { Option } from 'effect'
 import { adapterForUrl, allAdapterHostMatch } from '../core/adapters/registry'
+import { isJsonObject } from '@/packages/schema'
 import type { Message, TabMessage, JsonValue } from '@/packages/schema'
 import type { ClearTweetResponse } from '@/packages/schema'
 import type { TabMessagingPort } from '@/packages/download/media-url-refresh'
@@ -395,6 +396,34 @@ const defaultTabsPort = (): TabsPort => {
   }
 }
 
+/** Narrow a `TabsPort.sendTabMessage` reply to the `{ url? }` shape
+ *  `TabMessagingPort` promises its caller (`refreshMediaUrlFromTabs`'s
+ *  `hasFreshUrl`). This port only ever sends `RefreshMediaUrlRequest`, whose
+ *  receiver (the overlay content script) always answers `RefreshMediaUrlResponse`
+ *  (`{ url? }`) or nothing — never any other tagged message's reply shape — so an
+ *  ordinary `JsonValue` narrow (object check + `typeof url`) states that contract
+ *  instead of asserting it: a malformed `url` (or no object at all) folds to `{}`,
+ *  which `hasFreshUrl`'s own `typeof res?.url === 'string'` check already treats
+ *  identically to a genuinely absent one. */
+const hasStringUrlField = (value: JsonValue): value is { readonly url: string } =>
+  isJsonObject(value) && typeof value.url === 'string'
+
+const asRefreshMediaUrlReply = (
+  value: JsonValue | undefined,
+): { readonly url?: string } | undefined => {
+  if (value === undefined) return undefined
+  return hasStringUrlField(value) ? { url: value.url } : {}
+}
+
+/** Narrow a `TabsPort.sendTabMessage` reply to `ClearTweetResponse` for the
+ *  `ClearTweetRequest` tag — the ONE cast both `probeReleaseTab` and `runFanOut`
+ *  need, named here instead of repeated at each call site.
+ *  SAFETY: a `ClearTweetRequest` is always answered with a `ClearTweetResponse`
+ *  (or the tab dies and `sendTabMessage` throws instead, caught by the caller) —
+ *  the overlay's dispatch gate never replies to this tag with any other shape. */
+const asClearTweetResponse = (value: JsonValue | undefined): ClearTweetResponse | undefined =>
+  value as ClearTweetResponse | undefined
+
 export const makeTabBroadcaster = (
   tabs: TabsPort = defaultTabsPort(),
   deps: TabBroadcasterDeps = {},
@@ -404,11 +433,8 @@ export const makeTabBroadcaster = (
 
   const makeTabMessagingPort = (): TabMessagingPort => ({
     queryTabs: async () => (await queryXTabs()).map((id) => ({ id })),
-    // SAFETY: this port only ever sends `RefreshMediaUrlRequest`, whose receiver
-    // (the overlay content script) always answers `RefreshMediaUrlResponse`
-    // (`{ url? }`) or nothing — never any other tagged message's reply shape.
     sendTabMessage: (tabId, message) =>
-      tabs.sendTabMessage(tabId, message) as Promise<{ readonly url?: string } | undefined>,
+      tabs.sendTabMessage(tabId, message).then(asRefreshMediaUrlReply),
   })
 
   /** Broadcast a fire-and-forget message to every open X tab. A dead tab (no
@@ -542,17 +568,16 @@ export const makeTabBroadcaster = (
     probes: number,
   ): Promise<ProbeResult> => {
     try {
-      // SAFETY: a `ClearTweetRequest` is always answered with `ClearTweetResponse`
-      // (or the tab dies and this throws instead) — the overlay's dispatch gate
-      // never replies to this tag with any other shape.
-      const res = (await tabs.sendTabMessage(tabId, {
-        _tag: 'ClearTweetRequest',
-        tweetId,
-        scopes,
-        allLists,
-        ...(asPageScope === undefined ? {} : { asPageScope }),
-        ...(probes >= 2 ? { probe: true } : {}),
-      })) as ClearTweetResponse | undefined
+      const res = asClearTweetResponse(
+        await tabs.sendTabMessage(tabId, {
+          _tag: 'ClearTweetRequest',
+          tweetId,
+          scopes,
+          allLists,
+          ...(asPageScope === undefined ? {} : { asPageScope }),
+          ...(probes >= 2 ? { probe: true } : {}),
+        }),
+      )
       if (res?.mounted === true) return { kind: 'mounted', results: res.results }
       return { kind: 'unmounted', page: res?.page }
     } catch {
@@ -781,15 +806,14 @@ export const makeTabBroadcaster = (
     for (const id of ids) {
       tried.push(id)
       try {
-        // SAFETY: a `ClearTweetRequest` is always answered with `ClearTweetResponse`
-        // (or the tab dies and this throws instead) — the overlay's dispatch gate
-        // never replies to this tag with any other shape.
-        const res = (await tabs.sendTabMessage(id, {
-          _tag: 'ClearTweetRequest',
-          tweetId,
-          scopes,
-          allLists,
-        })) as ClearTweetResponse | undefined
+        const res = asClearTweetResponse(
+          await tabs.sendTabMessage(id, {
+            _tag: 'ClearTweetRequest',
+            tweetId,
+            scopes,
+            allLists,
+          }),
+        )
         clearOrphanRecord(id)
         const attempted = res?.results.some((result) => !result.noop) === true
         const allSucceeded = res?.results.every((result) => result.ok) === true

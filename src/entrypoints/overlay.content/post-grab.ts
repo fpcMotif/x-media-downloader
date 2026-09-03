@@ -89,13 +89,13 @@ export function wholePostItemsFor(
   media: Element,
   item: MediaItem,
 ): MediaItem[] {
-  const postCodeFromElement = deps.adapter.postCodeFromElement
-  const code = postCodeFromElement?.(media, deps.pathname()) ?? null
+  const hasPostCodeResolver = deps.adapter.postCodeFromElement !== undefined
+  const code = deps.adapter.postCodeFromElement?.(media, deps.pathname()) ?? null
   const codePostId = code ? deps.store.postIdForCode(code) : undefined
   const teePost = codePostId ? deps.store.valuesForTweet(codePostId) : []
   if (teePost.length > 0) return teePost
   deps.onWholePostFallback?.({ item, code })
-  return postCodeFromElement ? [] : postGrabItems(item, deps.store.valuesForTweet(item.postId))
+  return hasPostCodeResolver ? [] : postGrabItems(item, deps.store.valuesForTweet(item.postId))
 }
 
 /** Hovered/cursor media target and its resolved key — the shape returned by
@@ -116,11 +116,12 @@ interface FireHoverProbe {
  * fall through to another post, so the caller aborts entirely on `'abort'`.
  */
 function resolveFireHoverTarget(deps: PostGrabDeps): FireHoverProbe | 'abort' {
-  const postCodeFromElement = deps.adapter.postCodeFromElement
-  const focusedPost = postCodeFromElement ? (deps.focusedPost?.() ?? null) : null
+  const focusedPost = deps.adapter.postCodeFromElement ? (deps.focusedPost?.() ?? null) : null
   if (focusedPost) {
     const hover = deps.cursorHovered?.() ?? null
-    const liveCode = hover ? (postCodeFromElement?.(hover.media, deps.pathname()) ?? null) : null
+    const liveCode = hover
+      ? (deps.adapter.postCodeFromElement?.(hover.media, deps.pathname()) ?? null)
+      : null
     if (liveCode !== focusedPost.postCode) {
       deps.clearFocusedPost?.()
       return 'abort'

@@ -60,7 +60,9 @@ interface Harness {
 }
 
 function harness(adapter: NavControllerDeps['adapter']): Harness {
-  const store = makeDetectionStore({ mediaKeyFromUrl: threadsAdapter.mediaKeyFromUrl })
+  const store = makeDetectionStore({
+    mediaKeyFromUrl: (url) => threadsAdapter.mediaKeyFromUrl(url),
+  })
   const sent: MediaItem[][] = []
   const logs: string[] = []
   const scrolled: Element[] = []

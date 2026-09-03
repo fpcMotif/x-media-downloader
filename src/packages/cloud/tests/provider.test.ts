@@ -3,6 +3,10 @@ import { PROVIDERS, revokeViaRecipe } from '../provider'
 import { DROPBOX_HOST_PATTERNS, DROPBOX_OAUTH, GDRIVE_HOST_PATTERNS, GDRIVE_OAUTH } from '../types'
 import { fetchStub } from '../lib/fetch-stub'
 
+/** `RequestInit.body` is `BodyInit | null | undefined`; the recipe under test always
+ *  posts a URL-encoded string body, so narrow to that before recording the call. */
+const isStringBody = (body: BodyInit | null | undefined): body is string => typeof body === 'string'
+
 describe('PROVIDERS registry', () => {
   it('describes Google Drive as a record (oauth, host patterns, label, fields)', () => {
     const p = PROVIDERS.gdrive
@@ -30,9 +34,9 @@ describe('revokeViaRecipe', () => {
   it('revokes the refresh token at the Google endpoint via a form body (gdrive)', async () => {
     const calls: { url: string; body: string }[] = []
     const fetchImpl = fetchStub(async (url, init) => {
-      // SAFETY: the recipe always posts a URL-encoded string body — never the wider
-      // `BodyInit` shapes `RequestInit['body']` allows.
-      calls.push({ url, body: init?.body as string })
+      const body = init?.body
+      if (!isStringBody(body)) throw new Error('expected a string request body')
+      calls.push({ url, body })
       return new Response('', { status: 200 })
     })
     await revokeViaRecipe(

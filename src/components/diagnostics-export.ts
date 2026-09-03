@@ -18,12 +18,15 @@ export async function runDiagnosticsExport(): Promise<ExportOutcome> {
 
   let res: ExportResponse | null = null
   try {
-    // SAFETY: the background's `ExportDiagnosticsRequest` handler always answers
-    // `{ ok, filename, text }` via `sendResponse` (or the channel dies and this
-    // throws instead); every field is read defensively below regardless.
-    res = (await browser.runtime.sendMessage({
+    // `browser.runtime.sendMessage`'s reply types as `any` (the polyfill has no way to
+    // know the background's response shape), so this is a plain annotation, not a
+    // cast: `any` is assignable to any declared type without an assertion. The
+    // background's `ExportDiagnosticsRequest` handler always answers `{ ok, filename,
+    // text }` via `sendResponse` (or the channel dies and this throws instead);
+    // every field is read defensively below regardless.
+    res = await browser.runtime.sendMessage({
       _tag: 'ExportDiagnosticsRequest',
-    })) as ExportResponse | null
+    })
   } catch (err) {
     console.error('[XMD] release-diag-export sendMessage threw', err)
     return { ok: false, detail: 'Could not reach the extension worker.' }

@@ -268,7 +268,7 @@ describe('instagramAdapter', () => {
   })
 
   it('has no findMediaNeedingRecovery (no public no-auth recovery fallback exists)', () => {
-    expect(instagramAdapter.findMediaNeedingRecovery).toBeUndefined()
+    expect('findMediaNeedingRecovery' in instagramAdapter).toBe(false)
   })
 
   it('resolveHoverItem/canResolveHoverItem fall back to .src when currentSrc is empty (not-yet-loaded image)', () => {

@@ -8,8 +8,10 @@ import type { MediaItem } from '@/packages/schema'
 const el = <T extends Element = Element>(html: string): T => {
   const root = document.createElement('div')
   root.innerHTML = html.trim()
-  // SAFETY: see the doc comment above — the caller's own type argument names
-  // the tag its markup's root element actually is.
+  // SAFETY: T is a compile-time-only type parameter — there is no `instanceof T`
+  // to narrow with at runtime. Every call site's HTML literal is non-empty and its
+  // root tag matches the T it requests (e.g. `el<HTMLImageElement>('<img ... />')`),
+  // so `firstElementChild` is always both present and shaped like T.
   return root.firstElementChild as T
 }
 

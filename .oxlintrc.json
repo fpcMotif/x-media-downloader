@@ -31,10 +31,6 @@
     "typescript/ban-ts-comment": "error",
     "eqeqeq": ["error", "always"],
     "typescript/no-unnecessary-type-assertion": "warn",
-    "typescript/no-unsafe-type-assertion": "off",
-    "typescript/unbound-method": "off",
-    "typescript/consistent-return": "off",
-    "typescript/no-unnecessary-type-parameters": "off",
 
     "no-console": ["warn", { "allow": ["warn", "error", "info", "debug"] }],
     "no-warning-comments": ["warn", { "terms": ["todo", "fixme", "xxx", "hack"] }],

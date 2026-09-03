@@ -284,19 +284,45 @@ const cloudTargetFor = (m: { readonly ext: string }, filename: string): UploadTa
   }
 }
 
+/** True when a Settings field value is one `settingsField` can hand back — the
+ *  string/number half of the property-value union `s[key]` types as once `key`
+ *  is a computed `keyof Settings`. A real type predicate (not a cast), so the
+ *  narrowing below is sound rather than asserted. */
+const isStringOrNumberField = (v: Settings[keyof Settings]): v is string | number =>
+  typeof v === 'string' || typeof v === 'number'
+
+/** Read one provider-token field off `s` at a `provider.ts`-supplied key, narrowed
+ *  to `kind`. `ProviderFields` types every entry as plain `keyof Settings` (a
+ *  computed key), so `s[key]` itself types as the UNION of every Settings field's
+ *  value type; each `PROVIDERS[p].fields` entry is wired (in provider.ts) to a
+ *  specific string/number Settings key, so the actual runtime value always matches
+ *  the `kind` requested at each call site below even though the static type can't
+ *  narrow through a computed key. Overloaded (not generic) so each call site's
+ *  result type comes from `kind` alone, with no per-call-site assertion. */
+function settingsField(s: Settings, key: keyof Settings, kind: 'string'): string
+function settingsField(s: Settings, key: keyof Settings, kind: 'number'): number
+function settingsField(
+  s: Settings,
+  key: keyof Settings,
+  _kind: 'string' | 'number',
+): string | number {
+  const value = s[key]
+  if (isStringOrNumberField(value)) return value
+  // SAFETY: every call site resolves `key` from a `provider.ts` ProviderFields
+  // entry, which only ever points at a string/number Settings field (clientId/
+  // accessToken/refreshToken/expiry/account) — this branch is unreachable in
+  // practice; it exists only so the predicate narrowing above is total.
+  throw new TypeError(`settingsField: ${key} is not a string or number field`)
+}
+
 const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
   const f = PROVIDERS[p].fields
-  // SAFETY: `f.*` are `keyof Settings`, so `s[f.*]` types as the UNION of every
-  // Settings field's value type; each `PROVIDERS[p].fields` entry is wired (in
-  // provider.ts) to a specific string/number Settings key, so the actual runtime
-  // value always matches the annotation here even though the static type can't
-  // narrow through a computed key.
   return {
-    clientId: s[f.clientId] as string,
-    accessToken: s[f.accessToken] as string,
-    refreshToken: s[f.refreshToken] as string,
-    expiry: s[f.expiry] as number,
-    account: s[f.account] as string,
+    clientId: settingsField(s, f.clientId, 'string'),
+    accessToken: settingsField(s, f.accessToken, 'string'),
+    refreshToken: settingsField(s, f.refreshToken, 'string'),
+    expiry: settingsField(s, f.expiry, 'number'),
+    account: settingsField(s, f.account, 'string'),
   }
 }
 

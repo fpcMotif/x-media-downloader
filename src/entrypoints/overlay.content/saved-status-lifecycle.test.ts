@@ -16,8 +16,9 @@ const makeHarness = (initialActive: boolean) => {
 
   const lifecycle = makeSavedStatusLifecycle({
     isActive: () => active,
-    // SAFETY: Test harness root mock never accessed as DOM node; satisfies the interface shape only.
-    root: {} as Node,
+    // Never actually accessed as a DOM node by the fake observer; a real
+    // element satisfies the `root: Node` dependency without an unsafe cast.
+    root: document.createElement('div'),
     delayMs: 500,
     makeObserver: (notify) => {
       const o: FakeObserver = { notify, observed: 0, disconnected: 0 }

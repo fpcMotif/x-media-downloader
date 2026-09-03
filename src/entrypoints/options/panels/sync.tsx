@@ -226,7 +226,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   useEffect(() => {
     if (!uploadOn) {
       setCloudStatus(null)
-      return
+      return undefined
     }
     const poll = (): void => {
       void browser.runtime

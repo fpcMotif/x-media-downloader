@@ -27,6 +27,11 @@ const runExchange = (fetchImpl: typeof fetch, input: Parameters<typeof exchangeC
 const runRefresh = (fetchImpl: typeof fetch, input: Parameters<typeof refreshAccessToken>[0]) =>
   Effect.runPromise(refreshAccessToken(input).pipe(Effect.provide(makeFetchServiceLive(fetchImpl))))
 
+/** `postToken` always posts a URL-encoded string body — never the wider
+ *  `BodyInit` shapes `RequestInit['body']` allows — so narrow to that before
+ *  treating the captured body as text. */
+const isStringBody = (body: BodyInit | null | undefined): body is string => typeof body === 'string'
+
 describe('PKCE primitives', () => {
   it('base64UrlEncode is url-safe and unpadded', () => {
     const out = base64UrlEncode(Uint8Array.of(251, 255, 191, 0))
@@ -170,9 +175,9 @@ describe('exchangeCode', () => {
   it('posts PKCE params (no secret) and maps the token response', async () => {
     let captured: { url: string; body: string } | null = null
     const fetchImpl = fetchStub(async (url, init) => {
-      // SAFETY: `postToken` always posts a URL-encoded string body — never the
-      // wider `BodyInit` shapes `RequestInit['body']` allows.
-      captured = { url, body: init?.body as string }
+      const body = init?.body
+      if (!isStringBody(body)) throw new Error('expected string body')
+      captured = { url, body }
       return jsonResponse({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 })
     })
 
@@ -409,9 +414,9 @@ describe('refreshAccessToken', () => {
   it('posts the refresh grant and returns a new access token', async () => {
     let body = ''
     const fetchImpl = fetchStub(async (_url, init) => {
-      // SAFETY: `postToken` always posts a URL-encoded string body — never the
-      // wider `BodyInit` shapes `RequestInit['body']` allows.
-      body = init?.body as string
+      const nextBody = init?.body
+      if (!isStringBody(nextBody)) throw new Error('expected string body')
+      body = nextBody
       return jsonResponse({ access_token: 'AT2', expires_in: 3600 })
     })
     const out = await runRefresh(fetchImpl, {

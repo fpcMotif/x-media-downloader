@@ -23,22 +23,22 @@ export const errText = (res: Response): Promise<string> => res.text().catch(() =
 /** Parse a JSON response body as `T`. A malformed body rejects → a defect that
  *  `runUpload`'s `catchCause` maps to a failure outcome (as the old `await` did). */
 export const okJson = <T>(res: Response): Effect.Effect<T> =>
-  Effect.promise(() => {
-    // SAFETY: `T` is caller-supplied and unconstrained — there is no runtime shape
-    // to check it against here. Each `okJson<T>()` call site owns the actual
-    // invariant (which provider field it reads off `T`); a malformed body still
-    // fails safely, just as a defect instead of a type error.
-    return res.json() as Promise<T>
-  })
+  // SAFETY: `T` is caller-supplied and unconstrained — there is no runtime shape
+  // to check it against here. Each `okJson<T>()` call site owns the actual
+  // invariant (which provider field it reads off `T`); a malformed body still
+  // fails safely, just as a defect instead of a type error. `res.json()` widens
+  // to `Promise<T>` on return here (no `as`) because `Effect.promise`'s own
+  // signature is generic over the promised value.
+  Effect.promise<T>(() => res.json())
 
 /** Promise-land twin of `okJson`, for plain async/await code that can't take on an
  *  Effect boundary mid-loop (the Dropbox session sink runs inside one `tryPromise`). */
-export const jsonAs = <T>(res: Response): Promise<T> => {
-  // SAFETY: `T` is caller-supplied and unconstrained, same as `okJson` above —
-  // there is no runtime shape to check it against here; a malformed body still
-  // fails safely, just as a thrown rejection instead of a type error.
-  return res.json() as Promise<T>
-}
+// SAFETY: `T` is caller-supplied and unconstrained, same as `okJson` above —
+// there is no runtime shape to check it against here; a malformed body still
+// fails safely, just as a thrown rejection instead of a type error. The
+// declared `Promise<T>` return type (no `as`) is what widens `res.json()`'s
+// `Promise<any>` here.
+export const jsonAs = <T>(res: Response): Promise<T> => res.json()
 
 /** `<provider> HTTP <status>[: <body first 200 chars>]` — the shared error format. */
 export const httpErr = (provider: string, status: number, body: string): string =>

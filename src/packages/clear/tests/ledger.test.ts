@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { Schema } from 'effect'
 import {
   canClaim,
   createEntry,
@@ -13,15 +14,18 @@ import {
   type Scope,
   type Strategy,
 } from '../ledger'
-import type { Settings } from '@/packages/schema'
+import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
 
-const toggles = (bookmark: boolean, like: boolean, notInterested: boolean): Settings =>
-  // SAFETY: hookScopes reads only the three per-scope toggles; partial Settings satisfies test invariant
-  ({
-    autoUnbookmarkOnSave: bookmark,
-    autoUnlikeOnSave: like,
-    autoNotInterestedOnSave: notInterested,
-  }) as Settings
+// Decoded from the schema's own defaults (same pattern as seed.test.ts) so the
+// three toggles below sit on a fully-typed Settings — no assertion needed.
+const baseSettings = Schema.decodeUnknownSync(SettingsSchema)({})
+
+const toggles = (bookmark: boolean, like: boolean, notInterested: boolean): Settings => ({
+  ...baseSettings,
+  autoUnbookmarkOnSave: bookmark,
+  autoUnlikeOnSave: like,
+  autoNotInterestedOnSave: notInterested,
+})
 
 const seed = (over: Partial<{ scopes: Scope[]; strategy: Strategy; expected: string[] }> = {}) =>
   createEntry({

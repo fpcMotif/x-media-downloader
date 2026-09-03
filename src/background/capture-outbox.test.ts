@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
 import { makeCaptureOutbox, type LedgerStorage } from './capture-outbox'
 import {
+  isJsonObject,
   type JsonObject,
   type JsonValue,
   Settings as SettingsSchema,
@@ -54,6 +55,17 @@ function fakeLedger(
     },
   }
   return box
+}
+
+/** Narrow one wire-sent capture (a `JsonValue`) to an object carrying a string
+ *  `tweetId`, without asserting the whole shape away. */
+function hasStringTweetId(value: JsonValue): value is JsonObject & { tweetId: string } {
+  return isJsonObject(value) && typeof value.tweetId === 'string'
+}
+
+function captureTweetId(value: JsonValue): string {
+  if (!hasStringTweetId(value)) throw new Error('expected a capture with a string tweetId')
+  return value.tweetId
 }
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0))
@@ -178,13 +190,12 @@ describe('makeCaptureOutbox — drain', () => {
     outbox.mirrorCaptures([mk('2')])
 
     await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(2))
-    // SAFETY: `mutation` only ever receives the wire shape `toWireCapture` builds
-    // (asserted by the two interleaved `mirrorCaptures` calls above), so `captures`
-    // is always this array of wire capture events, never arbitrary JSON.
-    const sent = mutation.mock.calls.flatMap(
-      ([, args]) => (args as { captures: ReadonlyArray<{ tweetId: string }> }).captures,
-    )
-    expect(sent.map((capture) => capture.tweetId)).toEqual(['1', '2'])
+    const sent = mutation.mock.calls.flatMap(([, args]) => {
+      const { captures } = args
+      if (!Array.isArray(captures)) throw new Error('expected captures to be an array')
+      return captures
+    })
+    expect(sent.map(captureTweetId)).toEqual(['1', '2'])
   })
 
   it('caps each Convex wire batch at 64 captures', async () => {

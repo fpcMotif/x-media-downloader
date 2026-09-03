@@ -161,18 +161,14 @@ const mediaRefs = (
  * node carries no tweet `legacy`.
  */
 export function tweetRecordFromNode(args: {
-  node: object
+  node: JsonObject
   author: Author
   mediaRaw: ReadonlyArray<RawMedia>
   source: Source
   capturedAt: number
 }): TweetRecord | null {
   const { node, author, mediaRaw, source, capturedAt } = args
-  // SAFETY: every read on `tweet` below is defensive (`isObj`/`str`/optional
-  // chaining), so a node whose fields don't match JsonObject's shape degrades to
-  // `undefined` reads rather than a bad access — the same loose contract `object`
-  // already promised the caller.
-  const tweet = node as JsonObject
+  const tweet = node
   const legacy = tweet['legacy']
   if (!isObj(legacy)) return null
 

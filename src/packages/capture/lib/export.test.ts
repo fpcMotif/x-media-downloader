@@ -23,6 +23,18 @@ const rec = (
 const byId = (rs: ReadonlyArray<TweetRecord>): Map<string, TweetRecord> =>
   new Map(rs.map((r) => [r.tweetId, r]))
 
+// SAFETY: toJsonl produces valid ExportTweet JSON lines; the return type states
+// that invariant so no cast is needed at the call site.
+const parseExportTweetLine = (line: string): ExportTweet => JSON.parse(line)
+
+interface ParsedTree {
+  readonly conversationId: string
+  readonly tweets: ReadonlyArray<{ readonly id: string; readonly children: ReadonlyArray<unknown> }>
+}
+// SAFETY: toTreeJson produces valid nested JSON with conversationId and tweets
+// fields; the return type states that invariant so no cast is needed at the call site.
+const parseTree = (json: string): ParsedTree => JSON.parse(json)
+
 const root = rec({
   tweetId: 'R',
   conversationId: 'C',
@@ -137,8 +149,7 @@ describe('toJsonl', () => {
   it('emits one clean ExportTweet per line with stable keys', () => {
     const lines = toJsonl(all).split('\n')
     expect(lines).toHaveLength(all.length)
-    // SAFETY: toJsonl produces valid ExportTweet JSON lines
-    const parsed = lines.map((l) => JSON.parse(l) as ExportTweet)
+    const parsed = lines.map(parseExportTweetLine)
     expect(parsed.map((p) => p.id)).toEqual(['R', 'A', 'Q', 'QT'])
     for (const p of parsed) {
       expect('url' in p && 'replyTo' in p && 'quote' in p && 'createdAt' in p).toBe(true)
@@ -159,11 +170,7 @@ describe('toTreeJson', () => {
     const tree = buildTree(all).find((t) => t.conversationId === 'C')!
     const json = toTreeJson(tree, all)
     expect(json).toContain('\n')
-    // SAFETY: toTreeJson produces valid nested JSON with conversationId and tweets fields
-    const parsed = JSON.parse(json) as {
-      conversationId: string
-      tweets: Array<{ id: string; children: unknown[] }>
-    }
+    const parsed = parseTree(json)
     expect(parsed.conversationId).toBe('C')
     expect(parsed.tweets[0]!.id).toBe('R')
     expect(parsed.tweets[0]!.children.length).toBeGreaterThan(0)

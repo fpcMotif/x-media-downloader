@@ -304,10 +304,12 @@ describe('sendClearToTabs — clear targeting', () => {
     let releaseFirst: (() => void) | undefined
     const tabs = fakeTabs([], {
       [RELEASE_TAB_ID]: (message: Message | TabMessage) => {
-        // SAFETY: the release tab only ever receives `ClearTweetRequest`/
-        // `ClearDrainRequest` here, both of which carry `tweetId`.
-        const m = message as { tweetId: string }
-        if (m.tweetId === 't1') {
+        // The release tab only ever receives `ClearTweetRequest`/`ClearDrainRequest`
+        // here, both of which carry `tweetId` — narrow on `_tag` instead of casting.
+        if (
+          (message._tag === 'ClearTweetRequest' || message._tag === 'ClearDrainRequest') &&
+          message.tweetId === 't1'
+        ) {
           firstPolls++
           if (firstPolls === 1) {
             return new Promise((resolve) => {
@@ -611,13 +613,14 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
     expect(res).toEqual([{ scope: 'bookmark', ok: true }])
     const releaseSent = tabs.sent.filter((s) => s.tabId === RELEASE_TAB_ID)
     expect(releaseSent).toHaveLength(3)
-    // SAFETY: the release tab only ever receives `ClearTweetRequest` here, whose
-    // `probe` field the leg sets from its 2nd attempt onward.
-    expect(releaseSent.map((s) => (s.message as { probe?: boolean }).probe)).toEqual([
-      undefined,
-      true,
-      true,
-    ])
+    // The release tab only ever receives `ClearTweetRequest` here, whose `probe`
+    // field the leg sets from its 2nd attempt onward — narrow on `_tag` instead
+    // of casting.
+    expect(
+      releaseSent.map((s) =>
+        s.message._tag === 'ClearTweetRequest' ? s.message.probe : undefined,
+      ),
+    ).toEqual([undefined, true, true])
     expect(t.releasePoll()).toEqual([
       {
         stage: 'clear-release-poll',

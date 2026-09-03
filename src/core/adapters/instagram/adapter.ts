@@ -72,7 +72,7 @@ export function visibleAreaInViewport(
  * all-zero rects, or two on-screen videos transiently the same size) are NOT
  * dominant on EITHER side — `postIdFromDom` only trusts `pathname` when
  * there's a single unambiguous "the one the user is looking at" video. */
-function isViewportDominantVideo(video: Element, root: Document | DocumentFragment): boolean {
+function isViewportDominantVideo(video: Element, root: ParentNode): boolean {
   const viewport = { width: window.innerWidth, height: window.innerHeight }
   const ownArea = visibleAreaInViewport(video.getBoundingClientRect(), viewport)
   if (ownArea <= 0) return false
@@ -148,15 +148,24 @@ function isViewportDominantVideo(video: Element, root: Document | DocumentFragme
 function postIdFromDom(el: Element, pathname: string): string | null {
   const container = findPostContainer(el, INSTAGRAM_POST_SELECTOR)
   if (container) return postCodeFromContainer(container, 'a[href]', INSTAGRAM_POST_LINK_PATTERN)
-  // SAFETY: `getRootNode()` resolves to the live `document` on a real page
-  // (every mounted video lives there), but to the nearest detached fragment
-  // root in a test that never attaches its scratch `<div>` to `document.body`
-  // — either way this counts every video actually reachable from `el`'s own
-  // tree, not a separate unrelated tree. A connected/detached element's root
-  // is always a Document or DocumentFragment (a ShadowRoot IS a
-  // DocumentFragment) — never a bare Element — so this covers every real
-  // case `getRootNode()` can return.
-  const root = el.getRootNode() as Document | DocumentFragment
+  // `getRootNode()` resolves to the live `document` on a real page (every
+  // mounted video lives there), but to the nearest detached ancestor in a
+  // test that never attaches its scratch `<div>` to `document.body` — that
+  // detached case bottoms out at a bare `Element` (its own topmost
+  // parent-less ancestor), not a Document/DocumentFragment, so all three are
+  // narrowed for below rather than assumed. Either way this counts every
+  // video actually reachable from `el`'s own tree, not a separate unrelated
+  // tree: `getRootNode()` can only return a Document, a DocumentFragment (a
+  // ShadowRoot IS a DocumentFragment), or an Element — nothing else can be a
+  // DOM parent, so nothing else can terminate a `parentNode` walk.
+  const root = el.getRootNode()
+  if (
+    !(root instanceof Document) &&
+    !(root instanceof DocumentFragment) &&
+    !(root instanceof Element)
+  ) {
+    return null
+  }
   const videos = root.querySelectorAll('video')
   if (videos.length === 1) return postCodeFromPathname(pathname)
   if (el instanceof HTMLVideoElement && isViewportDominantVideo(el, root)) {

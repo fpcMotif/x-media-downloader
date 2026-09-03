@@ -50,13 +50,15 @@ export const confirmEraseHistoryCopy = (count: number): string =>
 
 /** Ask the background for the durable download history; never throws (returns [] on failure). */
 export async function fetchHistory(): Promise<ReadonlyArray<DownloadRecord>> {
+  // `HistoryRequest`'s only handler (background.ts) always replies with
+  // `{ records: DownloadRecord[] }` decoded from the history store — never a
+  // different shape or a missing `records` field. The reply type is declared
+  // here (rather than asserted on `r`) so `sendMessage` hands back the real
+  // shape instead of `any`.
   return browser.runtime
-    .sendMessage({ _tag: 'HistoryRequest' })
-    .then((r) => {
-      // SAFETY: `HistoryRequest`'s only handler (background.ts) always replies
-      // with `{ records: DownloadRecord[] }` decoded from the history store —
-      // never a different shape or a missing `records` field.
-      return (r as { records?: ReadonlyArray<DownloadRecord> } | null)?.records ?? []
+    .sendMessage<{ _tag: 'HistoryRequest' }, { records?: ReadonlyArray<DownloadRecord> } | null>({
+      _tag: 'HistoryRequest',
     })
+    .then((r) => r?.records ?? [])
     .catch(() => [])
 }

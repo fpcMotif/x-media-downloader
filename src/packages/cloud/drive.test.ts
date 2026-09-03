@@ -109,19 +109,19 @@ const routeMidChunk500: Route = (url, init) => {
   }
   return folderResolved(url, init)
 }
-// SAFETY: `driveFail`/`errText` only ever read `res.ok`, `res.status`, and (on a
-// non-2xx) `res.text()` — never any other `Response` member — so this partial stub
-// is a sound substitute for the one path under test.
+/** A body stream that errors on read — `res.text()` rejects, as on a dropped connection. */
+const rejectingBody = (): ReadableStream<Uint8Array> =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new Error('read failed'))
+    },
+  })
+
 const routeErrTextRejects: Route = (url, init) =>
   isGet(init)
     ? new Response(JSON.stringify({ files: [] }), { status: 200 })
     : // POST (folder create) errors AND its body read rejects (dropped connection)
-      ({
-        ok: false,
-        status: 500,
-        text: () => Promise.reject(new Error('read failed')),
-        headers: new Headers(),
-      } as Response)
+      new Response(rejectingBody(), { status: 500 })
 
 interface Call {
   readonly url: string

@@ -91,16 +91,11 @@ const routeSessionEmptyMeta: Route = (endpoint) =>
   endpoint.endsWith('upload_session/start')
     ? sessionStarted()
     : new Response(JSON.stringify({}), { status: 200 })
-// SAFETY: `dropboxFail`/`errText` only ever read `res.ok`, `res.status`, and (on a
-// non-2xx) `res.text()` — never any other `Response` member — so this partial stub
-// is a sound substitute for the one path under test.
-const routeErrTextRejects: Route = () =>
-  ({
-    ok: false,
-    status: 500,
-    text: () => Promise.reject(new Error('read failed')),
-    headers: new Headers(),
-  }) as Response
+const routeErrTextRejects: Route = () => {
+  const res = new Response('ignored', { status: 500 })
+  res.text = () => Promise.reject(new Error('read failed'))
+  return res
+}
 
 interface Call {
   readonly endpoint: string

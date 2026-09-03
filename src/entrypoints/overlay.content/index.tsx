@@ -112,6 +112,26 @@ import type {
   SavedStatusResponse,
 } from '@/packages/schema'
 
+// Types the MAIN→ISOLATED custom-event channels this file listens on, so
+// `document.addEventListener`/`removeEventListener` resolve each `event.detail` to
+// the shape below at compile time — the standard TypeScript way to type a custom DOM
+// event, with zero runtime cost and no runtime cast. The values stay attacker-
+// controlled regardless (a page script can dispatch any of these itself): this only
+// tells the type checker what shape THIS file's own dispatchers use, and every
+// handler below still reads `detail` defensively rather than trusting the shape.
+declare global {
+  interface DocumentEventMap {
+    'xmd:media-response': CustomEvent<{ path: string; body: string }>
+    'xmd:mutation-response': CustomEvent<{
+      path: JsonValue
+      status: JsonValue
+      body: JsonValue
+      requestBody: JsonValue
+    }>
+    'xmd:tee-drop': CustomEvent<{ cap?: JsonValue }>
+  }
+}
+
 interface Rect {
   readonly top: number
   readonly left: number
@@ -695,9 +715,12 @@ export default defineContentScript({
     console.info('[XMD] overlay content script loaded @', location.href, adapter.platform)
 
     const store = makeDetectionStore({
-      mediaKeyFromUrl: adapter.mediaKeyFromUrl,
+      mediaKeyFromUrl: (url) => adapter.mediaKeyFromUrl(url),
       ...(adapter.findMediaNeedingRecovery
-        ? { findMediaNeedingRecovery: adapter.findMediaNeedingRecovery }
+        ? {
+            findMediaNeedingRecovery: (root, detectedKeys, attemptedTweetIds) =>
+              adapter.findMediaNeedingRecovery?.(root, detectedKeys, attemptedTweetIds) ?? [],
+          }
         : {}),
     })
     let host: HTMLElement | null = null
@@ -1793,15 +1816,15 @@ export default defineContentScript({
 
     // Named so invalidation can remove it — a stale tab must not retain
     // duplicate response callbacks (body unchanged apart from 001's URL filter).
-    const handleMediaResponse = (event: Event): void => {
-      // SAFETY: `detail` is attacker-controlled — a page script can dispatch
-      // 'xmd:media-response' itself with an arbitrary shape. This cast only names the
-      // shape THIS file's own dispatchers use (the tee below, and the inline-JSON
-      // fallback); every read of it downstream stays defensive regardless (`body` is
-      // JSON.parse'd inside a try/catch, `path` is used only as an opaque string), so
-      // a forged mismatched-shape detail degrades to the safe non-JSON/short-circuit
-      // paths rather than crashing.
-      const detail = (event as CustomEvent<{ path: string; body: string }>).detail
+    // SAFETY: `detail` is attacker-controlled — a page script can dispatch
+    // 'xmd:media-response' itself with an arbitrary shape. This parameter type only
+    // names the shape THIS file's own dispatchers use (the tee below, and the
+    // inline-JSON fallback); every read of it downstream stays defensive regardless
+    // (`body` is JSON.parse'd inside a try/catch, `path` is used only as an opaque
+    // string), so a forged mismatched-shape detail degrades to the safe
+    // non-JSON/short-circuit paths rather than crashing.
+    const handleMediaResponse = (event: CustomEvent<{ path: string; body: string }>): void => {
+      const detail = event.detail
       let json: JsonValue
       try {
         json = JSON.parse(detail.body)
@@ -1845,7 +1868,18 @@ export default defineContentScript({
     // network request this extension itself makes. Eliminating it fully would mean
     // not trusting ANY MAIN-world-observed event's content, which the media tee
     // already accepts the same tradeoff on; out of scope for this ticket chain.
-    const handleMutationResponse = (event: Event): void => {
+    // SAFETY: `detail` is attacker-controlled (same forgeable-event posture as
+    // `handleMediaResponse` above) — the fields are typed `JsonValue`, not the
+    // shape this file's own dispatchers use, precisely so every read below goes
+    // through `isString`/`isNumber` rather than trusting the parameter type.
+    const handleMutationResponse = (
+      event: CustomEvent<{
+        path: JsonValue
+        status: JsonValue
+        body: JsonValue
+        requestBody: JsonValue
+      }>,
+    ): void => {
       // X-only regardless of the diagnostics toggle below: the witness recording
       // must run whenever a Release could actually be in flight, which is X only —
       // `matchReleaseMutationOp`/`tweetIdFromMutationRequestBody` are X GraphQL-shaped
@@ -1853,18 +1887,7 @@ export default defineContentScript({
       // relying on that accident (mirrors `handleClearVisible`'s own `platform !== 'x'`
       // guard).
       if (adapter.platform !== 'x') return
-      // SAFETY: `detail` is attacker-controlled (same forgeable-event posture as
-      // `handleMediaResponse` above) — the fields are typed `JsonValue`, not the
-      // shape this file's own dispatchers use, precisely so every read below goes
-      // through `isString`/`isNumber` rather than trusting the cast.
-      const detail = (
-        event as CustomEvent<{
-          path: JsonValue
-          status: JsonValue
-          body: JsonValue
-          requestBody: JsonValue
-        }>
-      ).detail
+      const detail = event.detail
       if (!isString(detail.path) || !isNumber(detail.status)) return
       const op = matchReleaseMutationOp(detail.path)
       if (op === null) return
@@ -1902,11 +1925,11 @@ export default defineContentScript({
     // second — a drop storm still reads as "still dropping", while a flood
     // costs at most two messages.
     const lastTeeDropByCap = new Map<string, number>()
-    const handleTeeDrop = (event: Event): void => {
-      // SAFETY: `detail` is attacker-controlled (same forgeable-event posture as the
-      // two listeners above) — `cap` stays `JsonValue`, so the vocabulary check below
-      // is a real narrow rather than an assumption baked into the cast.
-      const detail = (event as CustomEvent<{ cap?: JsonValue }>).detail
+    // SAFETY: `detail` is attacker-controlled (same forgeable-event posture as the
+    // two listeners above) — `cap` stays `JsonValue`, so the vocabulary check below
+    // is a real narrow rather than an assumption baked into the parameter type.
+    const handleTeeDrop = (event: CustomEvent<{ cap?: JsonValue }>): void => {
+      const detail = event.detail
       const cap = detail?.cap ?? null
       if (!isString(cap) || !isTeeDropCap(cap)) return
       const now = Date.now()

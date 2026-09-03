@@ -32,14 +32,17 @@ export async function runCaptureExport(
 
   let res: ExportResponse | null = null
   try {
-    // SAFETY: the background's `ExportCaptureRequest` handler always answers
-    // `{ ok, filename, text }` via `sendResponse` (or the channel dies and this
-    // throws instead); every field is read defensively below regardless.
-    res = (await browser.runtime.sendMessage({
+    // `browser.runtime.sendMessage`'s reply types as `any` (the polyfill has no way to
+    // know the background's response shape), so this is a plain annotation, not a
+    // cast: `any` is assignable to any declared type without an assertion. The
+    // background's `ExportCaptureRequest` handler always answers `{ ok, filename,
+    // text }` via `sendResponse` (or the channel dies and this throws instead);
+    // every field is read defensively below regardless.
+    res = await browser.runtime.sendMessage({
       _tag: 'ExportCaptureRequest',
       kind,
       conversationId,
-    })) as ExportResponse | null
+    })
   } catch (err) {
     console.error('[XMD] capture-export sendMessage threw', err)
     return { ok: false, detail: 'Could not reach the extension worker.' }
@@ -95,10 +98,11 @@ export const fetchCaptureSummary = (limit?: number): Promise<CaptureSummary | nu
         ? { _tag: 'CaptureSummaryRequest' }
         : { _tag: 'CaptureSummaryRequest', limit },
     )
-    .then((s) => {
-      // SAFETY: the background's `CaptureSummaryRequest` handler always answers
-      // `{ tweets, conversations, recent }` via `sendResponse`, or the channel
-      // dies and `.catch` below already covers that with `null`.
-      return (s as CaptureSummary | null) ?? null
+    .then((s: CaptureSummary | null) => {
+      // `browser.runtime.sendMessage`'s reply types as `any`, so this is a plain
+      // annotation, not a cast. The background's `CaptureSummaryRequest` handler
+      // always answers `{ tweets, conversations, recent }` via `sendResponse`, or
+      // the channel dies and `.catch` below already covers that with `null`.
+      return s ?? null
     })
     .catch(() => null)

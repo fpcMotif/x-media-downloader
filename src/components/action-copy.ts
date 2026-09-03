@@ -195,6 +195,8 @@ export const contextLabel = (ctx: ContextLabelInput, scope?: ContextLabelScope):
     case 'none':
       return 'Not on X, Instagram, or Threads'
   }
+  const unreachable: never = ctx
+  throw new Error(`unhandled: ${JSON.stringify(unreachable)}`)
 }
 
 // ── Teaching copy (§2.3 "First-run strip", "Stage — IG/Threads teaching") ──

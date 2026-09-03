@@ -81,7 +81,9 @@ const makeMetaDeps = (
   const result = makeDeps({
     ...over,
     adapter: platformAdapter,
-    store: makeDetectionStore({ mediaKeyFromUrl: platformAdapter.mediaKeyFromUrl }),
+    store: makeDetectionStore({
+      mediaKeyFromUrl: (url) => platformAdapter.mediaKeyFromUrl(url),
+    }),
   })
   return { ...result, store: result.deps.store }
 }
