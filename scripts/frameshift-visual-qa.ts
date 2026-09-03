@@ -87,11 +87,24 @@ async function captureCheckpoints(mode: 'baseline' | 'candidate'): Promise<void>
     })
 
     await client.send('Page.navigate', { url: targetUrl })
-    // Allow DOM settling
-    const { promise: delayPromise, resolve: delayResolve } = Promise.withResolvers<void>()
-    setTimeout(delayResolve, 600)
-    await delayPromise
-
+    // Deterministic wait: poll until all loading placeholders are gone and layout is settled
+    await client.send('Runtime.evaluate', {
+      expression: `
+        new Promise(resolve => {
+          const start = Date.now();
+          const check = () => {
+            const loading = document.querySelector('.xmd-boot-fallback') || document.querySelector('.xmd-popup--loading');
+            if (!loading || Date.now() - start > 3000) {
+              setTimeout(resolve, 300);
+            } else {
+              setTimeout(check, 50);
+            }
+          };
+          check();
+        })
+      `,
+      awaitPromise: true,
+    })
     const ss = await client.send('Page.captureScreenshot', { format: 'png' })
     const buf = Buffer.from(ss.data, 'base64')
     writeFileSync(`${outDir}/${cp.name}.png`, buf)
