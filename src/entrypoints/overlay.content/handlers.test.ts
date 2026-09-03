@@ -1614,12 +1614,12 @@ describe('clearMountedForScope — ghost-row skip', () => {
       lines.push({ stage, ...(tweetId === undefined ? {} : { tweetId }) })
 
     for (let pass = 0; pass < GHOST_NOFLIP_LIMIT; pass++) {
-      await clearMountedForScope(document, 'bookmark', 0, trace, ghosts)
+      await clearMountedForScope({ document, scope: 'bookmark', paceMs: 0, trace, ghosts })
     }
     expect(ghosts.get('2085341199993565645')).toBe(GHOST_NOFLIP_LIMIT)
 
     const clicksGhost = trackClicks(art)
-    await clearMountedForScope(document, 'bookmark', 0, trace, ghosts)
+    await clearMountedForScope({ document, scope: 'bookmark', paceMs: 0, trace, ghosts })
     expect(clicksGhost()).toBe(0) // no third click on the ghost
     expect(lines.at(-1)?.stage).toBe('clear-ghost-skip')
     expect(lines.at(-1)?.tweetId).toBe('2085341199993565645')
@@ -1632,7 +1632,13 @@ describe('clearMountedForScope — ghost-row skip', () => {
     ghosts.set('111', GHOST_NOFLIP_LIMIT)
     const clicksGhost = trackClicks(ghost)
     const clicksFresh = trackClicks(fresh)
-    const cleared = await clearMountedForScope(document, 'bookmark', 0, () => {}, ghosts)
+    const cleared = await clearMountedForScope({
+      document,
+      scope: 'bookmark',
+      paceMs: 0,
+      trace: () => {},
+      ghosts,
+    })
     expect(clicksGhost()).toBe(0)
     expect(clicksFresh()).toBe(1)
     expect(cleared).toBe(1)
@@ -1641,7 +1647,7 @@ describe('clearMountedForScope — ghost-row skip', () => {
   it('is inert without a ghosts map — prior callers unchanged', async () => {
     const art = mountedPost('333')
     const clicksArt = trackClicks(art)
-    await clearMountedForScope(document, 'bookmark', 0, () => {})
+    await clearMountedForScope({ document, scope: 'bookmark', paceMs: 0, trace: () => {} })
     expect(clicksArt()).toBe(1)
   })
 })

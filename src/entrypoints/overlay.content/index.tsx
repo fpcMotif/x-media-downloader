@@ -341,7 +341,7 @@ const scrollDrain = makeScrollDrain({
   path: () => location.pathname,
   liveMountedIds: mountedTweetIds,
   clearMounted: (id, scopes, allLists) =>
-    clearMountedTweet(drainDeps(), id, scopes, allLists, 'drain'),
+    clearMountedTweet(drainDeps(), { tweetId: id, scopes, allLists, origin: 'drain' }),
   report: reportClear,
 })
 const runDrain = scrollDrain.run

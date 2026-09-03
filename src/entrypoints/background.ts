@@ -705,14 +705,14 @@ const settleBrowserDownload = async (
   // `session:transfers` after its terminal was mirrored — a later boot reconcile would
   // otherwise re-fire it as a contradictory outcome.
   const settings = await getSettings()
-  const fx = decideTerminalOutcome(
-    { transfers: transfersState, metrics: live },
+  const fx = decideTerminalOutcome({
+    state: { transfers: transfersState, metrics: live },
     id,
     outcome,
     now,
-    settings.cloudDeviceId,
-    { ...(tweetId === undefined ? {} : { tweetId }), downloadId },
-  )
+    deviceId: settings.cloudDeviceId,
+    context: { ...(tweetId === undefined ? {} : { tweetId }), downloadId },
+  })
   await applyOutcomeEffects(
     fx,
     {
@@ -1089,30 +1089,37 @@ const describeDedupedRequest = (
   return { detail, response }
 }
 
+/** Raw pieces `buildQueueStartArgs` assembles into `decideQueueStart`'s input. */
+interface QueueStartAssembly {
+  readonly requests: ReadonlyArray<PlannedDownload>
+  readonly mediaById: ReadonlyMap<string, MediaItem>
+  readonly settings: Settings
+  readonly startedAt: number
+  readonly metrics: MetricsState | null
+  readonly sweep: { readonly scope: Scope } | undefined
+  readonly clearExpect:
+    | ReadonlyArray<{ readonly tweetId: string; readonly ids: ReadonlyArray<string> }>
+    | undefined
+  readonly originTabId: number | undefined
+}
+
 /** Assemble `decideQueueStart`'s input, respecting `exactOptionalPropertyTypes`
  *  for its three optional fields (present only when the caller actually passed
  *  them, never explicitly `undefined`). */
-const buildQueueStartArgs = (
-  requests: ReadonlyArray<PlannedDownload>,
-  mediaById: ReadonlyMap<string, MediaItem>,
-  settings: Settings,
-  startedAt: number,
-  metrics: MetricsState | null,
-  sweep: { readonly scope: Scope } | undefined,
-  clearExpect:
-    | ReadonlyArray<{ readonly tweetId: string; readonly ids: ReadonlyArray<string> }>
-    | undefined,
-  originTabId: number | undefined,
-) => ({
-  metrics,
-  requests,
-  mediaById,
-  settings,
-  startedAt,
-  ...(sweep ? { sweep } : {}),
-  ...(clearExpect ? { clearExpect } : {}),
-  ...(originTabId === undefined ? {} : { originTabId }),
-})
+const buildQueueStartArgs = (input: QueueStartAssembly) => {
+  const { requests, mediaById, settings, startedAt, metrics, sweep, clearExpect, originTabId } =
+    input
+  return {
+    metrics,
+    requests,
+    mediaById,
+    settings,
+    startedAt,
+    ...(sweep ? { sweep } : {}),
+    ...(clearExpect ? { clearExpect } : {}),
+    ...(originTabId === undefined ? {} : { originTabId }),
+  }
+}
 
 /** Seed in-flight bookkeeping for every admitted request: mark it in-flight,
  *  clear any leftover interrupt-retry state, and stash its meta (URL/filename/
@@ -1151,14 +1158,17 @@ interface OutcomeApplyCtx {
  *  download?" is answerable from the requesting tab's own console, not just the
  *  SW's. Returns the folded `droppedMeta` (this delete OR the value passed in),
  *  mirroring the inline `||` the loop used to do itself. */
-const applyStartFailedOutcome = (
-  o: RequestOutcome,
-  media: MediaItem | undefined,
-  metrics: MetricsState,
-  failures: { itemId: string; reason: string }[],
-  droppedMeta: boolean,
-  ctx: OutcomeApplyCtx,
-): boolean => {
+interface StartFailedOutcomeRecord {
+  readonly o: RequestOutcome
+  readonly media: MediaItem | undefined
+  readonly metrics: MetricsState
+  readonly failures: { itemId: string; reason: string }[]
+  readonly droppedMeta: boolean
+  readonly ctx: OutcomeApplyCtx
+}
+
+const applyStartFailedOutcome = (input: StartFailedOutcomeRecord): boolean => {
+  const { o, media, metrics, failures, droppedMeta, ctx } = input
   inFlight.delete(o.id)
   const dropped = requestMetaById.delete(o.id) || droppedMeta
   recordClearFailure(media?.postId, o.id)
@@ -1226,15 +1236,18 @@ const applyBrowserStartedOutcome = (
  *  (an aria2 hand-off, or a strategy that resolves complete in-process): drop
  *  its in-flight bookkeeping and apply the metrics/sync/history effects. Returns
  *  the folded `droppedMeta`, same fold as `applyStartFailedOutcome`. */
-const applyExternalCompleteOutcome = (
-  o: RequestOutcome,
-  handle: Extract<DownloadHandle, { kind: 'aria2' }> | undefined,
-  media: MediaItem | undefined,
-  metrics: MetricsState,
-  sizeById: ReadonlyMap<string, number | null>,
-  droppedMeta: boolean,
-  ctx: OutcomeApplyCtx,
-): boolean => {
+interface ExternalCompleteOutcomeRecord {
+  readonly o: RequestOutcome
+  readonly handle: Extract<DownloadHandle, { kind: 'aria2' }> | undefined
+  readonly media: MediaItem | undefined
+  readonly metrics: MetricsState
+  readonly sizeById: ReadonlyMap<string, number | null>
+  readonly droppedMeta: boolean
+  readonly ctx: OutcomeApplyCtx
+}
+
+const applyExternalCompleteOutcome = (input: ExternalCompleteOutcomeRecord): boolean => {
+  const { o, handle, media, metrics, sizeById, droppedMeta, ctx } = input
   inFlight.delete(o.id)
   const dropped = requestMetaById.delete(o.id) || droppedMeta
   const outcome: TerminalOutcome = 'complete'
@@ -1350,16 +1363,16 @@ const handleDownload = (
         : `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
     })
     const startFx = decideQueueStart(
-      buildQueueStartArgs(
+      buildQueueStartArgs({
         requests,
         mediaById,
         settings,
         startedAt,
-        live,
+        metrics: live,
         sweep,
         clearExpect,
         originTabId,
-      ),
+      }),
     )
     live = yield* Effect.promise(() =>
       applyQueueStartEffects(startFx, startedAt, {
@@ -1421,19 +1434,26 @@ const handleDownload = (
     for (const o of res.outcomes) {
       const media = mediaById.get(o.id)
       if (!o.ok) {
-        droppedMeta = applyStartFailedOutcome(o, media, live, failures, droppedMeta, outcomeCtx)
+        droppedMeta = applyStartFailedOutcome({
+          o,
+          media,
+          metrics: live,
+          failures,
+          droppedMeta,
+          ctx: outcomeCtx,
+        })
       } else if (o.handle?.kind === 'browser') {
         live = applyBrowserStartedOutcome(o, o.handle, media, live, outcomeCtx)
       } else {
-        droppedMeta = applyExternalCompleteOutcome(
+        droppedMeta = applyExternalCompleteOutcome({
           o,
-          o.handle,
+          handle: o.handle,
           media,
-          live,
-          admission.sizeById,
+          metrics: live,
+          sizeById: admission.sizeById,
           droppedMeta,
-          outcomeCtx,
-        )
+          ctx: outcomeCtx,
+        })
       }
     }
     if (droppedMeta) persistRequestMeta()

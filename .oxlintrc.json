@@ -38,6 +38,7 @@
 
     "max-depth": ["warn", { "max": 4 }],
     "max-nested-callbacks": ["warn", { "max": 4 }],
+    "max-params": ["warn", { "max": 5 }],
 
     "anti-slop/no-chained-type-assertions": "error",
     "anti-slop/no-known-value-widening": "error",

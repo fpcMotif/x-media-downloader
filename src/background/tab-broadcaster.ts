@@ -228,6 +228,18 @@ type ProbeResult =
   | { readonly kind: 'mounted'; readonly results: ReadonlyArray<ClearScopeResult> }
   | { readonly kind: 'unmounted'; readonly page: ReleasePageEvidence | undefined }
 
+/** One `probeReleaseTab` call's inputs — the release tab and the clear it may
+ *  perform there, plus which attempt number this is (drives `probe: true` on the
+ *  outgoing request from the 2nd attempt on, see `probeReleaseTab`). */
+interface ReleaseTabProbe {
+  readonly tabId: number
+  readonly tweetId: string
+  readonly scopes: Scope[]
+  readonly allLists: boolean | undefined
+  readonly asPageScope: MembershipScope | undefined
+  readonly probes: number
+}
+
 /** `runFanOut`'s verdict: a tab really flipped it (terminal), or nothing did —
  *  `sawDiscardedMounted` distinguishes the fabricated-tail outcome downstream
  *  (`noop-only` vs `exhausted`). */
@@ -235,24 +247,46 @@ type FanOutOutcome =
   | { readonly kind: 'mounted'; readonly results: ReadonlyArray<ClearScopeResult> }
   | { readonly kind: 'exhausted'; readonly sawDiscardedMounted: boolean }
 
+/** One `runFanOut` call's inputs — the ordered tab ids to try plus the clear
+ *  itself, and the three out-params (`tried`/`answered`/`clearErrors`) the caller
+ *  mutates in place so its own trace line reads the same state regardless of
+ *  which exit path fires (see `runFanOut`'s own doc). */
+interface FanOutDispatch {
+  readonly ids: number[]
+  readonly tweetId: string
+  readonly scopes: Scope[]
+  readonly allLists: boolean | undefined
+  readonly tried: number[]
+  readonly answered: string[]
+  readonly clearErrors: Map<string, number>
+}
+
+/** One `formatReleasePoll` call's tally — the running counters `releaseViaStatusTab`
+ *  accumulates across its poll loop, folded to a single trace line at each exit. */
+interface ReleasePollSummary {
+  readonly tabId: number | undefined
+  readonly probes: number
+  readonly threw: number
+  readonly unmounted: number
+  readonly lastPage: ReleasePageEvidence | undefined
+  readonly reloaded: boolean
+  readonly elapsedMs: number
+  readonly reason: ReleasePollReason
+}
+
 /** The one folded line every `releaseViaStatusTab` exit emits — replaces the old
  *  per-poll `clear-tweet-request` / `clear-tweet-not-mounted` pairs (silenced on
  *  the content-script side once `probe: true`, Part B) with a single summary of
  *  the WHOLE poll, so a burst of queued legs can't eat the durable log's cap. */
-const formatReleasePoll = (
-  tabId: number | undefined,
-  probes: number,
-  threw: number,
-  unmounted: number,
-  lastPage: ReleasePageEvidence | undefined,
-  reloaded: boolean,
-  elapsedMs: number,
-  reason: ReleasePollReason,
-): string =>
-  `tab=${tabId ?? 'none'} probes=${probes} threw=${threw} unmounted=${unmounted} ` +
-  `lastArticles=${lastPage?.articles ?? 'none'} lastCells=${lastPage?.cells ?? 'none'} ` +
-  `lastReady=${lastPage?.ready ?? 'none'} lastError=${lastPage?.error ?? 'none'} ` +
-  `reloaded=${reloaded} elapsedMs=${elapsedMs} reason=${reason}`
+const formatReleasePoll = (input: ReleasePollSummary): string => {
+  const { tabId, probes, threw, unmounted, lastPage, reloaded, elapsedMs, reason } = input
+  return (
+    `tab=${tabId ?? 'none'} probes=${probes} threw=${threw} unmounted=${unmounted} ` +
+    `lastArticles=${lastPage?.articles ?? 'none'} lastCells=${lastPage?.cells ?? 'none'} ` +
+    `lastReady=${lastPage?.ready ?? 'none'} lastError=${lastPage?.error ?? 'none'} ` +
+    `reloaded=${reloaded} elapsedMs=${elapsedMs} reason=${reason}`
+  )
+}
 
 /** A permalink that rendered and settled on nothing: no articles, no cells, and the
  *  page itself reports `ready=complete`. Reused by `nextEscalation`'s stuck-reload
@@ -559,14 +593,8 @@ export const makeTabBroadcaster = (
    *  `probe: true` from the 2nd attempt: the first bare attempt still proves the
    *  tab reached the tweet at all, so the trace shows that once; every later
    *  attempt is expected noise the content script silences on its own side. */
-  const probeReleaseTab = async (
-    tabId: number,
-    tweetId: string,
-    scopes: Scope[],
-    allLists: boolean | undefined,
-    asPageScope: MembershipScope | undefined,
-    probes: number,
-  ): Promise<ProbeResult> => {
+  const probeReleaseTab = async (input: ReleaseTabProbe): Promise<ProbeResult> => {
+    const { tabId, tweetId, scopes, allLists, asPageScope, probes } = input
     try {
       const res = asClearTweetResponse(
         await tabs.sendTabMessage(tabId, {
@@ -606,7 +634,16 @@ export const makeTabBroadcaster = (
     if (clock.now() < backoffUntil) {
       trace(
         'clear-release-poll',
-        formatReleasePoll(undefined, 0, 0, 0, undefined, false, 0, 'backoff'),
+        formatReleasePoll({
+          tabId: undefined,
+          probes: 0,
+          threw: 0,
+          unmounted: 0,
+          lastPage: undefined,
+          reloaded: false,
+          elapsedMs: 0,
+          reason: 'backoff',
+        }),
         tweetId,
       )
       return { ok: false, tabId: undefined }
@@ -624,7 +661,16 @@ export const makeTabBroadcaster = (
       )
       trace(
         'clear-release-poll',
-        formatReleasePoll(undefined, 0, 0, 0, undefined, false, 0, 'nav-failed'),
+        formatReleasePoll({
+          tabId: undefined,
+          probes: 0,
+          threw: 0,
+          unmounted: 0,
+          lastPage: undefined,
+          reloaded: false,
+          elapsedMs: 0,
+          reason: 'nav-failed',
+        }),
         tweetId,
       )
       return { ok: false, tabId: undefined }
@@ -645,23 +691,23 @@ export const makeTabBroadcaster = (
       await clock.sleep(RELEASE_POLL_INTERVAL_MS)
       elapsed = clock.now() - start
       probes++
-      const probe = await probeReleaseTab(tabId, tweetId, scopes, allLists, asPageScope, probes)
+      const probe = await probeReleaseTab({ tabId, tweetId, scopes, allLists, asPageScope, probes })
 
       if (probe.kind === 'threw') {
         threw++
         if (threw === probes && elapsed >= RELEASE_UNREACHABLE_MS) {
           trace(
             'clear-release-poll',
-            formatReleasePoll(
+            formatReleasePoll({
               tabId,
               probes,
               threw,
               unmounted,
               lastPage,
               reloaded,
-              elapsed,
-              'unreachable',
-            ),
+              elapsedMs: elapsed,
+              reason: 'unreachable',
+            }),
             tweetId,
           )
           return { ok: false, tabId }
@@ -673,16 +719,16 @@ export const makeTabBroadcaster = (
         backoffUntil = 0 // the page recovered — clear the breaker for the next leg
         trace(
           'clear-release-poll',
-          formatReleasePoll(
+          formatReleasePoll({
             tabId,
             probes,
             threw,
             unmounted,
             lastPage,
             reloaded,
-            elapsed,
-            'mounted',
-          ),
+            elapsedMs: elapsed,
+            reason: 'mounted',
+          }),
           tweetId,
         )
         return { ok: true, tabId, results: probe.results }
@@ -708,16 +754,16 @@ export const makeTabBroadcaster = (
         backoffUntil = clock.now() + RELEASE_BACKOFF_MS
         trace(
           'clear-release-poll',
-          formatReleasePoll(
+          formatReleasePoll({
             tabId,
             probes,
             threw,
             unmounted,
             lastPage,
             reloaded,
-            elapsed,
-            'page-error',
-          ),
+            elapsedMs: elapsed,
+            reason: 'page-error',
+          }),
           tweetId,
         )
         return { ok: false, tabId }
@@ -731,7 +777,16 @@ export const makeTabBroadcaster = (
     const reason: ReleasePollReason = unmounted > 0 ? 'exhausted' : 'unreachable'
     trace(
       'clear-release-poll',
-      formatReleasePoll(tabId, probes, threw, unmounted, lastPage, reloaded, elapsed, reason),
+      formatReleasePoll({
+        tabId,
+        probes,
+        threw,
+        unmounted,
+        lastPage,
+        reloaded,
+        elapsedMs: elapsed,
+        reason,
+      }),
       tweetId,
     )
     return { ok: false, tabId }
@@ -792,15 +847,8 @@ export const makeTabBroadcaster = (
    *  `tried`/`answered`/`clearErrors` are mutated IN PLACE (not returned) so the
    *  caller's `traceDispatch` — built before this runs — reads the same arrays/map
    *  regardless of which exit path fires. */
-  const runFanOut = async (
-    ids: number[],
-    tweetId: string,
-    scopes: Scope[],
-    allLists: boolean | undefined,
-    tried: number[],
-    answered: string[],
-    clearErrors: Map<string, number>,
-  ): Promise<FanOutOutcome> => {
+  const runFanOut = async (input: FanOutDispatch): Promise<FanOutOutcome> => {
+    const { ids, tweetId, scopes, allLists, tried, answered, clearErrors } = input
     let sawDiscardedMounted = false
     // oxlint-disable no-await-in-loop -- ordered ownership protocol
     for (const id of ids) {
@@ -921,7 +969,15 @@ export const makeTabBroadcaster = (
       )
     }
 
-    const fanOut = await runFanOut(ordered, tweetId, scopes, allLists, tried, answered, clearErrors)
+    const fanOut = await runFanOut({
+      ids: ordered,
+      tweetId,
+      scopes,
+      allLists,
+      tried,
+      answered,
+      clearErrors,
+    })
     if (fanOut.kind === 'mounted') {
       traceDispatch('mounted', false)
       return fanOut.results

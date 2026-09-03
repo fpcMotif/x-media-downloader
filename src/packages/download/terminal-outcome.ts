@@ -115,19 +115,24 @@ const decideCompletionIntents = (args: {
   }
 }
 
+/** Everything one Terminal Outcome decision reads: the state to advance, the
+ *  settled transfer's identity, and the sinks that key off it. */
+export interface TerminalOutcomeRecord {
+  readonly state: OutcomeState
+  readonly id: string
+  readonly outcome: TerminalOutcome
+  readonly now: number
+  readonly deviceId: string
+  readonly context?: OutcomeContext | undefined
+}
+
 /**
  * Decide the full fan-out for one Terminal Outcome. Idempotent on `id`: the
  * underlying `settleTransfer` / `recordOutcome` are no-ops the second time, so a
  * duplicate `onChanged` terminal can never double-count or re-settle.
  */
-export function decideTerminalOutcome(
-  state: OutcomeState,
-  id: string,
-  outcome: TerminalOutcome,
-  now: number,
-  deviceId: string,
-  context?: OutcomeContext,
-): OutcomeEffects {
+export function decideTerminalOutcome(input: TerminalOutcomeRecord): OutcomeEffects {
+  const { state, id, outcome, now, deviceId, context } = input
   const kind = recordedKind(outcome)
   const transfers = settleTransfer(state.transfers, id)
   const metrics = state.metrics === null ? null : recordOutcome(state.metrics, id, outcome, now)

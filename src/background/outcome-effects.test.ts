@@ -10,8 +10,8 @@ import { emptyMetrics } from '@/packages/download/metrics'
 import { emptyTracker, trackTransfer } from '@/packages/download/transfer-tracker'
 
 const outcome = (kind: 'complete' | 'failed') =>
-  decideTerminalOutcome(
-    {
+  decideTerminalOutcome({
+    state: {
       transfers: trackTransfer(emptyTracker, {
         id: 'm1',
         downloadId: 7,
@@ -20,12 +20,12 @@ const outcome = (kind: 'complete' | 'failed') =>
       }),
       metrics: emptyMetrics({ total: 1, concurrencyCap: 1, startedAt: 0 }),
     },
-    'm1',
-    kind,
-    1_000,
-    'device-1',
-    { tweetId: 't1', downloadId: 7 },
-  )
+    id: 'm1',
+    outcome: kind,
+    now: 1_000,
+    deviceId: 'device-1',
+    context: { tweetId: 't1', downloadId: 7 },
+  })
 
 describe('applyOutcomeEffects', () => {
   it('keeps Clear before transfer flush, then flushes before Sync and History', async () => {

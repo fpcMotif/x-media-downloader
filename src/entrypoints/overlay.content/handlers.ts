@@ -495,18 +495,32 @@ function ghostSkipCheck(
  *  the DOM, and 'none' falls through to the existing `flipConfirmed` DOM check.
  *  Updates `ghosts` the same way a DOM flip always has: a confirmed or
  *  DOM-observed flip deletes the memo entry, any failure increments it. */
-function recordClearVerdict(
-  document: Document,
-  article: Element,
-  tweetId: string,
-  scope: MembershipScope,
-  verdict: 'ok' | 'error' | 'none',
-  paceMs: number,
-  targetKind: 'button' | 'testid-node',
-  disabled: boolean,
-  ghosts: Map<string, number> | undefined,
-  trace: (stage: string, detail: string, tweetId?: string) => void,
-): void {
+interface ClearVerdictRecord {
+  readonly document: Document
+  readonly article: Element
+  readonly tweetId: string
+  readonly scope: MembershipScope
+  readonly verdict: 'ok' | 'error' | 'none'
+  readonly paceMs: number
+  readonly targetKind: 'button' | 'testid-node'
+  readonly disabled: boolean
+  readonly ghosts: Map<string, number> | undefined
+  readonly trace: (stage: string, detail: string, tweetId?: string) => void
+}
+
+function recordClearVerdict(input: ClearVerdictRecord): void {
+  const {
+    document,
+    article,
+    tweetId,
+    scope,
+    verdict,
+    paceMs,
+    targetKind,
+    disabled,
+    ghosts,
+    trace,
+  } = input
   if (verdict === 'error') {
     ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
     trace(
@@ -556,15 +570,18 @@ function recordClearVerdict(
  *  regardless of the DOM (and deletes the ghost memo entry, same as a DOM
  *  flip), 'error' is `reason=mutation-error`, and 'none' falls through to the
  *  existing DOM check unchanged. */
-export async function clearMountedForScope(
-  document: Document,
-  scope: MembershipScope,
-  paceMs: number,
-  trace: (stage: string, detail: string, tweetId?: string) => void,
-  ghosts?: Map<string, number>,
-  witness?: Pick<MutationWitness, 'outcome'>,
-  now: () => number = Date.now,
-): Promise<number> {
+interface MountedScopeClear {
+  readonly document: Document
+  readonly scope: MembershipScope
+  readonly paceMs: number
+  readonly trace: (stage: string, detail: string, tweetId?: string) => void
+  readonly ghosts?: Map<string, number> | undefined
+  readonly witness?: Pick<MutationWitness, 'outcome'> | undefined
+  readonly now?: (() => number) | undefined
+}
+
+export async function clearMountedForScope(input: MountedScopeClear): Promise<number> {
+  const { document, scope, paceMs, trace, ghosts, witness, now = Date.now } = input
   let cleared = 0
   // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
   for (const article of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
@@ -591,7 +608,7 @@ export async function clearMountedForScope(
     // permalink) ⇒ nothing to tag the trace line with; still counts as clicked.
     if (tweetId === null) continue
     const verdict = witness?.outcome(tweetId, scope, clickedAt) ?? 'none'
-    recordClearVerdict(
+    recordClearVerdict({
       document,
       article,
       tweetId,
@@ -602,7 +619,7 @@ export async function clearMountedForScope(
       disabled,
       ghosts,
       trace,
-    )
+    })
   }
   // oxlint-enable no-await-in-loop
   return cleared
@@ -644,14 +661,14 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       sendResponse({ _tag: 'ClearVisibleResponse', cleared: 0, reason: 'not-list-page' })
       return
     }
-    const cleared = await clearMountedForScope(
-      deps.document,
-      scope.value,
-      350,
-      deps.reportClear,
-      sweepGhosts,
-      deps.witness,
-    )
+    const cleared = await clearMountedForScope({
+      document: deps.document,
+      scope: scope.value,
+      paceMs: 350,
+      trace: deps.reportClear,
+      ghosts: sweepGhosts,
+      witness: deps.witness,
+    })
     if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
     deps.reportClear('clear-visible-end', `cleared ${cleared} ${scope.value}`)
     sendResponse({ _tag: 'ClearVisibleResponse', cleared })
@@ -702,14 +719,14 @@ export const handleClearWholeList: MessageHandler = (_message, deps, sendRespons
     clearVisibleForPage: async () => {
       const live = pageScope(deps.location.pathname)
       if (Option.isNone(live) || live.value !== scope.value) return 0
-      return clearMountedForScope(
-        deps.document,
-        live.value,
-        350,
-        deps.reportClear,
-        sweepGhosts,
-        deps.witness,
-      )
+      return clearMountedForScope({
+        document: deps.document,
+        scope: live.value,
+        paceMs: 350,
+        trace: deps.reportClear,
+        ghosts: sweepGhosts,
+        witness: deps.witness,
+      })
     },
     report: (stage, detail) => deps.reportClear(stage, detail),
   })
@@ -923,17 +940,22 @@ export type ClearResult = ClearScopeResult
  * page has no scope of its OWN — a real Likes/Bookmarks tab always wins, so a supplied
  * scope can never widen that page past its one-mutation-per-page rule.
  */
-export async function clearMountedTweet(
-  deps: Pick<HandlerDeps, 'document' | 'location' | 'clearScope' | 'clearLog'>,
-  tweetId: string,
-  scopes: ReadonlyArray<ClearScope>,
-  allLists: boolean,
+interface TweetClearTarget {
+  readonly tweetId: string
+  readonly scopes: ReadonlyArray<ClearScope>
+  readonly allLists: boolean
   /** WHICH call path fired this clear — threaded straight through to `clearScope`
    *  so the diagnostics log's `clear-flip`/`clear-attempt-fail`/`clear-already-cleared`
    *  lines carry it (see `ClearOrigin`). */
-  origin: ClearOrigin,
-  asPageScope?: MembershipScope,
+  readonly origin: ClearOrigin
+  readonly asPageScope?: MembershipScope | undefined
+}
+
+export async function clearMountedTweet(
+  deps: Pick<HandlerDeps, 'document' | 'location' | 'clearScope' | 'clearLog'>,
+  input: TweetClearTarget,
 ): Promise<ClearResult[]> {
+  const { tweetId, scopes, allLists, origin, asPageScope } = input
   const onScope = clearableScope(deps.location.pathname, deps.document) ?? asPageScope ?? null
   const ordered = [...scopes.filter((s) => s !== onScope), ...scopes.filter((s) => s === onScope)]
   const results: ClearResult[] = []
@@ -1028,14 +1050,13 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
     }
     let results: ReadonlyArray<ClearResult>
     try {
-      results = await clearMountedTweet(
-        deps,
-        req.tweetId,
-        req.scopes,
+      results = await clearMountedTweet(deps, {
+        tweetId: req.tweetId,
+        scopes: req.scopes,
         allLists,
-        'settle',
-        req.asPageScope,
-      )
+        origin: 'settle',
+        asPageScope: req.asPageScope,
+      })
     } catch (error) {
       results = req.scopes.map((scope) => ({ scope, ok: false }))
       const failure = error instanceof Error ? error : String(error)
