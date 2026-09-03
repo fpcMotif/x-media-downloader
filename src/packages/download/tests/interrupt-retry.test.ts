@@ -28,10 +28,18 @@ describe('isRetryableInterruptReason', () => {
 })
 
 describe('interruptBackoffMs', () => {
-  it('doubles the base delay per attempt (2s → 4s → 8s)', () => {
+  it('counts attempts 0-based and doubles the base delay (2s → 4s → 8s)', () => {
     expect(interruptBackoffMs(0)).toBe(2000)
     expect(interruptBackoffMs(1)).toBe(4000)
     expect(interruptBackoffMs(2)).toBe(8000)
+  })
+
+  it('holds at the last delay INTERRUPT_RETRY_MAX allows instead of doubling forever', () => {
+    // The reachable ladder ends at attempt INTERRUPT_RETRY_MAX - 1; past it the
+    // ceiling is stated rather than left to the caller's max to imply.
+    expect(interruptBackoffMs(INTERRUPT_RETRY_MAX - 1)).toBe(8000)
+    expect(interruptBackoffMs(INTERRUPT_RETRY_MAX)).toBe(8000)
+    expect(interruptBackoffMs(20)).toBe(8000)
   })
 })
 
@@ -58,6 +66,16 @@ describe('planInterruptRetry', () => {
   it('does not schedule for non-retryable interrupt reasons', () => {
     expect(planInterruptRetry({ reason: 'SERVER_FORBIDDEN', attempt: 0 })).toEqual({
       schedule: false,
+    })
+  })
+
+  it('bounds the delay when maxRetries is raised past the default ladder', () => {
+    // The override is the only way to reach an attempt the default policy never
+    // sizes a delay for; an uncapped ladder would put attempt 9 at ~17 minutes.
+    expect(planInterruptRetry({ reason: 'NETWORK_FAILED', attempt: 9, maxRetries: 12 })).toEqual({
+      schedule: true,
+      delayMs: 8000,
+      nextAttempt: 10,
     })
   })
 })

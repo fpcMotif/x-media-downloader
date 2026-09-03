@@ -1,4 +1,5 @@
 import { Schema } from 'effect'
+import { type BackoffPolicy, expBackoffMs } from '@/packages/kernel/backoff'
 import { CLOUD_PROVIDERS } from '@/packages/schema'
 import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
 
@@ -108,8 +109,22 @@ export const isTerminal = (job: UploadJob): boolean => TERMINAL.has(job.status)
 export const idempotencyKeyFor = (mediaId: string, provider: CloudProviderId): string =>
   `${mediaId}:${provider}`
 
-export const backoffMs = (attempts: number): number =>
-  Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1))
+const UPLOAD_BACKOFF = {
+  baseMs: BACKOFF_BASE_MS,
+  capMs: BACKOFF_CAP_MS,
+} satisfies BackoffPolicy
+
+/**
+ * Delay before the next upload attempt.
+ *
+ * @param attempts - Attempts already ENDED — 1-BASED against the ladder, matching
+ * the `attempts` field it is fed from: the first failure passes 1 and waits 5s, so
+ * 0 and 1 share that base. Doubles per attempt, capped at 5 min — a cap
+ * {@link MAX_ATTEMPTS} keeps out of reach, since the last delay a live job can draw
+ * is 40s at `attempts` 4. Contrast the 0-based `interruptBackoffMs` in
+ * `@/packages/download`.
+ */
+export const backoffMs = (attempts: number): number => expBackoffMs(attempts - 1, UPLOAD_BACKOFF)
 
 /** Decode a persisted ledger; fall back to empty on corrupt data (outbox idiom). */
 export function decodeLedger(raw: unknown): JobLedger {

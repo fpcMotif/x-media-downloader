@@ -64,6 +64,25 @@ describe('markFailed / isReady', () => {
     for (let i = 0; i < 10; i += 1) s = markFailed(s, 0)
     expect(s.nextAttemptAt).toBe(300_000)
   })
+
+  it('reads consecutiveFailures 0-based, so a call sets the delay for the failure it records', () => {
+    // Unlike the cloud ledger's 1-based `attempts`, the count is read BEFORE the
+    // bump: failure n reads n-1 and waits 5s·2^(n-1).
+    const at = (consecutiveFailures: number) =>
+      markFailed({ ...emptyOutbox, consecutiveFailures }, 0).nextAttemptAt
+    expect(at(0)).toBe(5_000)
+    expect(at(1)).toBe(10_000)
+    expect(at(2)).toBe(20_000)
+    // The cap binds here and nowhere else: nothing bounds consecutiveFailures.
+    expect(at(5)).toBe(160_000)
+    expect(at(6)).toBe(300_000)
+  })
+
+  it('never shortens the delay below the base when storage yields a negative count', () => {
+    // Schema.Finite admits negatives, so a hand-corrupted storage.local row can
+    // reach the ladder. It must read as the base, not as a sub-base retry storm.
+    expect(markFailed({ ...emptyOutbox, consecutiveFailures: -3 }, 0).nextAttemptAt).toBe(5_000)
+  })
 })
 
 describe('decodeOutbox', () => {

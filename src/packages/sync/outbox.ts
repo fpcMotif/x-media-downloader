@@ -1,12 +1,16 @@
 import { Schema } from 'effect'
 import { SyncEvent } from './events'
+import { type BackoffPolicy, expBackoffMs } from '@/packages/kernel/backoff'
 
 /** Beyond this many undrained events the oldest are dropped (prolonged offline). */
 export const DEFAULT_CAP = 2000
 /** ≤64 events per drain ⇒ ≤128 Convex doc writes — far under platform limits. */
 export const DEFAULT_BATCH = 64
-const BACKOFF_BASE_MS = 5_000
-const BACKOFF_CAP_MS = 300_000
+
+// Unlike the cloud ledger, nothing bounds consecutiveFailures — a device offline
+// for a day keeps failing — so this is the one ladder that actually reaches its cap
+// (at 6 failures: 5s·2⁶ = 320s > 300s).
+const DRAIN_BACKOFF = { baseMs: 5_000, capMs: 300_000 } satisfies BackoffPolicy
 
 const OutboxStateSchema = Schema.Struct({
   pending: Schema.Array(SyncEvent),
@@ -65,9 +69,16 @@ export function markDrained(state: OutboxState, sentIds: ReadonlyArray<string>):
   }
 }
 
-/** A drain failed: exponential backoff (5s · 2ⁿ, capped at 5 min). */
+/**
+ * A drain failed: bump the failure count and set `nextAttemptAt` from it.
+ *
+ * The ladder is 0-BASED on `consecutiveFailures` — the first failure reads 0 and
+ * waits the 5s base — so the delay a call sets is the one for the failure it is
+ * recording, not the one after. Contrast the 1-based `backoffMs` in
+ * `@/packages/cloud`. `now` is milliseconds on the same clock as `nextAttemptAt`.
+ */
 export function markFailed(state: OutboxState, now: number): OutboxState {
-  const delay = Math.min(BACKOFF_BASE_MS * 2 ** state.consecutiveFailures, BACKOFF_CAP_MS)
+  const delay = expBackoffMs(state.consecutiveFailures, DRAIN_BACKOFF)
   return {
     ...state,
     consecutiveFailures: state.consecutiveFailures + 1,

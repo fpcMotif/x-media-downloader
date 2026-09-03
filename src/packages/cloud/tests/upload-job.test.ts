@@ -420,6 +420,16 @@ describe('claim / transition guards', () => {
     expect(backoffMs(100)).toBe(300_000) // BACKOFF_CAP_MS
   })
 
+  it('backoffMs counts attempts 1-based, so the first failure waits the base', () => {
+    // The `attempts` field is a count of ENDED attempts, so recordFailure's first
+    // call passes 1 — not 0 as the download and sync ladders do.
+    expect(backoffMs(1)).toBe(5_000)
+    expect(backoffMs(2)).toBe(10_000)
+    expect(backoffMs(3)).toBe(20_000)
+    // The last delay a live job can draw: recordFailure dies at MAX_ATTEMPTS.
+    expect(backoffMs(MAX_ATTEMPTS - 1)).toBe(40_000)
+  })
+
   it('isClaimable: live-lease uploading job is not claimable; expired-lease one is', () => {
     const l0 = enqueue([], spec('m1'), 0)
     const claimed = claim(l0, l0[0]!.jobId, 0, 1000).ledger
