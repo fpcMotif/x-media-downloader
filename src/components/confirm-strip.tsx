@@ -38,6 +38,121 @@ const prefersReducedMotion = (): boolean => {
   )
 }
 
+interface ConfirmStripArmedProps {
+  readonly sentence: string
+  readonly confirmLabel: string
+  readonly typedWord: string | undefined
+  readonly onConfirm: () => void
+  readonly disarm: () => void
+  readonly cancelRef: preact.Ref<HTMLButtonElement>
+  readonly stripRef: preact.Ref<HTMLDivElement>
+  readonly typedValue: string
+  readonly onTypedValueChange: (value: string) => void
+  readonly preCommitted: boolean
+  readonly confirmInert: boolean
+  readonly guardOpacity: number
+  readonly showUnderline: boolean
+  readonly underlineRemaining: number
+}
+
+function ConfirmStripArmed({
+  sentence,
+  confirmLabel,
+  typedWord,
+  onConfirm,
+  disarm,
+  cancelRef,
+  stripRef,
+  typedValue,
+  onTypedValueChange,
+  preCommitted,
+  confirmInert,
+  guardOpacity,
+  showUnderline,
+  underlineRemaining,
+}: ConfirmStripArmedProps): VNode {
+  return (
+    <div
+      ref={stripRef}
+      className={cn(
+        'animate-in fade-in grid gap-2 rounded-[var(--xmd-radius-3)] p-3 duration-[180ms] ease-[var(--xmd-ease)]',
+        preCommitted ? 'bg-muted' : 'bg-destructive/8',
+      )}
+    >
+      <p
+        className={cn(
+          'text-pretty text-[13px]',
+          preCommitted ? 'text-foreground' : 'text-destructive',
+        )}
+      >
+        {sentence}
+      </p>
+      {typedWord !== undefined && (
+        <label className="grid min-h-10 gap-1 text-xs text-muted-foreground">
+          Type {typedWord.toUpperCase()} to continue
+          <Input
+            value={typedValue}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e: Event) => {
+              if (e.target instanceof HTMLInputElement) {
+                onTypedValueChange(e.target.value)
+              }
+            }}
+            onKeyDown={(e: KeyboardEvent) => {
+              // The typed-word gate cannot fire on Enter alone — Enter inside
+              // the input is inert; firing requires an explicit activation of
+              // the confirm button (§2.5).
+              if (e.key === 'Enter') e.preventDefault()
+            }}
+          />
+        </label>
+      )}
+
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          ref={cancelRef}
+          data-slot="button"
+          className="h-10 min-w-[96px] rounded-[var(--xmd-radius-3)] text-xs font-medium text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+          onClick={disarm}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          data-slot="button"
+          aria-disabled={confirmInert}
+          style={{ opacity: guardOpacity }}
+          className={cn(
+            'h-10 min-w-[96px] rounded-[var(--xmd-radius-3)] text-xs font-semibold outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50',
+            confirmInert && 'pointer-events-none',
+            preCommitted
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-destructive/10 text-destructive hover:bg-destructive/20',
+          )}
+          onClick={() => {
+            if (confirmInert) return
+            onConfirm()
+            disarm()
+          }}
+        >
+          {confirmLabel}
+        </button>
+      </div>
+
+      {showUnderline && (
+        <div aria-hidden="true" className="relative h-[2px] w-full overflow-hidden rounded-full">
+          <div
+            className="absolute inset-y-0 left-0 bg-destructive/40"
+            style={{ width: `${underlineRemaining * 100}%` }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
 export interface ConfirmStripProps {
   /** The consequence sentence shown once armed (13px, tier-colored). */
   readonly sentence: string
@@ -165,87 +280,22 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
       {armedAt === null ? (
         children(arm)
       ) : (
-        <div
-          ref={stripRef}
-          className={cn(
-            'animate-in fade-in grid gap-2 rounded-[var(--xmd-radius-3)] p-3 duration-[180ms] ease-[var(--xmd-ease)]',
-            preCommitted ? 'bg-muted' : 'bg-destructive/8',
-          )}
-        >
-          <p
-            className={cn(
-              'text-pretty text-[13px]',
-              preCommitted ? 'text-foreground' : 'text-destructive',
-            )}
-          >
-            {sentence}
-          </p>
-          {typedWord !== undefined && (
-            <label className="grid min-h-10 gap-1 text-xs text-muted-foreground">
-              Type {typedWord.toUpperCase()} to continue
-              <Input
-                value={typedValue}
-                autoComplete="off"
-                spellCheck={false}
-                onChange={(e: Event) => {
-                  if (e.target instanceof HTMLInputElement) {
-                    setTypedValue(e.target.value)
-                  }
-                }}
-                onKeyDown={(e: KeyboardEvent) => {
-                  // The typed-word gate cannot fire on Enter alone — Enter inside
-                  // the input is inert; firing requires an explicit activation of
-                  // the confirm button (§2.5).
-                  if (e.key === 'Enter') e.preventDefault()
-                }}
-              />
-            </label>
-          )}
-
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              ref={cancelRef}
-              data-slot="button"
-              className="h-10 min-w-[96px] rounded-[var(--xmd-radius-3)] text-xs font-medium text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-              onClick={disarm}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              data-slot="button"
-              aria-disabled={confirmInert}
-              style={{ opacity: guardOpacity }}
-              className={cn(
-                'h-10 min-w-[96px] rounded-[var(--xmd-radius-3)] text-xs font-semibold outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50',
-                confirmInert && 'pointer-events-none',
-                preCommitted
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-destructive/10 text-destructive hover:bg-destructive/20',
-              )}
-              onClick={() => {
-                if (confirmInert) return
-                onConfirm()
-                disarm()
-              }}
-            >
-              {confirmLabel}
-            </button>
-          </div>
-
-          {showUnderline && (
-            <div
-              aria-hidden="true"
-              className="relative h-[2px] w-full overflow-hidden rounded-full"
-            >
-              <div
-                className="absolute inset-y-0 left-0 bg-destructive/40"
-                style={{ width: `${underlineRemaining * 100}%` }}
-              />
-            </div>
-          )}
-        </div>
+        <ConfirmStripArmed
+          sentence={sentence}
+          confirmLabel={confirmLabel}
+          typedWord={typedWord}
+          onConfirm={onConfirm}
+          disarm={disarm}
+          cancelRef={cancelRef}
+          stripRef={stripRef}
+          typedValue={typedValue}
+          onTypedValueChange={setTypedValue}
+          preCommitted={preCommitted}
+          confirmInert={confirmInert}
+          guardOpacity={guardOpacity}
+          showUnderline={showUnderline}
+          underlineRemaining={underlineRemaining}
+        />
       )}
     </>
   )

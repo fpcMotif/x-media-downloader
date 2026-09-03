@@ -46,21 +46,46 @@ function isIpLiteral(host: string): boolean {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':') || host.startsWith('[')
 }
 
+/** Check if first octet indicates this-network, RFC-1918 /8, or loopback. */
+function isReservedFirstOctet(a: number): boolean {
+  return a === 0 || a === 10 || a === 127
+}
+
+/** Check if the address is link-local (169.254.0.0/16), including metadata endpoint. */
+function isLinkLocal(a: number, b: number): boolean {
+  return a === 169 && b === 254
+}
+
+/** Check if the address is RFC-1918 /12 (172.16.0.0/12). */
+function isRfc1918Mid(a: number, b: number): boolean {
+  return a === 172 && b >= 16 && b <= 31
+}
+
+/** Check if the address is RFC-1918 /16 (192.168.0.0/16). */
+function isRfc1918High(a: number, b: number): boolean {
+  return a === 192 && b === 168
+}
+
+/** Check if the address is CGNAT (100.64.0.0/10). */
+function isCgnat(a: number, b: number): boolean {
+  return a === 100 && b >= 64 && b <= 127
+}
+
 /** A private / loopback / link-local / CGNAT / metadata IPv4 literal. */
 function isPrivateIpv4(host: string): boolean {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
   if (!m) return false
-  const [a, b] = [Number(m[1]), Number(m[2])]
+  const [a, b, c, d] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])]
   // Defense in depth: WHATWG URL parsing already rejects out-of-range octets
   // (`new URL('https://999.1.1.1/')` throws) before this runs, so this guard is
   // unreachable via assertAllowedMediaUrl — but kept as a fail-closed invariant.
   /* v8 ignore next */
-  if (a > 255 || b > 255 || Number(m[3]) > 255 || Number(m[4]) > 255) return true // malformed → unsafe
-  if (a === 0 || a === 10 || a === 127) return true // this-network, RFC-1918 /8, loopback
-  if (a === 169 && b === 254) return true // link-local (incl. 169.254.169.254 metadata)
-  if (a === 172 && b >= 16 && b <= 31) return true // RFC-1918 /12
-  if (a === 192 && b === 168) return true // RFC-1918 /16
-  if (a === 100 && b >= 64 && b <= 127) return true // CGNAT /10
+  if (a > 255 || b > 255 || c > 255 || d > 255) return true // malformed → unsafe
+  if (isReservedFirstOctet(a)) return true // this-network, RFC-1918 /8, loopback
+  if (isLinkLocal(a, b)) return true // link-local (incl. 169.254.169.254 metadata)
+  if (isRfc1918Mid(a, b)) return true // RFC-1918 /12
+  if (isRfc1918High(a, b)) return true // RFC-1918 /16
+  if (isCgnat(a, b)) return true // CGNAT /10
   return false
 }
 

@@ -256,6 +256,21 @@ const freshTimelineHasMember = (
   return ids.has(tweetId) ? 'present' : 'absent'
 }
 
+// Release re-appearance watchdog's ghost-vs-real discriminator (spec #59 ticket
+// #64): the media tee already captures Bookmarks/Likes timeline responses for
+// detection — reuse that SAME capture to track which tweet ids are CURRENTLY
+// members of each list, independent of media (a text-only bookmark still counts).
+// Own try/catch: this must never disrupt media detection below, whatever X's
+// response shape does. Caller (`handleMediaResponse`) gates this to X only.
+const trackFreshListMembership = (path: string, json: JsonValue): void => {
+  try {
+    if (path.endsWith('/Bookmarks')) freshBookmarksIds = timelineTweetIds(json)
+    else if (path.endsWith('/Likes')) freshLikesIds = timelineTweetIds(json)
+  } catch {
+    /* the watchdog degrades to freshTimeline=unknown; never break the page */
+  }
+}
+
 const releaseRecheck = makeReleaseRecheck({
   clock: {
     after: (ms, fn) => {
@@ -1722,49 +1737,23 @@ export default defineContentScript({
       }
     }
 
-    // Named so invalidation can remove it — a stale tab must not retain
-    // duplicate response callbacks (body unchanged apart from 001's URL filter).
-    const handleMediaResponse = (event: Event): void => {
-      // SAFETY: `detail` is attacker-controlled — a page script can dispatch
-      // 'xmd:media-response' itself with an arbitrary shape. This cast only names the
-      // shape THIS file's own dispatchers use (the tee below, and the inline-JSON
-      // fallback); every read of it downstream stays defensive regardless (`body` is
-      // JSON.parse'd inside a try/catch, `path` is used only as an opaque string), so
-      // a forged mismatched-shape detail degrades to the safe non-JSON/short-circuit
-      // paths rather than crashing.
-      const detail = (event as CustomEvent<{ path: string; body: string }>).detail
-      let json: JsonValue
+    // Fail-closed trust boundary: page scripts can forge 'xmd:media-response'
+    // events, so only CDN-allow-listed items ever reach the store. Own
+    // try/catch: a shape-drift throw here — Meta's response schema shifting
+    // under the reverse-engineered walker — must never go fully silent (it
+    // previously did, "media detection is best-effort") because that meant
+    // zero items were EVER detected for that response with no visible signal
+    // at all: the single hardest case to diagnose live, since nothing
+    // downstream (hover, badge, grab) had anything to even report as
+    // missing. Mirrors the capture-harvest catch in `harvestFrom`, which
+    // already logs its own throws.
+    const detectAndStoreMedia = (path: string, json: JsonValue): void => {
       try {
-        json = JSON.parse(detail.body)
-      } catch {
-        if (import.meta.env.DEV)
-          console.debug(
-            `[XMD] media-response · ${adapter.platform} · path=${detail.path} · non-JSON body (${detail.body.length} chars), skipping`,
-          )
-        return /* non-JSON tee body */
-      }
-      // Release re-appearance watchdog's ghost-vs-real discriminator (spec #59 ticket
-      // #64): the media tee already captures Bookmarks/Likes timeline responses for
-      // detection — reuse that SAME capture to track which tweet ids are CURRENTLY
-      // members of each list, independent of media (a text-only bookmark still counts).
-      // Own try/catch: this must never disrupt media detection below, whatever X's
-      // response shape does.
-      if (adapter.platform === 'x') {
-        try {
-          if (detail.path.endsWith('/Bookmarks')) freshBookmarksIds = timelineTweetIds(json)
-          else if (detail.path.endsWith('/Likes')) freshLikesIds = timelineTweetIds(json)
-        } catch {
-          /* the watchdog degrades to freshTimeline=unknown; never break the page */
-        }
-      }
-      try {
-        // Fail-closed trust boundary: page scripts can forge 'xmd:media-response'
-        // events, so only CDN-allow-listed items ever reach the store.
-        const raw = adapter.detectFromResponse(detail.path, json)
+        const raw = adapter.detectFromResponse(path, json)
         const checked = partitionAllowedMediaItems(raw)
         if (import.meta.env.DEV)
           console.debug(
-            `[XMD] media-response · ${adapter.platform} · path=${detail.path} · detected=${raw.length} allowed=${checked.allowed.length} rejected=${checked.rejected.length}`,
+            `[XMD] media-response · ${adapter.platform} · path=${path} · detected=${raw.length} allowed=${checked.allowed.length} rejected=${checked.rejected.length}`,
           )
         if (checked.rejected.length > 0) {
           console.warn(`[XMD] dropped ${checked.rejected.length} media item(s) with unsafe URLs`)
@@ -1798,18 +1787,36 @@ export default defineContentScript({
           for (const [postId, code] of codes) store.registerPostCode(postId, code)
         }
       } catch (err) {
-        // Previously fully silent ("media detection is best-effort"). A shape-drift
-        // throw here — Meta's response schema shifting under the reverse-engineered
-        // walker — meant zero items were EVER detected for that response with no
-        // visible signal at all: the single hardest case to diagnose live, because
-        // nothing downstream (hover, badge, grab) had anything to even report as
-        // missing. Mirrors the capture-harvest catch immediately below, which
-        // already logs its own throws.
-        console.warn(
-          `[XMD] media detection THREW on ${adapter.platform} path=${detail.path} —`,
-          err,
-        )
+        console.warn(`[XMD] media detection THREW on ${adapter.platform} path=${path} —`, err)
       }
+    }
+
+    // Named so invalidation can remove it — a stale tab must not retain
+    // duplicate response callbacks (body unchanged apart from 001's URL filter).
+    const handleMediaResponse = (event: Event): void => {
+      // SAFETY: `detail` is attacker-controlled — a page script can dispatch
+      // 'xmd:media-response' itself with an arbitrary shape. This cast only names the
+      // shape THIS file's own dispatchers use (the tee below, and the inline-JSON
+      // fallback); every read of it downstream stays defensive regardless (`body` is
+      // JSON.parse'd inside a try/catch, `path` is used only as an opaque string), so
+      // a forged mismatched-shape detail degrades to the safe non-JSON/short-circuit
+      // paths rather than crashing.
+      const detail = (event as CustomEvent<{ path: string; body: string }>).detail
+      let json: JsonValue
+      try {
+        json = JSON.parse(detail.body)
+      } catch {
+        if (import.meta.env.DEV)
+          console.debug(
+            `[XMD] media-response · ${adapter.platform} · path=${detail.path} · non-JSON body (${detail.body.length} chars), skipping`,
+          )
+        return /* non-JSON tee body */
+      }
+      // Ghost-vs-real discriminator upkeep — own try/catch, see
+      // `trackFreshListMembership`'s doc — gated to X, the only platform its
+      // Bookmarks/Likes path matching can ever fire on.
+      if (adapter.platform === 'x') trackFreshListMembership(detail.path, json)
+      detectAndStoreMedia(detail.path, json)
       // Knowledge Capture is X-only-forever (design spec Non-goals): harvestTweets'
       // tree walker assumes X's tweet-node JSON shape, so never call it off-platform.
       if (adapter.platform === 'x') harvestFrom(json, detail.path) // own try/catch — never swallowed by media path
@@ -2006,6 +2013,31 @@ export default defineContentScript({
       { passive: true },
     )
 
+    // Badge half of the scroll hit-test: same media+key still under the
+    // pointer ⇒ only its rect may have moved (a re-render picks that up from
+    // the DOM directly); a different media/key ⇒ refocus, but only while the
+    // badge is already visible (scrolling must never itself summon it).
+    const syncBadgeToHover = (media: HoverMediaElement | null, key: string | null): void => {
+      if (media === badgeMedia && key === badge.key) {
+        if (badge.phase !== 'hidden') rerender()
+        return
+      }
+      if (badge.phase !== 'hidden') focusBadge(media, key)
+    }
+
+    // Grab half of the scroll hit-test: same media+key still held ⇒ refresh
+    // the charging ring's rect in place; a different media/key ⇒ re-arm.
+    const syncGrabToHover = (media: HoverMediaElement | null, key: string | null): void => {
+      if (media === hoverMedia && key === hoverKey) {
+        if (grabUi !== null && media !== null) {
+          grabUi = { ...grabUi, rect: rectOf(media) }
+          rerender()
+        }
+        return
+      }
+      focusHover(media, key)
+    }
+
     // The per-scroll hit-test: re-run resolution so the dwell and ring track what
     // is actually under the pointer, and refresh the rect when the same media
     // preview merely shifted. Runs inside a coalesced rAF (see queueScrollHitTest),
@@ -2024,20 +2056,9 @@ export default defineContentScript({
       }
       const media = resolveHoverMedia(top ?? null, stack, lastX, lastY)
       const key = previewKeyFromMedia(adapter, media, location.pathname)
-      if (media === badgeMedia && key === badge.key) {
-        if (badge.phase !== 'hidden') rerender()
-      } else if (badge.phase !== 'hidden') {
-        focusBadge(media, key)
-      }
+      syncBadgeToHover(media, key)
       if (!grab.active) return
-      if (media === hoverMedia && key === hoverKey) {
-        if (grabUi !== null && media !== null) {
-          grabUi = { ...grabUi, rect: rectOf(media) }
-          rerender()
-        }
-        return
-      }
-      focusHover(media, key)
+      syncGrabToHover(media, key)
     }
 
     // Coalesce a burst of scroll events into a single hit-test per frame (same

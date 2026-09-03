@@ -23,6 +23,171 @@ const retryUploads = async (): Promise<void> => {
 const inputValue = (e: Event): string =>
   e.target instanceof HTMLInputElement ? e.target.value : ''
 
+function SyncDetailsSection({
+  settings,
+  update,
+  convexGranted,
+  syncStatus,
+  testingSync,
+  onTestConnection,
+  onRequestAccess,
+}: {
+  settings: PanelProps['settings']
+  update: PanelProps['update']
+  convexGranted: boolean | null
+  syncStatus: SyncStatus | null
+  testingSync: boolean
+  onTestConnection: () => Promise<void>
+  onRequestAccess: () => Promise<void>
+}) {
+  return (
+    <>
+      <Field>
+        <FieldLabel htmlFor="convexUrl">Convex deployment URL</FieldLabel>
+        <Input
+          id="convexUrl"
+          placeholder="https://<deployment>.convex.cloud"
+          value={settings.convexUrl}
+          onChange={(e: Event) => void update({ convexUrl: inputValue(e) })}
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="convexSyncSecret">Sync secret (required)</FieldLabel>
+        <Input
+          id="convexSyncSecret"
+          type="password"
+          placeholder="must match the deployment's SYNC_SHARED_SECRET"
+          value={settings.convexSyncSecret}
+          onChange={(e: Event) => void update({ convexSyncSecret: inputValue(e) })}
+        />
+      </Field>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="min-h-10"
+          disabled={testingSync || settings.convexUrl === '' || settings.convexSyncSecret === ''}
+          onClick={() => void onTestConnection()}
+        >
+          {testingSync ? 'Testing…' : 'Test connection'}
+        </Button>
+        {convexGranted === false && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="min-h-10"
+            onClick={() => void onRequestAccess()}
+          >
+            Grant access
+          </Button>
+        )}
+        {convexGranted === true && (
+          <span className="text-[13px] font-medium text-success">access granted</span>
+        )}
+      </div>
+      {syncStatus && (
+        <p
+          className={cn(
+            'text-sm leading-snug text-pretty',
+            syncStatus.ok ? 'text-success' : 'text-destructive',
+          )}
+        >
+          {syncStatus.detail}
+        </p>
+      )}
+    </>
+  )
+}
+
+function UploadDetailsSection({
+  settings,
+  connecting,
+  connectMsg,
+  cloudStatus,
+  onConnect,
+  onDisconnect,
+  onBackfill,
+  onRetry,
+}: {
+  settings: PanelProps['settings']
+  connecting: CloudProviderId | null
+  connectMsg: string
+  cloudStatus: CloudUploadStatus | null
+  onConnect: (provider: CloudProviderId, clientId: string) => Promise<void>
+  onDisconnect: (provider: CloudProviderId) => Promise<void>
+  onBackfill: () => Promise<void>
+  onRetry: () => Promise<void>
+}) {
+  const hasConnectedProviders =
+    settings.gdriveRefreshToken !== '' || settings.dropboxRefreshToken !== ''
+
+  return (
+    <>
+      <FieldDescription className="text-pretty">
+        Uploads run automatically as you download — there's no separate step. Use “Back up past
+        downloads” to sync media you saved earlier.
+      </FieldDescription>
+      <CloudProviderRow
+        provider="gdrive"
+        clientId={settings.gdriveClientId}
+        connected={settings.gdriveRefreshToken !== ''}
+        account={settings.gdriveAccount}
+        connecting={connecting === 'gdrive'}
+        onConnect={(clientId) => void onConnect('gdrive', clientId)}
+        onDisconnect={() => void onDisconnect('gdrive')}
+      />
+      <CloudProviderRow
+        provider="dropbox"
+        clientId={settings.dropboxClientId}
+        connected={settings.dropboxRefreshToken !== ''}
+        account={settings.dropboxAccount}
+        connecting={connecting === 'dropbox'}
+        onConnect={(clientId) => void onConnect('dropbox', clientId)}
+        onDisconnect={() => void onDisconnect('dropbox')}
+      />
+      {hasConnectedProviders && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="min-h-10 self-start"
+          onClick={() => void onBackfill()}
+        >
+          Back up past downloads
+        </Button>
+      )}
+      {connectMsg && (
+        <p className="text-sm leading-snug text-pretty text-muted-foreground">{connectMsg}</p>
+      )}
+      {cloudStatus && (
+        <div className="flex items-center justify-between gap-2">
+          <p
+            className={cn(
+              'text-sm leading-snug text-pretty',
+              cloudStatus.lastError ? 'text-destructive' : 'text-muted-foreground',
+            )}
+          >
+            {cloudStatus.lastError ?? describeUploadSummary(cloudStatus.summary)}
+          </p>
+          {(cloudStatus.summary.dead > 0 || cloudStatus.summary.failed > 0) && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="min-h-10"
+              onClick={() => void onRetry()}
+            >
+              Retry failed
+            </Button>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
 export function SyncPanel({ settings, update, reload }: PanelProps) {
   const [convexGranted, setConvexGranted] = useState<boolean | null>(null)
   const [testingSync, setTestingSync] = useState(false)
@@ -161,65 +326,15 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         </Field>
 
         {settings.cloudSyncEnabled && (
-          <>
-            <Field>
-              <FieldLabel htmlFor="convexUrl">Convex deployment URL</FieldLabel>
-              <Input
-                id="convexUrl"
-                placeholder="https://<deployment>.convex.cloud"
-                value={settings.convexUrl}
-                onChange={(e: Event) => void update({ convexUrl: inputValue(e) })}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="convexSyncSecret">Sync secret (required)</FieldLabel>
-              <Input
-                id="convexSyncSecret"
-                type="password"
-                placeholder="must match the deployment's SYNC_SHARED_SECRET"
-                value={settings.convexSyncSecret}
-                onChange={(e: Event) => void update({ convexSyncSecret: inputValue(e) })}
-              />
-            </Field>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="min-h-10"
-                disabled={
-                  testingSync || settings.convexUrl === '' || settings.convexSyncSecret === ''
-                }
-                onClick={() => void testConvexConnection()}
-              >
-                {testingSync ? 'Testing…' : 'Test connection'}
-              </Button>
-              {convexGranted === false && (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="min-h-10"
-                  onClick={() => void requestConvexAccess()}
-                >
-                  Grant access
-                </Button>
-              )}
-              {convexGranted === true && (
-                <span className="text-[13px] font-medium text-success">access granted</span>
-              )}
-            </div>
-            {syncStatus && (
-              <p
-                className={cn(
-                  'text-sm leading-snug text-pretty',
-                  syncStatus.ok ? 'text-success' : 'text-destructive',
-                )}
-              >
-                {syncStatus.detail}
-              </p>
-            )}
-          </>
+          <SyncDetailsSection
+            settings={settings}
+            update={update}
+            convexGranted={convexGranted}
+            syncStatus={syncStatus}
+            testingSync={testingSync}
+            onTestConnection={testConvexConnection}
+            onRequestAccess={requestConvexAccess}
+          />
         )}
       </Section>
 
@@ -240,67 +355,16 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         </Field>
 
         {settings.cloudUploadEnabled && (
-          <>
-            <FieldDescription className="text-pretty">
-              Uploads run automatically as you download — there's no separate step. Use “Back up
-              past downloads” to sync media you saved earlier.
-            </FieldDescription>
-            <CloudProviderRow
-              provider="gdrive"
-              clientId={settings.gdriveClientId}
-              connected={settings.gdriveRefreshToken !== ''}
-              account={settings.gdriveAccount}
-              connecting={connecting === 'gdrive'}
-              onConnect={(clientId) => void connectProvider('gdrive', clientId)}
-              onDisconnect={() => void disconnectProvider('gdrive')}
-            />
-            <CloudProviderRow
-              provider="dropbox"
-              clientId={settings.dropboxClientId}
-              connected={settings.dropboxRefreshToken !== ''}
-              account={settings.dropboxAccount}
-              connecting={connecting === 'dropbox'}
-              onConnect={(clientId) => void connectProvider('dropbox', clientId)}
-              onDisconnect={() => void disconnectProvider('dropbox')}
-            />
-            {(settings.gdriveRefreshToken !== '' || settings.dropboxRefreshToken !== '') && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="min-h-10 self-start"
-                onClick={() => void backfillUploads()}
-              >
-                Back up past downloads
-              </Button>
-            )}
-            {connectMsg && (
-              <p className="text-sm leading-snug text-pretty text-muted-foreground">{connectMsg}</p>
-            )}
-            {cloudStatus && (
-              <div className="flex items-center justify-between gap-2">
-                <p
-                  className={cn(
-                    'text-sm leading-snug text-pretty',
-                    cloudStatus.lastError ? 'text-destructive' : 'text-muted-foreground',
-                  )}
-                >
-                  {cloudStatus.lastError ?? describeUploadSummary(cloudStatus.summary)}
-                </p>
-                {(cloudStatus.summary.dead > 0 || cloudStatus.summary.failed > 0) && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="min-h-10"
-                    onClick={() => void retryUploads()}
-                  >
-                    Retry failed
-                  </Button>
-                )}
-              </div>
-            )}
-          </>
+          <UploadDetailsSection
+            settings={settings}
+            connecting={connecting}
+            connectMsg={connectMsg}
+            cloudStatus={cloudStatus}
+            onConnect={connectProvider}
+            onDisconnect={disconnectProvider}
+            onBackfill={backfillUploads}
+            onRetry={retryUploads}
+          />
         )}
       </Section>
     </>

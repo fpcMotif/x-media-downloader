@@ -460,6 +460,92 @@ export const GHOST_NOFLIP_LIMIT = 2
  *  content script's lifetime; a reload (fresh list, fresh truth) resets it. */
 const sweepGhosts = new Map<string, number>()
 
+/** Resolve the real clickable node for a clear control, and the pre-click state a
+ *  trace line describes. `closest` types as `Element | null` for a compound
+ *  selector — narrow instead of asserting, since the caller's `.click()` needs the
+ *  real `HTMLElement` guarantee. `targetKind`/`disabled` are read off that same
+ *  resolved node, so the trace line always matches what was actually clicked. */
+function resolveClearTarget(ctrl: HTMLElement) {
+  const closestControl = ctrl.closest('button,[role="button"]')
+  const button = closestControl instanceof HTMLElement ? closestControl : null
+  const target = button ?? ctrl
+  const targetKind: 'button' | 'testid-node' = button === null ? 'testid-node' : 'button'
+  const disabled =
+    target.hasAttribute('disabled') || target.getAttribute('aria-disabled') === 'true'
+  return { target, targetKind, disabled }
+}
+
+/** Ghost-skip check for one mounted article — see {@link GHOST_NOFLIP_LIMIT}.
+ *  `null` means "click it": no memo tracking (`ghosts` unset, or no resolvable
+ *  tweetId), or the row is still under the limit. A non-null result carries the
+ *  tweetId/count the caller traces before `continue`-ing past the click — the
+ *  same values the inlined check this replaces would have used. */
+function ghostSkipCheck(
+  tweetId: string | null,
+  ghosts: Map<string, number> | undefined,
+): { readonly tweetId: string; readonly noFlips: number } | null {
+  if (tweetId === null || ghosts === undefined) return null
+  const noFlips = ghosts.get(tweetId) ?? 0
+  return noFlips >= GHOST_NOFLIP_LIMIT ? { tweetId, noFlips } : null
+}
+
+/** Record one clicked article's clear verdict and emit the matching trace line —
+ *  same server-verdict-first precedence documented on `clearMountedForScope`:
+ *  'error' is a confirmed mutation failure, 'ok' is a confirmed flip regardless of
+ *  the DOM, and 'none' falls through to the existing `flipConfirmed` DOM check.
+ *  Updates `ghosts` the same way a DOM flip always has: a confirmed or
+ *  DOM-observed flip deletes the memo entry, any failure increments it. */
+function recordClearVerdict(
+  document: Document,
+  article: Element,
+  tweetId: string,
+  scope: MembershipScope,
+  verdict: 'ok' | 'error' | 'none',
+  paceMs: number,
+  targetKind: 'button' | 'testid-node',
+  disabled: boolean,
+  ghosts: Map<string, number> | undefined,
+  trace: (stage: string, detail: string, tweetId?: string) => void,
+): void {
+  if (verdict === 'error') {
+    ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
+    trace(
+      'clear-attempt-fail',
+      `scope=${scope} reason=mutation-error attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
+      tweetId,
+    )
+    return
+  }
+  if (verdict === 'ok') {
+    ghosts?.delete(tweetId)
+    const { reresolved } = classifyFlip(document, article, tweetId, scope)
+    trace(
+      'clear-flip',
+      `scope=${scope} arm=mutation attempt=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} reresolved=${reresolved} origin=manual`,
+      tweetId,
+    )
+    return
+  }
+  if (flipConfirmed(article, scope)) {
+    ghosts?.delete(tweetId)
+    const { arm, reresolved } = classifyFlip(document, article, tweetId, scope)
+    const detail = `scope=${scope} arm=${arm} attempt=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} reresolved=${reresolved} origin=manual`
+    trace('clear-flip', detail, tweetId)
+    // Same "distinct, loud" event `tweet-clear.ts`'s `traceFlip` emits — a detach
+    // arm whose fresh re-resolve still shows the post a member is the fabricated-
+    // flip smoking gun regardless of which origin produced it.
+    if (arm === 'detached' && reresolved === 'member')
+      trace('clear-flip-fabricated', detail, tweetId)
+    return
+  }
+  ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
+  trace(
+    'clear-attempt-fail',
+    `scope=${scope} reason=no-flip attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
+    tweetId,
+  )
+}
+
 /** Click the clear control on every mounted post that is a clearable member of
  *  the given scope — the manual, unledgered path (spec #59 H5). `ghosts`, when
  *  supplied, memoizes consecutive no-flips per tweetId so a stale row that can
@@ -484,23 +570,18 @@ export async function clearMountedForScope(
   for (const article of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
     const ctrl = clearControl(article, scope)
     if (ctrl === null) continue
-    // `closest` types as `Element | null` for a compound selector — narrow instead of
-    // asserting, since `.click()` below needs the real `HTMLElement` guarantee.
-    const closestControl = ctrl.closest('button,[role="button"]')
-    const button = closestControl instanceof HTMLElement ? closestControl : null
-    const target = button ?? ctrl
-    const targetKind = button === null ? 'testid-node' : 'button'
-    const disabled =
-      target.hasAttribute('disabled') || target.getAttribute('aria-disabled') === 'true'
+    const { target, targetKind, disabled } = resolveClearTarget(ctrl)
     // Resolved BEFORE the click, same as tweet-clear.ts's pre-click snapshot — the
     // node the trace line is ABOUT, not whatever `document` shows a tick later.
     const tweetId = Option.getOrNull(tweetIdOfArticle(article))
-    if (tweetId !== null && ghosts !== undefined) {
-      const noFlips = ghosts.get(tweetId) ?? 0
-      if (noFlips >= GHOST_NOFLIP_LIMIT) {
-        trace('clear-ghost-skip', `scope=${scope} noFlips=${noFlips} origin=manual`, tweetId)
-        continue
-      }
+    const ghostSkip = ghostSkipCheck(tweetId, ghosts)
+    if (ghostSkip !== null) {
+      trace(
+        'clear-ghost-skip',
+        `scope=${scope} noFlips=${ghostSkip.noFlips} origin=manual`,
+        ghostSkip.tweetId,
+      )
+      continue
     }
     const clickedAt = now()
     target.click()
@@ -510,39 +591,18 @@ export async function clearMountedForScope(
     // permalink) ⇒ nothing to tag the trace line with; still counts as clicked.
     if (tweetId === null) continue
     const verdict = witness?.outcome(tweetId, scope, clickedAt) ?? 'none'
-    if (verdict === 'error') {
-      ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
-      trace(
-        'clear-attempt-fail',
-        `scope=${scope} reason=mutation-error attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
-        tweetId,
-      )
-    } else if (verdict === 'ok') {
-      ghosts?.delete(tweetId)
-      const { reresolved } = classifyFlip(document, article, tweetId, scope)
-      trace(
-        'clear-flip',
-        `scope=${scope} arm=mutation attempt=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} reresolved=${reresolved} origin=manual`,
-        tweetId,
-      )
-    } else if (flipConfirmed(article, scope)) {
-      ghosts?.delete(tweetId)
-      const { arm, reresolved } = classifyFlip(document, article, tweetId, scope)
-      const detail = `scope=${scope} arm=${arm} attempt=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} reresolved=${reresolved} origin=manual`
-      trace('clear-flip', detail, tweetId)
-      // Same "distinct, loud" event `tweet-clear.ts`'s `traceFlip` emits — a detach
-      // arm whose fresh re-resolve still shows the post a member is the fabricated-
-      // flip smoking gun regardless of which origin produced it.
-      if (arm === 'detached' && reresolved === 'member')
-        trace('clear-flip-fabricated', detail, tweetId)
-    } else {
-      ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
-      trace(
-        'clear-attempt-fail',
-        `scope=${scope} reason=no-flip attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
-        tweetId,
-      )
-    }
+    recordClearVerdict(
+      document,
+      article,
+      tweetId,
+      scope,
+      verdict,
+      paceMs,
+      targetKind,
+      disabled,
+      ghosts,
+      trace,
+    )
   }
   // oxlint-enable no-await-in-loop
   return cleared

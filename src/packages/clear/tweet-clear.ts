@@ -65,6 +65,40 @@ const FLIP_CONFIRM_TIMEOUT_MS = FLIP_POLL_ATTEMPTS * FLIP_POLL_INTERVAL_MS
 const EXTRA_WITNESS_POLL_INTERVAL_MS = 250
 const EXTRA_WITNESS_POLL_ATTEMPTS = 4
 
+/** WHAT `clearScope` clicked, resolved once right before the click and read at
+ *  every terminal — see `resolveClickTarget`'s own comment for why each field
+ *  (especially `targetKind`/`disabled`) matters on both the success and failure
+ *  trace lines. */
+interface ClickTarget {
+  readonly target: HTMLElement
+  readonly targetKind: 'button' | 'testid-node'
+  readonly disabled: boolean
+}
+
+// Click the actionable button, not the bare testid node — X may put the testid
+// on a wrapper; clicking `.closest(button/role=button)` is the path proven to
+// un-like in the console. Falls back to the element itself.
+//
+// Snapshot WHAT we clicked, before we click it: the node is usually gone by the time
+// the verdict is traced. `target=testid-node` means no button ancestor existed, so we
+// dispatched at a wrapper X may simply ignore; `disabled` catches a control rendered
+// inert mid-flight (X disables the action bar while a mutation is in flight) — either
+// one explains a click that produced no flip without implicating our selectors. BOTH
+// terminals carry them: on `clear-flip` they say the click that worked was ordinary,
+// and on `clear-attempt-fail reason=no-flip` — the terminal they actually explain —
+// they are the difference between "X ignored our dispatch" and "the list never
+// updated". Emitting them only on success would put the evidence where the question
+// never gets asked.
+function resolveClickTarget(ctrl: HTMLElement) {
+  const closestButton = ctrl.closest('button,[role="button"]')
+  const button = closestButton instanceof HTMLElement ? closestButton : null
+  const target = button ?? ctrl
+  const targetKind = button === null ? 'testid-node' : 'button'
+  const disabled =
+    target.hasAttribute('disabled') || target.getAttribute('aria-disabled') === 'true'
+  return { target, targetKind, disabled } satisfies ClickTarget
+}
+
 export interface TweetClearerDeps {
   readonly document: Document
   /** The Drain's Clock shape (sleep-only slice) — fake time in tests. */
@@ -189,6 +223,121 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
       trace('clear-flip-fabricated', detail, tweetId)
   }
 
+  // Poll for the flip: X updates the control optimistically but the row removal /
+  // re-render can lag well past a single tick — too short a window reports a real
+  // un-like/un-bookmark as a failure. Confirm on the SAME node: its active
+  // un-control gone (flipped in place) or the row detached. When a `witness` port
+  // is supplied its verdict is consulted FIRST on every iteration (see the module
+  // doc's precedence note) — an 'ok' is authoritative regardless of the DOM, and an
+  // 'error' short-circuits the whole DOM budget since the server already answered.
+  // Returns null when the budget exhausts with no verdict either way, so the caller
+  // falls through to the extra witness-only polls (or straight to the final failure
+  // line when no witness was supplied) — same fallthrough as the original inline loop.
+  async function pollDomFlip(
+    article: Element,
+    tweetId: string,
+    scope: MembershipScope,
+    origin: ClearOrigin,
+    clickedAt: number,
+    targetKind: 'button' | 'testid-node',
+    disabled: boolean,
+  ): Promise<boolean | null> {
+    // oxlint-disable no-await-in-loop -- sequential poll with a fixed cap
+    for (let i = 1; i <= FLIP_POLL_ATTEMPTS; i++) {
+      await clock.sleep(FLIP_POLL_INTERVAL_MS)
+      if (witness) {
+        const verdict = witness.outcome(tweetId, scope, clickedAt)
+        if (verdict === 'error') {
+          traceAttemptFail(
+            tweetId,
+            scope,
+            'mutation-error',
+            i,
+            article,
+            { target: targetKind, disabled },
+            origin,
+          )
+          return false
+        }
+        if (verdict === 'ok') {
+          traceFlip(article, tweetId, scope, i, targetKind, disabled, origin, 'mutation')
+          if (onFlip) onFlip(tweetId, scope, origin)
+          return true
+        }
+      }
+      if (!flipConfirmed(article, scope)) continue
+      if (log) log(scope, `→ flip confirmed after ${i * FLIP_POLL_INTERVAL_MS}ms`)
+      const { arm, reresolved } = classifyFlip(document, article, tweetId, scope)
+      traceFlip(article, tweetId, scope, i, targetKind, disabled, origin)
+      // Discriminated flip-confirm (#62): detachment alone is not proof. The
+      // virtualizer detaches the captured node of a post that is STILL a member
+      // when a sibling release re-renders the list (diagnosis cause #1) — the
+      // fresh re-resolve splits the worlds: `member`/`ambiguous` refuse (fail-
+      // closed, latch stays re-claimable); `gone` stays deferred to the recheck
+      // watchdog that onFlip arms; `cleared` is a genuine flip on a fresh node.
+      if (arm === 'detached' && (reresolved === 'member' || reresolved === 'ambiguous'))
+        return false
+      if (onFlip) onFlip(tweetId, scope, origin)
+      return true
+    }
+    // oxlint-enable no-await-in-loop
+    return null
+  }
+
+  // Once the DOM poll budget above is exhausted with no DOM flip AND no witness
+  // verdict, give the server mutation a few more beats to land — its response can
+  // lag the DOM update on a slow connection, and the witness-only checks are cheap
+  // (no DOM work, just a Map read). Only ever called when a `witness` port was
+  // supplied (see the caller); returns null if even this budget exhausts with no
+  // verdict, matching the original inline loop's fallthrough to the final failure.
+  async function pollExtraWitnessFlip(
+    article: Element,
+    tweetId: string,
+    scope: MembershipScope,
+    origin: ClearOrigin,
+    clickedAt: number,
+    targetKind: 'button' | 'testid-node',
+    disabled: boolean,
+    activeWitness: Pick<MutationWitness, 'outcome'>,
+  ): Promise<boolean | null> {
+    // oxlint-disable no-await-in-loop -- sequential poll with a fixed cap
+    for (let j = 1; j <= EXTRA_WITNESS_POLL_ATTEMPTS; j++) {
+      await clock.sleep(EXTRA_WITNESS_POLL_INTERVAL_MS)
+      const verdict = activeWitness.outcome(tweetId, scope, clickedAt)
+      const elapsedMs = FLIP_CONFIRM_TIMEOUT_MS + j * EXTRA_WITNESS_POLL_INTERVAL_MS
+      if (verdict === 'error') {
+        traceAttemptFail(
+          tweetId,
+          scope,
+          'mutation-error',
+          FLIP_POLL_ATTEMPTS + j,
+          article,
+          { target: targetKind, disabled },
+          origin,
+          elapsedMs,
+        )
+        return false
+      }
+      if (verdict === 'ok') {
+        traceFlip(
+          article,
+          tweetId,
+          scope,
+          FLIP_POLL_ATTEMPTS + j,
+          targetKind,
+          disabled,
+          origin,
+          'mutation',
+          elapsedMs,
+        )
+        if (onFlip) onFlip(tweetId, scope, origin)
+        return true
+      }
+    }
+    // oxlint-enable no-await-in-loop
+    return null
+  }
+
   // Clear ONE scope for a tweet. Re-resolves the article by id IMMEDIATELY before
   // the click (findArticle re-checks tweetId), so a virtualized/recycled node can
   // never make us click the wrong post (spec §4.4 — the guard must run per click,
@@ -246,116 +395,38 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
       return false
     }
     /* v8 ignore stop */
-    // Click the actionable button, not the bare testid node — X may put the testid
-    // on a wrapper; clicking `.closest(button/role=button)` is the path proven to
-    // un-like in the console. Falls back to the element itself.
-    const closestButton = ctrl.closest('button,[role="button"]')
-    const button = closestButton instanceof HTMLElement ? closestButton : null
-    const target = button ?? ctrl
-    // Snapshot WHAT we clicked, before we click it: the node is usually gone by the time
-    // the verdict is traced. `target=testid-node` means no button ancestor existed, so we
-    // dispatched at a wrapper X may simply ignore; `disabled` catches a control rendered
-    // inert mid-flight (X disables the action bar while a mutation is in flight) — either
-    // one explains a click that produced no flip without implicating our selectors. BOTH
-    // terminals carry them: on `clear-flip` they say the click that worked was ordinary,
-    // and on `clear-attempt-fail reason=no-flip` — the terminal they actually explain —
-    // they are the difference between "X ignored our dispatch" and "the list never
-    // updated". Emitting them only on success would put the evidence where the question
-    // never gets asked.
-    const targetKind = button === null ? 'testid-node' : 'button'
-    const disabled =
-      target.hasAttribute('disabled') || target.getAttribute('aria-disabled') === 'true'
+    const { target, targetKind, disabled } = resolveClickTarget(ctrl)
     if (log) log(scope, '→ clicking', CLEAR_TESTID[scope].active)
     // Captured IMMEDIATELY before the click — `witness.outcome`'s `sinceT` — so a
     // mutation the tee observed for a PRIOR, unrelated attempt on this tweet (e.g. a
     // re-add the user did by hand) can never be misread as confirming THIS click.
     const clickedAt = now()
     target.click()
-    // Poll for the flip: X updates the control optimistically but the row removal /
-    // re-render can lag well past a single tick — too short a window reports a real
-    // un-like/un-bookmark as a failure. Confirm on the SAME node: its active
-    // un-control gone (flipped in place) or the row detached. When a `witness` port
-    // is supplied its verdict is consulted FIRST on every iteration (see the module
-    // doc's precedence note) — an 'ok' is authoritative regardless of the DOM, and an
-    // 'error' short-circuits the whole DOM budget since the server already answered.
-    // oxlint-disable no-await-in-loop -- sequential poll with a fixed cap
-    for (let i = 1; i <= FLIP_POLL_ATTEMPTS; i++) {
-      await clock.sleep(FLIP_POLL_INTERVAL_MS)
-      if (witness) {
-        const verdict = witness.outcome(tweetId, scope, clickedAt)
-        if (verdict === 'error') {
-          traceAttemptFail(
-            tweetId,
-            scope,
-            'mutation-error',
-            i,
-            article.value,
-            { target: targetKind, disabled },
-            origin,
-          )
-          return false
-        }
-        if (verdict === 'ok') {
-          traceFlip(article.value, tweetId, scope, i, targetKind, disabled, origin, 'mutation')
-          if (onFlip) onFlip(tweetId, scope, origin)
-          return true
-        }
-      }
-      if (!flipConfirmed(article.value, scope)) continue
-      if (log) log(scope, `→ flip confirmed after ${i * FLIP_POLL_INTERVAL_MS}ms`)
-      const { arm, reresolved } = classifyFlip(document, article.value, tweetId, scope)
-      traceFlip(article.value, tweetId, scope, i, targetKind, disabled, origin)
-      // Discriminated flip-confirm (#62): detachment alone is not proof. The
-      // virtualizer detaches the captured node of a post that is STILL a member
-      // when a sibling release re-renders the list (diagnosis cause #1) — the
-      // fresh re-resolve splits the worlds: `member`/`ambiguous` refuse (fail-
-      // closed, latch stays re-claimable); `gone` stays deferred to the recheck
-      // watchdog that onFlip arms; `cleared` is a genuine flip on a fresh node.
-      if (arm === 'detached' && (reresolved === 'member' || reresolved === 'ambiguous'))
-        return false
-      if (onFlip) onFlip(tweetId, scope, origin)
-      return true
-    }
-    // oxlint-enable no-await-in-loop
+    const primary = await pollDomFlip(
+      article.value,
+      tweetId,
+      scope,
+      origin,
+      clickedAt,
+      targetKind,
+      disabled,
+    )
+    if (primary !== null) return primary
     // The DOM budget is exhausted with no DOM flip. Give the server mutation a few
     // more beats ONLY if a witness was supplied — with none, this is unreachable and
     // behaviour is unchanged from before the witness existed.
     if (witness) {
-      // oxlint-disable no-await-in-loop -- sequential poll with a fixed cap
-      for (let j = 1; j <= EXTRA_WITNESS_POLL_ATTEMPTS; j++) {
-        await clock.sleep(EXTRA_WITNESS_POLL_INTERVAL_MS)
-        const verdict = witness.outcome(tweetId, scope, clickedAt)
-        const elapsedMs = FLIP_CONFIRM_TIMEOUT_MS + j * EXTRA_WITNESS_POLL_INTERVAL_MS
-        if (verdict === 'error') {
-          traceAttemptFail(
-            tweetId,
-            scope,
-            'mutation-error',
-            FLIP_POLL_ATTEMPTS + j,
-            article.value,
-            { target: targetKind, disabled },
-            origin,
-            elapsedMs,
-          )
-          return false
-        }
-        if (verdict === 'ok') {
-          traceFlip(
-            article.value,
-            tweetId,
-            scope,
-            FLIP_POLL_ATTEMPTS + j,
-            targetKind,
-            disabled,
-            origin,
-            'mutation',
-            elapsedMs,
-          )
-          if (onFlip) onFlip(tweetId, scope, origin)
-          return true
-        }
-      }
-      // oxlint-enable no-await-in-loop
+      const extra = await pollExtraWitnessFlip(
+        article.value,
+        tweetId,
+        scope,
+        origin,
+        clickedAt,
+        targetKind,
+        disabled,
+        witness,
+      )
+      if (extra !== null) return extra
     }
     if (log)
       log(
@@ -379,6 +450,23 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
    *  a half-opened caret menu isn't left covering the feed. */
   function dismissMenu(): void {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  }
+
+  // Poll for the menu our click opened — the one new since the snapshot. Exactly one
+  // new menu = ours; two+ is ambiguous (don't guess which is this caret's) → bail
+  // (null). Also null when the poll budget exhausts with no matching item found.
+  async function awaitCaretMenuItem(before: ReadonlySet<Element>): Promise<HTMLElement | null> {
+    let item: HTMLElement | null = null
+    // oxlint-disable no-await-in-loop -- staged poll with a fixed cap
+    for (let i = 1; i <= FLIP_POLL_ATTEMPTS && item === null; i++) {
+      await clock.sleep(FLIP_POLL_INTERVAL_MS)
+      const opened = [...document.querySelectorAll('[role="menu"]')].filter((m) => !before.has(m))
+      if (opened.length > 1) break
+      const [sole] = opened
+      if (sole) item = Option.getOrNull(findNotInterestedItem(sole))
+    }
+    // oxlint-enable no-await-in-loop
+    return item
   }
 
   // Clear a For You post by firing X's own "Not interested in this post": open the
@@ -406,17 +494,7 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
     const before = new Set(document.querySelectorAll('[role="menu"]'))
     if (log) log('notInterested', tweetId, '→ opening caret menu')
     caretTarget.click()
-    // Poll for the menu our click opened — the one new since the snapshot. Exactly one
-    // new menu = ours; two+ is ambiguous (don't guess which is this caret's) → bail.
-    let item: HTMLElement | null = null
-    // oxlint-disable no-await-in-loop -- staged poll with a fixed cap
-    for (let i = 1; i <= FLIP_POLL_ATTEMPTS && item === null; i++) {
-      await clock.sleep(FLIP_POLL_INTERVAL_MS)
-      const opened = [...document.querySelectorAll('[role="menu"]')].filter((m) => !before.has(m))
-      if (opened.length > 1) break
-      const [sole] = opened
-      if (sole) item = Option.getOrNull(findNotInterestedItem(sole))
-    }
+    const item = await awaitCaretMenuItem(before)
     if (item === null) {
       if (log) log('notInterested', '→ own menu/item not found; dismissing')
       dismissMenu()
@@ -428,6 +506,7 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
     // then FULLY hide it: click the follow-up "This post isn't relevant" so X drops the
     // post rather than leaving the "Thanks…" stub (the stub-collapse CSS hides any
     // residual). Without this the cleared post lingers as a feedback panel on the feed.
+    // oxlint-disable no-await-in-loop -- staged poll with a fixed cap
     for (let i = 1; i <= FLIP_POLL_ATTEMPTS; i++) {
       await clock.sleep(FLIP_POLL_INTERVAL_MS)
       if (notInterestedConfirmed(article)) {

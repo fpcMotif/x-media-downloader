@@ -78,21 +78,42 @@ const firstValue = (node: JsonValue | undefined): JsonObject | undefined => {
   return undefined
 }
 
+/** Safely navigate a path of keys in nested records, returning the string value or undefined. */
+const extractNestedString = (
+  base: JsonValue | undefined,
+  ...path: string[]
+): string | undefined => {
+  let current = base
+  for (const key of path) {
+    if (!isRecord(current)) return undefined
+    current = current[key]
+  }
+  return isString(current) ? current : undefined
+}
+
+/** Safely navigate a path of keys in nested records, returning the final record or undefined. */
+const extractNestedRecord = (
+  base: JsonValue | undefined,
+  ...path: string[]
+): JsonObject | undefined => {
+  let current = base
+  for (const key of path) {
+    if (!isRecord(current)) return undefined
+    current = current[key]
+  }
+  return isRecord(current) ? current : undefined
+}
+
 const unifiedMeta = (json: string): CardMeta => {
   const parsed: JsonValue = JSON.parse(json)
   if (!isRecord(parsed)) return {}
   const component = firstValue(parsed.component_objects)
   const data = isRecord(component?.data) ? component.data : undefined
-  const title =
-    isRecord(data?.title) && isString(data.title.content) ? data.title.content : undefined
-  const description =
-    isRecord(data?.subtitle) && isString(data.subtitle.content) ? data.subtitle.content : undefined
+  const title = extractNestedString(data, 'title', 'content')
+  const description = extractNestedString(data, 'subtitle', 'content')
   const destination = firstValue(parsed.destination_objects)
-  const urlData =
-    isRecord(destination?.data) && isRecord(destination.data.url_data)
-      ? destination.data.url_data
-      : undefined
-  const domain = isString(urlData?.vanity) ? urlData.vanity : undefined
+  const urlData = extractNestedRecord(destination?.data, 'url_data')
+  const domain = extractNestedString(urlData, 'vanity')
   return {
     ...(title !== undefined ? { title } : {}),
     ...(description !== undefined ? { description } : {}),

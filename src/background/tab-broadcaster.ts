@@ -219,6 +219,21 @@ type ReleasePollReason =
 /** The page-state evidence an unmounted `ClearTweetResponse` carries (Part B). */
 type ReleasePageEvidence = NonNullable<ClearTweetResponse['page']>
 
+/** What one release-tab probe told us: the tab threw (dead/no receiver), the article
+ *  is mounted (terminal — the caller performs no further probes), or it answered but
+ *  isn't mounted yet (carries whatever page evidence Part B attached, if any). */
+type ProbeResult =
+  | { readonly kind: 'threw' }
+  | { readonly kind: 'mounted'; readonly results: ReadonlyArray<ClearScopeResult> }
+  | { readonly kind: 'unmounted'; readonly page: ReleasePageEvidence | undefined }
+
+/** `runFanOut`'s verdict: a tab really flipped it (terminal), or nothing did —
+ *  `sawDiscardedMounted` distinguishes the fabricated-tail outcome downstream
+ *  (`noop-only` vs `exhausted`). */
+type FanOutOutcome =
+  | { readonly kind: 'mounted'; readonly results: ReadonlyArray<ClearScopeResult> }
+  | { readonly kind: 'exhausted'; readonly sawDiscardedMounted: boolean }
+
 /** The one folded line every `releaseViaStatusTab` exit emits — replaces the old
  *  per-poll `clear-tweet-request` / `clear-tweet-not-mounted` pairs (silenced on
  *  the content-script side once `probe: true`, Part B) with a single summary of
@@ -238,6 +253,63 @@ const formatReleasePoll = (
   `lastReady=${lastPage?.ready ?? 'none'} lastError=${lastPage?.error ?? 'none'} ` +
   `reloaded=${reloaded} elapsedMs=${elapsedMs} reason=${reason}`
 
+/** A permalink that rendered and settled on nothing: no articles, no cells, and the
+ *  page itself reports `ready=complete`. Reused by `nextEscalation`'s stuck-reload
+ *  check — pulled out on its own because it reads the ACCUMULATED `lastPage`, not
+ *  whichever page evidence the current probe carried (see `nextEscalation`). */
+const isStuckPage = (page: ReleasePageEvidence | undefined): boolean =>
+  page !== undefined && page.articles === 0 && page.cells === 0 && page.ready === 'complete'
+
+/** The readiness poll's running escalation state, carried from one probe to the next. */
+interface EscalationState {
+  readonly errorStreak: number
+  readonly stuckSince: number | undefined
+  readonly reloaded: boolean
+}
+
+/** What the poll should do about an unmounted answer: keep waiting (with the
+ *  escalation state to carry into the NEXT probe), reload the tab once (an error
+ *  streak or a stuck page — both recover the same way), or give up and arm the
+ *  breaker (a reload already happened and the page is STILL erroring). */
+type EscalationDecision =
+  | {
+      readonly action: 'wait'
+      readonly errorStreak: number
+      readonly stuckSince: number | undefined
+    }
+  | { readonly action: 'reload' }
+  | { readonly action: 'backoff' }
+
+/** Classify one unmounted answer against the poll's running state. `currentPage` is
+ *  THIS probe's evidence (drives the error streak); `lastPage` is the ACCUMULATED
+ *  evidence (falls back to an earlier probe's page when this one carried none) and
+ *  is what the stuck check reads — the two are read separately, mirroring what
+ *  `releaseViaStatusTab` used to do inline. The first probe after `tabs.update` can
+ *  still be answered by the OLD document before the navigation commits, so a lone
+ *  error answer proves nothing about the NEW page — only a STREAK of consecutive
+ *  error answers acts. Both reload causes converge on the same recovery (one
+ *  reload, with the error streak and stuck timer both cleared), so the caller needs
+ *  only ONE 'reload' action regardless of which threshold tripped. */
+const nextEscalation = (
+  currentPage: ReleasePageEvidence | undefined,
+  lastPage: ReleasePageEvidence | undefined,
+  state: EscalationState,
+  now: number,
+): EscalationDecision => {
+  const erroring = currentPage?.error === true
+  const errorStreak = erroring ? state.errorStreak + 1 : 0
+  // One erroring probe is noise; only a streak acts. `errorStreak` resets to 0
+  // whenever a probe is not erroring, so `>= 2` already implies `erroring`.
+  if (erroring && errorStreak < 2) {
+    return { action: 'wait', errorStreak, stuckSince: state.stuckSince }
+  }
+  if (errorStreak >= 2) return state.reloaded ? { action: 'backoff' } : { action: 'reload' }
+  if (!isStuckPage(lastPage)) return { action: 'wait', errorStreak, stuckSince: undefined }
+  const stuckSince = state.stuckSince ?? now
+  if (!state.reloaded && now - stuckSince >= RELEASE_STUCK_MS) return { action: 'reload' }
+  return { action: 'wait', errorStreak, stuckSince }
+}
+
 /** What a tab's `ClearTweetResponse` actually told us, for the folded dispatch line.
  * `mounted-failed` is retryable through another tab or the release tab; `no-receiver`
  * is an orphaned content script, `no-answer` is a live script that answered nothing,
@@ -247,6 +319,31 @@ const answerToken = (res: ClearTweetResponse | undefined): string => {
   if (!res.mounted) return 'unmounted'
   if (res.results.some((result) => !result.ok)) return 'mounted-failed'
   return res.results.length === 0 ? 'mounted-empty' : 'mounted-noop'
+}
+
+/** `orderProbeIds`'s verdict: the attempt order, and whether `preferTabId` actually
+ *  made it into that order. */
+interface OrderedProbeIds {
+  readonly ordered: number[]
+  readonly honoredPrefer: number | undefined
+}
+
+/** Try the originating tab FIRST (where the user downloaded): if the post is still
+ *  mounted there it answers and short-circuits, so a background Bookmarks/Likes tab
+ *  can't win and un-bookmark a post meant only for its own feed's clear. Falls back
+ *  to the rest (broadcast order) when the origin tab scrolled the post away or is
+ *  gone. `honoredPrefer` is returned SEPARATELY from the reordered list so the trace
+ *  can report whether the preference was actually HONORED: a stale `preferTabId`
+ *  silently degrades to broadcast order, which is one of the four worlds that arrive
+ *  downstream as the same failure. */
+const orderProbeIds = (probeIds: number[], preferTabId: number | undefined): OrderedProbeIds => {
+  const honoredPrefer =
+    preferTabId !== undefined && probeIds.includes(preferTabId) ? preferTabId : undefined
+  const ordered =
+    honoredPrefer !== undefined
+      ? [honoredPrefer, ...probeIds.filter((id) => id !== honoredPrefer)]
+      : probeIds
+  return { ordered, honoredPrefer }
 }
 
 const defaultTabsPort = (): TabsPort => {
@@ -421,6 +518,58 @@ export const makeTabBroadcaster = (
     return url === undefined ? undefined : listScopeOfUrl(url)
   }
 
+  /** One release-tab probe: send the request and fold the answer into a
+   *  `ProbeResult`. `allLists` rides through UNCHANGED. It used to be hard-coded
+   *  `true`, which silently promoted EVERY page-scoped release into a
+   *  clear-from-every-list one: `clearAllListsOnSave` ships false and the options UI
+   *  calls it "the most aggressive option", yet a status page's `clearableScope` is
+   *  null, so membership gating clicked BOTH un-like and un-bookmark on any post in
+   *  both lists — irreversibly, without consent.
+   *  With it ON, membership gating is still exactly right here and `asPageScope` is
+   *  deliberately OMITTED: supplying one would make `shouldClickScope` short-circuit
+   *  `scope === onScope` and fire a scope the article may not even be a member of.
+   *  With it OFF, `asPageScope` is the SEED-TIME pin — the list the user consented
+   *  to empty — so this permalink clears that one list and nothing else.
+   *  `probe: true` from the 2nd attempt: the first bare attempt still proves the
+   *  tab reached the tweet at all, so the trace shows that once; every later
+   *  attempt is expected noise the content script silences on its own side. */
+  const probeReleaseTab = async (
+    tabId: number,
+    tweetId: string,
+    scopes: Scope[],
+    allLists: boolean | undefined,
+    asPageScope: MembershipScope | undefined,
+    probes: number,
+  ): Promise<ProbeResult> => {
+    try {
+      // SAFETY: a `ClearTweetRequest` is always answered with `ClearTweetResponse`
+      // (or the tab dies and this throws instead) — the overlay's dispatch gate
+      // never replies to this tag with any other shape.
+      const res = (await tabs.sendTabMessage(tabId, {
+        _tag: 'ClearTweetRequest',
+        tweetId,
+        scopes,
+        allLists,
+        ...(asPageScope === undefined ? {} : { asPageScope }),
+        ...(probes >= 2 ? { probe: true } : {}),
+      })) as ClearTweetResponse | undefined
+      if (res?.mounted === true) return { kind: 'mounted', results: res.results }
+      return { kind: 'unmounted', page: res?.page }
+    } catch {
+      return { kind: 'threw' }
+    }
+  }
+
+  /** Reload the release tab once. A gone tab just makes the NEXT probe throw, which
+   *  the poll already degrades to unreachable/exhausted — never a special case here. */
+  const attemptReload = async (tabId: number): Promise<void> => {
+    try {
+      await tabs.reloadReleaseTab(tabId)
+    } catch {
+      /* tab gone — the next probe throws and the loop degrades to unreachable/exhausted */
+    }
+  }
+
   const releaseViaStatusTab = async (
     tweetId: string,
     scopes: Scope[],
@@ -463,9 +612,6 @@ export const makeTabBroadcaster = (
     let unmounted = 0
     let lastPage: ReleasePageEvidence | undefined
     let reloaded = false
-    // The first probe after `tabs.update` can still be answered by the OLD
-    // document before the navigation commits, so a lone error answer proves
-    // nothing about the NEW page — only two CONSECUTIVE error answers act.
     let errorStreak = 0
     let stuckSince: number | undefined
     let elapsed = 0
@@ -474,34 +620,9 @@ export const makeTabBroadcaster = (
       await clock.sleep(RELEASE_POLL_INTERVAL_MS)
       elapsed = clock.now() - start
       probes++
-      let res: ClearTweetResponse | undefined
-      try {
-        // `allLists` rides through UNCHANGED. It used to be hard-coded `true`, which
-        // silently promoted EVERY page-scoped release into a clear-from-every-list one:
-        // `clearAllListsOnSave` ships false and the options UI calls it "the most
-        // aggressive option", yet a status page's `clearableScope` is null, so
-        // membership gating clicked BOTH un-like and un-bookmark on any post in both
-        // lists — irreversibly, without consent.
-        // With it ON, membership gating is still exactly right here and `asPageScope` is
-        // deliberately OMITTED: supplying one would make `shouldClickScope` short-circuit
-        // `scope === onScope` and fire a scope the article may not even be a member of.
-        // With it OFF, `asPageScope` is the SEED-TIME pin — the list the user consented
-        // to empty — so this permalink clears that one list and nothing else.
-        // `probe: true` from the 2nd attempt: the first bare attempt still proves the
-        // tab reached the tweet at all, so the trace shows that once; every later
-        // attempt is expected noise the content script silences on its own side.
-        // SAFETY: a `ClearTweetRequest` is always answered with `ClearTweetResponse`
-        // (or the tab dies and this throws instead) — the overlay's dispatch gate
-        // never replies to this tag with any other shape.
-        res = (await tabs.sendTabMessage(tabId, {
-          _tag: 'ClearTweetRequest',
-          tweetId,
-          scopes,
-          allLists,
-          ...(asPageScope === undefined ? {} : { asPageScope }),
-          ...(probes >= 2 ? { probe: true } : {}),
-        })) as ClearTweetResponse | undefined
-      } catch {
+      const probe = await probeReleaseTab(tabId, tweetId, scopes, allLists, asPageScope, probes)
+
+      if (probe.kind === 'threw') {
         threw++
         if (threw === probes && elapsed >= RELEASE_UNREACHABLE_MS) {
           trace(
@@ -522,7 +643,8 @@ export const makeTabBroadcaster = (
         }
         continue
       }
-      if (res?.mounted === true) {
+
+      if (probe.kind === 'mounted') {
         backoffUntil = 0 // the page recovered — clear the breaker for the next leg
         trace(
           'clear-release-poll',
@@ -538,27 +660,26 @@ export const makeTabBroadcaster = (
           ),
           tweetId,
         )
-        return { ok: true, tabId, results: res.results }
+        return { ok: true, tabId, results: probe.results }
       }
+
       unmounted++
-      lastPage = res?.page ?? lastPage
-      const erroring = res?.page?.error === true
-      errorStreak = erroring ? errorStreak + 1 : 0
-      // One erroring probe is noise; only a streak acts. `errorStreak` resets to 0
-      // whenever a probe is not erroring, so `>= 2` already implies `erroring`.
-      if (erroring && errorStreak < 2) continue
-      if (errorStreak >= 2) {
-        if (!reloaded) {
-          try {
-            await tabs.reloadReleaseTab(tabId)
-          } catch {
-            /* tab gone — the next probe throws and the loop degrades to unreachable/exhausted */
-          }
-          reloaded = true
-          errorStreak = 0
-          stuckSince = undefined
-          continue
-        }
+      const currentPage = probe.page
+      lastPage = currentPage ?? lastPage
+      const decision = nextEscalation(
+        currentPage,
+        lastPage,
+        { errorStreak, stuckSince, reloaded },
+        clock.now(),
+      )
+      if (decision.action === 'reload') {
+        await attemptReload(tabId)
+        reloaded = true
+        errorStreak = 0
+        stuckSince = undefined
+        continue
+      }
+      if (decision.action === 'backoff') {
         backoffUntil = clock.now() + RELEASE_BACKOFF_MS
         trace(
           'clear-release-poll',
@@ -576,25 +697,8 @@ export const makeTabBroadcaster = (
         )
         return { ok: false, tabId }
       }
-      const stuck =
-        lastPage !== undefined &&
-        lastPage.articles === 0 &&
-        lastPage.cells === 0 &&
-        lastPage.ready === 'complete'
-      if (!stuck) {
-        stuckSince = undefined
-      } else {
-        stuckSince ??= clock.now()
-        if (!reloaded && clock.now() - stuckSince >= RELEASE_STUCK_MS) {
-          try {
-            await tabs.reloadReleaseTab(tabId)
-          } catch {
-            /* tab gone — the next probe throws and the loop degrades to unreachable/exhausted */
-          }
-          reloaded = true
-          stuckSince = undefined
-        }
-      }
+      errorStreak = decision.errorStreak
+      stuckSince = decision.stuckSince
     }
     // oxlint-enable no-await-in-loop
 
@@ -606,6 +710,142 @@ export const makeTabBroadcaster = (
       tweetId,
     )
     return { ok: false, tabId }
+  }
+
+  /** A tab id the platform no longer reports is a closed tab — forget its orphan
+   *  record rather than pin it forever. */
+  const pruneClosedOrphans = (openIds: Set<number>): void => {
+    for (const id of orphanRecords.keys()) {
+      if (!openIds.has(id)) orphanRecords.delete(id)
+    }
+  }
+
+  /** `partitionProbeCandidates`'s verdict: which ids are worth probing this
+   *  dispatch, and how many of the rest were left skipped. */
+  interface ProbeCandidates {
+    readonly probeIds: number[]
+    readonly skippedCount: number
+  }
+
+  /** Split candidate tab ids into those worth probing THIS dispatch and a count of
+   *  the rest, left unprobed because they're currently in orphan skip state (see
+   *  ORPHAN_MISS_THRESHOLD) and not yet due for a re-probe — either way a skipped
+   *  candidate counts once toward the caller's `skipped=` trace field. The origin
+   *  tab is exempt from the skip filter: `preferTabId` is the whole reason the
+   *  origin-first short-circuit exists, and a transient orphan miss must not cost
+   *  it that guarantee — probed every dispatch, skip state or not, and its record
+   *  still updates from THIS probe like any other tab's. A skipped tab is closed
+   *  over whichever comes first, wall clock or dispatch count, so a tab that never
+   *  gets ANOTHER dispatch (a quiet list tab) still gets a fresh chance eventually. */
+  const partitionProbeCandidates = (
+    candidates: number[],
+    preferTabId: number | undefined,
+  ): ProbeCandidates => {
+    const probeIds: number[] = []
+    let skippedCount = 0
+    for (const id of candidates) {
+      if (id === preferTabId) {
+        probeIds.push(id)
+        continue
+      }
+      const record = orphanRecords.get(id)
+      const due =
+        record?.skippedSince !== undefined &&
+        (clock.now() - record.skippedSince >= ORPHAN_REPROBE_MS ||
+          record.skippedDispatches >= ORPHAN_REPROBE_DISPATCHES)
+      if (record?.skippedSince !== undefined && !due) {
+        record.skippedDispatches++
+        skippedCount++
+      } else {
+        probeIds.push(id)
+      }
+    }
+    return { probeIds, skippedCount }
+  }
+
+  /** Try immediate Clear in order, stopping at the first tab that really flipped it.
+   *  `tried`/`answered`/`clearErrors` are mutated IN PLACE (not returned) so the
+   *  caller's `traceDispatch` — built before this runs — reads the same arrays/map
+   *  regardless of which exit path fires. */
+  const runFanOut = async (
+    ids: number[],
+    tweetId: string,
+    scopes: Scope[],
+    allLists: boolean | undefined,
+    tried: number[],
+    answered: string[],
+    clearErrors: Map<string, number>,
+  ): Promise<FanOutOutcome> => {
+    let sawDiscardedMounted = false
+    // oxlint-disable no-await-in-loop -- ordered ownership protocol
+    for (const id of ids) {
+      tried.push(id)
+      try {
+        // SAFETY: a `ClearTweetRequest` is always answered with `ClearTweetResponse`
+        // (or the tab dies and this throws instead) — the overlay's dispatch gate
+        // never replies to this tag with any other shape.
+        const res = (await tabs.sendTabMessage(id, {
+          _tag: 'ClearTweetRequest',
+          tweetId,
+          scopes,
+          allLists,
+        })) as ClearTweetResponse | undefined
+        clearOrphanRecord(id)
+        const attempted = res?.results.some((result) => !result.noop) === true
+        const allSucceeded = res?.results.every((result) => result.ok) === true
+        if (res?.mounted && attempted && allSucceeded) {
+          answered.push(`${id}:mounted`)
+          return { kind: 'mounted', results: res.results }
+        }
+        answered.push(`${id}:${answerToken(res)}`)
+        if (res?.mounted === true) sawDiscardedMounted = true
+      } catch (error) {
+        answered.push(`${id}:no-receiver`)
+        recordOrphanMiss(id)
+        const reason = compactReason(error instanceof Error ? error : String(error))
+        clearErrors.set(reason, (clearErrors.get(reason) ?? 0) + 1)
+      }
+    }
+    // oxlint-enable no-await-in-loop
+    return { kind: 'exhausted', sawDiscardedMounted }
+  }
+
+  /** `planReleaseScope`'s verdict: the scope the permalink page may click (already
+   *  fail-CLOSED to `undefined`), and whether the leg is worth running at all. */
+  interface ReleaseScopePlan {
+    readonly asPageScope: MembershipScope | undefined
+    readonly clickable: boolean
+  }
+
+  /** Page-scoped mode (`allLists` off — the SHIPPED DEFAULT) uses the PIN the
+   *  ledger entry was seeded with. It is never re-derived from the origin tab here:
+   *  that tab may have moved to the other list while the download ran, and a
+   *  permalink clear aimed at a list the user never pressed Release for is
+   *  irreversible. Can this leg click ANYTHING? A permalink page's own
+   *  `clearableScope` is null, so with all-lists off the pin is the only thing
+   *  `shouldClickScope` can match — and it must be one of the CLAIMED (`membership`)
+   *  scopes, or every scope no-ops. Without this check a guaranteed-no-op leg still
+   *  costs a background navigation plus the full readiness poll (up to
+   *  RELEASE_POLL_BUDGET_MS), serialized ahead of every release behind it. In
+   *  all-lists mode membership gating is already correct on a permalink page, so
+   *  `asPageScope` stays OMITTED and everything is clickable. */
+  const planReleaseScope = (
+    allLists: boolean | undefined,
+    release: ReleaseScopePin | undefined,
+    preferTabId: number | undefined,
+    membership: Scope[],
+    tweetId: string,
+  ): ReleaseScopePlan => {
+    const asPageScope = allLists === true ? undefined : pinnedScope(release)
+    if (allLists === true) return { asPageScope, clickable: true }
+    const clickable = asPageScope !== undefined && membership.includes(asPageScope)
+    trace(
+      'clear-release-scope',
+      `origin=${preferTabId ?? 'none'} asPageScope=${asPageScope ?? 'none'} ` +
+        `source=${release?.source ?? 'none'} clickable=${clickable}`,
+      tweetId,
+    )
+    return { asPageScope, clickable }
   }
 
   /** Try immediate Clear in every tab. When no tab has the post mounted, the
@@ -629,56 +869,17 @@ export const makeTabBroadcaster = (
     // A tab id the platform no longer reports is a closed tab — forget its orphan
     // record rather than pin it forever.
     const openIds = new Set(ids)
-    for (const id of orphanRecords.keys()) {
-      if (!openIds.has(id)) orphanRecords.delete(id)
-    }
+    pruneClosedOrphans(openIds)
     // The release tab is covered by the leg below, which targets it directly — probing
     // it again here would just be a second message to the same tab this dispatch.
     const excludedReleaseTabId = tabs.releaseTabId()
     const candidates = ids.filter((id) => id !== excludedReleaseTabId)
-    // A tab currently in skip state (see ORPHAN_MISS_THRESHOLD) is left unprobed unless
-    // it's due for a re-probe; either way it counts once toward `skipped=` below.
-    const probeIds: number[] = []
-    let skippedCount = 0
-    for (const id of candidates) {
-      // The origin tab is exempt from the skip filter: `preferTabId` is the whole
-      // reason the origin-first short-circuit exists, and a transient orphan miss
-      // must not cost it that guarantee — probed every dispatch, skip state or
-      // not, and its record still updates from THIS probe like any other tab's.
-      if (id === preferTabId) {
-        probeIds.push(id)
-        continue
-      }
-      const record = orphanRecords.get(id)
-      const due =
-        record?.skippedSince !== undefined &&
-        (clock.now() - record.skippedSince >= ORPHAN_REPROBE_MS ||
-          record.skippedDispatches >= ORPHAN_REPROBE_DISPATCHES)
-      if (record?.skippedSince !== undefined && !due) {
-        record.skippedDispatches++
-        skippedCount++
-      } else {
-        probeIds.push(id)
-      }
-    }
-    // Try the originating tab FIRST (where the user downloaded): if the post is still
-    // mounted there it answers and short-circuits, so a background Bookmarks/Likes tab
-    // can't win and un-bookmark a post meant only for its own feed's clear. Falls back
-    // to the rest (broadcast) when the origin tab scrolled the post away or is gone.
-    // Named (not inlined into `ordered`) so the trace can report whether the preference
-    // was actually HONORED: a stale `preferTabId` silently degrades to broadcast order,
-    // which is one of the four worlds that arrive downstream as the same failure.
-    const honoredPrefer =
-      preferTabId !== undefined && probeIds.includes(preferTabId) ? preferTabId : undefined
-    const ordered =
-      honoredPrefer !== undefined
-        ? [honoredPrefer, ...probeIds.filter((id) => id !== honoredPrefer)]
-        : probeIds
+    const { probeIds, skippedCount } = partitionProbeCandidates(candidates, preferTabId)
+    const { ordered, honoredPrefer } = orderProbeIds(probeIds, preferTabId)
     // Per-tab verdicts, folded into the single dispatch line. `tried` keeps the ATTEMPT
     // ORDER (so a dishonored preference is visible even when nothing answered).
     const tried: number[] = []
     const answered: string[] = []
-    let sawDiscardedMounted = false
     const clearErrors = new Map<string, number>()
     // `releaseTabId` is the tab the release leg actually USED, passed per exit path
     // rather than read off shared state: the leg is serialized behind a queue, so a later
@@ -695,68 +896,25 @@ export const makeTabBroadcaster = (
         tweetId,
       )
     }
-    // oxlint-disable no-await-in-loop -- ordered ownership protocol
-    for (const id of ordered) {
-      tried.push(id)
-      try {
-        // SAFETY: a `ClearTweetRequest` is always answered with `ClearTweetResponse`
-        // (or the tab dies and this throws instead) — the overlay's dispatch gate
-        // never replies to this tag with any other shape.
-        const res = (await tabs.sendTabMessage(id, {
-          _tag: 'ClearTweetRequest',
-          tweetId,
-          scopes,
-          allLists,
-        })) as ClearTweetResponse | undefined
-        clearOrphanRecord(id)
-        const attempted = res?.results.some((result) => !result.noop) === true
-        const allSucceeded = res?.results.every((result) => result.ok) === true
-        if (res?.mounted && attempted && allSucceeded) {
-          answered.push(`${id}:mounted`)
-          traceDispatch('mounted', false)
-          return res.results
-        }
-        answered.push(`${id}:${answerToken(res)}`)
-        if (res?.mounted === true) sawDiscardedMounted = true
-      } catch (error) {
-        answered.push(`${id}:no-receiver`)
-        recordOrphanMiss(id)
-        const reason = compactReason(error instanceof Error ? error : String(error))
-        clearErrors.set(reason, (clearErrors.get(reason) ?? 0) + 1)
-      }
+
+    const fanOut = await runFanOut(ordered, tweetId, scopes, allLists, tried, answered, clearErrors)
+    if (fanOut.kind === 'mounted') {
+      traceDispatch('mounted', false)
+      return fanOut.results
     }
-    // oxlint-enable no-await-in-loop
+
     // The not-mounted path: the permalink release tab. Membership scopes only — a
     // notInterested claim can act solely on the For You feed the dispatch just
     // tried, so navigating a status page for it could only fabricate a verdict.
     const membership = scopes.filter((scope) => scope !== 'notInterested')
     if (membership.length > 0) {
-      // Page-scoped mode (`allLists` off — the SHIPPED DEFAULT) uses the PIN the ledger
-      // entry was seeded with. It is never re-derived from the origin tab here: that tab
-      // may have moved to the other list while the download ran, and a permalink clear
-      // aimed at a list the user never pressed Release for is irreversible.
-      const asPageScope = allLists === true ? undefined : pinnedScope(release)
-      if (allLists !== true) {
-        // Can this leg click ANYTHING? A permalink page's own `clearableScope` is null, so
-        // with all-lists off the pin is the only thing `shouldClickScope` can match — and
-        // it must be one of the CLAIMED scopes, or every scope no-ops. Without this check
-        // a guaranteed-no-op leg still costs a background navigation plus the full
-        // readiness poll (up to RELEASE_POLL_BUDGET_MS), serialized ahead of every
-        // release behind it.
-        const clickable = asPageScope !== undefined && membership.includes(asPageScope)
-        trace(
-          'clear-release-scope',
-          `origin=${preferTabId ?? 'none'} asPageScope=${asPageScope ?? 'none'} ` +
-            `source=${release?.source ?? 'none'} clickable=${clickable}`,
-          tweetId,
-        )
-        if (!clickable) {
-          traceDispatch('release-skipped', true)
-          return scopes.map((scope) => ({ scope, ok: false }))
-        }
+      const plan = planReleaseScope(allLists, release, preferTabId, membership, tweetId)
+      if (!plan.clickable) {
+        traceDispatch('release-skipped', true)
+        return scopes.map((scope) => ({ scope, ok: false }))
       }
       const released = await releaseQueue.run(() =>
-        releaseViaStatusTab(tweetId, scopes, allLists, asPageScope),
+        releaseViaStatusTab(tweetId, scopes, allLists, plan.asPageScope),
       )
       if (released.ok) {
         traceDispatch('release-tab', false, released.tabId)
@@ -765,11 +923,12 @@ export const makeTabBroadcaster = (
       traceDispatch('release-failed', true, released.tabId)
       return scopes.map((scope) => ({ scope, ok: false }))
     }
+
     // The fabricated tail, reachable only by a notInterested-only claim. `outcome`
     // says WHICH world produced it: a tab really had the post but every scope was a
     // no-op/nothing was attempted (`noop-only`), or nothing usable answered at all —
     // zero tabs, all orphaned, all unmounted (`exhausted`).
-    const outcome = sawDiscardedMounted ? 'noop-only' : 'exhausted'
+    const outcome = fanOut.sawDiscardedMounted ? 'noop-only' : 'exhausted'
     traceDispatch(outcome, true)
     return scopes.map((scope) => ({ scope, ok: false }))
   }

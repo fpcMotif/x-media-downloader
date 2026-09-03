@@ -5,6 +5,7 @@ import {
   type DownloadTraceEntry,
   type MediaItem,
   type MetricsSnapshot,
+  type QueueUpdate,
   type Settings,
 } from '@/packages/schema'
 import {
@@ -27,6 +28,7 @@ import { refreshMediaUrlFromTabs } from '@/packages/download/media-url-refresh'
 import {
   makeDirectStrategy,
   makeSchemeRoutingStrategy,
+  type DownloadHandle,
   type DownloadStrategy,
 } from '@/packages/download/strategy'
 import { makeAria2Strategy, makeAria2RpcPort } from '@/packages/download/aria2'
@@ -37,10 +39,14 @@ import {
   makeOffscreenPort,
   makePermissionsPort,
 } from '@/packages/download/fetched-strategy'
-import { makeDownloadQueueCore } from '@/packages/download/queue'
+import { makeDownloadQueueCore, type RequestOutcome } from '@/packages/download/queue'
 import { makeSerialQueue } from '@/packages/kernel/serial-queue'
 import { isMessageAllowed } from '@/packages/kernel/sender-guard'
-import { planDownloads, partitionUsableIds } from '@/packages/download/destination'
+import {
+  planDownloads,
+  partitionUsableIds,
+  type PlannedDownload,
+} from '@/packages/download/destination'
 import { makeSizeProbe } from '@/packages/download/size-probe'
 import { type BudgetRecord } from '@/packages/download/daily-budget'
 import { type SkipReason } from '@/packages/download/admission'
@@ -108,11 +114,15 @@ import { makeTabBroadcaster } from '../background/tab-broadcaster'
 import { makeSyncOutbox } from '../background/sync-outbox'
 import { makeCloudUpload } from '../background/cloud-upload'
 import { makeSavedStatusCoordinator } from '../background/saved-status'
-import { makeAdmissionGate } from '../background/admission-gate'
+import { makeAdmissionGate, type AdmissionResult } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
 import { makeClearSession } from '../background/clear-session'
 import { applyQueueStartEffects } from '../background/queue-start-applier'
-import { applyEnqueueOutcomeEffects, applyOutcomeEffects } from '../background/outcome-effects'
+import {
+  applyEnqueueOutcomeEffects,
+  applyOutcomeEffects,
+  type EnqueueOutcomeEffectPorts,
+} from '../background/outcome-effects'
 import { makeRetryQueue } from '@/packages/download/retry-queue'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
@@ -1056,6 +1066,205 @@ const summarizeSkipped = (
   return [...counts].map(([reason, count]) => ({ reason, count }))
 }
 
+/** Build the trace detail and `QueueUpdate` reply for a batch that ended up
+ *  with nothing to schedule (all gate-skipped, already in-flight, or URL/id-
+ *  rejected). */
+const describeDedupedRequest = (
+  sweep: { readonly scope: Scope } | undefined,
+  items: ReadonlyArray<MediaItem>,
+  admission: AdmissionResult,
+  rejectFailures: ReadonlyArray<{ readonly itemId: string; readonly reason: string }>,
+  skipped: ReadonlyArray<{ reason: SkipReason; count: number }>,
+) => {
+  const detail = sweep
+    ? `scope=${sweep.scope} items=${items.length} admitted=${admission.admitted.length} skipped=${admission.skipped.length} rejected=${rejectFailures.length}`
+    : `${admission.admitted.length} admitted, ${admission.skipped.length} skipped`
+  const response = {
+    _tag: 'QueueUpdate',
+    completed: 0,
+    total: rejectFailures.length,
+    skipped,
+    ...(rejectFailures.length > 0 ? { failures: rejectFailures } : {}),
+  } satisfies QueueUpdate
+  return { detail, response }
+}
+
+/** Assemble `decideQueueStart`'s input, respecting `exactOptionalPropertyTypes`
+ *  for its three optional fields (present only when the caller actually passed
+ *  them, never explicitly `undefined`). */
+const buildQueueStartArgs = (
+  requests: ReadonlyArray<PlannedDownload>,
+  mediaById: ReadonlyMap<string, MediaItem>,
+  settings: Settings,
+  startedAt: number,
+  metrics: MetricsState | null,
+  sweep: { readonly scope: Scope } | undefined,
+  clearExpect:
+    | ReadonlyArray<{ readonly tweetId: string; readonly ids: ReadonlyArray<string> }>
+    | undefined,
+  originTabId: number | undefined,
+) => ({
+  metrics,
+  requests,
+  mediaById,
+  settings,
+  startedAt,
+  ...(sweep ? { sweep } : {}),
+  ...(clearExpect ? { clearExpect } : {}),
+  ...(originTabId === undefined ? {} : { originTabId }),
+})
+
+/** Seed in-flight bookkeeping for every admitted request: mark it in-flight,
+ *  clear any leftover interrupt-retry state, and stash its meta (URL/filename/
+ *  source item) for the onChanged/search loop and popup to read back. */
+const markRequestsInFlight = (
+  requests: ReadonlyArray<PlannedDownload>,
+  mediaById: ReadonlyMap<string, MediaItem>,
+): void => {
+  for (const r of requests) {
+    inFlight.add(r.id)
+    clearInterruptRetryState(r.id)
+    const item = mediaById.get(r.id)
+    requestMetaById.set(r.id, {
+      url: r.url,
+      filename: r.filename,
+      ...(item ? { item } : {}),
+    })
+  }
+}
+
+/** Values shared by the three per-outcome helpers below that don't change across
+ *  `res.outcomes` — built once per `handleDownload` call rather than re-derived
+ *  (and re-branched on `sweep`) on every iteration. */
+interface OutcomeApplyCtx {
+  readonly settings: Settings
+  readonly now: number
+  readonly startedAt: number
+  readonly sweep?: { readonly scope: Scope }
+  readonly enqueuePorts: EnqueueOutcomeEffectPorts
+}
+
+/** A request that failed to start (403/network/CDN/etc., or an aria2 hand-off
+ *  that never issued): drop its in-flight bookkeeping, record the clear-session
+ *  failure, apply the metrics/sync/history effects, and push the failure entry
+ *  — WITH the strategy's own reason — onto `failures` so "why didn't this
+ *  download?" is answerable from the requesting tab's own console, not just the
+ *  SW's. Returns the folded `droppedMeta` (this delete OR the value passed in),
+ *  mirroring the inline `||` the loop used to do itself. */
+const applyStartFailedOutcome = (
+  o: RequestOutcome,
+  media: MediaItem | undefined,
+  metrics: MetricsState,
+  failures: { itemId: string; reason: string }[],
+  droppedMeta: boolean,
+  ctx: OutcomeApplyCtx,
+): boolean => {
+  inFlight.delete(o.id)
+  const dropped = requestMetaById.delete(o.id) || droppedMeta
+  recordClearFailure(media?.postId, o.id)
+  const outcome: TerminalOutcome = 'failed'
+  applyEnqueueOutcomeEffects(
+    decideEnqueueOutcome({
+      metrics,
+      id: o.id,
+      outcome,
+      now: ctx.now,
+      deviceId: ctx.settings.cloudDeviceId,
+      ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
+    }),
+    ctx.enqueuePorts,
+  )
+  const reason = o.error ?? 'unknown'
+  failures.push({ itemId: o.id, reason })
+  traceBackground(traceStageForSweep('start-failed', ctx.sweep), {
+    itemId: o.id,
+    elapsedMs: ctx.now - (requestStartedAt.get(o.id) ?? ctx.startedAt),
+    detail: ctx.sweep ? `scope=${ctx.sweep.scope} reason=${redactTraceDetail(reason)}` : reason,
+  })
+  return dropped
+}
+
+/** A browser-strategy transfer started: correlate the download id so the
+ *  onChanged/search loop can find its request, arm the stuck-download watchdog,
+ *  track the transfer (media only — sidecar `.json` requests carry no badge and
+ *  are never mirrored, so they need no outcome tracking), and fold in the first
+ *  (zero-byte) sample. Returns the updated metrics for the caller to store back
+ *  onto `live`, mirroring the direct assignment the inline code used to do. */
+const applyBrowserStartedOutcome = (
+  o: RequestOutcome,
+  handle: Extract<DownloadHandle, { kind: 'browser' }>,
+  media: MediaItem | undefined,
+  metrics: MetricsState,
+  ctx: OutcomeApplyCtx,
+): MetricsState => {
+  requestIdByDownloadId.set(handle.id, o.id)
+  ensureStuckPoll() // watchdog recovers a missed terminal onChanged for this download
+  if (!o.id.endsWith('.json'))
+    transfersState = trackTransfer(transfersState, {
+      id: o.id,
+      downloadId: handle.id,
+      ...(media?.postId ? { tweetId: media.postId } : {}),
+      startedAt: requestStartedAt.get(o.id) ?? ctx.startedAt,
+    })
+  const nextMetrics = recordSample(metrics, {
+    id: o.id,
+    bytesReceived: 0,
+    totalBytes: -1,
+    t: ctx.now,
+  })
+  traceBackground(traceStageForSweep('browser-started', ctx.sweep), {
+    itemId: o.id,
+    elapsedMs: ctx.now - (requestStartedAt.get(o.id) ?? ctx.startedAt),
+    detail: ctx.sweep
+      ? `scope=${ctx.sweep.scope} downloadId=${handle.id}`
+      : `downloadId ${handle.id}`,
+  })
+  return nextMetrics
+}
+
+/** A request completed without ever entering the browser download lifecycle
+ *  (an aria2 hand-off, or a strategy that resolves complete in-process): drop
+ *  its in-flight bookkeeping and apply the metrics/sync/history effects. Returns
+ *  the folded `droppedMeta`, same fold as `applyStartFailedOutcome`. */
+const applyExternalCompleteOutcome = (
+  o: RequestOutcome,
+  handle: Extract<DownloadHandle, { kind: 'aria2' }> | undefined,
+  media: MediaItem | undefined,
+  metrics: MetricsState,
+  sizeById: ReadonlyMap<string, number | null>,
+  droppedMeta: boolean,
+  ctx: OutcomeApplyCtx,
+): boolean => {
+  inFlight.delete(o.id)
+  const dropped = requestMetaById.delete(o.id) || droppedMeta
+  const outcome: TerminalOutcome = 'complete'
+  applyEnqueueOutcomeEffects(
+    decideEnqueueOutcome({
+      metrics,
+      id: o.id,
+      outcome,
+      now: ctx.now,
+      deviceId: ctx.settings.cloudDeviceId,
+      ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
+      bytes: sizeById.get(o.id) ?? 0,
+    }),
+    ctx.enqueuePorts,
+  )
+  const externalCompleteDetail = ctx.sweep
+    ? handle
+      ? `scope=${ctx.sweep.scope} strategy=aria2 gid=${handle.gid}`
+      : `scope=${ctx.sweep.scope} strategy=external`
+    : handle
+      ? `aria2 ${handle.gid}`
+      : undefined
+  traceBackground(traceStageForSweep('external-complete', ctx.sweep), {
+    itemId: o.id,
+    elapsedMs: ctx.now - (requestStartedAt.get(o.id) ?? ctx.startedAt),
+    ...(externalCompleteDetail === undefined ? {} : { detail: externalCompleteDetail }),
+  })
+  return dropped
+}
+
 const handleDownload = (
   items: ReadonlyArray<MediaItem>,
   sweep?: { readonly scope: Scope },
@@ -1121,31 +1330,13 @@ const handleDownload = (
     // Nothing to schedule (all gate-skipped or already in flight): report with the
     // skip summary so the overlay can explain why nothing downloaded.
     if (requests.length === 0) {
-      traceBackground(traceStageForSweep('request-deduped', sweep), {
-        detail: sweep
-          ? `scope=${sweep.scope} items=${items.length} admitted=${admission.admitted.length} skipped=${admission.skipped.length} rejected=${rejectFailures.length}`
-          : `${admission.admitted.length} admitted, ${admission.skipped.length} skipped`,
-      })
+      const deduped = describeDedupedRequest(sweep, items, admission, rejectFailures, skipped)
+      traceBackground(traceStageForSweep('request-deduped', sweep), { detail: deduped.detail })
       yield* Effect.promise(() => persistSnapshot(Date.now()))
-      return {
-        _tag: 'QueueUpdate' as const,
-        completed: 0,
-        total: rejectFailures.length,
-        skipped,
-        ...(rejectFailures.length > 0 ? { failures: rejectFailures } : {}),
-      }
+      return deduped.response
     }
     const mediaById = new Map(admission.admitted.map((i) => [i.id, i]))
-    for (const r of requests) {
-      inFlight.add(r.id)
-      clearInterruptRetryState(r.id)
-      const item = mediaById.get(r.id)
-      requestMetaById.set(r.id, {
-        url: r.url,
-        filename: r.filename,
-        ...(item ? { item } : {}),
-      })
-    }
+    markRequestsInFlight(requests, mediaById)
     persistRequestMeta()
 
     // One pure start decision owns monitoring, queued mirrors/uploads, and B's
@@ -1158,16 +1349,18 @@ const handleDownload = (
         ? `scope=${sweep.scope} requests=${requests.length} concurrency=${settings.downloadConcurrency}`
         : `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
     })
-    const startFx = decideQueueStart({
-      metrics: live,
-      requests,
-      mediaById,
-      settings,
-      startedAt,
-      ...(sweep ? { sweep } : {}),
-      ...(clearExpect ? { clearExpect } : {}),
-      ...(originTabId === undefined ? {} : { originTabId }),
-    })
+    const startFx = decideQueueStart(
+      buildQueueStartArgs(
+        requests,
+        mediaById,
+        settings,
+        startedAt,
+        live,
+        sweep,
+        clearExpect,
+        originTabId,
+      ),
+    )
     live = yield* Effect.promise(() =>
       applyQueueStartEffects(startFx, startedAt, {
         resetCorrelation: () => requestIdByDownloadId.clear(),
@@ -1218,79 +1411,29 @@ const handleDownload = (
         budgetQueue.push(() => budgetStore.recordCompletion(bytes, count)),
       markMediaSaved: savedMediaIndex.markSaved,
     }
+    const outcomeCtx = {
+      settings,
+      now,
+      startedAt,
+      enqueuePorts,
+      ...(sweep ? { sweep } : {}),
+    } satisfies OutcomeApplyCtx
     for (const o of res.outcomes) {
       const media = mediaById.get(o.id)
       if (!o.ok) {
-        inFlight.delete(o.id)
-        droppedMeta = requestMetaById.delete(o.id) || droppedMeta
-        recordClearFailure(media?.postId, o.id)
-        const outcome: TerminalOutcome = 'failed'
-        applyEnqueueOutcomeEffects(
-          decideEnqueueOutcome({
-            metrics: live,
-            id: o.id,
-            outcome,
-            now,
-            deviceId: settings.cloudDeviceId,
-            ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
-          }),
-          enqueuePorts,
-        )
-        const reason = o.error ?? 'unknown'
-        failures.push({ itemId: o.id, reason })
-        traceBackground(traceStageForSweep('start-failed', sweep), {
-          itemId: o.id,
-          elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
-          detail: sweep ? `scope=${sweep.scope} reason=${redactTraceDetail(reason)}` : reason,
-        })
+        droppedMeta = applyStartFailedOutcome(o, media, live, failures, droppedMeta, outcomeCtx)
       } else if (o.handle?.kind === 'browser') {
-        requestIdByDownloadId.set(o.handle.id, o.id)
-        ensureStuckPoll() // watchdog recovers a missed terminal onChanged for this download
-        // Only media downloads enter the durable ledger; sidecar `.json` requests
-        // carry no badge and are never mirrored, so they need no outcome tracking.
-        if (!o.id.endsWith('.json'))
-          transfersState = trackTransfer(transfersState, {
-            id: o.id,
-            downloadId: o.handle.id,
-            ...(media?.postId ? { tweetId: media.postId } : {}),
-            startedAt: requestStartedAt.get(o.id) ?? startedAt,
-          })
-        live = recordSample(live, { id: o.id, bytesReceived: 0, totalBytes: -1, t: now })
-        traceBackground(traceStageForSweep('browser-started', sweep), {
-          itemId: o.id,
-          elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
-          detail: sweep
-            ? `scope=${sweep.scope} downloadId=${o.handle.id}`
-            : `downloadId ${o.handle.id}`,
-        })
+        live = applyBrowserStartedOutcome(o, o.handle, media, live, outcomeCtx)
       } else {
-        inFlight.delete(o.id)
-        droppedMeta = requestMetaById.delete(o.id) || droppedMeta
-        const outcome: TerminalOutcome = 'complete'
-        applyEnqueueOutcomeEffects(
-          decideEnqueueOutcome({
-            metrics: live,
-            id: o.id,
-            outcome,
-            now,
-            deviceId: settings.cloudDeviceId,
-            ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
-            bytes: admission.sizeById.get(o.id) ?? 0,
-          }),
-          enqueuePorts,
+        droppedMeta = applyExternalCompleteOutcome(
+          o,
+          o.handle,
+          media,
+          live,
+          admission.sizeById,
+          droppedMeta,
+          outcomeCtx,
         )
-        const externalCompleteDetail = sweep
-          ? o.handle
-            ? `scope=${sweep.scope} strategy=aria2 gid=${o.handle.gid}`
-            : `scope=${sweep.scope} strategy=external`
-          : o.handle
-            ? `aria2 ${o.handle.gid}`
-            : undefined
-        traceBackground(traceStageForSweep('external-complete', sweep), {
-          itemId: o.id,
-          elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
-          ...(externalCompleteDetail === undefined ? {} : { detail: externalCompleteDetail }),
-        })
       }
     }
     if (droppedMeta) persistRequestMeta()

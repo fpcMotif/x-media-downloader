@@ -67,42 +67,15 @@ export function planClearSeed(input: {
 }): ClearSeedVerdict {
   const { requests, mediaById, sweep, clearExpect, settings, originTabId } = input
 
-  // A sweep is strictly list-scoped: it reads clearAllListsOnSave but never
-  // mutates it, and (with it on) widens by the hook's non-notInterested scopes
-  // — the auto-hook itself is NOT widened by clearAllListsOnSave, only by its
-  // own per-scope toggles. That asymmetry is current behavior, not fixed here.
-  const scopes: Scope[] = sweep
-    ? settings.clearAllListsOnSave
-      ? [...new Set([sweep.scope, ...hookScopes(settings).filter((s) => s !== 'notInterested')])]
-      : [sweep.scope]
-    : hookScopes(settings)
+  const scopes = resolveClearScopes(sweep, settings)
   const origin: 'sweep' | 'hook' = sweep ? 'sweep' : 'hook'
-  // The sweep's own scope IS the user's consent — the list they pressed Release on —
-  // so it rides through as the release pin instead of being re-derived from a tab url
-  // once the download settles. `notInterested` pins nothing: it has no membership
-  // control, and a permalink page is not the For You feed.
-  const consentedScope: MembershipScope | undefined =
-    sweep !== undefined && sweep.scope !== 'notInterested' ? sweep.scope : undefined
+  const consentedScope = resolveConsentedScope(sweep)
 
   if (settings.downloadStrategy === 'aria2') return { decision: 'skip', reason: 'aria2' }
   if (!settings.clearOnSave) return { decision: 'skip', reason: 'clear-off' }
   if (scopes.length === 0) return { decision: 'skip', reason: 'no-scopes' }
 
-  const byTweet = new Map<string, string[]>()
-  const unclearable = new Set<string>()
-  for (const r of requests) {
-    const item = mediaById.get(r.id)
-    if (item === undefined) continue
-    // The Clear can only LOCATE a post by its numeric /status/ id (findArticle).
-    // A tweetId that fails that check (e.g. a quote-card image's media-key
-    // fallback, which belongs to a DIFFERENT post) would only defer-then-drop —
-    // or worse, wrong-clear on a stray match. Skip it; the download still runs.
-    if (!isClearableTweetId(item.postId)) {
-      unclearable.add(item.postId)
-      continue
-    }
-    byTweet.set(item.postId, [...(byTweet.get(item.postId) ?? []), r.id])
-  }
+  const { byTweet, unclearableCount } = groupClearableMedia(requests, mediaById)
 
   // For You: widen `expected` to the post's FULL media set so the clear waits
   // for every photo — a 1-of-4 grab must never mark the post Truly Complete and
@@ -118,8 +91,63 @@ export function planClearSeed(input: {
     byTweet,
     scopes,
     origin,
-    unclearableCount: unclearable.size,
+    unclearableCount,
     ...(originTabId === undefined ? {} : { originTabId }),
     ...(consentedScope === undefined ? {} : { consentedScope }),
   }
+}
+
+/**
+ * A sweep is strictly list-scoped: it reads clearAllListsOnSave but never
+ * mutates it, and (with it on) widens by the hook's non-notInterested scopes
+ * — the auto-hook itself is NOT widened by clearAllListsOnSave, only by its
+ * own per-scope toggles. That asymmetry is current behavior, not fixed here.
+ */
+function resolveClearScopes(
+  sweep: { readonly scope: Scope } | undefined,
+  settings: Settings,
+): Scope[] {
+  if (sweep === undefined) return hookScopes(settings)
+  if (!settings.clearAllListsOnSave) return [sweep.scope]
+  return [...new Set([sweep.scope, ...hookScopes(settings).filter((s) => s !== 'notInterested')])]
+}
+
+/**
+ * The sweep's own scope IS the user's consent — the list they pressed Release on —
+ * so it rides through as the release pin instead of being re-derived from a tab url
+ * once the download settles. `notInterested` pins nothing: it has no membership
+ * control, and a permalink page is not the For You feed.
+ */
+function resolveConsentedScope(
+  sweep: { readonly scope: Scope } | undefined,
+): MembershipScope | undefined {
+  if (sweep === undefined) return undefined
+  if (sweep.scope === 'notInterested') return undefined
+  return sweep.scope
+}
+
+/**
+ * Groups requests into per-tweet media id lists, skipping ids whose tweet fails
+ * the clearable check. The Clear can only LOCATE a post by its numeric /status/
+ * id (findArticle). A tweetId that fails that check (e.g. a quote-card image's
+ * media-key fallback, which belongs to a DIFFERENT post) would only
+ * defer-then-drop — or worse, wrong-clear on a stray match. Skip it; the
+ * download still runs.
+ */
+function groupClearableMedia(
+  requests: ReadonlyArray<SaveRequest>,
+  mediaById: ReadonlyMap<string, MediaItem>,
+) {
+  const byTweet = new Map<string, string[]>()
+  const unclearable = new Set<string>()
+  for (const r of requests) {
+    const item = mediaById.get(r.id)
+    if (item === undefined) continue
+    if (!isClearableTweetId(item.postId)) {
+      unclearable.add(item.postId)
+      continue
+    }
+    byTweet.set(item.postId, [...(byTweet.get(item.postId) ?? []), r.id])
+  }
+  return { byTweet, unclearableCount: unclearable.size }
 }

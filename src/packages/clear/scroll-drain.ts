@@ -98,6 +98,11 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
   let draining = false
   let cancelDrain: (() => void) | null = null
   let emptyDrainPasses = 0
+  // Reset at the top of each drainPendingClears() pass, mutated in place by
+  // clearReadyIds/runScanPass (not returned) so a mid-pass throw still leaves the
+  // finally block's report + retry decision seeing whatever was actually cleared —
+  // matching the pre-extraction single-variable behaviour exactly.
+  let clearedThisPass = 0
   interface Waiter {
     readonly scopes: ReadonlyArray<ClearScope>
     readonly resolve: (results: ReadonlyArray<ClearScopeResult>) => void
@@ -157,6 +162,105 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
     }
   }
 
+  /** Clear every pending tweet that's mounted right now, accumulating into `clearedThisPass`. */
+  async function clearReadyIds(): Promise<void> {
+    for (const id of readyToClear(pendingClears, deps.liveMountedIds())) {
+      const p = pendingClears.get(id)
+      /* v8 ignore next -- readyToClear only yields ids still in the queue */
+      if (p === undefined) continue
+      pendingClears.delete(id)
+      let results: ReadonlyArray<ClearScopeResult>
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- each pending tweet must clear in turn
+        results = await deps.clearMounted(id, p.scopes, p.allLists)
+      } catch (error) {
+        const narrowedError: Error | string = error instanceof Error ? error : String(error)
+        reportTerminal('drain-failed', id, p.scopes, failureReason(narrowedError))
+        results = p.scopes.map((scope) => ({ scope, ok: false }))
+      }
+      resolveTweet(id, p.scopes, results)
+      clearedThisPass += 1
+      deps.report('cleared', formatClearResults(results), id)
+    }
+  }
+
+  /** Run one scroll-scan pass: jump to top, then walk down in bounded steps, clearing
+   *  every pending tweet that mounts along the way (via `clearReadyIds`, which accumulates
+   *  into `clearedThisPass`). */
+  async function runScanPass(): Promise<void> {
+    // Scan from the TOP: a "download this page" batch is detected as you scroll DOWN,
+    // so the cleared posts sit ABOVE wherever you ended up — a down-only scan from the
+    // current position would miss most of them.
+    deps.scroll.to(0)
+    await deps.clock.sleep(DRAIN_SCROLL_SETTLE_MS)
+    let noProgress = 0
+    // oxlint-disable no-await-in-loop -- a paced scroll pass, one viewport at a time
+    for (let step = 0; step < DRAIN_MAX_STEPS && pendingClears.size > 0; step++) {
+      await clearReadyIds()
+      if (pendingClears.size === 0) break
+      const before = deps.scroll.position()
+      deps.scroll.by(Math.round(deps.scroll.viewport() * DRAIN_VIEWPORT_FRACTION))
+      await deps.clock.sleep(DRAIN_SCROLL_SETTLE_MS)
+      // Scroll didn't advance: either the true bottom, or X hasn't extended the
+      // virtualized feed yet (a lazy re-render after the jump to top). Only a run of
+      // stalls counts as the bottom, so a slow extension doesn't end the scan before
+      // the pending posts mount in.
+      if (deps.scroll.position() <= before) {
+        noProgress += 1
+        if (noProgress >= DRAIN_BOTTOM_STALLS) break
+      } else {
+        noProgress = 0
+      }
+    }
+    // oxlint-enable no-await-in-loop
+  }
+
+  /** What to do once a scan pass leaves work still pending. Keep going while work
+   *  remains: a pass that cleared something resets the empty budget and re-runs promptly
+   *  (more posts settle mid-scroll); a pass that cleared nothing spends one retry of a
+   *  bounded budget — a longer backoff lets a lazily re-rendering feed catch up — before
+   *  the drain finally gives up. This stops the tail of a batch being abandoned just
+   *  because one pass surfaced nothing, without ever spinning forever on posts that
+   *  genuinely aren't on this list. */
+  function classifyPostPassAction(
+    offList: boolean,
+    cleared: number,
+    emptyPassBudgetUsed: number,
+  ): 'abort-off-list' | 'reschedule-progress' | 'reschedule-retry' | 'give-up' {
+    if (offList) return 'abort-off-list'
+    if (cleared > 0) return 'reschedule-progress'
+    if (emptyPassBudgetUsed < DRAIN_MAX_EMPTY_PASSES) return 'reschedule-retry'
+    return 'give-up'
+  }
+
+  function runPostPassAction(cleared: number): void {
+    const action = classifyPostPassAction(
+      Option.isNone(pageScope(deps.path())),
+      cleared,
+      emptyDrainPasses,
+    )
+    switch (action) {
+      case 'abort-off-list':
+        failPending('drain-abort', 'off-list')
+        break
+      case 'reschedule-progress':
+        emptyDrainPasses = 0
+        scheduleDrain()
+        break
+      case 'reschedule-retry':
+        emptyDrainPasses += 1
+        deps.report(
+          'drain-retry',
+          `ordinal=${emptyDrainPasses} budget=${DRAIN_MAX_EMPTY_PASSES} pending=${pendingClears.size}`,
+        )
+        scheduleDrain(DRAIN_RETRY_BACKOFF_MS)
+        break
+      case 'give-up':
+        failPending('drain-failed', 'empty-pass-exhausted')
+        break
+    }
+  }
+
   async function drainPendingClears(): Promise<void> {
     if (draining || pendingClears.size === 0) return
     // Only auto-scroll on a Likes/Bookmarks list page — the drain is meaningless on the
@@ -169,77 +273,15 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
     }
     draining = true
     const startY = deps.scroll.position()
-    let clearedThisPass = 0
+    clearedThisPass = 0
     deps.report('drain-start', `pending=${pendingClears.size}`)
     try {
-      // Scan from the TOP: a "download this page" batch is detected as you scroll DOWN,
-      // so the cleared posts sit ABOVE wherever you ended up — a down-only scan from the
-      // current position would miss most of them.
-      deps.scroll.to(0)
-      await deps.clock.sleep(DRAIN_SCROLL_SETTLE_MS)
-      let noProgress = 0
-      // oxlint-disable no-await-in-loop -- a paced scroll pass, one viewport at a time
-      for (let step = 0; step < DRAIN_MAX_STEPS && pendingClears.size > 0; step++) {
-        for (const id of readyToClear(pendingClears, deps.liveMountedIds())) {
-          const p = pendingClears.get(id)
-          /* v8 ignore next -- readyToClear only yields ids still in the queue */
-          if (p === undefined) continue
-          pendingClears.delete(id)
-          let results: ReadonlyArray<ClearScopeResult>
-          try {
-            results = await deps.clearMounted(id, p.scopes, p.allLists)
-          } catch (error) {
-            const narrowedError: Error | string = error instanceof Error ? error : String(error)
-            reportTerminal('drain-failed', id, p.scopes, failureReason(narrowedError))
-            results = p.scopes.map((scope) => ({ scope, ok: false }))
-          }
-          resolveTweet(id, p.scopes, results)
-          clearedThisPass += 1
-          deps.report('cleared', formatClearResults(results), id)
-        }
-        if (pendingClears.size === 0) break
-        const before = deps.scroll.position()
-        deps.scroll.by(Math.round(deps.scroll.viewport() * DRAIN_VIEWPORT_FRACTION))
-        await deps.clock.sleep(DRAIN_SCROLL_SETTLE_MS)
-        // Scroll didn't advance: either the true bottom, or X hasn't extended the
-        // virtualized feed yet (a lazy re-render after the jump to top). Only a run of
-        // stalls counts as the bottom, so a slow extension doesn't end the scan before
-        // the pending posts mount in.
-        if (deps.scroll.position() <= before) {
-          noProgress += 1
-          if (noProgress >= DRAIN_BOTTOM_STALLS) break
-        } else {
-          noProgress = 0
-        }
-      }
-      // oxlint-enable no-await-in-loop
+      await runScanPass()
     } finally {
       deps.scroll.to(startY) // put the user back where they were
       draining = false
       deps.report('drain-end', `cleared=${clearedThisPass} pending=${pendingClears.size}`)
-      // Keep going while work remains. A pass that cleared something resets the empty
-      // budget and re-runs promptly (more posts settle mid-scroll); a pass that cleared
-      // nothing spends one retry of a bounded budget — a longer backoff lets a lazily
-      // re-rendering feed catch up — before the drain finally gives up. This stops the
-      // tail of a batch being abandoned just because one pass surfaced nothing, without
-      // ever spinning forever on posts that genuinely aren't on this list.
-      if (pendingClears.size > 0) {
-        if (Option.isNone(pageScope(deps.path()))) {
-          failPending('drain-abort', 'off-list')
-        } else if (clearedThisPass > 0) {
-          emptyDrainPasses = 0
-          scheduleDrain()
-        } else if (emptyDrainPasses < DRAIN_MAX_EMPTY_PASSES) {
-          emptyDrainPasses += 1
-          deps.report(
-            'drain-retry',
-            `ordinal=${emptyDrainPasses} budget=${DRAIN_MAX_EMPTY_PASSES} pending=${pendingClears.size}`,
-          )
-          scheduleDrain(DRAIN_RETRY_BACKOFF_MS)
-        } else {
-          failPending('drain-failed', 'empty-pass-exhausted')
-        }
-      }
+      if (pendingClears.size > 0) runPostPassAction(clearedThisPass)
     }
   }
 

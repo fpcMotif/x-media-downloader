@@ -12,5 +12,14 @@
   "rules": {
     "complexity": ["warn", { "max": 15, "variant": "modified" }]
   },
-  "ignorePatterns": [".output", ".wxt", "study", ".agents", ".claude", "backend", "src/components/ui"]
+  "ignorePatterns": [
+    ".output",
+    ".wxt",
+    "study",
+    ".agents",
+    ".claude",
+    "backend",
+    "src/components/ui",
+    "tools"
+  ]
 }

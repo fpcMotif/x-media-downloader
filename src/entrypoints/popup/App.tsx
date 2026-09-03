@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useRef, useState, type MutableRef } from 'preact/hooks'
 import { getSettings, setSettings } from '@/packages/settings'
 import { DOWNLOAD_MODES } from '@/packages/download/strategy'
 import { CLEAR_AFTER_DOWNLOAD } from '@/packages/clear/copy'
@@ -159,6 +159,73 @@ const openOptionsSection = (hash: string): void =>
 // options app reads location.hash on mount to select the section).
 const openCaptureArchive = (): void => openOptionsSection('capture')
 const openReleaseSettings = (): void => openOptionsSection('release')
+
+/** Compute whether a release action is viable given the current settings. */
+function canRelease(settings: Settings | null, sweepScope?: { scope: Scope }): boolean {
+  if (settings === null) return false
+  const decision = planClearSeed({
+    requests: [],
+    mediaById: new Map(),
+    ...(sweepScope ? { sweep: sweepScope } : {}),
+    settings,
+  }).decision
+  return decision === 'seed'
+}
+
+/** Create an async runner that dismisses first-run UI on success. */
+function createFirstRunAwareRunner(
+  actionRun: () => Promise<void>,
+  downloadOkRef: MutableRef<boolean>,
+  dismissFirstRun: () => void,
+): () => void {
+  return () => {
+    void (async () => {
+      await actionRun()
+      if (downloadOkRef.current) dismissFirstRun()
+    })()
+  }
+}
+
+/** Determine whether to show the active monitor (only when a batch is really running). */
+function getActiveMonitor(metrics: MetricsSnapshot | null): MetricsSnapshot | null {
+  if (!metrics || metrics.total === 0) return null
+  return metrics
+}
+
+/** Determine if the first-run intro should be displayed. */
+function shouldShowFirstRunIntro(introState: FirstRunState | null, ctx: TabContext): boolean {
+  if (introState === null || !isXContext(ctx)) return false
+  return shouldShowIntro(introState)
+}
+
+/**
+ * Determine if a download action completed successfully (not a persistent error).
+ *
+ * Actionable errors (the persist-list) are exactly the lines that must NOT count
+ * as a completed Stage action — enumerated via the predicate so a new one (the
+ * drain's own DOWNLOAD_REQUEST_FAILED) can't silently start dismissing the strip.
+ */
+function isDownloadOk(msg: string | null): boolean {
+  if (msg === null) return false
+  return !isPersistentStatus(msg)
+}
+
+/** Determine if a context is Meta-owned (Instagram or Threads). */
+function isMetaContextValue(ctx: TabContext): boolean {
+  switch (ctx) {
+    case 'instagram':
+    case 'threads':
+      return true
+    default:
+      return false
+  }
+}
+
+/** Compute the sweep-scope-adjusted release logic. */
+function getWillClearSweep(settings: Settings | null, scope: MembershipScope | undefined): boolean {
+  if (scope === undefined) return canRelease(settings)
+  return canRelease(settings, { scope })
+}
 
 // ── Zone 1 — Context strip (§2.2, §2.3) ──
 
@@ -701,10 +768,7 @@ export function App() {
   // the triggering promise settles, not after the next render.
   const downloadOkRef = useRef(false)
   const trackDownloadMsg = (m: string | null): void => {
-    // Actionable errors (the persist-list) are exactly the lines that must NOT count
-    // as a completed Stage action — enumerated via the predicate so a new one (the
-    // drain's own DOWNLOAD_REQUEST_FAILED) can't silently start dismissing the strip.
-    downloadOkRef.current = m !== null && !isPersistentStatus(m)
+    downloadOkRef.current = isDownloadOk(m)
     setDownloadMsg(m)
   }
 
@@ -717,16 +781,8 @@ export function App() {
   // list scope and releases even with all hook toggles off (seed.test.ts pins
   // that asymmetry). Computed before the loading early-return so the action
   // hooks below (which must run unconditionally) can close over it.
-  const willRelease = (sweep?: { scope: Scope }): boolean =>
-    settings !== null &&
-    planClearSeed({
-      requests: [],
-      mediaById: new Map(),
-      ...(sweep !== undefined ? { sweep } : {}),
-      settings,
-    }).decision === 'seed'
-  const willClear = willRelease()
-  const willClearSweep = scope !== undefined ? willRelease({ scope }) : willClear
+  const willClear = canRelease(settings)
+  const willClearSweep = getWillClearSweep(settings, scope)
   const aria2Caveat = settings?.clearOnSave === true && settings.downloadStrategy === 'aria2'
 
   // The reply is terminal (it settles after the background answers), so `busy` — the
@@ -866,7 +922,7 @@ export function App() {
 
   const onXTab = tabAdapter?.platform === 'x'
   const onListPage = ctx === 'x-list'
-  const isMetaContext = ctx === 'instagram' || ctx === 'threads'
+  const isMetaContext = isMetaContextValue(ctx)
 
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
@@ -880,35 +936,27 @@ export function App() {
 
   const dismissFirstRun = (): void => void markDone().then(setIntroState)
 
-  const runDrain = (): void => {
-    void (async () => {
-      await drain.run()
-      if (downloadOkRef.current) dismissFirstRun()
-    })()
-  }
-  const runSweep = (): void => {
-    void (async () => {
-      await sweep.run()
-      if (downloadOkRef.current) dismissFirstRun()
-    })()
-  }
+  const runDrain = createFirstRunAwareRunner(() => drain.run(), downloadOkRef, dismissFirstRun)
+  const runSweep = createFirstRunAwareRunner(() => sweep.run(), downloadOkRef, dismissFirstRun)
 
   const resetMonitor = async (): Promise<void> => {
     const res: { ok?: boolean } | null = await browser.runtime
       .sendMessage({ _tag: 'ClearDownloadMonitorRequest' })
       .catch(() => null)
-    if (res?.ok) setMetrics(null)
+    // Only clear if the reset was acknowledged as successful
+    if (!res?.ok) return
+    setMetrics(null)
   }
 
   // Only surface the monitor for a real download batch — not for stray hover/UI
   // trace events that also ride the metrics snapshot.
-  const monitor = metrics && metrics.total > 0 ? metrics : null
+  const monitor = getActiveMonitor(metrics)
   // Independent of `monitor`: a Release run's diagnostics can exist (and matter)
   // well after its download batch finished, or without one having been the popup's
   // own concern at all (a manual "Release the whole list…" pass, say).
   const releaseSummary = metrics?.releaseDiagnostics ?? null
 
-  const showFirstRun = introState !== null && isXContext(ctx) && shouldShowIntro(introState)
+  const showFirstRun = shouldShowFirstRunIntro(introState, ctx)
   const mod = modifierLabel(settings.quickGrabModifier)
   const mod2 = secondModifierLabel(settings.quickGrabModifier)
 
