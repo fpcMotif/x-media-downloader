@@ -19,7 +19,7 @@ const CHECKPOINTS: Checkpoint[] = [
 async function getCDPOptionsTarget(): Promise<{ wsUrl: string; extBaseUrl: string }> {
   const targets = await (await fetch('http://127.0.0.1:9222/json/list')).json()
   const optTarget = targets.find((t: { url?: string; type?: string }) =>
-    t.type === 'page' && t.url && t.url.includes('chrome-extension://') && t.url.includes('ejbfndjdeemmhccclagchbdbkinepoof')
+    t.type === 'page' && t.url && t.url.includes('chrome-extension://') && (t.url.includes('options.html') || t.url.includes('popup.html'))
   )
   if (!optTarget) {
     throw new Error('Could not find extension page target on CDP port 9222. Ensure Chrome extension is running.')
