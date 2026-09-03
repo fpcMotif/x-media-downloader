@@ -102,6 +102,11 @@ export default defineConfig({
     plugins: [preact(), tailwindcss()],
     build: {
       target: 'chrome120',
+      rollupOptions: {
+        treeshake: {
+          moduleSideEffects: false,
+        },
+      },
     },
   }),
 })
