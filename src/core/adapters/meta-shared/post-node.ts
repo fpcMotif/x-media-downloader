@@ -15,15 +15,12 @@
  * `code`+`user` — gets visited as its own independent post automatically, no
  * special-casing needed (research recommends resolving both the quoting and
  * the quoted post's media).
- *
- * NEEDS LIVE VERIFICATION before this is relied on for real detection: the
- * `pk`+`code` split is research-documented; the `code`+`user.username`
- * co-location this walker gates on is this implementation's own structural
- * assumption, not independently confirmed against a live response by this
- * codebase. If a real response places the author elsewhere (an `items[]`
- * envelope, an `owner` key, or absent on an ad-mixed wrapper node),
- * `postContext` returns `null` and that node's posts go undetected.
  */
+// NEEDS LIVE VERIFICATION: the `pk`+`code` split is research-documented; the
+// `code`+`user.username` co-location this walker gates on is an assumption.
+// If a real response places the author elsewhere (an `items[]` envelope, an
+// `owner` key, or absent on an ad-mixed wrapper node), `postContext` returns
+// `null` and that node's posts go undetected.
 
 type Obj = Record<string, unknown>
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null

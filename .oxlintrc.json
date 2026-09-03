@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react", "jsx-a11y", "vitest"],
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react", "jsx-a11y", "vitest", "jsdoc"],
   "categories": {
     "correctness": "error",
     "suspicious": "warn",
@@ -20,7 +20,8 @@
     "react/react-in-jsx-scope": "off",
     "no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
     "import/no-unassigned-import": ["warn", { "allow": ["**/*.css"] }],
-    "vitest/expect-expect": ["error", { "assertFunctionNames": ["expect", "fc.assert"] }]
+    "vitest/expect-expect": ["error", { "assertFunctionNames": ["expect", "fc.assert"] }],
+    "jsdoc/check-tag-names": ["error", { "definedTags": ["defaultValue", "remarks"], "typed": true }]
   },
   "overrides": [
     {

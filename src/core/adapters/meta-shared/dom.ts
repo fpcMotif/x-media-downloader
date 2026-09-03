@@ -74,37 +74,29 @@ export function isGrabbableMetaPhotoUrl(url: string): boolean {
 }
 
 /**
- * The stable media key for a cdninstagram.com URL: the final path segment,
- * minus extension, minus query string. Already gated on
- * {@link isGrabbableMetaPhotoUrl} — returns null for anything that isn't a
- * grabbable content photo, so callers don't need a separate predicate (unlike
- * X's `mediaKeyFromUrl`, which is deliberately ungated for historical reasons
- * — see `x/adapter.ts`'s combining wrapper).
+ * Resolves the stable media key for a `cdninstagram.com` URL: the final path
+ * segment minus extension and query string. Gated on {@link isGrabbableMetaPhotoUrl},
+ * returning null for non-content URLs.
  *
- * UNVERIFIED ASSUMPTION, NOT SETTLED: this only key-matches a DOM-rendered
- * `<img>` back to the tee's detected MediaItem if every rendition in
- * `image_versions2.candidates[]` for one asset shares the exact same
- * basename (query string aside — that part IS confirmed: see the
- * differently-`stp=`-query test case in dom.test.ts, which only varies the
- * query, not the path). Whether the basename ITSELF is stable across
- * different-dimension renditions (e.g. a 150×150 thumbnail vs. a 1080×1404
- * original) has NOT been independently re-verified against a real captured
- * `image_versions2.candidates[]` array, and a prior live observation this
- * session went the other way — that a rendered `<img>`'s srcset-selected
- * basename can differ from the tee's largest-candidate basename for the
- * same asset. If that's correct, this function under-matches: DOM-hover on
- * a smaller rendition silently fails to resolve to the tee's item (hover
- * badge never appears), or worse, `resolveHoverItem`'s placeholder fallback
- * mints a second, distinct MediaItem for the same asset. Unlike X (whose
- * `upgradePhotoUrl` forces a canonical quality via a `name=orig` QUERY
- * PARAM, leaving the basename itself untouched because X's basename was
- * never rendition-dependent in the first place), no equivalent
- * basename-normalization step exists here — if the assumption above is
- * wrong, one is needed (e.g. keying off the numeric ID prefix shared across
- * renditions rather than the full basename). Re-verify against a real
- * network capture before trusting this for anything beyond the exact-basename
- * case the current tests cover.
+ * @see ADR-0016
  */
+// UNVERIFIED ASSUMPTION, NOT SETTLED: this only key-matches a DOM-rendered
+// `<img>` back to the tee's detected MediaItem if every rendition in
+// `image_versions2.candidates[]` for one asset shares the exact same
+// basename (query string aside — that part IS confirmed: see the
+// differently-`stp=`-query test case in dom.test.ts, which only varies the
+// query, not the path). Whether the basename ITSELF is stable across
+// different-dimension renditions (e.g. a 150×150 thumbnail vs. a 1080×1404
+// original) has NOT been independently re-verified against a real captured
+// `image_versions2.candidates[]` array, and a prior live observation went
+// the other way — that a rendered `<img>`'s srcset-selected basename can differ
+// from the tee's largest-candidate basename for the same asset. If that's
+// correct, this function under-matches: DOM-hover on a smaller rendition
+// silently fails to resolve to the tee's item (hover badge never appears), or
+// worse, `resolveHoverItem`'s placeholder fallback mints a second, distinct
+// MediaItem for the same asset. Unlike X (whose `upgradePhotoUrl` forces a
+// canonical quality via a `name=orig` query parameter, leaving the basename
+// itself untouched), no equivalent basename-normalization step exists here.
 export function mediaKeyFromMetaUrl(url: string): string | null {
   let u: URL
   try {

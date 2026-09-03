@@ -4,7 +4,7 @@ import { cdnHostsForAllAdapters } from '@/core/adapters/registry'
 import type { MediaItem } from '@/packages/schema'
 
 /**
- * SSRF guard for the cloud-destinations byte path (ADR-0013 §5.3). The extension
+ * SSRF guard for the cloud-destinations byte path. The extension
  * (and any server-side fetcher) must dereference *only* a registered platform's
  * public media CDN and nothing else — never an internal address reached via a
  * crafted or redirected URL.
@@ -12,16 +12,22 @@ import type { MediaItem } from '@/packages/schema'
  * `assertAllowedMediaUrl` is a pure check (no I/O); `guardedFetch` is the single
  * egress wrapper that re-runs the check on every redirect hop. Validate both a
  * Media Item's `url` and its `previewUrl` (use `assertAllowedMediaUrls`).
+ *
+ * @see ADR-0013
  */
 export class UnsafeUrlError extends Data.TaggedError('UnsafeUrlError')<{
   readonly url: string
   readonly reason: string
 }> {}
 
-/** The adapter-registry-derived CDN allow-list (docs/adr/0019) — the single
- *  source of truth every registered platform's `cdnHosts` feeds into. Adding
- *  a platform, or a CDN host to an existing platform, widens this set purely
- *  by editing that adapter; nothing here needs to change. */
+/**
+ * The adapter-registry-derived CDN allow-list — the single source of truth
+ * every registered platform's `cdnHosts` feeds into. Adding a platform, or
+ * a CDN host to an existing platform, widens this set purely by editing
+ * that adapter; nothing here needs to change.
+ *
+ * @see ADR-0019
+ */
 const ALLOWED_CDN_HOSTS = cdnHostsForAllAdapters()
 
 /** `host` is on the allow-list iff it exactly matches an entry's `host`, or

@@ -625,10 +625,13 @@ function chooseStrategy(settings: Settings): DownloadStrategy {
   return direct
 }
 
-/** The shared terminal path for a browser download (ADR-0014). Branches ONLY on
+/** The shared terminal path for a browser download. Branches ONLY on
  *  `outcome` for: the clear-recorder, the durable outcome string (sync event +
  *  history), and the trace stage. Everything else — settle/flush ordering, the
- *  reportTransferOutcome backlink, metrics, sidecar gating — is identical. */
+ *  reportTransferOutcome backlink, metrics, sidecar gating — is identical.
+ *
+ * @see ADR-0014
+ */
 const settleBrowserDownload = async (
   id: string,
   downloadId: number,
@@ -842,7 +845,7 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
 }
 
 /**
- * Recover the outcomes that landed while the SW was dead (ADR-0002). Load the
+ * Recover the outcomes that landed while the SW was dead. Load the
  * persisted in-flight ledger, reconcile each tracked transfer against
  * `downloads.search`, then surface the terminals — a transfer that completed or
  * failed in the gap is recorded to metrics/history/sync and announced to the
@@ -860,6 +863,8 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
  * `handleDownload` during the (awaited) search window is merged back, never
  * evicted; a transfer whose search THREW (transient, not a purge) is retained for
  * the next boot rather than abandoned.
+ *
+ * @see ADR-0002
  */
 const reconcileTransfersOnBoot = async (): Promise<void> => {
   const persisted = await transfersItem.getValue()
@@ -1443,10 +1448,7 @@ const messageHandlers: MessageHandlers = {
     const releaseDiagnostics = await releaseDiagnosticsSummary()
     return releaseDiagnostics === undefined ? base : { ...base, releaseDiagnostics }
   },
-  // NOTE: this projection is an allowlist — a field added to `traceFields` but NOT
-  // added here is silently dropped for every content-script event. `tabId` is taken
-  // from `sender`, never from `msg`, so the page can't forge it (and the popup/options
-  // legs, which have no `sender.tab`, simply omit it).
+
   DownloadTraceEvent: handle<'DownloadTraceEvent'>(async (msg, sender) => {
     recordTrace({
       source: msg.source,
@@ -1463,12 +1465,6 @@ const messageHandlers: MessageHandlers = {
     return { ok: true }
   }),
   ClearDownloadMonitorRequest: () => clearDownloadMonitor(),
-  // Both of these go through `historyQueue`, like `recordHistory` — reading or
-  // erasing outside it races the queued read-modify-write. A `recordHistory`
-  // task that already read the store, then an erase, then that task's write:
-  // the erased records come back. The read is queued for the weaker reason —
-  // otherwise the popup can render a store that a queued write is about to
-  // replace.
   HistoryRequest: () =>
     historyQueue.run(async () => ({
       records: decodeStore(await historyItem.getValue()).records,
@@ -1493,16 +1489,12 @@ const messageHandlers: MessageHandlers = {
   SweepEnqueueRequest: handle<'SweepEnqueueRequest'>((msg, sender) =>
     handleSweepEnqueue(msg.scope, msg.posts, sender.tab?.id),
   ),
-  // Recover an un-teed tweet's media via the syndication endpoint (videos the
-  // DOM can't expose). Reply with the raw body; the content script parses it.
+
   RecoverTweetMediaRequest: handle<'RecoverTweetMediaRequest'>(async (msg) => {
     const body = await recoverSyndicationBody(msg.tweetId)
     return { _tag: 'RecoverTweetMediaResponse', ...(body !== null ? { body } : {}) }
   }),
-  // Knowledge Capture (spec §8/§9/§10/§12). The dispatcher persists the batch to
-  // the durable IndexedDB store (source of truth), then offers it to the opt-in
-  // Convex mirror fire-and-forget — `mirrorCaptures` gates internally and never
-  // affects the `{ stored }` reply.
+
   CaptureTweets: handle<'CaptureTweets'>(async (msg) => {
     await captureDb.putRecords(msg.records)
     const total = await captureDb.count()
@@ -1510,15 +1502,14 @@ const messageHandlers: MessageHandlers = {
     captureOutbox.mirrorCaptures(msg.records)
     return { stored: msg.records.length }
   }),
-  // Streams the store through a cursor fold — the harvest can be tens of
-  // thousands of records, and `getAll()` materialized every one of them in SW
-  // memory on each popup open just to compute three aggregates.
+
   CaptureSummaryRequest: handle<'CaptureSummaryRequest'>(async (msg) =>
     finishCaptureSummary(
       await captureDb.fold(emptyCaptureSummary(), foldCaptureSummary),
       msg.limit ?? captureRecentLimit,
     ),
   ),
+
   ExportCaptureRequest: handle<'ExportCaptureRequest'>(async (msg) => {
     const records = await captureDb.allRecords()
     const built = composeCaptureExport(records, msg.kind, msg.conversationId, Date.now())
@@ -1528,29 +1519,22 @@ const messageHandlers: MessageHandlers = {
     )
     return { ok: true, filename: built.filename, text: built.text }
   }),
+
   ClearCaptureRequest: async () => {
     const cleared = await captureDb.count()
     await captureDb.clear()
     return { cleared }
   },
-  // Build the Release diagnostics export from the durable capped log
-  // (mirrors ExportCaptureRequest's SW-builds/options-page-downloads split above).
+
   ExportDiagnosticsRequest: handle<'ExportDiagnosticsRequest'>(async () => {
-    // Flush the trailing buffer FIRST — otherwise the export silently omits the last
-    // few hundred ms of the run, which is exactly where a failing Release ends.
+    // Flush trailing buffer before reading so the last events are included.
     await flushReleaseDiagnostics()
     const log = await releaseDiagnosticsQueue.run(async () =>
       decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue()),
     )
     return composeDiagnosticsExport(log, Date.now())
   }),
-  // Release diagnostics (spec #59 ticket #63): one observed bookmark/like mutation,
-  // already re-validated by the overlay before it ever reached this message (the
-  // content script only sends this tag while `releaseMutationDiagnosticsEnabled`
-  // is on). `traceBackground` gives it the `clear-` stage prefix that admits it
-  // into the durable Release diagnostics log via `isReleaseDiagnosticsEvent`,
-  // exactly like every other Release trace line — no separate storage, no
-  // separate export path.
+
   ReleaseMutationEvent: handle<'ReleaseMutationEvent'>(async (msg) => {
     traceBackground('clear-mutation', {
       ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
@@ -1560,6 +1544,13 @@ const messageHandlers: MessageHandlers = {
   }),
 }
 
+/**
+ * MV3 background service worker.
+ *
+ * Bootstraps the download engine, registers synchronous browser event listeners
+ * (downloads, alarms, runtime messages), authorizes callers, and routes extension
+ * messages to their handlers. Rehydrates pending retries and sync queues on boot.
+ */
 export default defineBackground(() => {
   // Boot marker: prints on every service-worker start. If you DON'T see this line
   // in the SW console, the new build isn't loaded (reload the extension / check it

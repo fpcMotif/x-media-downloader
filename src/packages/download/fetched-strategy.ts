@@ -6,7 +6,10 @@ import { cdnMatchPatternsForAllAdapters } from '@/core/adapters/registry'
 import type { DownloadStrategy, SaveRequest } from './strategy'
 
 /** Every registered adapter's CDN match pattern (docs/adr/0019), requested at
- *  runtime when Fetched is enabled (ADR-0003). */
+ *  runtime when Fetched is enabled.
+ *
+ * @see ADR-0003
+ */
 export const FETCHED_HOST_PATTERNS = cdnMatchPatternsForAllAdapters()
 
 export const FETCHED_PERMISSIONS = ['offscreen'] as const
@@ -80,8 +83,10 @@ export async function ensureFetchedPermissions(port: PermissionsPort): Promise<b
 }
 
 /**
- * Fetched strategy (opt-in, ADR-0003): fetch bytes in the SW, verify content-type,
+ * Fetched strategy (opt-in): fetch bytes in the SW, verify content-type,
  * then save via an offscreen document that can call `URL.createObjectURL`.
+ *
+ * @see ADR-0003
  */
 export function makeFetchedStrategy(opts: {
   readonly permissions: PermissionsPort

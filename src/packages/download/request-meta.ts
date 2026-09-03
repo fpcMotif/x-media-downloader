@@ -4,7 +4,7 @@
  *
  * `requestMetaById` is retry-essential: `scheduleInterruptRetry`/`fireInterruptRetry`
  * read it to re-fire an interrupted browser download. It dies with the worker
- * (ADR-0002). Two durable ledgers already restore SOME of it on boot:
+ *. Two durable ledgers already restore SOME of it on boot:
  * `session:interruptRetries` (via `rehydrateInterruptRetries`, for ids the retry
  * queue owns) and — via THIS module — `session:requestMeta`, for ids `session:transfers`
  * re-seeds as still-in-progress. `TrackedTransfer` deliberately stays narrow (its own
@@ -13,6 +13,8 @@
  *
  * Pure: no `chrome.*`, no storage I/O. The background entrypoint reads/writes
  * `session:requestMeta` and feeds this module's plan.
+ *
+ * @see ADR-0002
  */
 import { Schema } from 'effect'
 import { MediaItem } from '@/packages/schema'
@@ -53,7 +55,7 @@ export interface MetaReconcilePlan {
 }
 
 /**
- * Plan the `session:requestMeta` boot reconcile (ADR-0002 companion to
+ * Plan the `session:requestMeta` boot reconcile (companion to
  * `planBootReconcile`/`partitionOwnership`). Given the ids `reconcileTransfersOnBoot`
  * is re-seeding, the retry queue's owned ids (the dual-ledger tie-break — `rehydrateInterruptRetries`
  * runs first and is authoritative for those), and the persisted record, decide what
@@ -66,6 +68,8 @@ export interface MetaReconcilePlan {
  * driver. Its persisted entry lands in `prune` (never `restore`); since the shell
  * rewrites the store from the live map, it stays mirrored while the retry is
  * pending and is reaped at settle.
+ *
+ * @see ADR-0002
  */
 export function planMetaReconcile(input: {
   readonly reSeedIds: ReadonlyArray<string>

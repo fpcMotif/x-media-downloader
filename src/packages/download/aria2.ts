@@ -5,7 +5,10 @@ import { errorReason } from '@/packages/kernel/error'
 import type { DownloadStrategy, SaveRequest } from './strategy'
 
 /** Minimal port over aria2's JSON-RPC `aria2.addUri`; resolves to the new gid.
- *  Reads the shared `FetchService` from `R` (ADR-0017) — no `fetchImpl` thread. */
+ *  Reads the shared `FetchService` from `R` — no `fetchImpl` thread.
+ *
+ * @see ADR-0017
+ */
 export interface Aria2RpcPort {
   readonly addUri: (
     urls: ReadonlyArray<string>,

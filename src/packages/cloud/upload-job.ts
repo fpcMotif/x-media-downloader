@@ -5,7 +5,7 @@ import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
 
 /**
  * UploadJob ledger — the pure state machine for the client-side cloud byte path
- * (ADR-0013), adapted from the `feat/upload-job-ledger` reducer. One job per
+ *, adapted from the `feat/upload-job-ledger` reducer. One job per
  * (media item × connected provider):
  *
  *   pending ─claim→ uploading ─┬─ recordSuccess ──→ succeeded
@@ -19,6 +19,8 @@ import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
  * the metadata outbox (`src/core/sync/outbox.ts`): deterministic jobIds make the
  * at-least-once enqueue exactly-once. A lease is a fencing token (`leaseSeq`) so a
  * zombie run after a recycle can never corrupt the live claimant.
+ *
+ * @see ADR-0013
  */
 
 export const MAX_ATTEMPTS = 5
@@ -400,13 +402,15 @@ export function summarize(ledger: JobLedger): UploadSummary {
 }
 
 /**
- * The Convex control-plane mirror shape of an UploadJob (`uploads:recordUploadJobs`,
- * ADR-0013) — the single source for the outgoing wire payload, mirroring how
+ * The Convex control-plane mirror shape of an UploadJob (`uploads:recordUploadJobs`) —
+ * the single source for the outgoing wire payload, mirroring how
  * `events.ts` pairs `SyncEvent` with its constructors. The backend `upload_jobs`
  * validator (`backend/convex/schema.ts`) is the server half of this contract;
  * keeping the projection here (typed, not an inline literal) makes a client-side
  * drift a compile error instead of a silently-swallowed mirror reject. Metadata
  * only — bytes never transit Convex.
+ *
+ * @see ADR-0013
  */
 export const WireUploadJob = Schema.Struct({
   /** Wire idempotency key `${deviceId}/${mediaId}/${provider}` (distinct from the

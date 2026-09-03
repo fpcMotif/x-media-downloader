@@ -70,11 +70,14 @@ export interface BackfillRecord {
  *  validates it on read), so this carries `unknown`. */
 export type LedgerStore = DurableStore
 
-/** Everything that executes on the ONE per-SW-life cloud runtime (ADR-0017): the
+/** Everything that executes on the ONE per-SW-life cloud runtime: the
  *  provider byte uploaders, Drive's root-folder resolve, the OAuth token grants, and
  *  the best-effort Convex mirror. Folding them behind one port keeps the single
  *  shared ManagedRuntime invariant (FetchService/SourceFetch/FolderCache) — and lets
- *  a test substitute a plain-async fake with no Effect/Layer ceremony. */
+ *  a test substitute a plain-async fake with no Effect/Layer ceremony.
+ *
+ * @see ADR-0017
+ */
 export interface CloudRuntimePort {
   uploadDrive(args: DriveArgs, input: UploadInput): Promise<UploadOutcome>
   uploadDropbox(accessToken: string, input: UploadInput): Promise<UploadOutcome>
@@ -174,7 +177,10 @@ export interface CloudUploadDeps {
   /** The interactive OAuth flow (default: `browser.identity`). */
   readonly authFlow?: AuthFlowPort
   /** The settings writer (default: the core `setSettings`). Always re-serialized
-   *  through the SW-side settingsQueue inside, so ADR-0005 single-writer holds. */
+   *  through the SW-side settingsQueue inside, so single-writer serialization holds.
+   *
+   * @see ADR-0005
+   */
   readonly setSettings?: (patch: Partial<Settings>) => Promise<Settings>
   /** The clock (default: `Date.now`). Injected so backoff/expiry assertions are deterministic. */
   readonly now?: () => number
@@ -212,10 +218,13 @@ const defaultLedgerStore = (): LedgerStore => {
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
-/** The live cloud runtime (ADR-0017): one ManagedRuntime per SW life wiring FetchService
+/** The live cloud runtime: one ManagedRuntime per SW life wiring FetchService
  *  (binds fetch once), SourceFetch (the SSRF-guarded twimg fetch), and a Ref FolderCache
  *  (handle → subfolder id) that persists across uploads. `provideMerge` keeps FetchService
- *  in the runtime's context so the Convex/OAuth ports (which read FetchService) run on it. */
+ *  in the runtime's context so the Convex/OAuth ports (which read FetchService) run on it.
+ *
+ * @see ADR-0017
+ */
 const defaultRuntimePort = (fetchImpl: typeof fetch): CloudRuntimePort => {
   const runtime = ManagedRuntime.make(
     Layer.mergeAll(DriveUploaderLive, DropboxUploaderLive).pipe(
@@ -399,8 +408,11 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     return rt.uploadDropbox(accessToken, input)
   }
 
-  /** Best-effort mirror of a job's state to the Convex control plane (ADR-0013).
-   *  Gated on Cloud Sync config; the local ledger remains authoritative. */
+  /** Best-effort mirror of a job's state to the Convex control plane.
+   *  Gated on Cloud Sync config; the local ledger remains authoritative.
+   *
+   * @see ADR-0013
+   */
   const mirrorUploadJob = async (settings: Settings, job: UploadJob): Promise<void> => {
     if (!isSyncConfigured(settings) || settings.cloudDeviceId === '') return
     try {

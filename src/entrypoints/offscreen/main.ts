@@ -1,3 +1,12 @@
+/**
+ * Offscreen document download sink.
+ *
+ * Enforces a least-privilege invariant: only the background service worker may
+ * drive this sink (`makeOffscreenPort.saveBlob`). Because `runtime.sendMessage`
+ * broadcasts to every extension frame, content scripts (which share the extension ID
+ * but carry a `sender.tab`) are rejected to prevent untrusted pages from initiating
+ * arbitrary disk downloads.
+ */
 import { isFromExtensionWorker } from '@/packages/kernel/sender-guard'
 
 interface OffscreenSaveRequest {

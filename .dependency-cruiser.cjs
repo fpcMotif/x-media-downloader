@@ -23,7 +23,6 @@ const R = PACKAGES_ROOT;
  */
 const PACKAGE_INTERNALS = `^${R}/[^/]+/[^/]+/`;
 
-/** @type {import('dependency-cruiser').IConfiguration} */
 module.exports = {
   forbidden: [
     {

@@ -1,8 +1,11 @@
 /**
  * Minimal port over Convex's public HTTP API: `POST {deployment}/api/{mutation|query}`
  * with `{path, args, format: 'json'}` → `{status: 'success'|'error', …}`. Reads
- * the shared `FetchService` from `R` (ADR-0017) — no `fetchImpl` thread, no
- * convex SDK and no WebSocket client inside the MV3 service worker (ADR-0009).
+ * the shared `FetchService` from `R` — no `fetchImpl` thread, no
+ * convex SDK and no WebSocket client inside the MV3 service worker.
+ *
+ * @see ADR-0009
+ * @see ADR-0017
  */
 import { Data, Effect, Option } from 'effect'
 import { FetchService, FetchError, makeFetchServiceLive } from '@/packages/kernel/fetch-service'

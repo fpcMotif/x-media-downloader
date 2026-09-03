@@ -24,9 +24,11 @@ export type OutboxState = typeof OutboxStateSchema.Type
 export const emptyOutbox: OutboxState = { pending: [], consecutiveFailures: 0, nextAttemptAt: 0 }
 
 /**
- * Pure reducer over the local outbox (ADR-0008 precedent: injected timestamps,
+ * Pure reducer over the local outbox (injected timestamps,
  * no Effect, no I/O). The background SW persists the state to `storage.local`
  * and drains it FIFO; idempotent eventIds make at-least-once delivery safe.
+ *
+ * @see ADR-0008
  */
 export function decodeOutbox(raw: unknown): OutboxState {
   try {

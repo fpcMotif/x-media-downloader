@@ -3,11 +3,13 @@ import { FetchService } from '@/packages/kernel/fetch-service'
 import type { OAuthConfig, OAuthTokens } from './types'
 
 /**
- * OAuth 2.0 Authorization Code + PKCE for a Chrome MV3 extension (ADR-0013 §4).
+ * OAuth 2.0 Authorization Code + PKCE for a Chrome MV3 extension.
  * Pure helpers (verifier/challenge/auth-URL/redirect-parse) are I/O-free and
  * unit-tested; `exchangeCode`/`refreshAccessToken` take an injected `fetch`
  * (the aria2/convex port convention) so they test without the network. No
  * client secret anywhere — PKCE replaces it; an extension bundle can't keep one.
+ *
+ * @see ADR-0013
  */
 export class OAuthError extends Data.TaggedError('OAuthError')<{
   readonly message: string
@@ -68,8 +70,12 @@ export function buildAuthUrl(
   return u.toString()
 }
 
-/** Extract the authorization `code` from the redirect URL, after verifying `state`.
- *  Throws {@link OAuthError} on a provider error, state mismatch, or missing code. */
+/**
+ * Extracts the authorization `code` from the redirect URL after verifying `state`
+ * to protect against CSRF and state injection.
+ *
+ * @throws OAuthError on provider rejection, CSRF state mismatch, or missing code.
+ */
 export function parseAuthRedirect(redirectUrl: string, expectedState: string): { code: string } {
   let u: URL
   try {
@@ -123,7 +129,11 @@ const requireAccessToken = (json: TokenResponse, ctx: string): Effect.Effect<str
     ? new OAuthError({ message: `${ctx} had no access_token`, context: 'no-token' })
     : Effect.succeed(json.access_token)
 
-/** POST a token grant and validate the envelope (ADR-0017: reads `FetchService`). */
+/**
+ * POST a token grant and validate the envelope (reads `FetchService`).
+ *
+ * @see ADR-0017
+ */
 const postToken = (
   cfg: OAuthConfig,
   body: Record<string, string>,

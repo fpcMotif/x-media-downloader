@@ -3,7 +3,11 @@ import { makeFetchServiceLive, type FetchService } from '@/packages/kernel/fetch
 import { makeSourceFetchLive, type SourceFetch } from './lib/source-fetch'
 import { FolderCacheLive, type FolderCache } from './lib/folder-cache'
 
-/** The services the cloud byte path reads from `R` (ADR-0017). */
+/**
+ * The services the cloud byte path reads from `R`.
+ *
+ * @see ADR-0017
+ */
 export type CloudServices = FetchService | SourceFetch | FolderCache
 
 /**

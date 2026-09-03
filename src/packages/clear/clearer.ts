@@ -407,7 +407,10 @@ export function isClearedStub(cell: Element): boolean {
 
 /** The page-level CSS hook for the collapse. Hides the stub cell's CONTENT (never
  *  the cell node itself) so it reads ~0 height while staying in layout — gentle on
- *  X's virtualization (the xtimelinefilter/ADR-0010 principle). */
+ *  X's virtualization (the xtimelinefilter collapse principle).
+ *
+ * @see ADR-0010
+ */
 export const CLEARED_STUB_ATTR = 'data-xmd-cleared'
 export const CLEARED_STUB_CSS = `${CELL_SEL}[${CLEARED_STUB_ATTR}] > *{display:none !important}`
 

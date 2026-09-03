@@ -85,65 +85,13 @@ function isViewportDominantVideo(video: Element, root: Document | DocumentFragme
 }
 
 /**
- * The postId a hovered element's Instagram post resolves to, by walking up
- * to its nearest <article> and reading that article's `/p/{code}/` link
- * fresh — or, when no <article> ancestor exists at all (a standalone
- * permalink/reel page has ZERO <article> elements anywhere on the page,
- * LIVE-VERIFIED 2026-07-05: `document.querySelector('article') === null` on
- * a real instagram.com/p/{code}/ page), falls back to the CURRENT page's own
- * `pathname` — the permalink url already carries the post's own code, a much
- * simpler signal than any further DOM walk.
+ * Resolves the post ID for a hovered element in an Instagram post.
  *
- * RISK, DISCLOSED NOT SOLVED (see the design doc's Part A): a permalink page
- * can render a "More posts" suggested-content section below the main post,
- * whose links carry OTHER, different posts' codes. LIVE-VERIFIED 2026-07-05
- * against a real permalink page (instagram.com/p/DaSs_DTmWdw/, which DOES
- * have such a section, confirmed via distinct `/{username}/p/{code}/` links
- * in the DOM): that section's cards render `<img>` thumbnails only — zero
- * `<video>` elements anywhere outside the main post (`videoCount` on the page
- * was exactly 1, matching the single real post). No hero-content DOM
- * boundary is built regardless — the pathname fallback applies
- * unconditionally once no `<article>` ancestor is found, per that clean
- * (if not exhaustively proven) live negative result.
+ * Walks up to the nearest `<article>` and reads its `/p/{code}/` link. When no
+ * `<article>` exists (standalone permalinks or Reels immersive player), falls back
+ * to the page's own pathname for single-video posts or the viewport-dominant video.
  *
- * REELS IMMERSIVE PLAYER (`/reels/{code}/`), VIEWPORT-DOMINANCE GATE
- * (live-verified 2026-07-05 and again 2026-07-06 — sibling count observed
- * both as 2 and as 6-11 across sessions, so treat the count as unbounded
- * ≥2, not a fixed number): this player is ALSO `<article>`-less, but unlike
- * a `/p/{code}/` permalink page (always exactly 1 mounted `<video>`), it
- * mounts 2+ sibling `<video>` elements simultaneously (off-screen ones
- * included) — live-verified: zero `data-*`/`id`/`aria-*` identity anywhere
- * in the ancestor chain from the visible video up to the React mount root,
- * and no `<a href>` in the whole document carries the reel's own code.
- * `location.pathname` is the ONLY signal of which reel is active, and it
- * always reflects whichever reel is currently scrolled into view.
- *
- * Originally this branch refused the pathname fallback entirely whenever
- * more than one `<video>` was reachable (gating on "exactly one `<video>`
- * reachable from `el`'s own root"), to stop every mounted sibling resolving
- * to the SAME post code (reproduced pre-fix: two distinct sibling `<video>`s
- * returned the identical key). That over-corrected: the reels player ALWAYS
- * has 2+ mounted videos, so hover never resolved there AT ALL — the
- * user-reported bug (cannot download instagram.com/reels/DaH4la4pRtC/).
- *
- * Fix: trust the pathname for the multi-video case too, but ONLY for the
- * video that is VIEWPORT-DOMINANT — strictly the largest visible-in-viewport
- * area among every mounted `<video>` in the same root, and that area must be
- * > 0 (`isViewportDominantVideo`/`visibleAreaInViewport`). Since `pathname`
- * always reflects the reel scrolled into view, the dominant video is the one
- * `pathname` actually describes — an off-screen sibling has 0 area and never
- * qualifies (preserving the old guarantee that off-screen siblings don't
- * false-positive), and an exact area tie (mid-scroll-transition, or
- * happy-dom's unstubbed all-zero rects in a test) resolves to null on BOTH
- * sides rather than guessing which one the user meant. The single-video
- * branch is untouched — unconditional pathname fallback, no dominance check
- * needed when there's nothing else it could be.
- *
- * `getRootNode()` is used rather than `el.ownerDocument` so this counts
- * correctly against a detached test fixture too, not just a real attached
- * page. `window.innerWidth`/`innerHeight` stand in for "the viewport" —
- * acceptable here because this whole code path only ever runs in a real
- * browser tab (a content script), never in a headless/offscreen context.
+ * @see ADR-0023
  */
 function postIdFromDom(el: Element, pathname: string): string | null {
   const container = findPostContainer(el, INSTAGRAM_POST_SELECTOR)

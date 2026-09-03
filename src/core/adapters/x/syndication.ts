@@ -8,8 +8,10 @@ import type { MediaItem } from '@/packages/schema'
  * when the passive GraphQL tee never saw a tweet (an SPA cache hit, a lazy-loaded
  * reply): the DOM exposes a `<video>` player but never the MP4 url, so the video
  * would otherwise go uncounted and un-downloadable. Unlike the tee (which is
- * strictly passive, ADR-0001), this issues a request — narrow, read-only, and
+ * strictly passive), this issues a request — narrow, read-only, and
  * X-owned, fired only for a video we provably failed to capture.
+ *
+ * @see ADR-0001
  */
 
 /** A tweet id is X's numeric snowflake — guard before building a URL so the

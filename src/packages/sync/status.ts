@@ -1,9 +1,11 @@
 /**
  * Make Cloud Sync failures legible. The outbox drains fire-and-forget
- * (ADR-0009) and the background swallows every error so downloads never block
+ * and the background swallows every error so downloads never block
  * on the cloud — but that left the user with a silent black box when sync was
  * misconfigured. These helpers turn a thrown drain/test error into one
  * actionable line, and shape the status the popup polls.
+ *
+ * @see ADR-0009
  */
 
 /** Result of a connection test or the latest drain attempt, as the popup sees it. */
@@ -17,7 +19,7 @@ export interface SyncStatus {
 }
 
 /**
- * Map an error thrown by `makeConvexHttpPort` (or a raw `fetch` rejection) to a
+ * Maps an error thrown by `makeConvexHttpPort` (or a raw `fetch` rejection) to a
  * message that names the likely cause and the fix. The port throws tagged errors
  * (`ConvexHttpError` with the edge `status`, `ConvexFunctionError` with the
  * server `errorMessage`, `ConvexMalformedError`), so HTTP cases switch on the
@@ -77,7 +79,7 @@ function isTagged(err: unknown): err is { _tag: string } {
   return typeof err === 'object' && err !== null && '_tag' in err
 }
 
-/** Phrase a successful drain/test for the popup. */
+/** Formats a successful drain or connection test message for the popup. */
 export function describeSyncOk(pending: number): string {
   return pending > 0
     ? `Connected ✓ — ${pending} event${pending === 1 ? '' : 's'} still queued.`

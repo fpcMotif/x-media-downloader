@@ -146,11 +146,14 @@ const releaseUrl = (tweetId: string): string => `https://x.com/i/web/status/${tw
  *  than shared because that module is a popup entrypoint the service worker must not
  *  import — the same reason `compactReason` above is inlined.
  *
- *  Platform-gated through the REGISTRY (ADR-0019 forbids ad-hoc X-specific url
+ *  Platform-gated through the REGISTRY (forbidding ad-hoc X-specific url
  *  matchers), because `pageScope` reads the PATH alone: any host whose path ends
  *  `/likes` or contains `/bookmarks` would otherwise name a membership scope and
  *  authorize a click. The popup's twin gets this for free — `tabScope` is only ever
- *  reached after `tabContext` established the adapter. */
+ *  reached after `tabContext` established the adapter.
+ *
+ * @see ADR-0019
+ */
 const listScopeOfUrl = (url: string): MembershipScope | undefined => {
   if (adapterForUrl(url)?.platform !== 'x') return undefined
   try {
