@@ -1,5 +1,5 @@
 import { renderFilename } from './filename'
-import type { MediaItem } from '@/packages/schema'
+import type { JsonValue, MediaItem } from '@/packages/schema'
 
 /** One concrete download to hand to `chrome.downloads.download`. */
 export interface PlannedDownload {
@@ -46,10 +46,12 @@ export interface RejectedMediaItemId {
  * `partitionAllowedMediaItems`: a Quick-Grab-all over a carousel should still
  * save its good slides and report the rest.
  */
-export function partitionUsableIds(items: ReadonlyArray<MediaItem>): {
+export interface PartitionedMediaItemIds {
   readonly allowed: MediaItem[]
   readonly rejected: RejectedMediaItemId[]
-} {
+}
+
+export function partitionUsableIds(items: ReadonlyArray<MediaItem>): PartitionedMediaItemIds {
   const allowed: MediaItem[] = []
   const rejected: RejectedMediaItemId[] = []
   const seen = new Set<string>()
@@ -77,28 +79,40 @@ export function sidecarFilename(mediaFilename: string): string {
   return dot > slash ? `${mediaFilename.slice(0, dot)}.json` : `${mediaFilename}.json`
 }
 
+/** The `.json` sidecar payload {@link buildSidecar} produces. Keys deliberately
+ *  stay `handle`/`tweetId` — this is a user-visible file format existing X
+ *  users may already parse; only the in-memory MediaItem field names
+ *  generalized (ADR: multi-platform design). A `type` alias (not an
+ *  `interface`): it must structurally satisfy {@link JsonValue} for
+ *  `sidecarDataUrl`, which an interface's nominal index-signature check won't. */
+export type SidecarMeta = {
+  readonly handle: string
+  readonly tweetId: string
+  readonly type: MediaItem['type']
+  readonly index: number
+  readonly url: string
+  readonly tweetUrl?: string
+  readonly capturedAt?: string
+}
+
 /** Plain metadata object for the sidecar; ctx fields are added only when present. */
-export function buildSidecar(item: MediaItem, ctx?: SidecarContext): Record<string, unknown> {
-  // Sidecar JSON keys deliberately stay `handle`/`tweetId` — this is a
-  // user-visible file format existing X users may already parse; only the
-  // in-memory MediaItem field names generalized (ADR: multi-platform design).
-  const meta: Record<string, unknown> = {
+export function buildSidecar(item: MediaItem, ctx?: SidecarContext): SidecarMeta {
+  return {
     handle: item.author,
     tweetId: item.postId,
     type: item.type,
     index: item.index,
     url: item.url,
+    ...(ctx?.tweetUrl !== undefined ? { tweetUrl: ctx.tweetUrl } : {}),
+    ...(ctx?.capturedAt !== undefined ? { capturedAt: ctx.capturedAt } : {}),
   }
-  if (ctx?.tweetUrl !== undefined) meta.tweetUrl = ctx.tweetUrl
-  if (ctx?.capturedAt !== undefined) meta.capturedAt = ctx.capturedAt
-  return meta
 }
 
 /**
  * Encode metadata as a `data:` URL routed through the same downloads path —
  * no host permissions needed. The payload round-trips via `decodeURIComponent`.
  */
-export function sidecarDataUrl(meta: unknown): string {
+export function sidecarDataUrl(meta: JsonValue): string {
   return `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(meta, null, 2))}`
 }
 

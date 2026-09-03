@@ -111,8 +111,10 @@ export function ArchivePanel() {
             placeholder="Search handles and text…"
             value={query}
             onInput={(e: Event) => {
-              setQuery((e.target as HTMLInputElement).value)
-              setVisible(PAGE_SIZE)
+              if (e.target instanceof HTMLInputElement) {
+                setQuery(e.target.value)
+                setVisible(PAGE_SIZE)
+              }
             }}
             className="min-w-[12rem] flex-1"
           />

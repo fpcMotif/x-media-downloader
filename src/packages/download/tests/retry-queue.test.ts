@@ -47,13 +47,13 @@ const baseArgs: ApplyRetryPlanArgs = {
   now: 1_000,
 }
 
-const makeDeps = (
-  over: Partial<Omit<RetryQueueDeps, 'clock' | 'store'>> = {},
-): {
-  deps: RetryQueueDeps
-  clock: ReturnType<typeof makeFakeClock>
-  store: ReturnType<typeof makeStore>
-} => {
+interface MakeDepsResult {
+  readonly deps: RetryQueueDeps
+  readonly clock: ReturnType<typeof makeFakeClock>
+  readonly store: ReturnType<typeof makeStore>
+}
+
+const makeDeps = (over: Partial<Omit<RetryQueueDeps, 'clock' | 'store'>> = {}): MakeDepsResult => {
   const clock = makeFakeClock()
   const store = makeStore()
   const deps: RetryQueueDeps = {

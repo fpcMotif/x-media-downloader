@@ -6,7 +6,7 @@ describe('makeSavedStatusCoordinator', () => {
   it('answers instantly from the local index and still queries the backstop for unknowns', async () => {
     const index = makeSavedIndex()
     index.seed(['T1'])
-    const queryConvex = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => [] as string[])
+    const queryConvex = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => [])
     const coord = makeSavedStatusCoordinator({ index, queryConvex })
 
     const res = await coord.handle({ _tag: 'SavedStatusRequest', tweetIds: ['T1', 'T2'] })
@@ -56,7 +56,7 @@ describe('makeSavedStatusCoordinator', () => {
   it('does not push when the backstop returns nothing fresh', async () => {
     const index = makeSavedIndex()
     index.seed(['T1'])
-    const queryConvex = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => [] as string[])
+    const queryConvex = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => [])
     const notifyFresh = vi.fn<(saved: ReadonlyArray<string>) => void>()
     const coord = makeSavedStatusCoordinator({ index, queryConvex, notifyFresh })
 
@@ -69,7 +69,7 @@ describe('makeSavedStatusCoordinator', () => {
 
   it('onCompleted marks the index — a later resolve returns it without querying', async () => {
     const index = makeSavedIndex()
-    const queryConvex = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => [] as string[])
+    const queryConvex = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => [])
     const coord = makeSavedStatusCoordinator({ index, queryConvex })
 
     coord.onCompleted('T7')
@@ -82,7 +82,7 @@ describe('makeSavedStatusCoordinator', () => {
   it('runs C-only when queryConvex is the sync-off no-op — answers from local seed only', async () => {
     const index = makeSavedIndex()
     index.seed(['T1'])
-    const queryConvex = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => [] as string[]) // sync unconfigured → no-op
+    const queryConvex = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => []) // sync unconfigured → no-op
     const coord = makeSavedStatusCoordinator({ index, queryConvex })
 
     const res = await coord.handle({ _tag: 'SavedStatusRequest', tweetIds: ['T1', 'T9'] })

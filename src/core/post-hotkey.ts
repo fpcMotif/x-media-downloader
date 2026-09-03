@@ -45,9 +45,8 @@ export interface PostHotkeyEvent {
 /** Whether `target` is an editable element (input/textarea/select or
  *  contentEditable) — keydowns there are text input, never hotkey presses. */
 export function isTypingTarget(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null
-  if (!el) return false
-  return el.isContentEditable === true || /^(input|textarea|select)$/i.test(el.tagName ?? '')
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || /^(input|textarea|select)$/i.test(target.tagName)
 }
 
 const isBare = (e: PostHotkeyEvent, key: string): boolean =>
@@ -64,11 +63,7 @@ const isBare = (e: PostHotkeyEvent, key: string): boolean =>
  * - Anything else — modified `d`, `Shift+D`, auto-repeated `d`, modifier
  *   keydowns themselves — breaks the sequence.
  */
-export function postHotkeyKey(
-  state: PostHotkeyState,
-  e: PostHotkeyEvent,
-  now: number,
-): { state: PostHotkeyState; action: PostHotkeyAction } {
+export function postHotkeyKey(state: PostHotkeyState, e: PostHotkeyEvent, now: number) {
   if (isTypingTarget(e.target)) return { state, action: null }
   if (isBare(e, 'g')) return { state: { dArmedAt: 0, gArmedAt: now }, action: null }
   if (isBare(e, 'd')) {

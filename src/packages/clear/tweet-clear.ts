@@ -17,6 +17,16 @@
  * a "flip" confirmed only because the captured node detached. The `clear-*` stages below
  * separate them, and carry ONLY stage tokens, scope names, `data-testid` strings,
  * counters and counter-derived ms — never post text, handles, URLs or `textContent`.
+ *
+ * Precedence (when a `witness` port is supplied): the SERVER's own mutation verdict
+ * outranks the DOM. Every poll iteration checks `witness.outcome` first — `'ok'` reports
+ * a confirmed flip (`arm=mutation`) regardless of what the DOM shows (the fix for
+ * virtualized worklists like `/i/history`, where a stale/ghost row never visibly flips
+ * even though X already dropped the post), and `'error'` reports `reason=mutation-error`
+ * immediately (the server rejected the mutation; no point waiting out the DOM budget).
+ * `'none'` — the tee hasn't seen a matching mutation yet — falls through to the ORIGINAL
+ * DOM-flip check unchanged. With no `witness` port at all, behaviour is byte-identical to
+ * before: DOM-only is the fallback, never the primary signal, when the tee saw nothing.
  */
 import { Option } from 'effect'
 import type { ClearScope } from '@/packages/schema'
@@ -38,6 +48,7 @@ import {
   type MembershipScope,
   notInterestedConfirmed,
 } from './clearer'
+import type { MutationWitness } from './mutation-witness'
 
 // Poll for the post-click testid flip. X updates the control optimistically, but
 // the row removal / re-render can lag well past a single tick, so we poll a fixed
@@ -45,6 +56,14 @@ import {
 const FLIP_POLL_INTERVAL_MS = 200
 const FLIP_POLL_ATTEMPTS = 6
 const FLIP_CONFIRM_TIMEOUT_MS = FLIP_POLL_ATTEMPTS * FLIP_POLL_INTERVAL_MS
+
+// Once the DOM poll budget above is exhausted with no DOM flip AND no witness
+// verdict, give the server mutation a few more beats to land — its response can
+// lag the DOM update on a slow connection, and the witness-only checks are cheap
+// (no DOM work, just a Map read). Skipped entirely when no `witness` port was
+// supplied, so behaviour without one is unchanged.
+const EXTRA_WITNESS_POLL_INTERVAL_MS = 250
+const EXTRA_WITNESS_POLL_ATTEMPTS = 4
 
 export interface TweetClearerDeps {
   readonly document: Document
@@ -65,9 +84,17 @@ export interface TweetClearerDeps {
    *  re-appearance watchdog. A flip confirmed via the `detached` arm may be fabricated
    *  (see `traceFlip`), and only a later re-observation of the post can prove it. */
   readonly onFlip?: ((tweetId: string, scope: ClearScope, origin: ClearOrigin) => void) | undefined
+  /** The server's own mutation verdict (see the module doc for precedence). Absent
+   *  in tests that don't wire one and (defensively) never on platforms other than
+   *  X — DOM-only fallback, byte-identical to the pre-witness behaviour. */
+  readonly witness?: Pick<MutationWitness, 'outcome'> | undefined
+  /** Clock read at click time so the witness knows which mutations postdate THIS
+   *  click (`witness.outcome`'s `sinceT`). Defaults to `Date.now` — fake it in
+   *  tests to pin `clickedAt` deterministically alongside the fake `clock`. */
+  readonly now?: (() => number) | undefined
 }
 
-export function makeTweetClearer(deps: TweetClearerDeps): {
+export function makeTweetClearer(deps: TweetClearerDeps) {
   /** Clear ONE scope for a tweet by clicking X's own control and confirming the flip.
    *  Invariants: re-resolves the article by id immediately before EVERY click; member ⇒
    *  click + confirm flip on a freshly re-resolved node within ATTEMPTS×INTERVAL;
@@ -78,30 +105,38 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
    *  emits its verdict through `trace` (`clear-flip` / `clear-attempt-fail` /
    *  `clear-already-cleared`, each carrying `origin=` — WHICH call path fired this
    *  clear, see `ClearOrigin`), and a confirmed flip additionally calls `onFlip`. */
-  readonly clearScope: (tweetId: string, scope: ClearScope, origin: ClearOrigin) => Promise<boolean>
-} {
-  const { document, clock, log, trace, onFlip } = deps
+  const { document, clock, log, trace, onFlip, witness, now = Date.now } = deps
 
-  /** The three fail-closed `return false` paths of the flip flow, in ONE vocabulary so
-   *  "the post isn't on this page", "X renamed our control" and "the click never took"
-   *  can never be read as each other. `attempts`/`elapsedMs` derive from the poll counter
-   *  × the interval — never a wall clock — so the line is deterministic.
+  /** The four fail-closed `return false` paths of the flip flow, in ONE vocabulary so
+   *  "the post isn't on this page", "X renamed our control", "the click never took" and
+   *  "the server itself rejected the mutation" can never be read as each other.
+   *  `attempts`/`elapsedMs` derive from the poll counter × the interval — never a wall
+   *  clock — so the line is deterministic; `elapsedMsOverride` exists ONLY for
+   *  `reason=mutation-error` raised during the extra witness-only polls, whose interval
+   *  (`EXTRA_WITNESS_POLL_INTERVAL_MS`) differs from the ordinary DOM poll's.
    *
    *  `reason=no-article` is the one line a `notInterested` clear can also emit: it is
    *  raised before the caret-menu flow branches off, and it is content-free (a scope name
    *  and two zeroes), so it is left reachable rather than special-cased — a "the post
    *  isn't mounted" failure is worth the same line whichever flow would have handled it.
-   *  Everything downstream of that branch is `bookmark`/`like` only. */
+   *  Everything downstream of that branch is `bookmark`/`like` only.
+   *
+   *  `reason=mutation-error` is the ONE reason with no DOM story at all: the server
+   *  answered the confirming mutation with a non-200 or an in-body error signal, which
+   *  is stronger evidence than any DOM read could ever be — reported the instant the
+   *  witness sees it, without waiting out the rest of the poll budget. */
   const traceAttemptFail = (
     tweetId: string,
     scope: ClearScope,
-    reason: 'no-article' | 'no-control' | 'no-flip',
+    reason: 'no-article' | 'no-control' | 'no-flip' | 'mutation-error',
     attempts: number,
     article: Element | null,
-    /** What we dispatched at, on the ONE reason that follows a click (`no-flip`); null on
-     *  the two that never clicked, so the tokens' presence itself says a click happened. */
+    /** What we dispatched at, on the reasons that follow a click (`no-flip`,
+     *  `mutation-error`); null on the two that never clicked, so the tokens' presence
+     *  itself says a click happened. */
     click: { readonly target: 'button' | 'testid-node'; readonly disabled: boolean } | null,
     origin: ClearOrigin,
+    elapsedMsOverride?: number,
   ): void => {
     if (!trace) return
     // No article ⇒ nothing to enumerate. Omit the token entirely: an EMPTY `testids=`
@@ -112,20 +147,27 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
     // hypotheses that exonerate our selectors (we dispatched at a wrapper X ignores; the
     // control was inert when we clicked it) and they are unreadable from anywhere else.
     const clicked = click === null ? '' : ` target=${click.target} disabled=${click.disabled}`
+    const elapsedMs = elapsedMsOverride ?? attempts * FLIP_POLL_INTERVAL_MS
     trace(
       'clear-attempt-fail',
-      `scope=${scope} reason=${reason} attempts=${attempts} elapsedMs=${attempts * FLIP_POLL_INTERVAL_MS}${clicked}${testids} origin=${origin}`,
+      `scope=${scope} reason=${reason} attempts=${attempts} elapsedMs=${elapsedMs}${clicked}${testids} origin=${origin}`,
       tweetId,
     )
   }
 
-  /** The DOM-flip verdict, made production-visible — WHY we believe the post left the
+  /** The flip verdict, made production-visible — WHY we believe the post left the
    *  list, not just that we believe it. `classifyFlip` (shared with the manual-release
    *  path in the overlay's handlers, so the `arm=`/`reresolved=` vocabulary never forks)
    *  does the actual re-resolve; this wrapper only formats + emits. A `detached` arm
    *  whose fresh re-resolve reads `member` is the fabricated-flip smoking gun — loud
    *  enough on its own line (`clear-flip-fabricated`) that a diagnostician doesn't have
-   *  to parse tokens out of the ordinary `clear-flip` line to find it. */
+   *  to parse tokens out of the ordinary `clear-flip` line to find it.
+   *
+   *  `armOverride`/`elapsedMsOverride` exist for the `witness` 'ok' verdict: `arm=mutation`
+   *  says the SERVER confirmed the release (never `testid`/`detached`, which are DOM-only
+   *  reads), but `classifyFlip` still runs — a fresh `reresolved=` keeps the line
+   *  comparable to every ordinary `clear-flip`, and `arm==='detached'` can never fire the
+   *  fabricated-flip line here since the override always wins that check. */
   const traceFlip = (
     article: Element,
     tweetId: string,
@@ -134,10 +176,14 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
     target: 'button' | 'testid-node',
     disabled: boolean,
     origin: ClearOrigin,
+    armOverride?: 'mutation',
+    elapsedMsOverride?: number,
   ): void => {
     if (!trace) return
-    const { arm, reresolved } = classifyFlip(document, article, tweetId, scope)
-    const detail = `scope=${scope} arm=${arm} attempt=${attempt} elapsedMs=${attempt * FLIP_POLL_INTERVAL_MS} target=${target} disabled=${disabled} reresolved=${reresolved} origin=${origin}`
+    const { arm: domArm, reresolved } = classifyFlip(document, article, tweetId, scope)
+    const arm = armOverride ?? domArm
+    const elapsedMs = elapsedMsOverride ?? attempt * FLIP_POLL_INTERVAL_MS
+    const detail = `scope=${scope} arm=${arm} attempt=${attempt} elapsedMs=${elapsedMs} target=${target} disabled=${disabled} reresolved=${reresolved} origin=${origin}`
     trace('clear-flip', detail, tweetId)
     if (arm === 'detached' && reresolved === 'member')
       trace('clear-flip-fabricated', detail, tweetId)
@@ -203,7 +249,8 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
     // Click the actionable button, not the bare testid node — X may put the testid
     // on a wrapper; clicking `.closest(button/role=button)` is the path proven to
     // un-like in the console. Falls back to the element itself.
-    const button = ctrl.closest('button,[role="button"]') as HTMLElement | null
+    const closestButton = ctrl.closest('button,[role="button"]')
+    const button = closestButton instanceof HTMLElement ? closestButton : null
     const target = button ?? ctrl
     // Snapshot WHAT we clicked, before we click it: the node is usually gone by the time
     // the verdict is traced. `target=testid-node` means no button ancestor existed, so we
@@ -219,14 +266,41 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
     const disabled =
       target.hasAttribute('disabled') || target.getAttribute('aria-disabled') === 'true'
     if (log) log(scope, '→ clicking', CLEAR_TESTID[scope].active)
+    // Captured IMMEDIATELY before the click — `witness.outcome`'s `sinceT` — so a
+    // mutation the tee observed for a PRIOR, unrelated attempt on this tweet (e.g. a
+    // re-add the user did by hand) can never be misread as confirming THIS click.
+    const clickedAt = now()
     target.click()
     // Poll for the flip: X updates the control optimistically but the row removal /
     // re-render can lag well past a single tick — too short a window reports a real
     // un-like/un-bookmark as a failure. Confirm on the SAME node: its active
-    // un-control gone (flipped in place) or the row detached.
+    // un-control gone (flipped in place) or the row detached. When a `witness` port
+    // is supplied its verdict is consulted FIRST on every iteration (see the module
+    // doc's precedence note) — an 'ok' is authoritative regardless of the DOM, and an
+    // 'error' short-circuits the whole DOM budget since the server already answered.
     // oxlint-disable no-await-in-loop -- sequential poll with a fixed cap
     for (let i = 1; i <= FLIP_POLL_ATTEMPTS; i++) {
       await clock.sleep(FLIP_POLL_INTERVAL_MS)
+      if (witness) {
+        const verdict = witness.outcome(tweetId, scope, clickedAt)
+        if (verdict === 'error') {
+          traceAttemptFail(
+            tweetId,
+            scope,
+            'mutation-error',
+            i,
+            article.value,
+            { target: targetKind, disabled },
+            origin,
+          )
+          return false
+        }
+        if (verdict === 'ok') {
+          traceFlip(article.value, tweetId, scope, i, targetKind, disabled, origin, 'mutation')
+          if (onFlip) onFlip(tweetId, scope, origin)
+          return true
+        }
+      }
       if (!flipConfirmed(article.value, scope)) continue
       if (log) log(scope, `→ flip confirmed after ${i * FLIP_POLL_INTERVAL_MS}ms`)
       const { arm, reresolved } = classifyFlip(document, article.value, tweetId, scope)
@@ -243,6 +317,46 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
       return true
     }
     // oxlint-enable no-await-in-loop
+    // The DOM budget is exhausted with no DOM flip. Give the server mutation a few
+    // more beats ONLY if a witness was supplied — with none, this is unreachable and
+    // behaviour is unchanged from before the witness existed.
+    if (witness) {
+      // oxlint-disable no-await-in-loop -- sequential poll with a fixed cap
+      for (let j = 1; j <= EXTRA_WITNESS_POLL_ATTEMPTS; j++) {
+        await clock.sleep(EXTRA_WITNESS_POLL_INTERVAL_MS)
+        const verdict = witness.outcome(tweetId, scope, clickedAt)
+        const elapsedMs = FLIP_CONFIRM_TIMEOUT_MS + j * EXTRA_WITNESS_POLL_INTERVAL_MS
+        if (verdict === 'error') {
+          traceAttemptFail(
+            tweetId,
+            scope,
+            'mutation-error',
+            FLIP_POLL_ATTEMPTS + j,
+            article.value,
+            { target: targetKind, disabled },
+            origin,
+            elapsedMs,
+          )
+          return false
+        }
+        if (verdict === 'ok') {
+          traceFlip(
+            article.value,
+            tweetId,
+            scope,
+            FLIP_POLL_ATTEMPTS + j,
+            targetKind,
+            disabled,
+            origin,
+            'mutation',
+            elapsedMs,
+          )
+          if (onFlip) onFlip(tweetId, scope, origin)
+          return true
+        }
+      }
+      // oxlint-enable no-await-in-loop
+    }
     if (log)
       log(
         scope,
@@ -282,7 +396,8 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
     // Capture the wrapping cell BEFORE the click — X replaces the tweet article with
     // the feedback stub in-place, so we'd lose the handle once it fires.
     const cell = cellOf(article)
-    const caretTarget = (caret.closest('button,[role="button"]') as HTMLElement | null) ?? caret
+    const closestCaretButton = caret.closest('button,[role="button"]')
+    const caretTarget = closestCaretButton instanceof HTMLElement ? closestCaretButton : caret
     // Snapshot the menus open BEFORE we click, so we only ever act on the menu THIS
     // caret click opens — never a stale clear-menu, the account switcher, a
     // compose/share menu, or one the user opened by hand. X portals the caret menu to
@@ -342,10 +457,10 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
     for (let i = 1; i <= FLIP_POLL_ATTEMPTS; i++) {
       const fb = findFeedbackButton(cell)
       if (Option.isSome(fb)) {
-        if (log)
-          log('notInterested', '→ dismissing feedback stub:', fb.value.textContent?.trim())
-          /* v8 ignore start -- findFeedbackButton only returns button/[role=button] elements, so closest self-matches; the `?? fb.value` fallback is unreachable */
-        ;((fb.value.closest('button,[role="button"]') as HTMLElement | null) ?? fb.value).click()
+        if (log) log('notInterested', '→ dismissing feedback stub:', fb.value.textContent?.trim())
+        /* v8 ignore start -- findFeedbackButton only returns button/[role=button] elements, so closest self-matches; the `?? fb.value` fallback is unreachable */
+        const clickable = fb.value.closest('button,[role="button"]')
+        ;(clickable instanceof HTMLElement ? clickable : fb.value).click()
         /* v8 ignore stop */
         return
       }
@@ -354,5 +469,11 @@ export function makeTweetClearer(deps: TweetClearerDeps): {
     // oxlint-enable no-await-in-loop
   }
 
-  return { clearScope }
+  return { clearScope } satisfies {
+    readonly clearScope: (
+      tweetId: string,
+      scope: ClearScope,
+      origin: ClearOrigin,
+    ) => Promise<boolean>
+  }
 }

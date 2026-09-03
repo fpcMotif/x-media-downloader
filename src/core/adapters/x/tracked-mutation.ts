@@ -7,6 +7,8 @@
  * channels is exactly the bug this file exists to avoid).
  */
 import { isClearableTweetId } from '@/packages/clear/clearer'
+import type { JsonValue } from '@/packages/schema'
+import { isJsonObject, isJsonString } from '../json-predicates'
 const MUTATION_OPS = [
   'CreateBookmark',
   'DeleteBookmark',
@@ -34,7 +36,7 @@ export function matchReleaseMutationOp(url: string): ReleaseMutationOp | null {
     return null
   }
   const last = pathname.slice(pathname.lastIndexOf('/') + 1)
-  return (MUTATION_OPS as readonly string[]).includes(last) ? (last as ReleaseMutationOp) : null
+  return MUTATION_OPS.find((op) => op === last) ?? null
 }
 
 /**
@@ -48,14 +50,10 @@ export function matchReleaseMutationOp(url: string): ReleaseMutationOp | null {
  */
 export function bodyHasErrorSignal(body: string): boolean {
   try {
-    const parsed: unknown = JSON.parse(body)
-    return (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'errors' in parsed &&
-      Array.isArray((parsed as { errors: unknown }).errors) &&
-      (parsed as { errors: unknown[] }).errors.length > 0
-    )
+    const parsed: JsonValue = JSON.parse(body)
+    if (!isJsonObject(parsed)) return false
+    const errors = parsed['errors']
+    return Array.isArray(errors) && errors.length > 0
   } catch {
     return false
   }
@@ -80,13 +78,12 @@ export function bodyHasErrorSignal(body: string): boolean {
  */
 export function tweetIdFromMutationRequestBody(body: string): string | undefined {
   try {
-    const parsed: unknown = JSON.parse(body)
-    if (typeof parsed !== 'object' || parsed === null || !('variables' in parsed)) return undefined
-    const variables = (parsed as { variables: unknown }).variables
-    if (typeof variables !== 'object' || variables === null || !('tweet_id' in variables))
-      return undefined
-    const tweetId = (variables as { tweet_id: unknown }).tweet_id
-    return typeof tweetId === 'string' && isClearableTweetId(tweetId) ? tweetId : undefined
+    const parsed: JsonValue = JSON.parse(body)
+    if (!isJsonObject(parsed)) return undefined
+    const variables = parsed['variables']
+    if (!isJsonObject(variables)) return undefined
+    const tweetId = variables['tweet_id']
+    return isJsonString(tweetId) && isClearableTweetId(tweetId) ? tweetId : undefined
   } catch {
     return undefined
   }

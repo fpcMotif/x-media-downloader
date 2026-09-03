@@ -42,18 +42,20 @@ interface Rect {
   readonly height: number
 }
 
-const rect = (r: Rect) => (): DOMRect =>
-  ({
-    top: r.top,
-    left: r.left,
-    right: r.left + r.width,
-    bottom: r.top + r.height,
-    width: r.width,
-    height: r.height,
-  }) as DOMRect
+const rect = (r: Rect) => (): DOMRect => ({
+  x: r.left,
+  y: r.top,
+  top: r.top,
+  left: r.left,
+  right: r.left + r.width,
+  bottom: r.top + r.height,
+  width: r.width,
+  height: r.height,
+  toJSON: () => ({}),
+})
 
 const stubRect = (element: Element, r: Rect): void => {
-  ;(element as HTMLElement).getBoundingClientRect = rect(r)
+  element.getBoundingClientRect = rect(r)
 }
 
 const expand = (r: Rect, by: number): Rect => ({
@@ -66,15 +68,25 @@ const expand = (r: Rect, by: number): Rect => ({
 const containsPoint = (r: Rect, x: number, y: number): boolean =>
   x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height
 
-// ---- fake adapter: previewKeyFromMedia only touches these two members -----
+// ---- fake adapter: previewKeyFromMedia only touches these two members; the
+// rest are inert stubs so this is a real, fully-typed PlatformAdapter. -------
 const fakeAdapter: PlatformAdapter = {
+  platform: 'instagram',
+  hostMatch: [],
+  cdnHosts: [],
+  matchesUrl: () => false,
   mediaKeyFromUrl: (url: string) => {
     if (!url.includes('cdninstagram.com')) return null
     const basename = url.slice(url.lastIndexOf('/') + 1)
     return basename ? `photo:${basename}` : null
   },
+  isTrackedResponseUrl: () => false,
+  detectFromResponse: () => [],
+  detectRenderedMedia: () => [],
+  resolveHoverItem: () => null,
+  canResolveHoverItem: () => false,
   postKeyFromVideoElement: (_video: HTMLVideoElement, pathname: string) => `post:${pathname}`,
-} as unknown as PlatformAdapter
+}
 
 // ---- scene model -------------------------------------------------------
 type MediaKind = 'img' | 'video'
@@ -146,7 +158,7 @@ const createMediaElement = (
     'mediaKind' | 'pointerEvents' | 'position' | 'videoHasUsableSrc' | 'mediaRect'
   >,
 ): HoverMediaElement => {
-  const media = document.createElement(spec.mediaKind) as HoverMediaElement
+  const media = document.createElement(spec.mediaKind)
   media.style.pointerEvents = spec.pointerEvents
   media.style.position = spec.position
   media.setAttribute('src', mediaSrc(spec))
@@ -264,7 +276,7 @@ describe('hover-resolve — ARM/FIRE composition (property-based)', () => {
         const holds = mediaStillUnderPointer(media, stack, point.x, point.y)
         const keyA = previewKeyFromMedia(fakeAdapter, media, '/')
         const keyB = previewKeyFromMedia(fakeAdapter, media, '/')
-        return holds === true && keyA === keyB
+        return holds && keyA === keyB
       }),
       { numRuns: 300 },
     )
@@ -304,7 +316,7 @@ describe('hover-resolve — ARM/FIRE composition (property-based)', () => {
         const strippedStack = stack.filter((el) => !el.contains(media))
         const detached = mediaStillUnderPointer(media, strippedStack, point.x, point.y)
 
-        return movedAway === false && detached === false
+        return !movedAway && !detached
       }),
       { numRuns: 300 },
     )

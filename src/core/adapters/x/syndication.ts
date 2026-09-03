@@ -1,6 +1,7 @@
 import { Option } from 'effect'
 import { resolveTweetMedia, type RawMedia } from '@/packages/resolver'
-import type { MediaItem } from '@/packages/schema'
+import type { JsonValue, MediaItem } from '@/packages/schema'
+import { isJsonNumber, isJsonObject, isJsonString } from '../json-predicates'
 
 /**
  * X's public embed endpoint (`cdn.syndication.twimg.com/tweet-result`) recovers a
@@ -40,8 +41,10 @@ export function syndicationUrl(tweetId: string): Option.Option<string> {
   return Option.some(u.toString())
 }
 
-type Obj = Record<string, unknown>
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
+/** Tweet ids arrive as strings (`id_str`) or numbers. Anything else is a malformed
+ *  payload, and must read as absent rather than stringify to `[object Object]`. */
+const idString = (v: JsonValue | undefined): string =>
+  isJsonString(v) ? v : isJsonNumber(v) ? String(v) : ''
 
 /**
  * Map a syndication `tweet-result` payload to MediaItems. Where the GraphQL tee
@@ -52,13 +55,16 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
  * resolver (highest-bitrate MP4, `name=orig` photos). Returns `[]` for any
  * non-tweet, id-less, or media-less payload.
  */
-export function parseSyndicationTweet(json: unknown): MediaItem[] {
-  if (!isObj(json)) return []
+export function parseSyndicationTweet(json: JsonValue): MediaItem[] {
+  if (!isJsonObject(json)) return []
   const media = json['mediaDetails']
   if (!Array.isArray(media) || media.length === 0) return []
-  const tweetId = String(json['id_str'] ?? '')
+  const tweetId = idString(json['id_str'])
   if (tweetId === '') return []
-  const user = isObj(json['user']) ? json['user'] : undefined
-  const handle = typeof user?.['screen_name'] === 'string' ? user['screen_name'] : ''
+  const user = json['user']
+  const handle = isJsonObject(user) && isJsonString(user['screen_name']) ? user['screen_name'] : ''
+  // SAFETY: `mediaDetails` is syndication's own flat media array — each entry is
+  // a `type`/`media_url_https`(+ optional `video_info`) object per the module
+  // doc above, the same shape `resolveTweetMedia` already treats defensively.
   return resolveTweetMedia({ tweetId, handle, media: media as ReadonlyArray<RawMedia> })
 }

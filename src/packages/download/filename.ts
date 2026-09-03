@@ -38,17 +38,21 @@ export function platformFolder(platform: Platform): string {
  * `chrome.downloads.download` throws otherwise (ADR-0003, grounding §d).
  */
 export function renderFilename(template: string, item: MediaItem, date?: string): string {
-  const tokens: Record<string, string> = {
-    handle: item.author,
-    tweetId: item.postId,
-    author: item.author,
-    postId: item.postId,
-    platform: platformFolder(item.platform),
-    index: String(item.index),
-    ext: item.ext,
-    type: item.type,
-    date: date ?? '',
-  }
+  // A Map, not a plain object: the template's `{token}` keys are arbitrary
+  // regex captures, so the lookup below needs a real dynamic-key contract
+  // rather than a dictionary type that would have to widen away the literal
+  // values just constructed above it.
+  const tokens = new Map<string, string>([
+    ['handle', item.author],
+    ['tweetId', item.postId],
+    ['author', item.author],
+    ['postId', item.postId],
+    ['platform', platformFolder(item.platform)],
+    ['index', String(item.index)],
+    ['ext', item.ext],
+    ['type', item.type],
+    ['date', date ?? ''],
+  ])
   // Sanitize every `/`-separated segment and drop the empties → a safe relative path.
   const toRelPath = (raw: string): string =>
     raw
@@ -56,7 +60,7 @@ export function renderFilename(template: string, item: MediaItem, date?: string)
       .map(sanitizeSegment)
       .filter((s) => s.length > 0)
       .join('/')
-  const path = toRelPath(template.replace(/\{(\w+)\}/g, (_, key: string) => tokens[key] ?? ''))
+  const path = toRelPath(template.replace(/\{(\w+)\}/g, (_, key: string) => tokens.get(key) ?? ''))
   if (path.length > 0) return path
   // The template sanitized away to nothing — run the id/index fallback through the
   // SAME pipeline so a degenerate postId can't reintroduce a `..`, an illegal char,

@@ -55,7 +55,7 @@ describe('freeReason', () => {
   })
 
   it('passes (fail-open) when width/height are absent even with a min set', () => {
-    const noDims: MediaItem = { ...item, width: undefined, height: undefined }
+    const { width: _w, height: _h, ...noDims } = item
     expect(freeReason(noDims, { ...allOff, minWidth: 500, minHeight: 500 }, new Set())).toBeNull()
   })
 

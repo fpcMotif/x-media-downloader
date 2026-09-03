@@ -66,6 +66,7 @@ import { getSettings, watchSettings } from '@/packages/settings'
 import { idlePostHotkey, postHotkeyKey } from '../../core/post-hotkey'
 import { fireCurrentPost, wholePostItemsFor, type PostGrabDeps } from './post-grab'
 import { safeSend } from '@/packages/kernel/messaging'
+import type { MessageSenderLike } from '@/packages/kernel/sender-guard'
 import { clickSensitiveReveals } from '../../core/adapters/x/reveal'
 import {
   alreadyCleared,
@@ -83,23 +84,27 @@ import { Option } from 'effect'
 import {
   clearMountedTweet,
   dispatchOverlayMessage,
+  isString,
   releaseRunDetail,
   releaseTerminalStage,
   sweepSavedStatus,
   savedStatusVisible,
   type HandlerDeps,
   type ReleaseRun,
+  type SendResponse,
   type TrackedSendResult,
 } from './handlers'
 import { makeScrollDrain } from '@/packages/clear/scroll-drain'
 import { makeSavedStatusLifecycle } from './saved-status-lifecycle'
 import { partitionAllowedMediaItems } from '@/packages/sync/url-guard'
 import { makeTweetClearer } from '@/packages/clear/tweet-clear'
+import { makeMutationWitness } from '@/packages/clear/mutation-witness'
 import { makeReleaseRecheck, type FreshTimelineMembership } from '@/packages/clear/recheck'
 import { timelineTweetIds } from '../../core/adapters/x/walk'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type {
   CaptureTweets,
+  JsonValue,
   MediaItem,
   QueueUpdate,
   RecoverTweetMediaResponse,
@@ -132,6 +137,14 @@ const clearLog = (...args: unknown[]): void => console.info('[XMD clear]', ...ar
 // Both `trace` and `onFlip` MUST stay lazy arrows — `reportClear` and
 // `releaseRecheck` are declared below this call, so a direct reference would be a
 // TDZ error at module init. The arrow bodies only run once a clear is in flight.
+// One witness per page session (mirrors `clearScope`/`releaseRecheck` below —
+// constructed once at content-script load, not per-clear): the log of release
+// mutations the MAIN-world tee has observed so far, consulted by EVERY clear
+// this tab runs. Module-level so `handleMutationResponse` (recording) and
+// `clearScope`'s poll loop (reading) share the same log across the page's
+// whole lifetime, not just one clear.
+const mutationWitness = makeMutationWitness()
+
 const { clearScope } = makeTweetClearer({
   document,
   clock: { sleep: (ms) => new Promise((r) => setTimeout(r, ms)) },
@@ -143,6 +156,7 @@ const { clearScope } = makeTweetClearer({
   onFlip: (tweetId, scope, origin) => {
     if (scope !== 'notInterested') releaseRecheck.arm(tweetId, scope, origin)
   },
+  witness: mutationWitness,
 })
 
 // ── Auto-scroll drain for not-mounted clears ──
@@ -159,8 +173,20 @@ const VIDEO_RECOVERY_SCROLL_IDLE_MS = 250
 
 /** Type-only narrowing (no runtime decode) — pins an `unknown` reply to the
  *  schema type that already describes it, in place of an `as` assertion. */
-const isSavedStatusResponse = (reply: unknown): reply is SavedStatusResponse =>
-  reply !== null && typeof reply === 'object' && 'saved' in reply
+const isSavedStatusResponse = (reply: JsonValue): reply is SavedStatusResponse =>
+  reply !== null && typeof reply === 'object' && !Array.isArray(reply) && 'saved' in reply
+
+/** Narrow a {@link JsonValue} to a number — paired with `isString` (imported from
+ *  `./handlers`) for reading fields off an untrusted MAIN-world event's `detail`. */
+const isNumber = (value: JsonValue): value is number => typeof value === 'number'
+
+/** Whether `value` is one of the tee's own drop-cap vocabulary.
+ *  SAFETY: widening the literal tuple to `readonly string[]` only relaxes the
+ *  search parameter's type for the runtime membership check below — this predicate's
+ *  own `value is TeeDropCap` return annotation is what supplies the narrowing, not
+ *  the cast. */
+const isTeeDropCap = (value: string): value is TeeDropCap =>
+  (TEE_DROP_CAPS as readonly string[]).includes(value)
 
 /** Ask the background which of these tweetIds are already downloaded (cross-device).
  *  Fail-safe: a context-invalidated / errored / malformed reply yields no marks. */
@@ -317,7 +343,7 @@ const notifyContextLost = (): void => {
 }
 
 /** Fire-and-forget post (telemetry): never throws; a dead context hints reload once. */
-const postEvent = (msg: unknown): void => {
+const postEvent = (msg: JsonValue): void => {
   void (async () => {
     const out = await safeSend(() => browser.runtime.sendMessage(msg))
     if (out.status === 'context-invalidated') notifyContextLost()
@@ -331,20 +357,27 @@ type ClearExpect = ReadonlyArray<{ readonly tweetId: string; readonly ids: Reado
 type SkipSummary = ReadonlyArray<{ readonly reason: string; readonly count: number }>
 
 // Friendly labels for admission-gate skip reasons (mirrors SkipReason).
-const SKIP_LABELS: Record<string, string> = {
+const SKIP_LABELS = {
   duplicate: 'already saved',
   'filtered-type': 'filtered',
   'too-small': 'too small',
   'too-big': 'too big',
   'daily-budget': 'daily limit',
-}
+} satisfies Record<string, string>
+
+/** Whether `reason` is one of the gate's known skip reasons — narrows a plain
+ *  `string` to a `SKIP_LABELS` key instead of an unchecked index. */
+const isSkipLabelKey = (reason: string): reason is keyof typeof SKIP_LABELS =>
+  Object.hasOwn(SKIP_LABELS, reason)
 
 /** Surface why media was dropped by the gate. The overlay has no toast surface,
  *  so — like notifyContextLost — this goes to the console. */
 const reportSkipped = (skipped?: SkipSummary): void => {
   if (!skipped || skipped.length === 0) return
   const total = skipped.reduce((n, s) => n + s.count, 0)
-  const parts = skipped.map((s) => `${s.count} ${SKIP_LABELS[s.reason] ?? s.reason}`)
+  const parts = skipped.map(
+    (s) => `${s.count} ${isSkipLabelKey(s.reason) ? SKIP_LABELS[s.reason] : s.reason}`,
+  )
   console.info(`[XMD] ${total} skipped — ${parts.join(', ')}`)
 }
 
@@ -361,8 +394,11 @@ const reportFailures = (failures?: ReadonlyArray<{ itemId: string; reason: strin
   )
 }
 
-const compactReleaseReason = (reason: unknown): string => {
-  const raw = reason instanceof Error ? reason.message : String(reason)
+/** Compact a failure into a short, log-line-safe reason token. Callers narrow their
+ *  caught/rejected value to this contract at the catch site (`e instanceof Error ? e
+ *  : String(e)`), so this function itself never has to guess at an unknown shape. */
+const compactReleaseReason = (failure: Error | string): string => {
+  const raw = failure instanceof Error ? failure.message : failure
   const compact = raw
     .trim()
     .toLowerCase()
@@ -486,7 +522,10 @@ const sendTracked = (
       traceReleaseFailure(`channel-${compactReleaseReason(out.error)}`)
       return { ok: false, admitted: 0, skipped: 0 }
     }
-    const r = out.reply as QueueUpdate | undefined
+    // `browser.runtime.sendMessage`'s reply types as `any` (the polyfill has no way to
+    // know the background's response shape), so this is a plain annotation, not a
+    // cast: `any` is assignable to any declared type without an assertion.
+    const r: QueueUpdate | undefined = out.reply
     reportSkipped(r?.skipped)
     reportFailures(r?.failures)
     const ok = r?.completed !== undefined && r.completed === r.total
@@ -541,12 +580,12 @@ const traceBadge = traceDownloadUi('badge')
 type TraceFn = ReturnType<typeof traceDownloadUi>
 
 /** Pill copy per launcher phase; the idle copy doubles as the hover-revealed action label. */
-const LAUNCHER_LABEL: Record<LauncherPhase, string> = {
+const LAUNCHER_LABEL = {
   idle: 'Download all',
   queued: 'Saving…',
   saved: 'Saved',
   failed: 'Retry',
-}
+} satisfies Record<LauncherPhase, string>
 
 /** The stacked phase glyphs (arrow / spinner / check / alert) shared by badge and launcher. */
 function PhaseGlyphs({ block }: { readonly block: 'xmd-badge' | 'xmd-launcher' }) {
@@ -778,10 +817,11 @@ export default defineContentScript({
           // the tweet's recovery permanently. Classify instead: a reply that told
           // us nothing about this tweet releases the claim; a reply that said
           // "no media" keeps it, so we can't loop on it.
-          const verdict = classifyRecoveryReply(
-            tweetId,
-            (out.reply as RecoverTweetMediaResponse | undefined)?.body,
-          )
+          // `browser.runtime.sendMessage`'s reply types as `any`, so this is a plain
+          // annotation, not a cast: `any` is assignable to any declared type without
+          // an assertion.
+          const reply: RecoverTweetMediaResponse | undefined = out.reply
+          const verdict = classifyRecoveryReply(tweetId, reply?.body)
           if (verdict.kind === 'retryable') {
             traceQuickGrab('recovery-retryable', { detail: `${tweetId} ${verdict.reason}` })
             store.unmarkAttempted(tweetId)
@@ -1649,7 +1689,7 @@ export default defineContentScript({
       }
     }
 
-    const harvestFrom = (json: unknown, path: string): void => {
+    const harvestFrom = (json: JsonValue, path: string): void => {
       if (!captureEnabled) {
         if (!captureStateLogged) {
           console.info(
@@ -1685,8 +1725,15 @@ export default defineContentScript({
     // Named so invalidation can remove it — a stale tab must not retain
     // duplicate response callbacks (body unchanged apart from 001's URL filter).
     const handleMediaResponse = (event: Event): void => {
+      // SAFETY: `detail` is attacker-controlled — a page script can dispatch
+      // 'xmd:media-response' itself with an arbitrary shape. This cast only names the
+      // shape THIS file's own dispatchers use (the tee below, and the inline-JSON
+      // fallback); every read of it downstream stays defensive regardless (`body` is
+      // JSON.parse'd inside a try/catch, `path` is used only as an opaque string), so
+      // a forged mismatched-shape detail degrades to the safe non-JSON/short-circuit
+      // paths rather than crashing.
       const detail = (event as CustomEvent<{ path: string; body: string }>).detail
-      let json: unknown
+      let json: JsonValue
       try {
         json = JSON.parse(detail.body)
       } catch {
@@ -1792,23 +1839,40 @@ export default defineContentScript({
     // not trusting ANY MAIN-world-observed event's content, which the media tee
     // already accepts the same tradeoff on; out of scope for this ticket chain.
     const handleMutationResponse = (event: Event): void => {
-      if (!releaseMutationDiagnosticsOn || adapter.platform !== 'x') return
+      // X-only regardless of the diagnostics toggle below: the witness recording
+      // must run whenever a Release could actually be in flight, which is X only —
+      // `matchReleaseMutationOp`/`tweetIdFromMutationRequestBody` are X GraphQL-shaped
+      // and would simply never match elsewhere, but the gate is explicit rather than
+      // relying on that accident (mirrors `handleClearVisible`'s own `platform !== 'x'`
+      // guard).
+      if (adapter.platform !== 'x') return
+      // SAFETY: `detail` is attacker-controlled (same forgeable-event posture as
+      // `handleMediaResponse` above) — the fields are typed `JsonValue`, not the
+      // shape this file's own dispatchers use, precisely so every read below goes
+      // through `isString`/`isNumber` rather than trusting the cast.
       const detail = (
         event as CustomEvent<{
-          path: unknown
-          status: unknown
-          body: unknown
-          requestBody: unknown
+          path: JsonValue
+          status: JsonValue
+          body: JsonValue
+          requestBody: JsonValue
         }>
       ).detail
-      if (typeof detail.path !== 'string' || typeof detail.status !== 'number') return
+      if (!isString(detail.path) || !isNumber(detail.status)) return
       const op = matchReleaseMutationOp(detail.path)
       if (op === null) return
-      const error = typeof detail.body === 'string' ? bodyHasErrorSignal(detail.body) : false
-      const tweetId =
-        typeof detail.requestBody === 'string'
-          ? tweetIdFromMutationRequestBody(detail.requestBody)
-          : undefined
+      const error = isString(detail.body) ? bodyHasErrorSignal(detail.body) : false
+      const tweetId = isString(detail.requestBody)
+        ? tweetIdFromMutationRequestBody(detail.requestBody)
+        : undefined
+      const t = Date.now()
+      // The witness records EVERY parsed mutation with a tweetId, independent of the
+      // diagnostics toggle — it is the authoritative release-confirm signal now
+      // (`tweet-clear.ts`'s module doc), not just diagnostics evidence. Only the
+      // background forward (durable, exportable log) stays gated.
+      if (tweetId !== undefined)
+        mutationWitness.record({ tweetId, op, status: detail.status, error, t })
+      if (!releaseMutationDiagnosticsOn) return
       void safeSend(() =>
         browser.runtime.sendMessage({
           _tag: 'ReleaseMutationEvent',
@@ -1816,7 +1880,7 @@ export default defineContentScript({
           status: detail.status,
           error,
           ...(tweetId !== undefined ? { tweetId } : {}),
-          t: Date.now(),
+          t,
         }),
       )
     }
@@ -1832,9 +1896,12 @@ export default defineContentScript({
     // costs at most two messages.
     const lastTeeDropByCap = new Map<string, number>()
     const handleTeeDrop = (event: Event): void => {
-      const detail = (event as CustomEvent<{ cap?: unknown }>).detail
-      const cap = detail?.cap
-      if (typeof cap !== 'string' || !TEE_DROP_CAPS.includes(cap as TeeDropCap)) return
+      // SAFETY: `detail` is attacker-controlled (same forgeable-event posture as the
+      // two listeners above) — `cap` stays `JsonValue`, so the vocabulary check below
+      // is a real narrow rather than an assumption baked into the cast.
+      const detail = (event as CustomEvent<{ cap?: JsonValue }>).detail
+      const cap = detail?.cap ?? null
+      if (!isString(cap) || !isTeeDropCap(cap)) return
       const now = Date.now()
       if (now - (lastTeeDropByCap.get(cap) ?? 0) < 1000) return
       lastTeeDropByCap.set(cap, now)
@@ -1921,13 +1988,13 @@ export default defineContentScript({
       document,
       'mousemove',
       (event) => {
-        const e = event as MouseEvent
+        const e = event
         lastX = e.clientX
         lastY = e.clientY
         pointerSeen = true
         if (!qgEnabled && !badgeEnabled) return
         mouseHitTest.push({
-          target: e.target as Element | null,
+          target: e.target instanceof Element ? e.target : null,
           clientX: e.clientX,
           clientY: e.clientY,
           altKey: e.altKey,
@@ -1950,7 +2017,7 @@ export default defineContentScript({
       // Pointer parked on our own badge: the media underneath didn't change,
       // only its rect did — refresh in place rather than re-hit-testing.
       const stack = document.elementsFromPoint(lastX, lastY)
-      const top = stack[0] as Element | undefined
+      const top = stack[0]
       if (top?.tagName === 'XMD-OVERLAY') {
         if (badge.phase !== 'hidden') rerender()
         return
@@ -2000,7 +2067,7 @@ export default defineContentScript({
     )
 
     ctx.addEventListener(window, 'keydown', (event) => {
-      const e = event as KeyboardEvent
+      const e = event
       if (!qgEnabled || !isModifierKey(e.key, qgModifier)) return
       const was = grab.active
       grab = pressModifier(grab)
@@ -2028,7 +2095,7 @@ export default defineContentScript({
     ctx.addEventListener(window, 'keyup', (event) => {
       // Drop any queued-but-unrun pointer sample alongside the grab: a stale
       // altKey sample must not re-arm (or fire) after the modifier is gone.
-      if (isModifierKey((event as KeyboardEvent).key, qgModifier)) {
+      if (isModifierKey(event.key, qgModifier)) {
         mouseHitTest.clear()
         releaseAll()
       }
@@ -2042,13 +2109,13 @@ export default defineContentScript({
     // and re-label a live ring. `allAugmentModifier(qgModifier)` is read fresh each
     // event because the base modifier can change via settings at runtime.
     ctx.addEventListener(window, 'keydown', (event) => {
-      const e = event as KeyboardEvent
+      const e = event
       if (!qgEnabled) return
       if (!isModifierKey(e.key, allAugmentModifier(qgModifier))) return
       refreshPostGrabArmed(postGrabActive(grab.active, e, qgModifier))
     })
     ctx.addEventListener(window, 'keyup', (event) => {
-      const e = event as KeyboardEvent
+      const e = event
       if (!isModifierKey(e.key, allAugmentModifier(qgModifier))) return
       refreshPostGrabArmed(false)
     })
@@ -2057,7 +2124,7 @@ export default defineContentScript({
     // chord, guarded inside postHotkeyKey), so this stays passive: no
     // preventDefault, X always sees the key.
     ctx.addEventListener(window, 'keydown', (event) => {
-      const e = event as KeyboardEvent
+      const e = event
       const next = postHotkeyKey(
         hotkey,
         {
@@ -2066,7 +2133,7 @@ export default defineContentScript({
           ctrlKey: e.ctrlKey,
           metaKey: e.metaKey,
           repeat: e.repeat,
-          target: (e.composedPath?.()[0] ?? e.target) as EventTarget | null,
+          target: e.composedPath?.()[0] ?? e.target,
         },
         Date.now(),
       )
@@ -2166,12 +2233,18 @@ export default defineContentScript({
       clearScope,
       runDrain,
       savedStatusActive: () => savedStatusVisible(location.pathname, savedStatusOn),
+      witness: mutationWitness,
     }
 
     const handleRuntimeMessage = (
-      message: unknown,
-      _sender: unknown,
-      sendResponse: (r: unknown) => void,
+      // The polyfill types `onMessage`'s payload as `unknown`, but every sender in
+      // this codebase (background.ts, other content scripts) hands
+      // `runtime.sendMessage`/`tabs.sendMessage` a plain tagged-struct object, so the
+      // wire value is always JSON-shaped; `dispatchOverlayMessage` schema-decodes it
+      // before trusting any field.
+      message: JsonValue,
+      _sender: MessageSenderLike,
+      sendResponse: SendResponse,
     ): boolean | void => dispatchOverlayMessage(message, handlerDeps, sendResponse)
     browser.runtime.onMessage.addListener(handleRuntimeMessage)
 

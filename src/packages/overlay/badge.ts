@@ -3,16 +3,16 @@ export type BadgePhase = 'hidden' | 'shown' | 'nudged' | 'queued' | 'saved' | 'f
 
 import type { MediaType } from '@/packages/schema'
 
-const MEDIA_NOUN: Record<MediaType, string> = {
+const MEDIA_NOUN = {
   photo: 'photo',
   video: 'video',
   gif: 'GIF',
-}
-const MEDIA_TITLE: Record<MediaType, string> = {
+} satisfies Record<MediaType, string>
+const MEDIA_TITLE = {
   photo: 'Photo',
   video: 'Video',
   gif: 'GIF',
-}
+} satisfies Record<MediaType, string>
 
 /** Accessible button name per phase+type — state and action stay truthful. */
 export function badgeAriaLabel(phase: BadgePhase, type: MediaType): string {

@@ -8,6 +8,12 @@ const DEBOUNCE_MS = 1200
 
 const clamp = (v: number, maxY: number): number => Math.max(0, Math.min(maxY, v))
 
+/** Every `y` and `dy` the harness's fake scroll port was called with, in call order. */
+interface ScrollCallLog {
+  to: number[]
+  by: number[]
+}
+
 /**
  * A fake window-scroll + virtualized feed. `layout` maps a tweetId to the absolute
  * Y where its article sits; `liveMountedIds` reports the ids whose Y falls in the
@@ -27,7 +33,7 @@ function harness(opts: {
   const layout = opts.layout ?? {}
   const maxY = opts.maxY ?? 4000
   const scroll = { y: 0 }
-  const scrollCalls = { to: [] as number[], by: [] as number[] }
+  const scrollCalls: ScrollCallLog = { to: [], by: [] }
   let path = opts.path ?? '/someone/likes'
 
   const clearMounted = vi.fn<ScrollDrainDeps['clearMounted']>(
@@ -93,7 +99,7 @@ const startCount = (h: Harness): number => stagesOf(h).filter((s) => s === 'drai
 // call throws.
 const throwingRestore = (
   h: Harness,
-  thrown: unknown = new Error('scroll port detached'),
+  thrown: Error | string = new Error('scroll port detached'),
 ): ScrollDrainDeps => ({
   ...h.deps,
   scroll: {
@@ -477,7 +483,8 @@ describe('makeScrollDrain', () => {
 
   it('reschedules with a fresh budget after a pass that cleared some but not all', async () => {
     // 'A' is reachable immediately; 'B' is rendered lazily, only after the first pass.
-    const layout: Record<string, number> = { A: 0 }
+    const layout: Record<string, number> = {}
+    layout.A = 0
     const h = harness({ layout, maxY: 0 })
     const drain = makeScrollDrain(h.deps)
 
@@ -491,7 +498,7 @@ describe('makeScrollDrain', () => {
   })
 
   /** The single `drain-failed` reason token from a pass whose restore threw `thrown`. */
-  const reasonFromThrow = async (thrown: unknown): Promise<string> => {
+  const reasonFromThrow = async (thrown: Error | string): Promise<string> => {
     const h = harness({ layout: { A: 0 }, maxY: 2000 })
     h.scroll.y = 500
     void makeScrollDrain(throwingRestore(h, thrown)).run('A', ['like'], false)
@@ -527,7 +534,7 @@ describe('makeScrollDrain', () => {
 
     const failed = h.report.mock.calls.filter((c) => c[0] === 'drain-failed')
     expect(failed.map((c) => c[2])).toContain('B')
-    expect(failed.some((c) => String(c[1]).includes('reason=scroll-port-detached'))).toBe(true)
+    expect(failed.some((c) => c[1].includes('reason=scroll-port-detached'))).toBe(true)
   })
 
   // A rejection is not guaranteed to be an Error (a DOM/extension teardown can reject

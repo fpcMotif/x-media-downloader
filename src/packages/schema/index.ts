@@ -3,6 +3,7 @@ import { TweetRecord } from '@/packages/capture/record'
 import { MediaItem, MediaType } from './media'
 
 export { MediaItem, MediaType, Platform } from './media'
+export { isJsonObject, type JsonObject, type JsonValue } from './json'
 
 export const DownloadStrategyName = Schema.Literals(['direct', 'fetched', 'aria2'])
 export const Theme = Schema.Literals(['light', 'dark', 'system'])
@@ -22,16 +23,16 @@ const traceFields = {
   source: DownloadTraceSource,
   stage: Schema.String,
   t: Schema.Number,
-  itemId: Schema.optional(Schema.String),
-  tweetId: Schema.optional(Schema.String),
-  type: Schema.optional(MediaType),
-  elapsedMs: Schema.optional(Schema.Number),
-  detail: Schema.optional(Schema.String),
+  itemId: Schema.optionalKey(Schema.String),
+  tweetId: Schema.optionalKey(Schema.String),
+  type: Schema.optionalKey(MediaType),
+  elapsedMs: Schema.optionalKey(Schema.Number),
+  detail: Schema.optionalKey(Schema.String),
   // Which tab produced a content-script trace line. Stamped ONLY in the background
   // from `sender.tab?.id` — never sent over the wire by the overlay, so a page script
   // can't forge it. Without it, two open X tabs answering one clear read as a retry in
   // a single tab, and `clear-dispatch`'s `preferHonored=` can't be cross-checked.
-  tabId: Schema.optional(Schema.Number),
+  tabId: Schema.optionalKey(Schema.Number),
 }
 export const DownloadTraceEntry = Schema.Struct(traceFields)
 export type DownloadTraceEntry = typeof DownloadTraceEntry.Type
@@ -218,14 +219,14 @@ export const MetricsSnapshot = Schema.Struct({
   bytesReceived: Schema.Number,
   bytesTotal: Schema.Number,
   throughputBps: Schema.Number,
-  etaSeconds: Schema.optional(Schema.Number),
+  etaSeconds: Schema.optionalKey(Schema.Number),
   elapsedMs: Schema.Number,
-  events: Schema.optional(Schema.Array(DownloadTraceEntry)),
-  releaseDiagnostics: Schema.optional(ReleaseDiagnosticsSummary),
+  events: Schema.optionalKey(Schema.Array(DownloadTraceEntry)),
+  releaseDiagnostics: Schema.optionalKey(ReleaseDiagnosticsSummary),
   // Count of tabs the fan-out has proven dead and stopped probing (tab-broadcaster.ts
   // Part D orphan policy). Omitted at 0 — the popup only shows the advisory when it
   // has something to say.
-  staleTabs: Schema.optional(Schema.Number),
+  staleTabs: Schema.optionalKey(Schema.Number),
 })
 export type MetricsSnapshot = typeof MetricsSnapshot.Type
 
@@ -294,7 +295,7 @@ export const ClearDownloadMonitorResponse = Schema.TaggedStruct('ClearDownloadMo
   active: Schema.Number,
   clearedMetrics: Schema.Boolean,
   clearedLocks: Schema.Number,
-  reason: Schema.optional(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
 })
 export type ClearDownloadMonitorResponse = typeof ClearDownloadMonitorResponse.Type
 

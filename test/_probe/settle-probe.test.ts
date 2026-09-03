@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fakeBrowser } from 'wxt/testing'
+import { fakeBrowser } from 'wxt/testing/fake-browser'
 import { Schema } from 'effect'
 import { makeClearSession, type ClearSessionDeps } from '../../src/background/clear-session'
 import { Settings as SettingsSchema, type Settings } from '@/packages/schema'

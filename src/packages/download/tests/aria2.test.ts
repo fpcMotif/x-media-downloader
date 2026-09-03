@@ -10,9 +10,16 @@ import {
   type Aria2RpcPort,
 } from '../aria2'
 import { FetchService, FetchError } from '@/packages/kernel/fetch-service'
+import type { JsonValue } from '@/packages/schema'
 import type { SaveRequest } from '../strategy'
 
 const req: SaveRequest = { id: 't1', url: 'https://x/v.mp4', filename: 'alice/v.mp4' }
+
+/** `typeof fetch`'s first param is `RequestInfo | URL`; every call in this file
+ *  passes a string, so narrow via `instanceof` (never stringify a `Request`,
+ *  whose default `toString` is meaningless). */
+const urlString = (input: RequestInfo | URL): string =>
+  input instanceof URL ? input.href : input instanceof Request ? input.url : input
 
 /** A FetchService stub that routes via `respond` (sync return or throw) and records calls. */
 const makeFetch = (respond: (url: string, init?: RequestInit) => Response) => {
@@ -25,15 +32,14 @@ const makeFetch = (respond: (url: string, init?: RequestInit) => Response) => {
         catch: (cause) => new FetchError({ url, cause }),
       })
     },
-    fetchPromise: (async (url: string | URL, init?: RequestInit) =>
-      respond(String(url), init)) as typeof fetch,
+    fetchPromise: async (url, init) => respond(urlString(url), init),
   })
   return { layer, calls }
 }
 
 const noFetch = Layer.succeed(FetchService, {
   fetch: () => Effect.die(new Error('unexpected fetch')),
-  fetchPromise: (() => Promise.reject(new Error('unexpected fetch'))) as typeof fetch,
+  fetchPromise: () => Promise.reject(new Error('unexpected fetch')),
 })
 
 const runAddUri = (
@@ -42,6 +48,17 @@ const runAddUri = (
   urls: ReadonlyArray<string> = ['u'],
   options: Record<string, string> = {},
 ): Promise<string> => Effect.runPromise(port.addUri(urls, options).pipe(Effect.provide(layer)))
+
+/** `RequestInit.body` is `BodyInit | null | undefined`; every request this port
+ *  sends is JSON-stringified text, so narrow to that before `JSON.parse`. */
+const isStringBody = (body: BodyInit | null | undefined): body is string => typeof body === 'string'
+
+/** Parse the JSON body this port actually POSTed, for asserting on the envelope. */
+const parsedRequestBody = (init: RequestInit | undefined) => {
+  const body = init?.body
+  if (!isStringBody(body)) throw new Error('expected a string request body')
+  return JSON.parse(body)
+}
 
 describe('buildAria2Options', () => {
   it('includes dir, out, split + max-connection-per-server', () => {
@@ -117,42 +134,40 @@ describe('makeAria2Strategy', () => {
 
 describe('makeAria2RpcPort', () => {
   it('POSTs a JSON-RPC envelope and returns the gid', async () => {
-    const { layer, calls } = makeFetch(
-      () => ({ json: async () => ({ result: 'gidABC' }) }) as Response,
-    )
+    const { layer, calls } = makeFetch(() => new Response(JSON.stringify({ result: 'gidABC' })))
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: 'S' })
     expect(await runAddUri(port, layer, ['https://x/v.mp4'], { out: 'v.mp4' })).toBe('gidABC')
     expect(calls[0]!.url).toBe('http://localhost:6800/jsonrpc')
     expect(calls[0]!.init?.method).toBe('POST')
-    const body = JSON.parse(String(calls[0]!.init?.body))
+    const body = parsedRequestBody(calls[0]!.init)
     expect(body.method).toBe('aria2.addUri')
     expect(body.params).toEqual(['token:S', ['https://x/v.mp4'], { out: 'v.mp4' }])
   })
 
   it('fails when the JSON-RPC response carries an error', async () => {
     const { layer } = makeFetch(
-      () => ({ json: async () => ({ error: { code: 1, message: 'unauthorized' } }) }) as Response,
+      () => new Response(JSON.stringify({ error: { code: 1, message: 'unauthorized' } })),
     )
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: '' })
     await expect(runAddUri(port, layer)).rejects.toThrow('unauthorized')
   })
 
   it('fails (with the code) when an error carries no message', async () => {
-    const { layer } = makeFetch(() => ({ json: async () => ({ error: { code: 1 } }) }) as Response)
+    const { layer } = makeFetch(() => new Response(JSON.stringify({ error: { code: 1 } })))
     await expect(
       runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
     ).rejects.toThrow('aria2 error 1')
   })
 
   it('fails with a placeholder code when an error carries neither message nor code', async () => {
-    const { layer } = makeFetch(() => ({ json: async () => ({ error: {} }) }) as Response)
+    const { layer } = makeFetch(() => new Response(JSON.stringify({ error: {} })))
     await expect(
       runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
     ).rejects.toThrow('aria2 error ?')
   })
 
   it('fails on a malformed body with neither result nor error', async () => {
-    const { layer } = makeFetch(() => ({ json: async () => ({}) }) as Response)
+    const { layer } = makeFetch(() => new Response(JSON.stringify({})))
     await expect(
       runAddUri(makeAria2RpcPort({ rpcUrl: 'http://x', secret: '' }), layer),
     ).rejects.toThrow('malformed')
@@ -167,22 +182,15 @@ describe('makeAria2RpcPort', () => {
   })
 
   it('maps a non-aria2 HTML 200 (json throws) to a malformed-response error', async () => {
-    const { layer } = makeFetch(
-      () =>
-        ({
-          ok: true,
-          status: 200,
-          json: async () => {
-            throw new SyntaxError('Unexpected token < in JSON at position 0')
-          },
-        }) as unknown as Response,
-    )
+    // A real Response over a non-JSON body — `.json()` throws for real, exactly
+    // the "parked domain/proxy served HTML" symptom this maps to a tagged error.
+    const { layer } = makeFetch(() => new Response('<html>not json</html>'))
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:8080/', secret: '' })
     await expect(runAddUri(port, layer, ['https://x/v.mp4'], {})).rejects.toThrow(/malformed/)
   })
 })
 
-const errorBody = (body: unknown) => makeFetch(() => new Response(JSON.stringify(body)))
+const errorBody = (body: JsonValue) => makeFetch(() => new Response(JSON.stringify(body)))
 
 describe('makeAria2RpcPort error mapping', () => {
   it('fails with Aria2RpcError + code on an error envelope', async () => {
@@ -215,16 +223,14 @@ describe('real-world: aria2 end-to-end with a twimg video', () => {
   }
 
   it('hands the full CDN url (query intact) + nested out path to the daemon and yields the gid', async () => {
-    const { layer, calls } = makeFetch(
-      () => ({ json: async () => ({ result: 'GID9f3a' }) }) as Response,
-    )
+    const { layer, calls } = makeFetch(() => new Response(JSON.stringify({ result: 'GID9f3a' })))
     const port = makeAria2RpcPort({ rpcUrl: 'http://localhost:6800/jsonrpc', secret: 'sek' })
     const handle = await Effect.runPromise(
       makeAria2Strategy(port, { split: 16, dir: '/Users/alice/Downloads/x' }, layer).save(videoReq),
     )
     expect(handle).toEqual({ kind: 'aria2', gid: 'GID9f3a' })
     expect(calls[0]!.url).toBe('http://localhost:6800/jsonrpc')
-    const body = JSON.parse(String(calls[0]!.init?.body))
+    const body = parsedRequestBody(calls[0]!.init)
     expect(body.params).toEqual([
       'token:sek',
       [videoReq.url],

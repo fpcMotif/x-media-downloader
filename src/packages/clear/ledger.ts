@@ -160,7 +160,7 @@ export const canClaim = (e: LedgerEntry, scope: Scope): boolean =>
   (e.clear[scope] === 'none' || e.clear[scope] === 'failed')
 
 /** Atomic claim: the CAS surface real code uses so hook and drain can't double-fire. */
-export function tryClaim(e: LedgerEntry, scope: Scope): { entry: LedgerEntry; won: boolean } {
+export function tryClaim(e: LedgerEntry, scope: Scope) {
   if (!canClaim(e, scope)) return { entry: e, won: false }
   return { entry: reduce(e, { type: 'ClaimClear', scope }), won: true }
 }
@@ -174,8 +174,10 @@ export const isFullyCleared = (e: LedgerEntry): boolean =>
  *  page the download happens on decides which of these is actually clicked
  *  (handleClearTweet's onScope): un-bookmark/un-like on a list page, "Not
  *  interested" on the For You feed; the off-page scopes no-op. */
-export const hookScopes = (s: Settings): Scope[] => [
-  ...(s.autoUnbookmarkOnSave ? (['bookmark'] as Scope[]) : []),
-  ...(s.autoUnlikeOnSave ? (['like'] as Scope[]) : []),
-  ...(s.autoNotInterestedOnSave ? (['notInterested'] as Scope[]) : []),
-]
+export const hookScopes = (s: Settings): Scope[] => {
+  const scopes: Scope[] = []
+  if (s.autoUnbookmarkOnSave) scopes.push('bookmark')
+  if (s.autoUnlikeOnSave) scopes.push('like')
+  if (s.autoNotInterestedOnSave) scopes.push('notInterested')
+  return scopes
+}

@@ -74,10 +74,7 @@ export function isGrabbableMediaPreviewUrl(url: string): boolean {
   if (u.hostname !== 'pbs.twimg.com') return false
   /* v8 ignore next -- `URL.pathname` is always >= '/', so split('/')[1] is never undefined */
   const section = u.pathname.split('/')[1] ?? ''
-  return (
-    u.pathname.startsWith('/media/') ||
-    (VIDEO_PREVIEW_SECTIONS as readonly string[]).includes(section)
-  )
+  return u.pathname.startsWith('/media/') || VIDEO_PREVIEW_SECTIONS.some((sect) => sect === section)
 }
 
 /**

@@ -89,11 +89,24 @@ const clearScopeSummary = (settings: Settings): string => {
   return active.length > 0 ? active.join(' · ') : 'No scopes selected'
 }
 
+/** Whether `value` is one of `DOWNLOAD_MODES`' own values — reuses that array (the
+ *  single source of truth for the strategy vocabulary) instead of asserting. */
+const isDownloadStrategy = (value: string): value is Settings['downloadStrategy'] =>
+  DOWNLOAD_MODES.some((mode) => mode.value === value)
+
 // Invisible hit-slop for compact text-links (footer Settings, Edit ›,
 // Archive ›) — matches the Switch idiom's after:-inset-y-3 (spec §2.8): 18px
 // text + 24px slop ≈ 42px effective target.
 const LINK_SLOP =
   'relative rounded-sm outline-none transition-colors after:absolute after:-inset-x-1 after:-inset-y-3 focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97]'
+
+/** What a page action hands its caller — a named contract (not an anonymous object
+ *  literal type) so the `{ busy, run }` returned below keeps its inferred shape
+ *  instead of widening through an inline annotation. */
+interface PageActionHandle {
+  readonly busy: boolean
+  readonly run: () => Promise<void>
+}
 
 /** A page action that messages the active tab's content script and turns the
  *  reply into a status line. Owns its own busy state and the query-tab → send
@@ -106,7 +119,7 @@ function usePageAction<R>(config: {
   /** Cluster-scoped status-line setter (downloadMsg or releaseMsg) — cleared
    *  on run start, set on completion/error. */
   setMsg: (m: string | null) => void
-}): { busy: boolean; run: () => Promise<void> } {
+}): PageActionHandle {
   const [busy, setBusy] = useState(false)
 
   const run = async (): Promise<void> => {
@@ -121,7 +134,10 @@ function usePageAction<R>(config: {
         config.setMsg(NO_ACTIVE_TAB)
         return
       }
-      const res = (await browser.tabs.sendMessage(tab.id, config.request)) as R | null
+      // `browser.tabs.sendMessage`'s reply types as `any` (the polyfill has no way to
+      // know the content script's response shape), so this is a plain annotation, not
+      // a cast: `any` is assignable to any declared type without an assertion.
+      const res: R | null = await browser.tabs.sendMessage(tab.id, config.request)
       config.setMsg(config.format(res))
     } catch {
       config.setMsg(PAGE_UNREACHABLE)
@@ -539,7 +555,7 @@ function PreferencesZone({
           aria-label="Download mode"
           value={settings.downloadStrategy}
           onValueChange={(value: string) => {
-            if (value) void update({ downloadStrategy: value as Settings['downloadStrategy'] })
+            if (isDownloadStrategy(value)) void update({ downloadStrategy: value })
           }}
         >
           {DOWNLOAD_MODES.map((option) => (
@@ -803,9 +819,8 @@ export function App() {
     const poll = (): void => {
       void browser.runtime
         .sendMessage({ _tag: 'MetricsRequest' })
-        .then((m) => {
+        .then((snapshot: MetricsSnapshot | null) => {
           if (!active) return false
-          const snapshot = m as MetricsSnapshot | null
           setMetrics(snapshot)
           // Slow the cadence when no batch is active — the monitor (and thus the
           // snapshot) is only shown while total > 0.
@@ -879,10 +894,10 @@ export function App() {
   }
 
   const resetMonitor = async (): Promise<void> => {
-    const res = await browser.runtime
+    const res: { ok?: boolean } | null = await browser.runtime
       .sendMessage({ _tag: 'ClearDownloadMonitorRequest' })
       .catch(() => null)
-    if ((res as { ok?: boolean } | null)?.ok) setMetrics(null)
+    if (res?.ok) setMetrics(null)
   }
 
   // Only surface the monitor for a real download batch — not for stray hover/UI

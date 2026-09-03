@@ -4,7 +4,7 @@ import { instagramAdapter } from '../../core/adapters/instagram/adapter'
 import { threadsAdapter } from '../../core/adapters/threads/adapter'
 import { makeDetectionStore } from '../../core/adapters/detection-store'
 import { mediaKeyFromUrl } from '../../core/adapters/x/dom'
-import type { MediaItem } from '@/packages/schema'
+import type { MediaItem, JsonObject } from '@/packages/schema'
 import {
   fireCurrentPost,
   wholePostItemsFor,
@@ -90,7 +90,7 @@ const seedMetaPost = (
   deps: PostGrabDeps,
   platformAdapter: PlatformAdapter,
   responseUrl: string,
-  response: unknown,
+  response: JsonObject,
 ): MediaItem[] => {
   const items = platformAdapter.detectFromResponse(responseUrl, response)
   deps.store.addDetected(items)
@@ -407,7 +407,7 @@ describe('fireCurrentPost — Threads/IG cursor fallback', () => {
       const mediaB = document.createElement('img')
       mediaB.dataset.postCode = 'CODE-B'
       const itemB = { ...photo('b', 'KB', 'post-b'), platform }
-      let cursor: { media: HTMLImageElement; key: string } = { media: mediaA, key: 'KA' }
+      let cursor = { media: mediaA, key: 'KA' } satisfies { media: HTMLImageElement; key: string }
       const cursorHovered = vi.fn<() => { media: HTMLImageElement; key: string }>(() => cursor)
       let focusedPost: { postCode: string } | null = { postCode: 'CODE-A' }
       const clearFocusedPost = vi.fn<() => void>(() => {
@@ -437,7 +437,7 @@ describe('fireCurrentPost — Threads/IG cursor fallback', () => {
       expect(marked).toEqual([])
       expect(clearFocusedPost).toHaveBeenCalledTimes(1)
 
-      cursor = { media: mediaB, key: 'KB' }
+      cursor = { media: mediaB, key: 'KB' } satisfies { media: HTMLImageElement; key: string }
       fireCurrentPost(depsWithRetainedFocus)
 
       expect(sent).toEqual([[itemB]])
@@ -1017,11 +1017,11 @@ describe('fireCurrentPost — staleness', () => {
   it('a settle arriving after a newer grab owns the ring is ignored', async () => {
     vi.useFakeTimers()
     const a = photo('a', 'KA', 't1')
-    const gate: { resolve?: (ok: boolean) => void } = {}
+    let resolveGate: ((ok: boolean) => void) | undefined
     const send = vi.fn<() => Promise<boolean>>(
       () =>
         new Promise<boolean>((res) => {
-          gate.resolve = res
+          resolveGate = res
         }),
     )
     const { deps, ui } = makeDeps({
@@ -1032,7 +1032,7 @@ describe('fireCurrentPost — staleness', () => {
     fireCurrentPost(deps)
     // A newer grab takes the ring before the first send settles.
     deps.setUi({ key: 'dd:newer', rect: RECT, phase: 'queued', all: true, allCount: 1 })
-    gate.resolve?.(true)
+    resolveGate?.(true)
     await settle()
     expect(ui()).toMatchObject({ key: 'dd:newer', phase: 'queued' })
     // …and no flash was armed against the stale key.

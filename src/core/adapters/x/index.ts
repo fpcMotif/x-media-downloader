@@ -1,6 +1,6 @@
 import { TWEET_ARTICLE_SEL } from '../../../packages/clear/clearer'
 import { resolveTweetMedia, upgradePhotoUrl } from '../../../packages/resolver'
-import type { MediaItem } from '@/packages/schema'
+import type { JsonValue, MediaItem } from '@/packages/schema'
 import {
   mediaKeyFromUrl,
   isGrabbablePhotoUrl,
@@ -27,7 +27,7 @@ export const isXUrl = (url: string): boolean => /https?:\/\/(x|twitter)\.com\//.
  * authority) and resolving each node's `legacy.extended_entities.media`. Nodes
  * with no media or no id contribute nothing; tweetIds are de-duplicated.
  */
-export function detectFromJson(json: unknown): MediaItem[] {
+export function detectFromJson(json: JsonValue): MediaItem[] {
   const out: MediaItem[] = []
   const seen = new Set<string>()
   forEachTweetNode(json, ({ tweetId, handle, mediaRaw }) => {

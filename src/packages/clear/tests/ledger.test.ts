@@ -15,8 +15,8 @@ import {
 } from '../ledger'
 import type { Settings } from '@/packages/schema'
 
-/** hookScopes reads only the three per-scope toggles; cast a minimal partial. */
 const toggles = (bookmark: boolean, like: boolean, notInterested: boolean): Settings =>
+  // SAFETY: hookScopes reads only the three per-scope toggles; partial Settings satisfies test invariant
   ({
     autoUnbookmarkOnSave: bookmark,
     autoUnlikeOnSave: like,

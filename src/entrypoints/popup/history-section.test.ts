@@ -87,26 +87,26 @@ describe('fetchHistory', () => {
 
   it('returns the records from a HistoryRequest reply', async () => {
     const records = [rec('1-0', 'alice', 100)]
-    browser.runtime.sendMessage = (async () => ({
+    browser.runtime.sendMessage = async () => ({
       records,
-    })) as typeof browser.runtime.sendMessage
+    })
     expect(await fetchHistory()).toBe(records)
   })
 
   it('returns [] when the reply has no records', async () => {
-    browser.runtime.sendMessage = (async () => ({})) as typeof browser.runtime.sendMessage
+    browser.runtime.sendMessage = async () => ({})
     expect(await fetchHistory()).toEqual([])
   })
 
   it('returns [] when the reply is null', async () => {
-    browser.runtime.sendMessage = (async () => null) as typeof browser.runtime.sendMessage
+    browser.runtime.sendMessage = async () => null
     expect(await fetchHistory()).toEqual([])
   })
 
   it('returns [] when sendMessage rejects', async () => {
-    browser.runtime.sendMessage = (async () => {
+    browser.runtime.sendMessage = async () => {
       throw new Error('no receiver')
-    }) as typeof browser.runtime.sendMessage
+    }
     expect(await fetchHistory()).toEqual([])
   })
 })

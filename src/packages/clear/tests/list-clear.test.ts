@@ -11,10 +11,15 @@ const clamp = (v: number, maxY: number): number => Math.max(0, Math.min(maxY, v)
  * and returns the count — exactly what the real per-pass click sweep does.
  */
 function harness(opts: { layout?: Record<string, number>; maxY?: number; path?: string }) {
-  const layout: Record<string, number> = { ...opts.layout }
+  const layout = { ...opts.layout } satisfies Record<string, number>
   const maxY = opts.maxY ?? 4000
   const scroll = { y: 0 }
-  const scrollCalls = { to: [] as number[], by: [] as number[] }
+  const scrollCalls = {
+    // SAFETY: to is mutated with .push(y) where y is a number scroll destination
+    to: [] as number[],
+    // SAFETY: by is mutated with .push(dy) where dy is a number delta value
+    by: [] as number[],
+  }
   let path = opts.path ?? '/someone/likes'
 
   const mounted = (): string[] =>

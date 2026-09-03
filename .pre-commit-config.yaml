@@ -1,0 +1,12 @@
+# Run with prek (https://github.com/j178/prek): `prek install` once, then it
+# fires on every commit. Advisory only — nothing here blocks a commit.
+repos:
+  - repo: local
+    hooks:
+      - id: oxlint-complexity
+        name: cyclomatic complexity
+        entry: bunx oxlint -c .oxlintrc.complexity.json --disable-nested-config
+        language: system
+        verbose: true
+        files: \.(ts|tsx|js|jsx|mjs)$
+        exclude: ^(\.agents|\.claude|backend|study|src/components/ui)/

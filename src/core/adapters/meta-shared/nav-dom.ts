@@ -26,21 +26,68 @@ export interface NavColumnDom {
 }
 
 /**
+ * Descendant-post counts for every ancestor of every post, up to (and
+ * excluding) `stopAt` — one bottom-up pass instead of the `querySelectorAll`
+ * a naive per-post ancestor walk would re-run at every level. For an
+ * ancestor `el`, `counts.get(el)` equals `el.querySelectorAll(postSelector).length`:
+ * each post increments every element on its own path, so the total landing on
+ * `el` is exactly the number of posts inside `el`'s subtree.
+ */
+function countPostsPerAncestor(
+  posts: readonly Element[],
+  postSelector: string,
+  stopAt: ParentNode,
+): Map<Element, number> {
+  const counts = new Map<Element, number>()
+  for (const post of posts) {
+    let el: Element | null = post.parentElement
+    while (el !== null && el !== stopAt) {
+      counts.set(el, (counts.get(el) ?? 0) + 1)
+      el = el.parentElement
+    }
+  }
+  return counts
+}
+
+/**
  * The column subtree containing `post`: the child of the nearest ancestor
  * whose children split into ≥2 post-bearing, non-post subtrees holding MORE
  * posts in total than there are such subtrees — or null when no such ancestor
  * exists up to (and excluding) `stopAt`, meaning the post lives in a single
  * un-grouped feed.
+ *
+ * `postCounts` (from {@link countPostsPerAncestor}) and `groupCountsByEl` (a
+ * per-`el` memo, shared and filled once across every post's walk) turn the
+ * per-level "how many post-bearing non-post children does `el` have" check
+ * into an O(1) lookup after the first post that reaches `el`, so a feed of N
+ * posts at depth D costs O(N·D) total instead of re-scanning `el`'s children
+ * — and re-querying each child's own subtree — for every post that passes
+ * through it.
  */
-function columnGroupOf(post: Element, postSelector: string, stopAt: ParentNode): Element | null {
+function columnGroupOf(
+  post: Element,
+  postSelector: string,
+  stopAt: ParentNode,
+  postCounts: ReadonlyMap<Element, number>,
+  groupCountsByEl: Map<Element, number>,
+): Element | null {
+  const groupsOf = (el: Element): number => {
+    const cached = groupCountsByEl.get(el)
+    if (cached !== undefined) return cached
+    let groups = 0
+    for (const c of el.children) {
+      if (!c.matches(postSelector) && (postCounts.get(c) ?? 0) > 0) groups++
+    }
+    groupCountsByEl.set(el, groups)
+    return groups
+  }
+
   let child: Element = post
   let el: Element | null = post.parentElement
   while (el !== null && el !== stopAt) {
-    const groups = [...el.children].filter(
-      (c) => !c.matches(postSelector) && c.querySelector(postSelector) !== null,
-    )
-    const postsInside = el.querySelectorAll(postSelector).length
-    if (groups.length >= 2 && postsInside > groups.length && !child.matches(postSelector)) {
+    const groups = groupsOf(el)
+    const postsInside = postCounts.get(el) ?? 0
+    if (groups >= 2 && postsInside > groups && !child.matches(postSelector)) {
       return child
     }
     child = el
@@ -57,9 +104,11 @@ function columnGroupOf(post: Element, postSelector: string, stopAt: ParentNode):
 export function enumerateNavColumns(root: ParentNode, postSelector: string): NavColumnDom[] {
   const posts = [...root.querySelectorAll(postSelector)]
   if (posts.length === 0) return []
+  const postCounts = countPostsPerAncestor(posts, postSelector, root)
+  const groupCountsByEl = new Map<Element, number>()
   const byContainer = new Map<Element | null, Element[]>()
   for (const post of posts) {
-    const container = columnGroupOf(post, postSelector, root)
+    const container = columnGroupOf(post, postSelector, root, postCounts, groupCountsByEl)
     const bucket = byContainer.get(container)
     if (bucket) bucket.push(post)
     else byContainer.set(container, [post])
@@ -97,10 +146,7 @@ export function buildNavSnapshot(
  * and the spatial keys degrade to column movement (never a wrong click).
  * Selector ownership stays here so a label rename is a one-line fix.
  */
-export function carouselControlsByAria(post: Element): {
-  readonly prev: Element | null
-  readonly next: Element | null
-} {
+export function carouselControlsByAria(post: Element) {
   return {
     prev: post.querySelector('button[aria-label="Go back"]'),
     next: post.querySelector('button[aria-label="Next"]'),

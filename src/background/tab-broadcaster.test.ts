@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { fakeBrowser } from 'wxt/testing'
+import { fakeBrowser } from 'wxt/testing/fake-browser'
 import {
   makeTabBroadcaster,
   RELEASE_BACKOFF_MS,
@@ -7,6 +7,7 @@ import {
   type TabsPort,
 } from './tab-broadcaster'
 import { allAdapterHostMatch } from '../core/adapters/registry'
+import type { Message, TabMessage, JsonValue } from '@/packages/schema'
 
 // The tab-broadcaster SHELL through an injected TabsPort. Pins the irreversible-clear
 // targeting guarantee that clear-session.test.ts mocks away: the origin tab is
@@ -15,10 +16,7 @@ import { allAdapterHostMatch } from '../core/adapters/registry'
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0))
 
-const messageTag = (message: unknown): string | undefined => {
-  if (typeof message !== 'object' || message === null || !('_tag' in message)) return undefined
-  return typeof message._tag === 'string' ? message._tag : undefined
-}
+const messageTag = (message: Message | TabMessage): string => message._tag
 
 /** The release tab's id in every fake port: distinct from any "open tab" id so a
  *  test can always tell a release-tab message from a fan-out one. */
@@ -47,6 +45,23 @@ const pinned = (scope: 'bookmark' | 'like' = 'bookmark') =>
 /** The fail-CLOSED pin: nothing was resolvable when the entry was seeded. */
 const NO_PIN = { source: 'none' } as const
 
+/** A per-tab scripted reply or thrown miss. */
+type FakeTabAnswer = JsonValue | undefined | Error
+
+/** A per-tab scripted answer: a literal reply, an `Error` (⇒ a dead tab), or a
+ *  function of the sent message computing either SYNCHRONOUSLY, or a real reply
+ *  ASYNCHRONOUSLY (a pending Promise lets a test hold a reply open — see the
+ *  "serializes concurrent releases" case below; the async path never resolves to
+ *  an `Error`, since nothing here awaits it before the `instanceof Error` check). */
+type FakeTabResponse =
+  | FakeTabAnswer
+  | ((message: Message | TabMessage) => FakeTabAnswer | Promise<JsonValue | undefined>)
+
+const isResponseFn = (
+  v: FakeTabResponse,
+): v is (message: Message | TabMessage) => FakeTabAnswer | Promise<JsonValue | undefined> =>
+  typeof v === 'function'
+
 /** A fake TabsPort: fixed open-tab ids + a per-tab response (an Error ⇒ a dead tab).
  *  `responses[RELEASE_TAB_ID]` scripts the release tab's answer; `navigateError`
  *  makes the navigation itself reject; `urls` scripts what `tabs.get(id).url` would
@@ -54,14 +69,14 @@ const NO_PIN = { source: 'none' } as const
  *  with no entry is a closed/off-platform tab. */
 function fakeTabs(
   ids: number[],
-  responses: Record<number, unknown> = {},
+  responses: Record<number, FakeTabResponse> = {},
   opts: {
     navigateError?: Error
     urls?: Record<number, string>
     releaseTabId?: number
   } = {},
 ) {
-  const sent: Array<{ tabId: number; message: unknown }> = []
+  const sent: Array<{ tabId: number; message: Message | TabMessage }> = []
   const navigated: string[] = []
   const reloaded: number[] = []
   // Mirrors the real port: `releaseTabId()` answers `undefined` until the first
@@ -77,10 +92,7 @@ function fakeTabs(
     sendTabMessage: vi.fn<TabsPort['sendTabMessage']>(async (tabId, message) => {
       sent.push({ tabId, message })
       const configured = responses[tabId]
-      const r =
-        typeof configured === 'function'
-          ? (configured as (message: unknown) => unknown)(message)
-          : configured
+      const r = isResponseFn(configured) ? configured(message) : configured
       if (r instanceof Error) throw r
       return r
     }),
@@ -291,7 +303,9 @@ describe('sendClearToTabs — clear targeting', () => {
     let firstPolls = 0
     let releaseFirst: (() => void) | undefined
     const tabs = fakeTabs([], {
-      [RELEASE_TAB_ID]: (message: unknown) => {
+      [RELEASE_TAB_ID]: (message: Message | TabMessage) => {
+        // SAFETY: the release tab only ever receives `ClearTweetRequest`/
+        // `ClearDrainRequest` here, both of which carry `tweetId`.
         const m = message as { tweetId: string }
         if (m.tweetId === 't1') {
           firstPolls++
@@ -597,6 +611,8 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
     expect(res).toEqual([{ scope: 'bookmark', ok: true }])
     const releaseSent = tabs.sent.filter((s) => s.tabId === RELEASE_TAB_ID)
     expect(releaseSent).toHaveLength(3)
+    // SAFETY: the release tab only ever receives `ClearTweetRequest` here, whose
+    // `probe` field the leg sets from its 2nd attempt onward.
     expect(releaseSent.map((s) => (s.message as { probe?: boolean }).probe)).toEqual([
       undefined,
       true,

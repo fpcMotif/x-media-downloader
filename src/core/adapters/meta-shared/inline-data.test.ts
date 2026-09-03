@@ -126,7 +126,9 @@ describe('inlineDataPayloads', () => {
 
     const payloads = inlineDataPayloads(scripts)
     expect(payloads).toHaveLength(1)
-    const json = JSON.parse(payloads[0] as string)
+    const [payload] = payloads
+    if (!payload) throw new Error('expected one inline payload')
+    const json = JSON.parse(payload)
 
     const items = detectMediaItems(json, 'instagram')
     const video = items.find((m) => m.type === 'video')

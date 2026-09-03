@@ -12,9 +12,10 @@ import { SIMPLE_MAX_BYTES, type UploadOutcome } from '../types'
  */
 
 /** Bearer auth header for a provider access token. */
-export const authHeader = (token: string): Record<string, string> => ({
-  authorization: `Bearer ${token}`,
-})
+export const authHeader = (token: string) =>
+  ({
+    authorization: `Bearer ${token}`,
+  }) satisfies Record<string, string>
 
 /** Best-effort error body; a mid-read failure (dropped connection) yields ''. */
 export const errText = (res: Response): Promise<string> => res.text().catch(() => '')
@@ -22,7 +23,22 @@ export const errText = (res: Response): Promise<string> => res.text().catch(() =
 /** Parse a JSON response body as `T`. A malformed body rejects → a defect that
  *  `runUpload`'s `catchCause` maps to a failure outcome (as the old `await` did). */
 export const okJson = <T>(res: Response): Effect.Effect<T> =>
-  Effect.promise(() => res.json() as Promise<T>)
+  Effect.promise(() => {
+    // SAFETY: `T` is caller-supplied and unconstrained — there is no runtime shape
+    // to check it against here. Each `okJson<T>()` call site owns the actual
+    // invariant (which provider field it reads off `T`); a malformed body still
+    // fails safely, just as a defect instead of a type error.
+    return res.json() as Promise<T>
+  })
+
+/** Promise-land twin of `okJson`, for plain async/await code that can't take on an
+ *  Effect boundary mid-loop (the Dropbox session sink runs inside one `tryPromise`). */
+export const jsonAs = <T>(res: Response): Promise<T> => {
+  // SAFETY: `T` is caller-supplied and unconstrained, same as `okJson` above —
+  // there is no runtime shape to check it against here; a malformed body still
+  // fails safely, just as a thrown rejection instead of a type error.
+  return res.json() as Promise<T>
+}
 
 /** `<provider> HTTP <status>[: <body first 200 chars>]` — the shared error format. */
 export const httpErr = (provider: string, status: number, body: string): string =>
@@ -41,7 +57,7 @@ export class CloudHttpError extends Data.TaggedError('CloudHttpError')<{
   readonly status: number
   readonly body: string
 }> {
-  get message(): string {
+  override get message(): string {
     return httpErr(this.provider, this.status, this.body)
   }
 }
@@ -90,11 +106,10 @@ export const runUpload = <R>(
       Effect.catchTag('CloudHttpError', (e) =>
         Effect.succeed<UploadOutcome>({ kind: 'failure', reason: e.message, status: e.status }),
       ),
-      Effect.catchCause((cause) =>
-        Effect.succeed<UploadOutcome>({
-          kind: 'failure',
-          reason: errorReason(Cause.squash(cause)),
-        }),
-      ),
+      Effect.catchCause((cause) => {
+        const squashed = Cause.squash(cause)
+        const reason = squashed instanceof Error ? squashed : String(squashed)
+        return Effect.succeed<UploadOutcome>({ kind: 'failure', reason: errorReason(reason) })
+      }),
     )
   })

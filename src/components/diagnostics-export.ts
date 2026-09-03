@@ -5,7 +5,7 @@
 // URL.createObjectURL, and chrome.downloads. Heavily logged ([XMD] release-diag-export
 // …) so a failed click is diagnosable from the page console without guessing.
 
-import type { ExportOutcome } from './capture-export'
+import { isNonEmptyString, type ExportOutcome } from './capture-export'
 
 interface ExportResponse {
   readonly ok?: boolean
@@ -18,6 +18,9 @@ export async function runDiagnosticsExport(): Promise<ExportOutcome> {
 
   let res: ExportResponse | null = null
   try {
+    // SAFETY: the background's `ExportDiagnosticsRequest` handler always answers
+    // `{ ok, filename, text }` via `sendResponse` (or the channel dies and this
+    // throws instead); every field is read defensively below regardless.
     res = (await browser.runtime.sendMessage({
       _tag: 'ExportDiagnosticsRequest',
     })) as ExportResponse | null
@@ -31,7 +34,7 @@ export async function runDiagnosticsExport(): Promise<ExportOutcome> {
     filename: res?.filename,
     bytes: res?.text?.length ?? 0,
   })
-  if (!res?.ok || typeof res.text !== 'string' || res.text.length === 0) {
+  if (!res?.ok || !isNonEmptyString(res.text)) {
     return { ok: false, detail: 'No Release diagnostics recorded yet — run a Release first.' }
   }
 

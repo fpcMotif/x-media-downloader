@@ -17,7 +17,7 @@
  * reference when nothing changes, so callers can skip a write cheaply.
  */
 import { Schema, Option } from 'effect'
-import { ClearScope } from '@/packages/schema'
+import { ClearScope, type JsonObject, type JsonValue } from '@/packages/schema'
 
 export const SweepState = Schema.Literals(['queued', 'downloaded', 'cleared', 'failed'])
 export type SweepState = typeof SweepState.Type
@@ -37,6 +37,13 @@ export const emptyWorklist: SweepWorklist = {}
 
 const decodeEntry = Schema.decodeUnknownOption(SweepEntry)
 
+/** A non-null `object` per `typeof` — same test `decodeWorklist` always used, just
+ *  named so the check reads as a domain fact instead of a bare `typeof`. Includes
+ *  arrays deliberately (matches `typeof`): `Object.values` on either yields the
+ *  same iterable of candidate entries. */
+const isJsonRecordLike = (v: JsonValue): v is JsonObject | ReadonlyArray<JsonValue> =>
+  typeof v === 'object' && v !== null
+
 /** Worklist key: scope-qualified so the SAME tweet swept under BOTH list scopes
  *  (a post that is both bookmarked AND liked) keeps an independent lifecycle per
  *  scope. Keying by bare tweetId conflated them — clearing it in one scope made a
@@ -50,10 +57,10 @@ export const keyFor = (scope: ClearScope, tweetId: string): string => `${scope}:
  *  data for free. (Even a full reset would be safe — a cleared post is no longer a
  *  member on the page, so it can't be re-clicked — but per-entry resilience keeps
  *  the skip-cache intact across an isolated corruption.) */
-export const decodeWorklist = (raw: unknown): SweepWorklist => {
-  if (raw === null || typeof raw !== 'object') return emptyWorklist
+export const decodeWorklist = (raw: JsonValue): SweepWorklist => {
+  if (!isJsonRecordLike(raw)) return emptyWorklist
   const out: Record<string, SweepEntry> = {}
-  for (const value of Object.values(raw as Record<string, unknown>)) {
+  for (const value of Object.values(raw)) {
     const decoded = decodeEntry(value)
     if (Option.isSome(decoded))
       out[keyFor(decoded.value.scope, decoded.value.tweetId)] = decoded.value
@@ -96,9 +103,18 @@ export const markState = (
   return { ...wl, [key]: { ...existing, state, at } }
 }
 
+/** Counts per state, for the popup's status line — a fixed, fully-enumerated
+ *  shape (never an open dictionary): every {@link SweepState} always has an entry. */
+export type SweepStateCounts = {
+  queued: number
+  downloaded: number
+  cleared: number
+  failed: number
+}
+
 /** Counts per state, for the popup's status line. */
-export const summarize = (wl: SweepWorklist): Record<SweepState, number> => {
-  const counts: Record<SweepState, number> = { queued: 0, downloaded: 0, cleared: 0, failed: 0 }
+export const summarize = (wl: SweepWorklist): SweepStateCounts => {
+  const counts: SweepStateCounts = { queued: 0, downloaded: 0, cleared: 0, failed: 0 }
   for (const e of Object.values(wl)) counts[e.state] += 1
   return counts
 }

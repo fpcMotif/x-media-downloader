@@ -28,12 +28,15 @@ const item: MediaItem = {
 describe('decodeRequestMetaStore', () => {
   it('round-trips a store including an entry with an optional item', () => {
     const store: RequestMetaStore = { a: meta(), b: meta({ item }) }
-    expect(decodeRequestMetaStore(store)).toEqual(store)
+    // `decodeRequestMetaStore` reads persisted JSON, so hand it what storage
+    // actually gives back — a plain-JSON clone — rather than the live typed
+    // value (which may carry optional fields JsonValue can't express).
+    expect(decodeRequestMetaStore(JSON.parse(JSON.stringify(store)))).toEqual(store)
   })
 
   it('decodes an entry with no item (optional field genuinely absent)', () => {
     const store: RequestMetaStore = { a: meta() }
-    const decoded = decodeRequestMetaStore(store)
+    const decoded = decodeRequestMetaStore(JSON.parse(JSON.stringify(store)))
     expect(decoded.a?.item).toBeUndefined()
   })
 

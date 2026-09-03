@@ -148,10 +148,10 @@ function isViewportDominantVideo(video: Element, root: Document | DocumentFragme
 function postIdFromDom(el: Element, pathname: string): string | null {
   const container = findPostContainer(el, INSTAGRAM_POST_SELECTOR)
   if (container) return postCodeFromContainer(container, 'a[href]', INSTAGRAM_POST_LINK_PATTERN)
-  // `getRootNode()` resolves to the live `document` on a real page (every
-  // mounted video lives there), but to the nearest detached fragment root in
-  // a test that never attaches its scratch `<div>` to `document.body` —
-  // either way this counts every video actually reachable from `el`'s own
+  // SAFETY: `getRootNode()` resolves to the live `document` on a real page
+  // (every mounted video lives there), but to the nearest detached fragment
+  // root in a test that never attaches its scratch `<div>` to `document.body`
+  // — either way this counts every video actually reachable from `el`'s own
   // tree, not a separate unrelated tree. A connected/detached element's root
   // is always a Document or DocumentFragment (a ShadowRoot IS a
   // DocumentFragment) — never a bare Element — so this covers every real
@@ -239,16 +239,16 @@ export function isTrackedInstagramResponseUrl(url: string): boolean {
 /** Keyboard Navigation action labels (issue #58) — Instagram's reply control
  *  is labeled "Comment". LOCALE-FRAGILE like Threads': a non-English UI
  *  resolves no control and the command fails safe. */
-const INSTAGRAM_NAV_ACTION_LABELS: Readonly<Record<NavAction, readonly string[]>> = {
+const INSTAGRAM_NAV_ACTION_LABELS = {
   like: ['Like'],
   reply: ['Comment'],
   repost: ['Repost'],
-}
+} satisfies Readonly<Record<NavAction, readonly string[]>>
 
-const INSTAGRAM_NAV_FLIPPED_LABELS: Readonly<Record<'like' | 'repost', string>> = {
+const INSTAGRAM_NAV_FLIPPED_LABELS = {
   like: 'Unlike',
   repost: 'Remove repost',
-}
+} satisfies Readonly<Record<'like' | 'repost', string>>
 
 const instagramNav: AdapterNav = {
   postSelector: INSTAGRAM_POST_SELECTOR,

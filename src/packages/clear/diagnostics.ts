@@ -34,7 +34,7 @@
  * mirrors the shape of `history/store.ts` and `download/request-meta.ts`.
  */
 import { Schema } from 'effect'
-import { DownloadTraceEntry } from '@/packages/schema'
+import { DownloadTraceEntry, isJsonObject, type JsonValue } from '@/packages/schema'
 import { computeReleaseCorrelationCounters } from './correlate'
 
 /** The durable Release diagnostics state: the event window plus the accounting that
@@ -111,29 +111,31 @@ export function appendReleaseDiagnostics(
   return appendManyReleaseDiagnostics(log, [e], cap)
 }
 
-/** Persisted counters are advisory — they only feed the export header — so a corrupt
- *  one degrades to `fallback` instead of discarding an otherwise-good event window. */
-const count = (v: unknown, fallback: number): number =>
-  typeof v === 'number' && Number.isInteger(v) ? v : fallback
-
-type WrapperShape = {
-  readonly events: ReadonlyArray<unknown>
-  readonly evicted?: unknown
-  readonly appended?: unknown
-  readonly decodeDropped?: unknown
+type DiagnosticsEnvelope = {
+  readonly events: ReadonlyArray<JsonValue>
+  readonly evicted?: JsonValue
+  readonly appended?: JsonValue
+  readonly decodeDropped?: JsonValue
 }
 
-const isWrapper = (raw: unknown): raw is WrapperShape =>
-  typeof raw === 'object' && raw !== null && 'events' in raw && Array.isArray(raw.events)
+const isWrapper = (raw: JsonValue | undefined): raw is DiagnosticsEnvelope =>
+  raw !== undefined && isJsonObject(raw) && Array.isArray(raw.events)
+
+/** Type predicate to validate that a persisted JSON value is a valid integer number. */
+function isValidNumber(v: JsonValue | undefined): v is number {
+  return typeof v === 'number' && Number.isInteger(v)
+}
+
+type DecodeEventsResult = {
+  readonly events: ReadonlyArray<DownloadTraceEntry>
+  readonly dropped: number
+}
 
 /** Decode elements ONE BY ONE: a corrupt entry costs that entry and nothing more.
  *  Whole-array fallback (what `history/store.ts`'s `decodeStore` does, and what this
  *  module used to do) is catastrophic here — the background persists whatever decode
  *  returns, so one bad element used to erase the entire Release log on the next write. */
-function decodeEvents(raw: ReadonlyArray<unknown>): {
-  events: ReadonlyArray<DownloadTraceEntry>
-  dropped: number
-} {
+function decodeEvents(raw: ReadonlyArray<JsonValue>): DecodeEventsResult {
   const events: DownloadTraceEntry[] = []
   let dropped = 0
   for (const el of raw) {
@@ -154,7 +156,7 @@ function decodeEvents(raw: ReadonlyArray<unknown>): {
  * distinguishable by inspection, and a version key would only add a migration that
  * could fail. Anything else (null, garbage, a non-array object) yields the zero state.
  */
-export function decodeReleaseDiagnostics(raw: unknown): ReleaseDiagnosticsLog {
+export function decodeReleaseDiagnostics(raw: JsonValue | undefined): ReleaseDiagnosticsLog {
   if (Array.isArray(raw)) {
     const { events, dropped } = decodeEvents(raw)
     return { events, evicted: 0, appended: events.length, decodeDropped: dropped }
@@ -163,16 +165,22 @@ export function decodeReleaseDiagnostics(raw: unknown): ReleaseDiagnosticsLog {
     const { events, dropped } = decodeEvents(raw.events)
     return {
       events,
-      evicted: count(raw.evicted, 0),
-      appended: count(raw.appended, events.length),
+      evicted: isValidNumber(raw.evicted) ? raw.evicted : 0,
+      appended: isValidNumber(raw.appended) ? raw.appended : events.length,
       // ACCUMULATE onto the persisted count instead of replacing it. The rejected
       // elements are gone from storage as soon as the next append re-persists this
       // window, so a decode that reported only its own drops would read 0 forever
       // after and the loss would be misattributed to refused writes.
-      decodeDropped: count(raw.decodeDropped, 0) + dropped,
+      decodeDropped: (isValidNumber(raw.decodeDropped) ? raw.decodeDropped : 0) + dropped,
     }
   }
   return EMPTY_RELEASE_DIAGNOSTICS
+}
+
+type DiagnosticsExportResult = {
+  readonly ok: boolean
+  readonly filename: string
+  readonly text: string
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -216,7 +224,7 @@ function utcStamp(nowMs: number): string {
 export function composeDiagnosticsExport(
   log: ReleaseDiagnosticsLog,
   now: number,
-): { ok: boolean; filename: string; text: string } {
+): DiagnosticsExportResult {
   if (log.events.length === 0) return { ok: false, filename: '', text: '' }
   const { clears, clearsByBranch, mutations, serverRejects, reAddFingerprints, reappearances } =
     computeReleaseCorrelationCounters(log.events)

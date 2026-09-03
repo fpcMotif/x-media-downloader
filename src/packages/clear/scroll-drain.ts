@@ -45,7 +45,7 @@ const compactDetailValue = (value: string, fallback: string): string => {
     .replace(/\s+/g, '-')
   return compact.length > 0 ? compact : fallback
 }
-const failureReason = (error: unknown): string =>
+const failureReason = (error: Error | string): string =>
   error instanceof Error ? compactDetailValue(error.message, 'error') : 'error'
 
 /** The window-scroll seam: live position + viewport reads, absolute/relative moves. */
@@ -189,7 +189,8 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
           try {
             results = await deps.clearMounted(id, p.scopes, p.allLists)
           } catch (error) {
-            reportTerminal('drain-failed', id, p.scopes, failureReason(error))
+            const narrowedError: Error | string = error instanceof Error ? error : String(error)
+            reportTerminal('drain-failed', id, p.scopes, failureReason(narrowedError))
             results = p.scopes.map((scope) => ({ scope, ok: false }))
           }
           resolveTweet(id, p.scopes, results)
@@ -248,7 +249,7 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
     if (cancelDrain !== null) cancelDrain()
     cancelDrain = deps.clock.after(delayMs, () => {
       cancelDrain = null
-      void drainPendingClears().catch((error: unknown) => {
+      void drainPendingClears().catch((error: Error | string) => {
         const reason = failureReason(error)
         draining = false
         if (pendingClears.size === 0) deps.report('drain-failed', `reason=${reason} pending=0`)

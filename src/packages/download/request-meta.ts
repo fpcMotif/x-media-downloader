@@ -15,12 +15,12 @@
  * `session:requestMeta` and feeds this module's plan.
  */
 import { Schema } from 'effect'
-import { MediaItem } from '@/packages/schema'
+import { MediaItem, type JsonValue } from '@/packages/schema'
 
 const PersistedRequestMetaSchema = Schema.Struct({
   url: Schema.String,
   filename: Schema.String,
-  item: Schema.optional(MediaItem),
+  item: Schema.optionalKey(MediaItem),
 })
 export type PersistedRequestMeta = typeof PersistedRequestMetaSchema.Type
 
@@ -32,7 +32,7 @@ export const emptyRequestMetaStore: RequestMetaStore = {}
 
 /** Tolerant decode of persisted JSON → store. A corrupt/foreign shape never
  *  throws — it falls back to empty, mirroring `history/store.ts`'s `decodeStore`. */
-export function decodeRequestMetaStore(raw: unknown): RequestMetaStore {
+export function decodeRequestMetaStore(raw: JsonValue | undefined): RequestMetaStore {
   try {
     return Schema.decodeUnknownSync(RequestMetaStoreSchema)(raw)
   } catch {

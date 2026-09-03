@@ -1,0 +1,23 @@
+# anti-slop/no-known-value-widening
+#
+# `const X: Record<..> = { .. }` discards the literal evidence the initialiser
+# carries. `satisfies` keeps the annotation's checking power without widening the
+# binding's type.
+#
+# Constrained to object-literal initialisers under a `Record<..>` annotation, so it
+# never touches ordinary annotated consts. The binding's type becomes the literal
+# type, so downstream code that reassigned or added keys may need adjusting — run
+# `bun run typecheck` after applying.
+#
+#   sg scan -r tools/ast-grep/rules/widening-to-satisfies.yml src        # preview
+#   sg scan -r tools/ast-grep/rules/widening-to-satisfies.yml src -U     # apply
+id: widening-to-satisfies
+language: typescript
+rule:
+  pattern: 'const $NAME: $TYPE = $INIT'
+constraints:
+  TYPE:
+    regex: '^Record<'
+  INIT:
+    kind: object
+fix: 'const $NAME = $INIT satisfies $TYPE'

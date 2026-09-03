@@ -11,7 +11,7 @@ export interface OutcomeEffectPorts {
   readonly recordClearFailure: (tweetId: string, requestId: string) => void
   readonly setTransfers: (state: TrackerState) => void
   readonly setMetrics: (state: MetricsState | null) => void
-  readonly flushTransfers: () => Promise<unknown>
+  readonly flushTransfers: () => Promise<void>
   readonly reportBacklink: (outcome: TransferOutcome) => void
   readonly recordSync: (events: ReadonlyArray<SyncEvent>) => void
   readonly recordHistory: (actions: ReadonlyArray<HistoryAction>) => void

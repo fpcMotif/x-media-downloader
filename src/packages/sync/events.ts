@@ -32,7 +32,7 @@ export const SyncEvent = Schema.Struct({
   requestId: Schema.String,
   deviceId: Schema.String,
   at: Schema.Number,
-  media: Schema.optional(SyncMediaMeta),
+  media: Schema.optionalKey(SyncMediaMeta),
 })
 export type SyncEvent = typeof SyncEvent.Type
 

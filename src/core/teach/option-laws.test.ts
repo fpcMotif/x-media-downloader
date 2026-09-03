@@ -98,15 +98,18 @@ describe('Your functions are lawful Kleisli arrows', () => {
   // Domain property: picks the max-bitrate mp4, or None when there is no mp4.
   it('pickVideoVariant selects the highest-bitrate mp4', () => {
     const variantArb = fc.array(
-      fc.record({
-        content_type: fc.constantFrom('video/mp4', 'application/x-mpegURL', 'video/webm'),
-        url: fc.string(),
-        bitrate: fc.option(fc.nat(), { nil: undefined }),
-      }),
+      fc.record(
+        {
+          content_type: fc.constantFrom('video/mp4', 'application/x-mpegURL', 'video/webm'),
+          url: fc.string(),
+          bitrate: fc.nat(),
+        },
+        { requiredKeys: ['content_type', 'url'] },
+      ),
     )
     fc.assert(
       fc.property(variantArb, (arr) => {
-        const r = pickVideoVariant(arr as Parameters<typeof pickVideoVariant>[0])
+        const r = pickVideoVariant(arr)
         const mp4 = arr.filter((v) => v.content_type === 'video/mp4')
         if (mp4.length === 0) return Option.isNone(r)
         if (!Option.isSome(r)) return false

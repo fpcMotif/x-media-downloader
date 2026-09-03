@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react", "jsx-a11y", "vitest"],
+  "jsPlugins": [{ "name": "anti-slop", "specifier": "./tools/anti-slop/plugin.mjs" }],
   "categories": {
     "correctness": "error",
     "suspicious": "warn",
@@ -18,9 +19,47 @@
   },
   "rules": {
     "react/react-in-jsx-scope": "off",
+    "react/purity": "off",
+    "react/immutability": "off",
+    "react/refs": "off",
+    "react/globals": "off",
     "no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
     "import/no-unassigned-import": ["warn", { "allow": ["**/*.css"] }],
-    "vitest/expect-expect": ["error", { "assertFunctionNames": ["expect", "fc.assert"] }]
+    "vitest/expect-expect": ["error", { "assertFunctionNames": ["expect", "fc.assert"] }],
+
+    "typescript/no-explicit-any": "error",
+    "typescript/ban-ts-comment": "error",
+    "eqeqeq": ["error", "always"],
+    "typescript/no-unnecessary-type-assertion": "warn",
+    "typescript/no-unsafe-type-assertion": "off",
+    "typescript/unbound-method": "off",
+    "typescript/consistent-return": "off",
+    "typescript/no-unnecessary-type-parameters": "off",
+
+    "no-console": ["warn", { "allow": ["warn", "error", "info", "debug"] }],
+    "no-warning-comments": ["warn", { "terms": ["todo", "fixme", "xxx", "hack"] }],
+    "unicorn/no-abusive-eslint-disable": "error",
+
+    "max-depth": ["warn", { "max": 4 }],
+    "max-nested-callbacks": ["warn", { "max": 4 }],
+
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-module-mocking": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-reflect-apply": "error",
+    "anti-slop/no-reflect-get": "error",
+    "anti-slop/no-runtime-typeof": ["error", { "allowInTypeGuards": true }],
+    "anti-slop/no-shape-in-symbol-names": "error",
+    "anti-slop/no-unknown-parameters": "error",
+    "anti-slop/no-unknown-returns": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-unsafe-dictionary-type": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    // anti-slop/no-conditional-empty-object-spread is deliberately NOT enabled:
+    // tsconfig sets exactOptionalPropertyTypes, under which `...(cond ? { k: v } : {})`
+    // is the only way to conditionally omit an optional property.
+    "anti-slop/require-safety-comment-for-type-assertion": "error"
   },
   "overrides": [
     {
@@ -31,7 +70,26 @@
         "promise/prefer-await-to-then": "off",
         "promise/no-nesting": "off"
       }
+    },
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx", "test/**", "scripts/**"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off",
+        "max-nested-callbacks": "off",
+        "no-await-in-loop": "off",
+        "no-console": "off"
+      }
     }
   ],
-  "ignorePatterns": [".output", ".wxt", "study", ".agents", ".claude", "backend", "src/components/ui"]
+  "ignorePatterns": [
+    ".output",
+    ".wxt",
+    "study",
+    ".agents",
+    ".claude",
+    "backend",
+    "src/components/ui",
+    "env.d.ts",
+    "tools/anti-slop"
+  ]
 }

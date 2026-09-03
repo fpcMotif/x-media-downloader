@@ -176,6 +176,7 @@ describe('capture pipeline e2e (harvest → merge → tree → export)', () => {
   it('exports the RICH thread for the re-served tweet, not the thin sighting', () => {
     expect(markdown).toContain('root tweet of the thread')
     expect(markdown).not.toContain('THIN sighting')
+    // SAFETY: toJsonl(records) produces JSONL where each line is {id, text, kind} record; records contain the expected root tweet
     const rootLine = jsonl
       .split('\n')
       .map((l) => JSON.parse(l) as { id: string; text: string; kind: string })

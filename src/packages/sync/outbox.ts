@@ -1,6 +1,7 @@
 import { Schema } from 'effect'
 import { SyncEvent } from './events'
 import { type BackoffPolicy, expBackoffMs } from '@/packages/kernel/backoff'
+import type { JsonValue } from '@/packages/schema'
 
 /** Beyond this many undrained events the oldest are dropped (prolonged offline). */
 export const DEFAULT_CAP = 2000
@@ -28,7 +29,7 @@ export const emptyOutbox: OutboxState = { pending: [], consecutiveFailures: 0, n
  * no Effect, no I/O). The background SW persists the state to `storage.local`
  * and drains it FIFO; idempotent eventIds make at-least-once delivery safe.
  */
-export function decodeOutbox(raw: unknown): OutboxState {
+export function decodeOutbox(raw: JsonValue | undefined): OutboxState {
   try {
     return Schema.decodeUnknownSync(OutboxStateSchema)(raw)
   } catch {

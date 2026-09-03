@@ -11,11 +11,12 @@ const makeHarness = (initialActive: boolean) => {
   let active = initialActive
   const timers: { run: () => void; cancelled: boolean; fired: boolean }[] = []
   const observers: { notify: () => void; observed: number; disconnected: number }[] = []
-  const deferred: { resolve: () => void; reject: (e: unknown) => void }[] = []
+  const deferred: { resolve: () => void; reject: (e: Error) => void }[] = []
   let sweeps = 0
 
   const lifecycle = makeSavedStatusLifecycle({
     isActive: () => active,
+    // SAFETY: Test harness root mock never accessed as DOM node; satisfies the interface shape only.
     root: {} as Node,
     delayMs: 500,
     makeObserver: (notify) => {

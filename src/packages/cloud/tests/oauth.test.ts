@@ -16,6 +16,8 @@ import { GDRIVE_OAUTH, DROPBOX_OAUTH } from '../types'
 import { classifyUploadError } from '../status'
 import { errorReason } from '@/packages/kernel/error'
 import { makeFetchServiceLive } from '@/packages/kernel/fetch-service'
+import type { JsonValue } from '@/packages/schema'
+import { fetchStub } from '../lib/fetch-stub'
 
 const REDIRECT = 'https://abcdef.chromiumapp.org/'
 
@@ -136,11 +138,10 @@ describe('parseAuthRedirect', () => {
     } catch (e) {
       caught = e
     }
-    expect(caught).toBeInstanceOf(OAuthError)
-    const e = caught as OAuthError
-    expect(e._tag).toBe('OAuthError')
-    expect(e.message).toBe('malformed redirect url')
-    expect(e.context).toBe('malformed-url')
+    if (!(caught instanceof OAuthError)) throw new Error('expected an OAuthError')
+    expect(caught._tag).toBe('OAuthError')
+    expect(caught.message).toBe('malformed redirect url')
+    expect(caught.context).toBe('malformed-url')
   })
 })
 
@@ -158,7 +159,7 @@ describe('OAuthError classification regression', () => {
   })
 })
 
-function jsonResponse(body: unknown, ok = true, status = 200): Response {
+function jsonResponse(body: JsonValue, ok = true, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
@@ -168,10 +169,12 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 describe('exchangeCode', () => {
   it('posts PKCE params (no secret) and maps the token response', async () => {
     let captured: { url: string; body: string } | null = null
-    const fetchImpl = (async (url: string, init?: RequestInit) => {
-      captured = { url: String(url), body: String(init?.body) }
+    const fetchImpl = fetchStub(async (url, init) => {
+      // SAFETY: `postToken` always posts a URL-encoded string body — never the
+      // wider `BodyInit` shapes `RequestInit['body']` allows.
+      captured = { url, body: init?.body as string }
       return jsonResponse({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 })
-    }) as unknown as typeof fetch
+    })
 
     const tokens = await runExchange(fetchImpl, {
       cfg: GDRIVE_OAUTH,
@@ -196,13 +199,14 @@ describe('exchangeCode', () => {
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '')
-    const fetchImpl = (async () =>
+    const fetchImpl = fetchStub(async () =>
       jsonResponse({
         access_token: 'AT',
         refresh_token: 'RT',
         expires_in: 3600,
         id_token: `h.${payload}.sig`,
-      })) as unknown as typeof fetch
+      }),
+    )
     const tokens = await runExchange(fetchImpl, {
       cfg: GDRIVE_OAUTH,
       clientId: 'cid',
@@ -215,13 +219,14 @@ describe('exchangeCode', () => {
   })
 
   it('keeps the account label when present (Dropbox)', async () => {
-    const fetchImpl = (async () =>
+    const fetchImpl = fetchStub(async () =>
       jsonResponse({
         access_token: 'AT',
         refresh_token: 'RT',
         expires_in: 14400,
         account_id: 'dbid:abc',
-      })) as unknown as typeof fetch
+      }),
+    )
     const tokens = await runExchange(fetchImpl, {
       cfg: DROPBOX_OAUTH,
       clientId: 'k',
@@ -234,8 +239,7 @@ describe('exchangeCode', () => {
   })
 
   it('fails closed when no refresh_token is returned', async () => {
-    const fetchImpl = (async () =>
-      jsonResponse({ access_token: 'AT', expires_in: 3600 })) as unknown as typeof fetch
+    const fetchImpl = fetchStub(async () => jsonResponse({ access_token: 'AT', expires_in: 3600 }))
     await expect(
       runExchange(fetchImpl, {
         cfg: GDRIVE_OAUTH,
@@ -249,12 +253,9 @@ describe('exchangeCode', () => {
   })
 
   it('surfaces a provider error body', async () => {
-    const fetchImpl = (async () =>
-      jsonResponse(
-        { error: 'invalid_grant', error_description: 'bad code' },
-        false,
-        400,
-      )) as unknown as typeof fetch
+    const fetchImpl = fetchStub(async () =>
+      jsonResponse({ error: 'invalid_grant', error_description: 'bad code' }, false, 400),
+    )
     await expect(
       runExchange(fetchImpl, {
         cfg: GDRIVE_OAUTH,
@@ -268,8 +269,7 @@ describe('exchangeCode', () => {
   })
 
   it('fails closed when the token response has no access_token', async () => {
-    const fetchImpl = (async () =>
-      jsonResponse({ refresh_token: 'RT', expires_in: 3600 })) as unknown as typeof fetch
+    const fetchImpl = fetchStub(async () => jsonResponse({ refresh_token: 'RT', expires_in: 3600 }))
     await expect(
       runExchange(fetchImpl, {
         cfg: GDRIVE_OAUTH,
@@ -283,8 +283,7 @@ describe('exchangeCode', () => {
   })
 
   it('falls back to error code, then HTTP status, when no description is present', async () => {
-    const onlyCode = (async () =>
-      jsonResponse({ error: 'invalid_grant' }, false, 400)) as unknown as typeof fetch
+    const onlyCode = fetchStub(async () => jsonResponse({ error: 'invalid_grant' }, false, 400))
     await expect(
       runExchange(onlyCode, {
         cfg: GDRIVE_OAUTH,
@@ -296,7 +295,7 @@ describe('exchangeCode', () => {
       }),
     ).rejects.toThrow(/invalid_grant/)
 
-    const noBody = (async () => jsonResponse({}, false, 503)) as unknown as typeof fetch
+    const noBody = fetchStub(async () => jsonResponse({}, false, 503))
     await expect(
       runExchange(noBody, {
         cfg: GDRIVE_OAUTH,
@@ -314,13 +313,14 @@ describe('exchangeCode', () => {
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '')
-    const fetchImpl = (async () =>
+    const fetchImpl = fetchStub(async () =>
       jsonResponse({
         access_token: 'AT',
         refresh_token: 'RT',
         expires_in: 3600,
         id_token: `h.${payload}.s`,
-      })) as unknown as typeof fetch
+      }),
+    )
     const tokens = await runExchange(fetchImpl, {
       cfg: GDRIVE_OAUTH,
       clientId: 'cid',
@@ -333,8 +333,9 @@ describe('exchangeCode', () => {
   })
 
   it('fails with an OAuthError when the token endpoint returns non-JSON', async () => {
-    const fetchImpl = (async () =>
-      new Response('<html>502 Bad Gateway</html>', { status: 502 })) as unknown as typeof fetch
+    const fetchImpl = fetchStub(
+      async () => new Response('<html>502 Bad Gateway</html>', { status: 502 }),
+    )
     await expect(
       runExchange(fetchImpl, {
         cfg: GDRIVE_OAUTH,
@@ -348,13 +349,14 @@ describe('exchangeCode', () => {
   })
 
   it('ignores a single-segment id_token (no payload) and falls back to no account', async () => {
-    const fetchImpl = (async () =>
+    const fetchImpl = fetchStub(async () =>
       jsonResponse({
         access_token: 'AT',
         refresh_token: 'RT',
         expires_in: 3600,
         id_token: 'not-a-jwt',
-      })) as unknown as typeof fetch
+      }),
+    )
     const tokens = await runExchange(fetchImpl, {
       cfg: GDRIVE_OAUTH,
       clientId: 'cid',
@@ -368,13 +370,14 @@ describe('exchangeCode', () => {
 
   it('ignores an id_token whose payload is not valid base64/JSON (decode throws)', async () => {
     // '@@@@' is present as the payload segment but atob() rejects it → caught → undefined
-    const fetchImpl = (async () =>
+    const fetchImpl = fetchStub(async () =>
       jsonResponse({
         access_token: 'AT',
         refresh_token: 'RT',
         expires_in: 3600,
         id_token: 'head.@@@@.sig',
-      })) as unknown as typeof fetch
+      }),
+    )
     const tokens = await runExchange(fetchImpl, {
       cfg: GDRIVE_OAUTH,
       clientId: 'cid',
@@ -387,8 +390,9 @@ describe('exchangeCode', () => {
   })
 
   it('defaults expiry to 1h when expires_in is omitted', async () => {
-    const fetchImpl = (async () =>
-      jsonResponse({ access_token: 'AT', refresh_token: 'RT' })) as unknown as typeof fetch
+    const fetchImpl = fetchStub(async () =>
+      jsonResponse({ access_token: 'AT', refresh_token: 'RT' }),
+    )
     const tokens = await runExchange(fetchImpl, {
       cfg: DROPBOX_OAUTH,
       clientId: 'k',
@@ -404,10 +408,12 @@ describe('exchangeCode', () => {
 describe('refreshAccessToken', () => {
   it('posts the refresh grant and returns a new access token', async () => {
     let body = ''
-    const fetchImpl = (async (_url: string, init?: RequestInit) => {
-      body = String(init?.body)
+    const fetchImpl = fetchStub(async (_url, init) => {
+      // SAFETY: `postToken` always posts a URL-encoded string body — never the
+      // wider `BodyInit` shapes `RequestInit['body']` allows.
+      body = init?.body as string
       return jsonResponse({ access_token: 'AT2', expires_in: 3600 })
-    }) as unknown as typeof fetch
+    })
     const out = await runRefresh(fetchImpl, {
       cfg: GDRIVE_OAUTH,
       clientId: 'cid',
@@ -422,7 +428,7 @@ describe('refreshAccessToken', () => {
   })
 
   it('defaults expiry to 1h when expires_in is omitted', async () => {
-    const fetchImpl = (async () => jsonResponse({ access_token: 'AT2' })) as unknown as typeof fetch
+    const fetchImpl = fetchStub(async () => jsonResponse({ access_token: 'AT2' }))
     const out = await runRefresh(fetchImpl, {
       cfg: GDRIVE_OAUTH,
       clientId: 'cid',
@@ -433,7 +439,7 @@ describe('refreshAccessToken', () => {
   })
 
   it('fails closed when the refresh response has no access_token', async () => {
-    const fetchImpl = (async () => jsonResponse({ expires_in: 3600 })) as unknown as typeof fetch
+    const fetchImpl = fetchStub(async () => jsonResponse({ expires_in: 3600 }))
     await expect(
       runRefresh(fetchImpl, { cfg: GDRIVE_OAUTH, clientId: 'cid', refreshToken: 'RT', now: 0 }),
     ).rejects.toThrow(/no access_token/)
@@ -455,9 +461,9 @@ describe('isTokenExpired', () => {
 
 describe('postToken transport failure', () => {
   it('maps a token-endpoint transport failure to OAuthError (context: token-endpoint)', async () => {
-    const throwing = (async () => {
+    const throwing = fetchStub(async () => {
       throw new Error('network down')
-    }) as unknown as typeof fetch
+    })
     const err = await Effect.runPromise(
       exchangeCode({
         cfg: GDRIVE_OAUTH,

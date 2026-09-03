@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { DownloadTraceEntry } from '@/packages/schema'
+import type { DownloadTraceEntry, JsonValue } from '@/packages/schema'
 import {
   RELEASE_DIAGNOSTICS_CAP,
   EMPTY_RELEASE_DIAGNOSTICS,
@@ -24,7 +24,7 @@ const logOf = (
 ): ReleaseDiagnosticsLog => ({ ...EMPTY_RELEASE_DIAGNOSTICS, events, ...counters })
 
 /** What the background's storage round-trip does to a log between writes. */
-const persist = (log: ReleaseDiagnosticsLog): unknown => JSON.parse(JSON.stringify(log))
+const persist = (log: ReleaseDiagnosticsLog): JsonValue => JSON.parse(JSON.stringify(log))
 
 describe('isReleaseDiagnosticsEvent', () => {
   it('is true for an overlay-reported clear event regardless of stage name', () => {
@@ -86,7 +86,7 @@ describe('appendReleaseDiagnostics', () => {
       log = appendReleaseDiagnostics(log, ev({ stage: `s${i}`, t: i }))
     }
     expect(log.events).toHaveLength(RELEASE_DIAGNOSTICS_CAP)
-    expect(log.events[0]?.stage).toBe(`s${10}`)
+    expect(log.events[0]?.stage).toBe(`s10`)
     expect(log.events[log.events.length - 1]?.stage).toBe(`s${RELEASE_DIAGNOSTICS_CAP + 9}`)
     expect(log.appended).toBe(RELEASE_DIAGNOSTICS_CAP + 10)
     expect(log.evicted).toBe(10)
@@ -183,7 +183,7 @@ describe('decodeReleaseDiagnostics', () => {
 
   it('drops ONLY the corrupt element and reports it (a bad entry must not wipe the log)', () => {
     const good = [ev({ stage: 'clear-claim', t: 1 }), ev({ stage: 'clear-resolve', t: 2 })]
-    const decoded = decodeReleaseDiagnostics([good[0], { nope: true }, good[1]])
+    const decoded = decodeReleaseDiagnostics([good[0]!, { nope: true }, good[1]!])
     expect(decoded.events).toEqual(good)
     expect(decoded.decodeDropped).toBe(1)
     expect(decoded.appended).toBe(2)
@@ -231,7 +231,7 @@ describe('decodeReleaseDiagnostics', () => {
 // silently reattributed to the refused-writes gap.
 describe('decode/append/export cycle (the real background flow)', () => {
   it('surfaces a decode drop in the export even after later appends re-persist the log', () => {
-    const stored: unknown = {
+    const stored = {
       events: [ev({ stage: 'clear-seeded', t: 1 }), { nope: 'corrupt' }],
       evicted: 0,
       appended: 2,
@@ -260,7 +260,7 @@ describe('decode/append/export cycle (the real background flow)', () => {
 
   it('keeps the counters a partition of every event offered, so each loss is attributable', () => {
     // 10 offered, 1 came back corrupt, and the ring evicted down to a cap of 4.
-    const stored: unknown = {
+    const stored = {
       events: [
         ...Array.from({ length: 4 }, (_, i) => ev({ stage: `clear-s${i}`, t: i })),
         { bad: 1 },

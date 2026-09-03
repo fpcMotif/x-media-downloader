@@ -53,9 +53,8 @@ describe('keysForItem', () => {
     expect(keysForItem(photo('p', 'KA'), mediaKeyFromUrl)).toEqual(['KA'])
   })
   it('omits a missing previewUrl', () => {
-    expect(keysForItem({ ...photo('p', 'KA'), previewUrl: undefined }, mediaKeyFromUrl)).toEqual([
-      'KA',
-    ])
+    const { previewUrl: _dropped, ...withoutPreview } = photo('p', 'KA')
+    expect(keysForItem(withoutPreview, mediaKeyFromUrl)).toEqual(['KA'])
   })
   it('falls back to previewUrl when the url is not twimg', () => {
     expect(
@@ -224,10 +223,10 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
     const s = makeDetectionStore({ mediaKeyFromUrl })
     // A root whose DOM would throw if touched — proves the absent-finder path
     // never walks the DOM, it just returns the empty constant.
-    const exploding = new Proxy(document.createElement('div'), {
-      get(target, prop, receiver) {
-        if (prop === 'querySelectorAll') throw new Error('needsRecovery walked the DOM')
-        return Reflect.get(target, prop, receiver)
+    const exploding = document.createElement('div')
+    Object.defineProperty(exploding, 'querySelectorAll', {
+      get() {
+        throw new Error('needsRecovery walked the DOM')
       },
     })
     expect(s.needsRecovery(exploding)).toEqual([])
@@ -484,6 +483,65 @@ describe('post-level video key (post:code:{code})', () => {
 
     expect(s.resolve(firstKey)).toEqual(v0)
     expect(s.resolve(secondKey)).toEqual(v1)
+  })
+
+  it('valuesForTweet/keysForTweet stay correct after registerPostCode re-links a video post-key', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4', 'POST', 'postT')
+    s.addDetected([v])
+    s.registerPostCode('postT', 'CODET')
+    expect(s.valuesForTweet('postT').map((i) => i.id)).toEqual(['v1'])
+    const keys = s.keysForTweet('postT')
+    expect(keys).toContain('MP4')
+    expect(keys).toContain('POST')
+    expect(keys).toContain(postVideoKey('CODET'))
+    expect(keys).toContain(postVideoKeyIndexed('CODET', 0))
+    expect(keys).toContain(postVideoKeyByDomSlot('CODET', 0))
+  })
+
+  it('keysForTweet stays correct after a 1→2 video re-sync (no-index key removed, indexed keys added)', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('postU', 'CODEU')
+    const v0 = video('v1', 'MP4A', 'POSTA', 'postU', 0)
+    s.addDetected([v0])
+    expect(s.keysForTweet('postU')).toContain(postVideoKey('CODEU'))
+
+    const v1 = video('v2', 'MP4B', 'POSTB', 'postU', 1)
+    s.addDetected([v1])
+    const keys = s.keysForTweet('postU')
+    expect(keys).not.toContain(postVideoKey('CODEU'))
+    expect(keys).toContain(postVideoKeyIndexed('CODEU', 0))
+    expect(keys).toContain(postVideoKeyIndexed('CODEU', 1))
+    expect(s.valuesForTweet('postU').map((i) => i.id)).toEqual(['v1', 'v2'])
+  })
+
+  it('keysForTweet reflects addRecovered items for their post, and clears on clear()', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4', 'POST', 'postV')
+    s.addRecovered([v])
+    expect(s.keysForTweet('postV')).toEqual(expect.arrayContaining(['MP4', 'POST']))
+    expect(s.valuesForTweet('postV').map((i) => i.id)).toEqual(['v1'])
+    s.clear()
+    expect(s.keysForTweet('postV')).toEqual([])
+    expect(s.valuesForTweet('postV')).toEqual([])
+  })
+
+  it('no stale ids/keys remain after an id+key is overwritten with an item of a DIFFERENT postId', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const original = photo('dup', 'KSHARED', 'postW1')
+    s.addDetected([original])
+    expect(s.valuesForTweet('postW1').map((i) => i.id)).toEqual(['dup'])
+    expect(s.keysForTweet('postW1')).toContain('KSHARED')
+
+    // Same id AND same key, re-added under a different postId — the old
+    // postId's indices must lose all trace of it, the new postId gains it.
+    const replacement = photo('dup', 'KSHARED', 'postW2')
+    s.addDetected([replacement])
+
+    expect(s.valuesForTweet('postW1')).toEqual([])
+    expect(s.keysForTweet('postW1')).not.toContain('KSHARED')
+    expect(s.valuesForTweet('postW2').map((i) => i.id)).toEqual(['dup'])
+    expect(s.keysForTweet('postW2')).toContain('KSHARED')
   })
 
   it('syncing one post leaves an unrelated registered code -> post mapping untouched', () => {

@@ -5,6 +5,7 @@ import { FetchService } from '@/packages/kernel/fetch-service'
 import { SourceFetch } from './lib/source-fetch'
 import { FolderCacheLive } from './lib/folder-cache'
 import type { UploadInput } from './types'
+import { fetchStub } from './lib/fetch-stub'
 
 const input = (path = 'alice/t1_0.jpg', folder = 'alice'): UploadInput => ({
   url: 'https://pbs.twimg.com/media/x.jpg',
@@ -15,9 +16,12 @@ const sourceResponse = (
   bytes: Uint8Array<ArrayBuffer>,
   opts: { status?: number; contentLength?: number | null; contentType?: string } = {},
 ): Response => {
-  const headers: Record<string, string> = { 'content-type': opts.contentType ?? 'image/jpeg' }
-  if (opts.contentLength !== null)
-    headers['content-length'] = String(opts.contentLength ?? bytes.length)
+  const headers = {
+    'content-type': opts.contentType ?? 'image/jpeg',
+    ...(opts.contentLength !== null
+      ? { 'content-length': String(opts.contentLength ?? bytes.length) }
+      : {}),
+  }
   return new Response(opts.status && opts.status >= 400 ? null : bytes, {
     status: opts.status ?? 200,
     headers,
@@ -98,13 +102,16 @@ const routeMidChunk500: Route = (url, init) => {
   if (url.includes('uploadType=resumable'))
     return new Response(null, { status: 200, headers: { location: 'https://s/put' } })
   if (url === 'https://s/put') {
-    const range = ((init?.headers ?? {}) as Record<string, string>)['content-range'] ?? ''
+    const range = new Headers(init?.headers).get('content-range') ?? ''
     return range.endsWith('/*')
       ? new Response('mid-fail', { status: 500 })
       : new Response(JSON.stringify({ id: 'x' }), { status: 200 })
   }
   return folderResolved(url, init)
 }
+// SAFETY: `driveFail`/`errText` only ever read `res.ok`, `res.status`, and (on a
+// non-2xx) `res.text()` — never any other `Response` member — so this partial stub
+// is a sound substitute for the one path under test.
 const routeErrTextRejects: Route = (url, init) =>
   isGet(init)
     ? new Response(JSON.stringify({ files: [] }), { status: 200 })
@@ -114,7 +121,7 @@ const routeErrTextRejects: Route = (url, init) =>
         status: 500,
         text: () => Promise.reject(new Error('read failed')),
         headers: new Headers(),
-      } as unknown as Response)
+      } as Response)
 
 interface Call {
   readonly url: string
@@ -129,8 +136,7 @@ const harness = (route: Route, src: Layer.Layer<SourceFetch>) => {
   }
   const fetchLayer = Layer.succeed(FetchService, {
     fetch: (url, init) => Effect.sync(() => record(url, init)),
-    fetchPromise: (async (url: string | URL, init?: RequestInit) =>
-      record(String(url), init)) as typeof fetch,
+    fetchPromise: fetchStub((url, init) => Promise.resolve(record(url, init))),
   })
   const app = DriveUploaderLive.pipe(
     Layer.provide(Layer.mergeAll(fetchLayer, src, FolderCacheLive)),
@@ -296,8 +302,7 @@ describe('DriveUploader — error & resumable edge paths', () => {
       sourceStub(() => sourceResponse(new Uint8Array(64))),
     )
     const out = await h.upload(input())
-    expect(out).toMatchObject({ kind: 'failure' })
-    expect((out as { reason: string }).reason).toMatch(/drive HTTP 500/)
+    expect(out).toMatchObject({ kind: 'failure', reason: expect.stringMatching(/drive HTTP 500/) })
   })
 
   it('multipart upload failure → failure outcome', async () => {
@@ -314,8 +319,7 @@ describe('DriveUploader — error & resumable edge paths', () => {
       sourceStub(() => sourceResponse(new Uint8Array(64), { contentLength: null })),
     )
     const out = await h.upload(input())
-    expect(out).toMatchObject({ kind: 'failure' })
-    expect((out as { reason: string }).reason).toMatch(/session url/)
+    expect(out).toMatchObject({ kind: 'failure', reason: expect.stringMatching(/session url/) })
   })
 
   it('resumable initiate failure → failure', async () => {
@@ -332,8 +336,7 @@ describe('DriveUploader — error & resumable edge paths', () => {
       sourceStub(() => sourceResponse(new Uint8Array(64), { contentLength: null })),
     )
     const out = await h.upload(input())
-    expect(out).toMatchObject({ kind: 'failure' })
-    expect((out as { reason: string }).reason).toMatch(/file id/)
+    expect(out).toMatchObject({ kind: 'failure', reason: expect.stringMatching(/file id/) })
   })
 
   it('resumable: final PUT error status → failure', async () => {
@@ -351,7 +354,7 @@ describe('DriveUploader — error & resumable edge paths', () => {
       if (url.includes('uploadType=resumable'))
         return new Response(null, { status: 200, headers: { location: 'https://s/put' } })
       if (url === 'https://s/put') {
-        const range = ((init?.headers ?? {}) as Record<string, string>)['content-range'] ?? ''
+        const range = new Headers(init?.headers).get('content-range') ?? ''
         puts.push(range)
         return range.endsWith('/*')
           ? new Response(null, { status: 308 })
@@ -415,8 +418,8 @@ describe('DriveUploader — error & resumable edge paths', () => {
       sourceStub(() => sourceResponse(new Uint8Array(32))),
     )
     const out = await h.upload(input())
-    expect(out).toMatchObject({ kind: 'failure' })
-    expect((out as { reason: string }).reason).toBe('drive HTTP 500') // body '' ⇒ no `: <body>` suffix
+    // body '' ⇒ no `: <body>` suffix
+    expect(out).toMatchObject({ kind: 'failure', reason: 'drive HTTP 500' })
   })
 })
 
@@ -455,8 +458,7 @@ describe('DriveUploader — folder + transport edge branches', () => {
       sourceStub(() => sourceResponse(new Uint8Array(16))),
     )
     const out = await h.upload(input())
-    expect(out).toMatchObject({ kind: 'failure' })
-    expect((out as { reason: string }).reason).toMatch(/no id/)
+    expect(out).toMatchObject({ kind: 'failure', reason: expect.stringMatching(/no id/) })
   })
 
   it('resumable: a transport throw mid-PUT becomes a status-0 failure', async () => {

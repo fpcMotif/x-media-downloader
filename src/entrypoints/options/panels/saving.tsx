@@ -42,6 +42,30 @@ const toggleType = (
   skip: boolean,
 ): MediaType[] => (skip ? [...skipTypes, type] : skipTypes.filter((t) => t !== type))
 
+/** The live value of the `<input>` that fired `e` — narrows `EventTarget | null`
+ *  instead of asserting it, since every caller below binds this to a real
+ *  `HTMLInputElement`'s `onChange`. */
+const inputValue = (e: Event): string =>
+  e.target instanceof HTMLInputElement ? e.target.value : ''
+
+/** The `<SelectItem>` values this panel's modifier picker actually renders — the
+ *  `satisfies` clause fails to compile if the JSX below and `Settings['quickGrabModifier']`
+ *  ever drift apart. */
+const QUICK_GRAB_MODIFIERS = ['alt', 'shift', 'ctrl', 'meta'] as const satisfies ReadonlyArray<
+  Settings['quickGrabModifier']
+>
+// SAFETY: widening the literal tuple to `readonly string[]` only relaxes the search
+// parameter's type for the runtime membership check below — this predicate's own
+// `value is Settings['quickGrabModifier']` return annotation is what supplies the
+// narrowing, not the cast.
+const isQuickGrabModifier = (value: string): value is Settings['quickGrabModifier'] =>
+  (QUICK_GRAB_MODIFIERS as readonly string[]).includes(value)
+
+/** Whether `value` is one of `DOWNLOAD_MODES`' own values — reuses that array (the
+ *  single source of truth for the strategy vocabulary) instead of asserting. */
+const isDownloadStrategy = (value: string): value is Settings['downloadStrategy'] =>
+  DOWNLOAD_MODES.some((mode) => mode.value === value)
+
 /** Merged General + Downloads + Filters (Stage redesign §3.3 "Saving") — all
  *  three answer "how does media get onto my disk", so they collapse into one
  *  scrollable, hairline-sectioned panel instead of three nav items. */
@@ -118,9 +142,9 @@ export function SavingPanel({ settings, update }: PanelProps) {
             </FieldContent>
             <Select
               value={settings.quickGrabModifier}
-              onValueChange={(value: string) =>
-                void update({ quickGrabModifier: value as Settings['quickGrabModifier'] })
-              }
+              onValueChange={(value: string) => {
+                if (isQuickGrabModifier(value)) void update({ quickGrabModifier: value })
+              }}
             >
               <SelectTrigger id="quickGrabModifier" className="w-44 min-h-10">
                 <SelectValue />
@@ -204,9 +228,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
           <Input
             id="filenameTemplate"
             value={settings.filenameTemplate}
-            onChange={(e: Event) =>
-              void update({ filenameTemplate: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e: Event) => void update({ filenameTemplate: inputValue(e) })}
           />
           <FieldDescription className="font-mono text-xs">
             {'{platform} {handle} {tweetId} {index} {ext} {type} {date}'}
@@ -245,7 +267,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             value={settings.downloadConcurrency}
             onChange={(e: Event) =>
               void update({
-                downloadConcurrency: Number((e.target as HTMLInputElement).value) || 1,
+                downloadConcurrency: Number(inputValue(e)) || 1,
               })
             }
           />
@@ -265,7 +287,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
           aria-label="Download mode"
           value={settings.downloadStrategy}
           onValueChange={(value: string) => {
-            if (value) void update({ downloadStrategy: value as Settings['downloadStrategy'] })
+            if (isDownloadStrategy(value)) void update({ downloadStrategy: value })
           }}
         >
           {DOWNLOAD_MODES.map((option) => (
@@ -289,9 +311,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 max={16}
                 className="w-20 text-center font-mono tabular-nums"
                 value={settings.aria2Split}
-                onChange={(e: Event) =>
-                  void update({ aria2Split: Number((e.target as HTMLInputElement).value) || 1 })
-                }
+                onChange={(e: Event) => void update({ aria2Split: Number(inputValue(e)) || 1 })}
               />
             </Field>
             <Field>
@@ -299,9 +319,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
               <Input
                 id="aria2RpcUrl"
                 value={settings.aria2RpcUrl}
-                onChange={(e: Event) =>
-                  void update({ aria2RpcUrl: (e.target as HTMLInputElement).value })
-                }
+                onChange={(e: Event) => void update({ aria2RpcUrl: inputValue(e) })}
               />
             </Field>
             <Field>
@@ -310,9 +328,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 id="aria2Secret"
                 type="password"
                 value={settings.aria2Secret}
-                onChange={(e: Event) =>
-                  void update({ aria2Secret: (e.target as HTMLInputElement).value })
-                }
+                onChange={(e: Event) => void update({ aria2Secret: inputValue(e) })}
               />
             </Field>
             <Field>
@@ -321,9 +337,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 id="aria2Dir"
                 placeholder="aria2 default"
                 value={settings.aria2Dir}
-                onChange={(e: Event) =>
-                  void update({ aria2Dir: (e.target as HTMLInputElement).value })
-                }
+                onChange={(e: Event) => void update({ aria2Dir: inputValue(e) })}
               />
             </Field>
             {aria2Granted === false && (
@@ -388,9 +402,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             min={0}
             className="w-24 text-center font-mono tabular-nums"
             value={settings.minWidth}
-            onChange={(e: Event) =>
-              void update({ minWidth: clampNonNegative((e.target as HTMLInputElement).value) })
-            }
+            onChange={(e: Event) => void update({ minWidth: clampNonNegative(inputValue(e)) })}
           />
         </Field>
 
@@ -405,9 +417,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             min={0}
             className="w-24 text-center font-mono tabular-nums"
             value={settings.minHeight}
-            onChange={(e: Event) =>
-              void update({ minHeight: clampNonNegative((e.target as HTMLInputElement).value) })
-            }
+            onChange={(e: Event) => void update({ minHeight: clampNonNegative(inputValue(e)) })}
           />
         </Field>
 
@@ -422,9 +432,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             min={0}
             className="w-24 text-center font-mono tabular-nums"
             value={settings.maxFileSizeMB}
-            onChange={(e: Event) =>
-              void update({ maxFileSizeMB: clampNonNegative((e.target as HTMLInputElement).value) })
-            }
+            onChange={(e: Event) => void update({ maxFileSizeMB: clampNonNegative(inputValue(e)) })}
           />
         </Field>
       </Section>
@@ -444,9 +452,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             min={0}
             className="w-24 text-center font-mono tabular-nums"
             value={settings.dailyMaxMB}
-            onChange={(e: Event) =>
-              void update({ dailyMaxMB: clampNonNegative((e.target as HTMLInputElement).value) })
-            }
+            onChange={(e: Event) => void update({ dailyMaxMB: clampNonNegative(inputValue(e)) })}
           />
         </Field>
 
@@ -461,9 +467,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             min={0}
             className="w-24 text-center font-mono tabular-nums"
             value={settings.dailyMaxCount}
-            onChange={(e: Event) =>
-              void update({ dailyMaxCount: clampNonNegative((e.target as HTMLInputElement).value) })
-            }
+            onChange={(e: Event) => void update({ dailyMaxCount: clampNonNegative(inputValue(e)) })}
           />
         </Field>
 

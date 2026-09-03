@@ -11,7 +11,7 @@ export class FetchError extends Data.TaggedError('FetchError')<{
   readonly url: string
   readonly cause: unknown
 }> {
-  get message(): string {
+  override get message(): string {
     return `fetch ${this.url}: ${String(this.cause)}`
   }
 }

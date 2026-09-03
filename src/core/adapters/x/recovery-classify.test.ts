@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { isJsonObject, type JsonObject, type JsonValue } from '@/packages/schema'
 import { classifyRecoveryReply } from './recovery-classify'
 
 const photo = {
@@ -17,7 +18,7 @@ const video = {
   },
 }
 
-const reply = (over: Record<string, unknown> = {}): string =>
+const reply = (over: JsonObject = {}): string =>
   JSON.stringify({
     id_str: 't1',
     user: { screen_name: 'alice' },
@@ -77,7 +78,9 @@ describe('classifyRecoveryReply', () => {
     })
 
     it('the reply carries no id_str at all', () => {
-      const { id_str: _dropped, ...rest } = JSON.parse(reply()) as Record<string, unknown>
+      const parsed: JsonValue = JSON.parse(reply())
+      if (!isJsonObject(parsed)) throw new Error('expected a JSON object')
+      const { id_str: _dropped, ...rest } = parsed
       expect(classifyRecoveryReply('t1', JSON.stringify(rest))).toEqual({
         kind: 'retryable',
         reason: 'wrong-tweet',
@@ -105,7 +108,9 @@ describe('classifyRecoveryReply', () => {
 
   describe('exhausted — the endpoint answered, keep the claim so it cannot loop', () => {
     it('mediaDetails absent', () => {
-      const { mediaDetails: _dropped, ...rest } = JSON.parse(reply()) as Record<string, unknown>
+      const parsed: JsonValue = JSON.parse(reply())
+      if (!isJsonObject(parsed)) throw new Error('expected a JSON object')
+      const { mediaDetails: _dropped, ...rest } = parsed
       expect(classifyRecoveryReply('t1', JSON.stringify(rest))).toEqual({
         kind: 'exhausted',
         reason: 'no-media',

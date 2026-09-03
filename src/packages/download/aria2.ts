@@ -3,6 +3,14 @@ import { FetchService } from '@/packages/kernel/fetch-service'
 import { DownloadError, Aria2RpcError } from './lib/errors'
 import { errorReason } from '@/packages/kernel/error'
 import type { DownloadStrategy, SaveRequest } from './strategy'
+import { type JsonValue, isJsonObject } from '@/packages/schema'
+
+/** Narrow one field of a parsed JSON-RPC response to a string/number.
+ *  `| undefined` because every property read off a `JsonObject` index
+ *  signature can be absent (`noUncheckedIndexedAccess`) — a missing key is
+ *  exactly as untrustworthy as a present-but-wrong-shaped one. */
+const isJsonString = (value: JsonValue | undefined): value is string => typeof value === 'string'
+const isJsonNumber = (value: JsonValue | undefined): value is number => typeof value === 'number'
 
 /** Minimal port over aria2's JSON-RPC `aria2.addUri`; resolves to the new gid.
  *  Reads the shared `FetchService` from `R` (ADR-0017) — no `fetchImpl` thread. */
@@ -34,18 +42,36 @@ export function aria2OriginPattern(rpcUrl: string): Option.Option<string> {
   }
 }
 
+/** The literal `addUri` options this module ever sends. A `type` alias — not an
+ *  `interface` — so it satisfies {@link Aria2RpcPort}'s `Record<string, string>`
+ *  parameter structurally, the same way a fresh object literal would. */
+export type Aria2AddUriOptions = {
+  readonly out: string
+  readonly split: string
+  readonly 'max-connection-per-server': string
+  readonly dir?: string
+}
+
 /**
  * Translate a SaveRequest into aria2 options. `out` is the path relative to
  * `dir`, so subfolders in `req.filename` are preserved. `dir` is omitted when
  * empty so aria2 falls back to its configured default download directory.
  */
-export function buildAria2Options(req: SaveRequest, opts: Aria2Options): Record<string, string> {
+export function buildAria2Options(req: SaveRequest, opts: Aria2Options): Aria2AddUriOptions {
   return {
     out: req.filename,
     split: String(opts.split),
     'max-connection-per-server': String(opts.split),
     ...(opts.dir ? { dir: opts.dir } : {}),
   }
+}
+
+/** The JSON-RPC 2.0 envelope {@link buildJsonRpcBody} assembles. */
+export type Aria2JsonRpcBody = {
+  readonly jsonrpc: '2.0'
+  readonly id: string
+  readonly method: string
+  readonly params: ReadonlyArray<unknown>
 }
 
 /**
@@ -56,7 +82,7 @@ export function buildJsonRpcBody(
   method: string,
   params: ReadonlyArray<unknown>,
   secret: string,
-): { jsonrpc: '2.0'; id: string; method: string; params: ReadonlyArray<unknown> } {
+): Aria2JsonRpcBody {
   return {
     jsonrpc: '2.0',
     id: 'xmd',
@@ -80,9 +106,11 @@ export function makeAria2Strategy(
     save: (req) =>
       port.addUri([req.url], buildAria2Options(req, opts)).pipe(
         Effect.map((gid) => ({ kind: 'aria2' as const, gid })),
-        Effect.catchCause(
-          (cause) => new DownloadError({ id: req.id, reason: errorReason(Cause.squash(cause)) }),
-        ),
+        Effect.catchCause((cause) => {
+          const squashed = Cause.squash(cause)
+          const reason = squashed instanceof Error ? squashed : String(squashed)
+          return new DownloadError({ id: req.id, reason: errorReason(reason) })
+        }),
         Effect.provide(fetch),
       ),
   }
@@ -105,16 +133,21 @@ export function makeAria2RpcPort(cfg: {
           })
           .pipe(Effect.catchTag('FetchError', (e) => new Aria2RpcError({ message: e.message })))
         const body = yield* Effect.tryPromise({
-          try: () =>
-            res.json() as Promise<{ result?: string; error?: { code?: number; message?: string } }>,
+          try: (): Promise<JsonValue> => res.json(),
           catch: () => new Aria2RpcError({ message: 'aria2: malformed JSON-RPC response' }),
         })
-        if (body.error)
+        if (!isJsonObject(body))
+          return yield* new Aria2RpcError({ message: 'aria2: malformed JSON-RPC response' })
+        if (body.error !== undefined && isJsonObject(body.error)) {
+          const { message, code } = body.error
           return yield* new Aria2RpcError({
-            message: body.error.message ?? `aria2 error ${body.error.code ?? '?'}`,
-            ...(body.error.code !== undefined ? { code: body.error.code } : {}),
+            message: isJsonString(message)
+              ? message
+              : `aria2 error ${isJsonNumber(code) ? code : '?'}`,
+            ...(isJsonNumber(code) ? { code } : {}),
           })
-        if (typeof body.result !== 'string')
+        }
+        if (!isJsonString(body.result))
           return yield* new Aria2RpcError({ message: 'aria2: malformed JSON-RPC response' })
         return body.result
       }),

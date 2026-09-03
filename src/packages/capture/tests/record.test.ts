@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { sourceRank, tweetRecordFromNode } from '../record'
 import { findAuthor, forEachTweetNode } from '@/core/adapters/x/walk'
+import type { JsonObject, JsonValue } from '@/packages/schema/json'
 import thread from '@/test/fixtures/tweet-detail-thread.json'
 import links from '@/test/fixtures/tweet-with-links.json'
 import cards from '@/test/fixtures/tweet-with-card.json'
 
 /** Pluck a tweet result node out of a fixture by id via the shared traversal. */
-const nodeOf = (json: unknown, tweetId: string): object => {
-  let hit: object | undefined
+const nodeOf = (json: JsonValue, tweetId: string): JsonObject => {
+  let hit: JsonObject | undefined
   forEachTweetNode(json, (v) => {
     if (v.tweetId === tweetId) hit = v.node
   })

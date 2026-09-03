@@ -137,6 +137,7 @@ describe('toJsonl', () => {
   it('emits one clean ExportTweet per line with stable keys', () => {
     const lines = toJsonl(all).split('\n')
     expect(lines).toHaveLength(all.length)
+    // SAFETY: toJsonl produces valid ExportTweet JSON lines
     const parsed = lines.map((l) => JSON.parse(l) as ExportTweet)
     expect(parsed.map((p) => p.id)).toEqual(['R', 'A', 'Q', 'QT'])
     for (const p of parsed) {
@@ -158,6 +159,7 @@ describe('toTreeJson', () => {
     const tree = buildTree(all).find((t) => t.conversationId === 'C')!
     const json = toTreeJson(tree, all)
     expect(json).toContain('\n')
+    // SAFETY: toTreeJson produces valid nested JSON with conversationId and tweets fields
     const parsed = JSON.parse(json) as {
       conversationId: string
       tweets: Array<{ id: string; children: unknown[] }>
@@ -174,7 +176,11 @@ describe('toTreeJson', () => {
 })
 
 describe('toMarkdown', () => {
-  const render = () => toMarkdown(buildTree(all).find((t) => t.conversationId === 'C')!, all)
+  const render = () =>
+    toMarkdown(
+      buildTree(all).find((t) => t.conversationId === 'C')!,
+      all,
+    )
 
   it('renders a thread header, author+name, ISO time and permalink', () => {
     const md = render()

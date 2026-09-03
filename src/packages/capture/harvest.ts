@@ -1,4 +1,5 @@
 import { forEachTweetNode } from '@/core/adapters/x/walk'
+import type { JsonValue } from '@/packages/schema/json'
 import { type Source, type TweetRecord, tweetRecordFromNode } from './record'
 
 /**
@@ -9,7 +10,7 @@ import { type Source, type TweetRecord, tweetRecordFromNode } from './record'
  * resolution (ADR-0016) — no second walk, no re-resolved media.
  */
 export function harvestTweets(
-  json: unknown,
+  json: JsonValue,
   opts: { source: Source; includeTextOnly: boolean; capturedAt: number },
 ): TweetRecord[] {
   const { source, includeTextOnly, capturedAt } = opts

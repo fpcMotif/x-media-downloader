@@ -25,8 +25,8 @@
  * `postContext` returns `null` and that node's posts go undetected.
  */
 
-type Obj = Record<string, unknown>
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
+import type { JsonObject, JsonValue } from '@/packages/schema'
+import { isJsonNumber, isJsonObject, isJsonString } from '../json-predicates'
 
 export interface PostContext {
   /** Stable numeric-or-string id (`pk`), falling back to the shortcode when absent. */
@@ -36,14 +36,14 @@ export interface PostContext {
   readonly author: string
 }
 
-function postContext(node: Obj): PostContext | null {
+function postContext(node: JsonObject): PostContext | null {
   const code = node['code']
   const user = node['user']
-  if (typeof code !== 'string' || code === '' || !isObj(user)) return null
+  if (!isJsonString(code) || code === '' || !isJsonObject(user)) return null
   const username = user['username']
-  if (typeof username !== 'string' || username === '') return null
+  if (!isJsonString(username) || username === '') return null
   const pk = node['pk']
-  const postId = typeof pk === 'string' || typeof pk === 'number' ? String(pk) : code
+  const postId = isJsonString(pk) || isJsonNumber(pk) ? String(pk) : code
   return { postId, code, author: username }
 }
 
@@ -53,25 +53,29 @@ function postContext(node: Obj): PostContext | null {
  *  (a nested repost/quote embedded as a carousel item) — that child is only
  *  ever this outer post's media when it has no post identity of its own;
  *  otherwise `forEachPostNode`'s own recursion already visits it separately. */
-export function isPostShaped(node: unknown): boolean {
-  return isObj(node) && postContext(node) !== null
+export function hasPostIdentity(node: JsonValue): boolean {
+  return isJsonObject(node) && postContext(node) !== null
 }
 
 /** One depth-first walk of an arbitrary Instagram/Threads API/GraphQL
  *  response, yielding one visit per post-shaped node found. A `WeakSet` of
  *  already-descended objects guards against a circular reference (JSON.parse
- *  output never produces one, but this walker takes arbitrary `unknown` and
- *  the design spec's error-handling contract requires failing closed rather
- *  than throwing into the tee's dispatch loop — see media-node.ts's own
- *  identical carousel-recursion gap, fixed the same way in detect.ts). */
-export function forEachPostNode(json: unknown, visit: (ctx: PostContext, node: Obj) => void): void {
-  const visiting = new WeakSet<Obj>()
-  const walk = (node: unknown): void => {
+ *  output never produces one, but this walker takes an arbitrary parsed
+ *  {@link JsonValue} and the design spec's error-handling contract requires
+ *  failing closed rather than throwing into the tee's dispatch loop — see
+ *  media-node.ts's own identical carousel-recursion gap, fixed the same way
+ *  in detect.ts). */
+export function forEachPostNode(
+  json: JsonValue,
+  visit: (ctx: PostContext, node: JsonObject) => void,
+): void {
+  const visiting = new WeakSet<JsonObject>()
+  const walk = (node: JsonValue): void => {
     if (Array.isArray(node)) {
       for (const v of node) walk(v)
       return
     }
-    if (!isObj(node)) return
+    if (!isJsonObject(node)) return
     if (visiting.has(node)) return
     visiting.add(node)
     const ctx = postContext(node)

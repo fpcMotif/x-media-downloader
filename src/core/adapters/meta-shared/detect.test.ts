@@ -187,7 +187,7 @@ describe('postCodesInResponse', () => {
         { pk: '2', code: 'B', user: { username: 'b' } },
       ],
     }
-    expect([...postCodesInResponse(json)].toSorted()).toEqual([
+    expect([...postCodesInResponse(json)].toSorted((a, b) => a[0].localeCompare(b[0]))).toEqual([
       ['1', 'A'],
       ['2', 'B'],
     ])

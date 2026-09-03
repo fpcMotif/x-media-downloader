@@ -21,10 +21,22 @@ let disarmCurrent: (() => void) | null = null
 
 const TICK_MS = 100
 
-const prefersReducedMotion = (): boolean =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches
+/** `matchMedia` is missing in some very old / embedded WebViews; guard it as a
+ *  capability check rather than assuming every `window` has it (lib.dom types
+ *  it as always present, so the value — not `unknown` — is what's optional here). */
+const isFunction = (v: Window['matchMedia'] | undefined): v is Window['matchMedia'] =>
+  typeof v === 'function'
+
+const prefersReducedMotion = (): boolean => {
+  // `globalThis.window` (not a bare `window` reference) so a context with no
+  // `window` at all reads as `undefined` rather than throwing.
+  const w = globalThis.window
+  return (
+    w !== undefined &&
+    isFunction(w.matchMedia) &&
+    w.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
 
 export interface ConfirmStripProps {
   /** The consequence sentence shown once armed (13px, tier-colored). */
@@ -175,7 +187,11 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
                 value={typedValue}
                 autoComplete="off"
                 spellCheck={false}
-                onChange={(e: Event) => setTypedValue((e.target as HTMLInputElement).value)}
+                onChange={(e: Event) => {
+                  if (e.target instanceof HTMLInputElement) {
+                    setTypedValue(e.target.value)
+                  }
+                }}
                 onKeyDown={(e: KeyboardEvent) => {
                   // The typed-word gate cannot fire on Enter alone — Enter inside
                   // the input is inert; firing requires an explicit activation of

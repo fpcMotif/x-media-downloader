@@ -33,12 +33,25 @@ import {
   type MembershipScope,
 } from '@/packages/clear/clearer'
 import type { makeDetectionStore } from '../../core/adapters/detection-store'
-import type { ClearScope, MediaItem } from '@/packages/schema'
+import type { MutationWitness } from '@/packages/clear/mutation-witness'
+import type {
+  ClearDetectedMediaResponse,
+  ClearDrainRequest,
+  ClearDrainResponse,
+  ClearScope,
+  ClearTweetRequest,
+  ClearTweetResponse,
+  JsonValue,
+  MediaItem,
+  RefreshMediaUrlRequest,
+  RefreshMediaUrlResponse,
+} from '@/packages/schema'
 import {
   TAB_MESSAGE_MEMBERS,
   TransferOutcome,
   SavedStatusUpdate,
   ClearDetectedMediaRequest,
+  isJsonObject,
 } from '@/packages/schema'
 
 type DetectionStore = ReturnType<typeof makeDetectionStore>
@@ -135,17 +148,78 @@ export interface HandlerDeps {
   /** Whether the "Saved" status is live on THIS page right now (setting on AND an
    *  in-scope timeline) — gates the late cross-device chip push. */
   readonly savedStatusActive: () => boolean
+  /** The server mutation witness (see `mutation-witness.ts`) — the same one wired
+   *  into `clearScope`'s poll loop, threaded here so the MANUAL sweep path
+   *  (`clearMountedForScope`) gets the same server-verdict-first precedence.
+   *  Optional: undefined ⇒ DOM-only, unchanged from before the witness existed. */
+  readonly witness?: Pick<MutationWitness, 'outcome'> | undefined
 }
 
-type SendResponse = (r: unknown) => void
+/** "Clear this page now" reply — see `handleClearVisible`. */
+type ClearVisibleResponse = {
+  readonly _tag: 'ClearVisibleResponse'
+  readonly cleared: number
+  readonly reason?: 'not-x' | 'not-list-page'
+}
+
+/** "Clear entire list" reply — see `handleClearWholeList`; the platform gate adds
+ *  `'not-x'` on top of the scan's own `ListClearResult` reasons. */
+type ClearWholeListResponse = {
+  readonly _tag: 'ClearWholeListResponse'
+  readonly cleared: number
+  readonly reason?: 'not-x' | 'not-list-page' | 'scope-changed'
+}
+
+/** "Release this page" (Drain) terminal reply — see `handleDrainPage`. */
+type DrainPageResponse = {
+  readonly _tag: 'DrainPageResponse'
+  readonly count: number
+  readonly admitted: number
+  readonly skipped: number
+  readonly ok: boolean
+  readonly onList: boolean
+}
+
+/** Durable one-by-one sweep reply — see `handleSweepPage`. */
+type SweepPageResponse = {
+  readonly _tag: 'SweepPageResponse'
+  readonly ok: boolean
+  readonly queued: number
+  readonly skipped: number
+  readonly reason?: 'not-list-page' | 'context' | 'malformed-reply'
+}
+
+/** Every shape a handler in this table ever hands `sendResponse` — named locally
+ *  above where no wire schema owns the reply (it never crosses `sendMessage`'s own
+ *  decode gate the way a REQUEST does), or the schema's own response type where one
+ *  does. Plain `type` aliases, not `interface`s: kept structural so each member stays
+ *  the real domain type `sendResponse` receives, per `no-unknown-parameters`. */
+type OverlayResponse =
+  | ClearVisibleResponse
+  | ClearWholeListResponse
+  | DrainPageResponse
+  | SweepPageResponse
+  | RefreshMediaUrlResponse
+  | ClearTweetResponse
+  | ClearDrainResponse
+  | ClearDetectedMediaResponse
+
+export type SendResponse = (r: OverlayResponse) => void
 
 /** A handler returns `true` to keep the message channel open for an async reply,
- *  or `false`/`undefined` for the fire-and-forget / unknown-tag paths. */
+ *  or `false`/`undefined` for the fire-and-forget / unknown-tag paths. The inbound
+ *  `message` is raw extension-messaging JSON — `JsonValue`, narrowed per-handler
+ *  after `dispatchOverlayMessage`'s own schema decode (or, in tests, a hand-built
+ *  fixture) — never a value this table can assume a domain shape for up front. */
 type MessageHandler = (
-  message: unknown,
+  message: JsonValue,
   deps: HandlerDeps,
   sendResponse: SendResponse,
 ) => boolean | void
+
+/** Narrow a {@link JsonValue} to a string — the one runtime check `no-runtime-typeof`
+ *  requires living behind a named type predicate instead of an inline `typeof`. */
+export const isString = (value: JsonValue): value is string => typeof value === 'string'
 
 /** Monotonic Release run id, per content-script instance. Per-tab is enough to
  *  identify a run in the export: the background stamps `tabId` on every trace entry
@@ -180,8 +254,11 @@ export const releaseTerminalStage = (scope: MembershipScope | null, ok: boolean)
       ? 'clear-download-page-skip'
       : 'clear-download-page-end'
 
-const compactReason = (error: unknown): string => {
-  const raw = error instanceof Error ? error.message : String(error)
+/** Compact a failure into a short, log-line-safe reason token. Callers narrow their
+ *  caught/rejected value to this contract at the catch site (`e instanceof Error ? e
+ *  : String(e)`), so this function itself never has to guess at an unknown shape. */
+const compactReason = (failure: Error | string): string => {
+  const raw = failure instanceof Error ? failure.message : failure
   const compact = raw
     .trim()
     .toLowerCase()
@@ -278,9 +355,9 @@ export const handleSavedStatusUpdate: MessageHandler = (message, deps) => {
   // return (no sendResponse) is the correct no-op here too.
   if (deps.adapter.platform !== 'x') return
   if (!deps.savedStatusActive()) return
-  const saved = (message as { saved?: unknown }).saved
+  const saved = isJsonObject(message) ? message.saved : undefined
   if (!Array.isArray(saved) || saved.length === 0) return
-  const ids = new Set(saved.filter((x): x is string => typeof x === 'string'))
+  const ids = new Set(saved.filter(isString))
   for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
     const tweetId = tweetIdOfArticle(article)
     if (Option.isSome(tweetId) && ids.has(tweetId.value)) markArticleSaved(article, deps.document)
@@ -292,7 +369,12 @@ export const handleSavedStatusUpdate: MessageHandler = (message, deps) => {
 // ONLY while still on screen. Broadcast to every X tab, so this no-ops unless
 // this tab is the one whose entrance/batch owns the request. Fire-and-forget.
 export const handleTransferOutcome: MessageHandler = (message, deps) => {
-  const m = message as { requestId: string; outcome: 'complete' | 'failed' }
+  // SAFETY: only reachable via the dispatch table in `messageHandlers`, keyed by the
+  // `TransferOutcome` tag — `dispatchOverlayMessage` schema-decodes every inbound
+  // message against `OverlayInboundMessage` (which includes `TransferOutcome`)
+  // before routing it here, so a message that reaches this handler already
+  // conforms to the shape below.
+  const m = message as TransferOutcome
   const ok = m.outcome === 'complete'
   const badge = deps.getBadge()
   const badgeMedia = deps.getBadgeMedia()
@@ -324,12 +406,10 @@ export const handleTransferOutcome: MessageHandler = (message, deps) => {
 // interrupt retry (twimg urls expire). Answer from the detected map, or a
 // fresh DOM scan keyed by tweet/index/type when the item has rotated out.
 export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendResponse) => {
-  const req = message as {
-    itemId: string
-    tweetId: string
-    index?: number
-    type?: MediaItem['type']
-  }
+  // SAFETY: only reachable via `messageHandlers.RefreshMediaUrlRequest`, gated by
+  // `dispatchOverlayMessage`'s decode against `OverlayInboundMessage` (which spreads
+  // in `TAB_MESSAGE_MEMBERS`, including `RefreshMediaUrlRequest`) before dispatch.
+  const req = message as RefreshMediaUrlRequest
   let fresh = deps.store.get(req.itemId)
   if (fresh?.postId !== req.tweetId) fresh = undefined
   let rescanAttempted = false
@@ -384,20 +464,30 @@ const sweepGhosts = new Map<string, number>()
  *  the given scope — the manual, unledgered path (spec #59 H5). `ghosts`, when
  *  supplied, memoizes consecutive no-flips per tweetId so a stale row that can
  *  never flip (see {@link GHOST_NOFLIP_LIMIT}) stops costing a click per pass;
- *  a real flip deletes its memo entry. */
+ *  a real flip deletes its memo entry. `witness`, when supplied, is consulted
+ *  AFTER the pace sleep — same server-verdict-first precedence as
+ *  `tweet-clear.ts`'s poll loop: 'ok' is a confirmed flip (`arm=mutation`)
+ *  regardless of the DOM (and deletes the ghost memo entry, same as a DOM
+ *  flip), 'error' is `reason=mutation-error`, and 'none' falls through to the
+ *  existing DOM check unchanged. */
 export async function clearMountedForScope(
   document: Document,
   scope: MembershipScope,
   paceMs: number,
   trace: (stage: string, detail: string, tweetId?: string) => void,
   ghosts?: Map<string, number>,
+  witness?: Pick<MutationWitness, 'outcome'>,
+  now: () => number = Date.now,
 ): Promise<number> {
   let cleared = 0
   // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
   for (const article of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
     const ctrl = clearControl(article, scope)
     if (ctrl === null) continue
-    const button = ctrl.closest('button,[role="button"]') as HTMLElement | null
+    // `closest` types as `Element | null` for a compound selector — narrow instead of
+    // asserting, since `.click()` below needs the real `HTMLElement` guarantee.
+    const closestControl = ctrl.closest('button,[role="button"]')
+    const button = closestControl instanceof HTMLElement ? closestControl : null
     const target = button ?? ctrl
     const targetKind = button === null ? 'testid-node' : 'button'
     const disabled =
@@ -412,13 +502,30 @@ export async function clearMountedForScope(
         continue
       }
     }
+    const clickedAt = now()
     target.click()
     cleared++
     await new Promise((r) => setTimeout(r, paceMs))
     // No resolvable id (should not happen — TWEET_ARTICLE_SEL articles always carry a
     // permalink) ⇒ nothing to tag the trace line with; still counts as clicked.
     if (tweetId === null) continue
-    if (flipConfirmed(article, scope)) {
+    const verdict = witness?.outcome(tweetId, scope, clickedAt) ?? 'none'
+    if (verdict === 'error') {
+      ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
+      trace(
+        'clear-attempt-fail',
+        `scope=${scope} reason=mutation-error attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
+        tweetId,
+      )
+    } else if (verdict === 'ok') {
+      ghosts?.delete(tweetId)
+      const { reresolved } = classifyFlip(document, article, tweetId, scope)
+      trace(
+        'clear-flip',
+        `scope=${scope} arm=mutation attempt=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} reresolved=${reresolved} origin=manual`,
+        tweetId,
+      )
+    } else if (flipConfirmed(article, scope)) {
       ghosts?.delete(tweetId)
       const { arm, reresolved } = classifyFlip(document, article, tweetId, scope)
       const detail = `scope=${scope} arm=${arm} attempt=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} reresolved=${reresolved} origin=manual`
@@ -483,6 +590,7 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       350,
       deps.reportClear,
       sweepGhosts,
+      deps.witness,
     )
     if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
     deps.reportClear('clear-visible-end', `cleared ${cleared} ${scope.value}`)
@@ -534,7 +642,14 @@ export const handleClearWholeList: MessageHandler = (_message, deps, sendRespons
     clearVisibleForPage: async () => {
       const live = pageScope(deps.location.pathname)
       if (Option.isNone(live) || live.value !== scope.value) return 0
-      return clearMountedForScope(deps.document, live.value, 350, deps.reportClear, sweepGhosts)
+      return clearMountedForScope(
+        deps.document,
+        live.value,
+        350,
+        deps.reportClear,
+        sweepGhosts,
+        deps.witness,
+      )
     },
     report: (stage, detail) => deps.reportClear(stage, detail),
   })
@@ -588,7 +703,7 @@ export const handleDrainPage: MessageHandler = (_message, deps, sendResponse) =>
       })
       return undefined
     })
-    .catch((error: unknown) => {
+    .catch((error) => {
       // Unreachable through the real `sendTracked` (it rides `safeSend`, which never
       // rejects — packages/kernel/messaging.ts:40-49). Kept because the reply is now
       // what un-busies the popup button: a thrown send must still terminate BOTH the
@@ -596,7 +711,7 @@ export const handleDrainPage: MessageHandler = (_message, deps, sendResponse) =>
       // spins forever.
       deps.reportClear(
         'clear-download-page-failed',
-        `${releaseRunDetail(release)} reason=${compactReason(error)}`,
+        `${releaseRunDetail(release)} reason=${compactReason(error instanceof Error ? error : String(error))}`,
       )
       sendResponse({
         _tag: 'DrainPageResponse',
@@ -692,7 +807,10 @@ export const handleSweepPage: MessageHandler = (_message, deps, sendResponse) =>
     // the SW crashed, and the popup would blame the list ("No new media detected")
     // for an extension failure. Gate on the field's PRESENCE, never on its value —
     // a genuine zero-queued sweep is a real reply and must stay distinguishable.
-    const r = out.reply as { queued?: number; skipped?: number } | undefined
+    // `browser.runtime.sendMessage`'s reply types as `any` (the polyfill has no way to
+    // know the background's response shape), so this is a plain annotation, not a
+    // cast: `any` is assignable to any declared type without an assertion.
+    const r: { queued?: number; skipped?: number } | undefined = out.reply
     if (r?.queued === undefined) {
       deps.reportClear(
         'clear-sweep-failed',
@@ -794,13 +912,10 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
     })
     return true
   }
-  const req = message as {
-    tweetId: string
-    scopes: ClearScope[]
-    allLists?: boolean
-    asPageScope?: MembershipScope
-    probe?: boolean
-  }
+  // SAFETY: only reachable via `messageHandlers.ClearTweetRequest`, gated by
+  // `dispatchOverlayMessage`'s decode against `OverlayInboundMessage` (which spreads
+  // in `TAB_MESSAGE_MEMBERS`, including `ClearTweetRequest`) before dispatch.
+  const req = message as ClearTweetRequest
   const allLists = req.allLists === true
   const onList = pageScope(deps.location.pathname)
   const pageScopeDetail = Option.getOrElse(onList, () => 'none')
@@ -863,10 +978,11 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
       )
     } catch (error) {
       results = req.scopes.map((scope) => ({ scope, ok: false }))
+      const failure = error instanceof Error ? error : String(error)
       deps.reportClear(
         'clear-tweet-failed',
         `pageScope=${pageScopeDetail} mounted=true drainEligible=${drainEligible} reason=${compactReason(
-          error,
+          failure,
         )} results=${clearResultsDetail(results)}`,
         req.tweetId,
       )
@@ -879,7 +995,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
       return
     }
     const pageScopeFailed =
-      Option.isSome(onList) && results.some((r) => r.scope === onList.value && r.ok === false)
+      Option.isSome(onList) && results.some((r) => r.scope === onList.value && !r.ok)
     const otherMembershipScopeRan =
       Option.isSome(onList) &&
       results.some(
@@ -917,7 +1033,10 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
 }
 
 export const handleClearDrain: MessageHandler = (message, deps, sendResponse) => {
-  const req = message as { tweetId: string; scopes: ClearScope[]; allLists?: boolean }
+  // SAFETY: only reachable via `messageHandlers.ClearDrainRequest`, gated by
+  // `dispatchOverlayMessage`'s decode against `OverlayInboundMessage` (which spreads
+  // in `TAB_MESSAGE_MEMBERS`, including `ClearDrainRequest`) before dispatch.
+  const req = message as ClearDrainRequest
   if (deps.adapter.platform !== 'x') {
     sendResponse({
       _tag: 'ClearDrainResponse',
@@ -928,7 +1047,7 @@ export const handleClearDrain: MessageHandler = (message, deps, sendResponse) =>
   void (async () => {
     let results: ReadonlyArray<ClearResult>
     try {
-      results = await deps.runDrain(req.tweetId, req.scopes, req.allLists === true)
+      results = await deps.runDrain(req.tweetId, [...req.scopes], req.allLists === true)
     } catch {
       results = req.scopes.map((scope) => ({ scope, ok: false }))
     }
@@ -949,8 +1068,8 @@ export const handleClearDrain: MessageHandler = (message, deps, sendResponse) =>
 // Gating this handler would silently break "Clear detected media" for Instagram/
 // Threads users, who have nothing X-specific to protect against in the first place.
 //
-// TODO: currently unreachable from the UI — its only sender was dropped by the
-// in-flight popup rewrite; kept wired pending that rewrite settling.
+// Currently unreachable from the UI: its only sender was dropped by the in-flight
+// popup rewrite. Kept wired pending that rewrite settling.
 export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResponse) => {
   const cleared = deps.store.count
   deps.store.clear()
@@ -962,7 +1081,11 @@ export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResp
   deps.clearRescanSpin()
   deps.setLauncher('idle')
   let rescanned = 0
-  const req = message as { _tag: string; rescanVisible?: boolean }
+  // SAFETY: only reachable via `messageHandlers.ClearDetectedMediaRequest`, gated by
+  // `dispatchOverlayMessage`'s decode against `OverlayInboundMessage` (which lists
+  // `ClearDetectedMediaRequest` as one of the three broadcast tags it also answers)
+  // before dispatch.
+  const req = message as ClearDetectedMediaRequest
   if (req.rescanVisible) {
     rescanned = deps.store.addDetected(
       deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname),
@@ -976,7 +1099,7 @@ export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResp
 /** Maps each runtime-message `_tag` to its handler. The router in index.tsx
  *  reads `dispatch[tag]?.(message, deps, sendResponse)`; an unmapped tag (no
  *  entry) falls through to the same `undefined`/`return false` path as before. */
-export const messageHandlers: Record<string, MessageHandler> = {
+export const messageHandlers = {
   TransferOutcome: handleTransferOutcome,
   SavedStatusUpdate: handleSavedStatusUpdate,
   RefreshMediaUrlRequest: handleRefreshMediaUrl,
@@ -987,7 +1110,7 @@ export const messageHandlers: Record<string, MessageHandler> = {
   ClearTweetRequest: handleClearTweet,
   ClearDrainRequest: handleClearDrain,
   ClearDetectedMediaRequest: handleClearDetectedMedia,
-}
+} satisfies Record<string, MessageHandler>
 
 /** The overlay's TRUE inbound set, decode-gated before any dispatch: the
  *  tab-targeted (`browser.tabs.sendMessage`) tags — spread from the SAME
@@ -1014,8 +1137,8 @@ export const dispatchOverlayMessage: MessageHandler = (message, deps, sendRespon
     // Warn UNCONDITIONALLY (not DEV-gated), mirroring background.ts's decode
     // gate: a silently-dropped message is exactly the signature two shipped
     // incidents had — diagnosed only live in a browser console.
-    const rawTag = (message as { _tag?: unknown } | null)?._tag
-    if (typeof rawTag === 'string')
+    const rawTag = isJsonObject(message) ? (message._tag ?? null) : null
+    if (isString(rawTag))
       console.warn(
         `[XMD] message ${rawTag} FAILED overlay schema decode (dropped):`,
         decoded.failure,
@@ -1026,5 +1149,9 @@ export const dispatchOverlayMessage: MessageHandler = (message, deps, sendRespon
   }
   const handler = messageHandlers[decoded.success._tag]
   if (handler === undefined) return
-  return handler(decoded.success, deps, sendResponse)
+  // SAFETY: `decoded.success` is the plain object `Schema.decodeUnknownResult`
+  // produced — every field decoded from String/Number/Boolean/Literals/Array, i.e.
+  // real JSON data. Effect's own `.Type` computation just doesn't surface an index
+  // signature for `JsonValue`'s structural check to see.
+  return handler(decoded.success as JsonValue, deps, sendResponse)
 }

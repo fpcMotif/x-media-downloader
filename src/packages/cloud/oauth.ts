@@ -1,6 +1,12 @@
 import { Data, Effect } from 'effect'
 import { FetchService } from '@/packages/kernel/fetch-service'
+import { isJsonObject, type JsonValue } from '@/packages/schema'
+import { jsonAs } from './lib/http'
 import type { OAuthConfig, OAuthTokens } from './types'
+
+/** Narrow a decoded JWT claims value to a string (`noUncheckedIndexedAccess` means
+ *  an absent key reads as `undefined`, not just a missing property). */
+const isJsonString = (v: JsonValue | undefined): v is string => typeof v === 'string'
 
 /**
  * OAuth 2.0 Authorization Code + PKCE for a Chrome MV3 extension (ADR-0013 §4).
@@ -70,7 +76,7 @@ export function buildAuthUrl(
 
 /** Extract the authorization `code` from the redirect URL, after verifying `state`.
  *  Throws {@link OAuthError} on a provider error, state mismatch, or missing code. */
-export function parseAuthRedirect(redirectUrl: string, expectedState: string): { code: string } {
+export function parseAuthRedirect(redirectUrl: string, expectedState: string) {
   let u: URL
   try {
     u = new URL(redirectUrl)
@@ -110,8 +116,8 @@ function emailFromIdToken(idToken: string | undefined): string | undefined {
     const payload = idToken.split('.')[1]
     if (payload === undefined) return undefined
     const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
-    const claims = JSON.parse(json) as { email?: string }
-    return typeof claims.email === 'string' ? claims.email : undefined
+    const claims: JsonValue = JSON.parse(json)
+    return isJsonObject(claims) && isJsonString(claims.email) ? claims.email : undefined
   } catch {
     return undefined
   }
@@ -143,7 +149,7 @@ const postToken = (
         ),
       )
     const json = yield* Effect.tryPromise({
-      try: () => res.json() as Promise<TokenResponse>,
+      try: () => jsonAs<TokenResponse>(res),
       catch: () =>
         new OAuthError({
           message: `token endpoint returned non-JSON (HTTP ${res.status})`,

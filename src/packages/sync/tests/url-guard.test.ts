@@ -9,13 +9,36 @@ import {
 import { cdnHostsForAllAdapters } from '@/core/adapters/registry'
 import type { MediaItem } from '@/packages/schema'
 
-const thrown = (fn: () => unknown): unknown => {
+/** Run `fn`, returning the `UnsafeUrlError` it must throw. Fails the test
+ *  immediately (via a thrown Error) if `fn` doesn't throw, or throws something
+ *  else — every call site below wants the tagged reason, never a maybe. */
+const thrown = (fn: () => void): UnsafeUrlError => {
   try {
     fn()
-    return undefined
   } catch (e) {
-    return e
+    if (e instanceof UnsafeUrlError) return e
+    throw e
   }
+  throw new Error('expected fn to throw UnsafeUrlError')
+}
+
+/** These fetch mocks are only ever invoked by `guardedFetch`/`bindFetch`, which
+ *  always calls fetch with a string URL — narrow away the wider `RequestInfo`
+ *  union `typeof fetch` declares via `instanceof`, rather than stringifying a
+ *  type that may carry a `Request` (whose default `toString` is meaningless). */
+const urlString = (input: RequestInfo | URL): string =>
+  input instanceof URL ? input.href : input instanceof Request ? input.url : input
+
+/** Async counterpart of {@link thrown} for `guardedFetch`'s rejected promise;
+ *  generic over `fn`'s resolved value since every call site discards it. */
+const rejectedWith = async <T>(fn: () => Promise<T>): Promise<UnsafeUrlError> => {
+  try {
+    await fn()
+  } catch (e) {
+    if (e instanceof UnsafeUrlError) return e
+    throw e
+  }
+  throw new Error('expected fn to reject with UnsafeUrlError')
 }
 
 describe('assertAllowedMediaUrl', () => {
@@ -69,7 +92,7 @@ describe('assertAllowedMediaUrl', () => {
     ]) {
       const e = thrown(() => assertAllowedMediaUrl(ip))
       expect(e).toBeInstanceOf(UnsafeUrlError)
-      expect((e as UnsafeUrlError).reason).toMatch(/private\/link-local ip/)
+      expect(e.reason).toMatch(/private\/link-local ip/)
     }
   })
 
@@ -77,19 +100,19 @@ describe('assertAllowedMediaUrl', () => {
     // WHATWG URL parsing rejects 999.x as an invalid IPv4 before our check runs.
     const e = thrown(() => assertAllowedMediaUrl('https://999.1.1.1/'))
     expect(e).toBeInstanceOf(UnsafeUrlError)
-    expect((e as UnsafeUrlError).reason).toMatch(/unparseable url/)
+    expect(e.reason).toMatch(/unparseable url/)
   })
 
   it('rejects a public IPv4 literal (not private) as a disallowed ip-literal host', () => {
     const e = thrown(() => assertAllowedMediaUrl('https://8.8.8.8/'))
     expect(e).toBeInstanceOf(UnsafeUrlError)
-    expect((e as UnsafeUrlError).reason).toMatch(/ip-literal host not allowed/)
+    expect(e.reason).toMatch(/ip-literal host not allowed/)
   })
 
   it('rejects an IPv6 literal host (bracketed)', () => {
     const e = thrown(() => assertAllowedMediaUrl('https://[2606:4700:4700::1111]/'))
     expect(e).toBeInstanceOf(UnsafeUrlError)
-    expect((e as UnsafeUrlError).reason).toMatch(/ip-literal host not allowed/)
+    expect(e.reason).toMatch(/ip-literal host not allowed/)
   })
 
   it('rejects an IPv4-mapped IPv6 loopback literal (::ffff:127.0.0.1)', () => {
@@ -97,13 +120,13 @@ describe('assertAllowedMediaUrl', () => {
     // colon-bearing host is caught by the ip-literal gate regardless.
     const e = thrown(() => assertAllowedMediaUrl('https://[::ffff:127.0.0.1]/'))
     expect(e).toBeInstanceOf(UnsafeUrlError)
-    expect((e as UnsafeUrlError).reason).toMatch(/ip-literal host not allowed/)
+    expect(e.reason).toMatch(/ip-literal host not allowed/)
   })
 
   it('allows a 172.x address outside the RFC-1918 /12 range only if on the CDN list (host still wins)', () => {
     // 172.15/172.32 are public; they fail on the allow-list, not the private check.
     const e = thrown(() => assertAllowedMediaUrl('https://172.15.0.1/'))
-    expect((e as UnsafeUrlError).reason).toMatch(/ip-literal host not allowed/)
+    expect(e.reason).toMatch(/ip-literal host not allowed/)
   })
 
   it('rejects an unparseable url', () => {
@@ -113,8 +136,8 @@ describe('assertAllowedMediaUrl', () => {
   it('carries a tagged reason', () => {
     const e = thrown(() => assertAllowedMediaUrl('https://evil.com/x'))
     expect(e).toBeInstanceOf(UnsafeUrlError)
-    expect((e as UnsafeUrlError)._tag).toBe('UnsafeUrlError')
-    expect((e as UnsafeUrlError).reason).toMatch(/host/)
+    expect(e._tag).toBe('UnsafeUrlError')
+    expect(e.reason).toMatch(/host/)
   })
 })
 
@@ -199,10 +222,10 @@ const resp = (status: number, location?: string): Response =>
 describe('guardedFetch', () => {
   it('fetches an allowed URL with manual redirect handling and returns the response', async () => {
     const calls: Array<{ url: string; redirect: RequestRedirect | undefined }> = []
-    const fetchImpl = ((url: string, init: RequestInit) => {
-      calls.push({ url, redirect: init.redirect })
+    const fetchImpl: typeof fetch = (url, init) => {
+      calls.push({ url: urlString(url), redirect: init?.redirect })
       return Promise.resolve(resp(200))
-    }) as unknown as typeof fetch
+    }
     const r = await guardedFetch('https://pbs.twimg.com/media/AAA', {}, fetchImpl)
     expect(r.status).toBe(200)
     expect(calls).toHaveLength(1)
@@ -210,29 +233,26 @@ describe('guardedFetch', () => {
   })
 
   it('re-runs the full guard on each redirect hop and follows an allowed redirect', async () => {
-    const fetchImpl = ((url: string) =>
+    const fetchImpl: typeof fetch = (url) =>
       Promise.resolve(
-        url === 'https://pbs.twimg.com/start'
+        urlString(url) === 'https://pbs.twimg.com/start'
           ? resp(302, 'https://video.twimg.com/final.mp4')
           : resp(200),
-      )) as unknown as typeof fetch
+      )
     const r = await guardedFetch('https://pbs.twimg.com/start', {}, fetchImpl)
     expect(r.status).toBe(200)
   })
 
   it('rejects a redirect to a non-allowlisted host', async () => {
-    const fetchImpl = (() =>
-      Promise.resolve(resp(302, 'https://evil.com/x'))) as unknown as typeof fetch
+    const fetchImpl: typeof fetch = () => Promise.resolve(resp(302, 'https://evil.com/x'))
     await expect(guardedFetch('https://pbs.twimg.com/start', {}, fetchImpl)).rejects.toBeInstanceOf(
       UnsafeUrlError,
     )
   })
 
   it('rejects a redirect to a metadata IP', async () => {
-    const fetchImpl = (() =>
-      Promise.resolve(
-        resp(302, 'https://169.254.169.254/latest/meta-data/'),
-      )) as unknown as typeof fetch
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(resp(302, 'https://169.254.169.254/latest/meta-data/'))
     await expect(guardedFetch('https://pbs.twimg.com/start', {}, fetchImpl)).rejects.toBeInstanceOf(
       UnsafeUrlError,
     )
@@ -240,10 +260,10 @@ describe('guardedFetch', () => {
 
   it('validates the initial url before any fetch happens', async () => {
     let called = false
-    const fetchImpl = (() => {
+    const fetchImpl: typeof fetch = () => {
       called = true
       return Promise.resolve(resp(200))
-    }) as unknown as typeof fetch
+    }
     await expect(guardedFetch('http://evil.com/x', {}, fetchImpl)).rejects.toBeInstanceOf(
       UnsafeUrlError,
     )
@@ -251,24 +271,23 @@ describe('guardedFetch', () => {
   })
 
   it('hands back a 3xx with no Location header as-is (nothing to follow)', async () => {
-    const fetchImpl = (() => Promise.resolve(resp(302))) as unknown as typeof fetch
+    const fetchImpl: typeof fetch = () => Promise.resolve(resp(302))
     const r = await guardedFetch('https://pbs.twimg.com/media/AAA', {}, fetchImpl)
     expect(r.status).toBe(302)
   })
 
   it('hands back a 3xx with an empty Location header as-is', async () => {
-    const fetchImpl = (() => {
+    const fetchImpl: typeof fetch = () => {
       const h = new Headers()
       h.set('location', '')
       return Promise.resolve(new Response(null, { status: 302, headers: h }))
-    }) as unknown as typeof fetch
+    }
     const r = await guardedFetch('https://pbs.twimg.com/media/AAA', {}, fetchImpl)
     expect(r.status).toBe(302)
   })
 
   it('bounds redirect chains (too many hops throws)', async () => {
-    const fetchImpl = (() =>
-      Promise.resolve(resp(302, 'https://pbs.twimg.com/loop'))) as unknown as typeof fetch
+    const fetchImpl: typeof fetch = () => Promise.resolve(resp(302, 'https://pbs.twimg.com/loop'))
     await expect(
       guardedFetch('https://pbs.twimg.com/loop', {}, fetchImpl, 3),
     ).rejects.toBeInstanceOf(UnsafeUrlError)
@@ -278,12 +297,12 @@ describe('guardedFetch', () => {
     // background passes the bare global `fetch` straight in; calling it unbound runs
     // it with `this === undefined`, which the MV3 SW rejects. A non-arrow stub exposes
     // the dynamic `this` (arrow mocks ignore it); bindFetch must detach it to globalThis.
-    const brandChecked = function (this: unknown) {
+    const brandChecked: typeof fetch = function (this: typeof globalThis) {
       if (this !== globalThis) {
         throw new TypeError("Failed to execute 'fetch' on 'WorkerGlobalScope': Illegal invocation")
       }
       return Promise.resolve(resp(200))
-    } as typeof fetch
+    }
     const r = await guardedFetch('https://pbs.twimg.com/media/AAA', {}, brandChecked)
     expect(r.status).toBe(200)
   })
@@ -293,21 +312,22 @@ describe('guardedFetch — adversarial redirect shapes (SSRF)', () => {
   it('rejects a protocol-relative redirect that swaps to a metadata host', async () => {
     // `Location: //169.254.169.254/…` keeps the scheme but swaps the host; it must
     // resolve against the current URL and re-fail the guard, not slip through.
-    const fetchImpl = (() =>
-      Promise.resolve(resp(302, '//169.254.169.254/latest/meta-data/'))) as unknown as typeof fetch
-    const e = await guardedFetch('https://pbs.twimg.com/start', {}, fetchImpl).catch((x) => x)
-    expect(e).toBeInstanceOf(UnsafeUrlError)
-    expect((e as UnsafeUrlError).reason).toMatch(/private\/link-local ip/)
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(resp(302, '//169.254.169.254/latest/meta-data/'))
+    const e = await rejectedWith(() => guardedFetch('https://pbs.twimg.com/start', {}, fetchImpl))
+    expect(e.reason).toMatch(/private\/link-local ip/)
   })
 
   it('follows a relative-path redirect that stays on the allowed host', async () => {
     const seen: string[] = []
-    const fetchImpl = ((url: string) => {
-      seen.push(url)
+    const fetchImpl: typeof fetch = (url) => {
+      seen.push(urlString(url))
       return Promise.resolve(
-        url === 'https://pbs.twimg.com/start' ? resp(302, '/media/final.jpg') : resp(200),
+        urlString(url) === 'https://pbs.twimg.com/start'
+          ? resp(302, '/media/final.jpg')
+          : resp(200),
       )
-    }) as unknown as typeof fetch
+    }
     const r = await guardedFetch('https://pbs.twimg.com/start', {}, fetchImpl)
     expect(r.status).toBe(200)
     expect(seen).toEqual(['https://pbs.twimg.com/start', 'https://pbs.twimg.com/media/final.jpg'])
@@ -315,13 +335,12 @@ describe('guardedFetch — adversarial redirect shapes (SSRF)', () => {
 
   it('stops after exactly maxHops+1 fetches and reports too-many-redirects', async () => {
     let calls = 0
-    const fetchImpl = (() => {
+    const fetchImpl: typeof fetch = () => {
       calls += 1
       return Promise.resolve(resp(302, 'https://pbs.twimg.com/loop'))
-    }) as unknown as typeof fetch
-    const e = await guardedFetch('https://pbs.twimg.com/loop', {}, fetchImpl, 3).catch((x) => x)
-    expect(e).toBeInstanceOf(UnsafeUrlError)
-    expect((e as UnsafeUrlError).reason).toMatch(/too many redirects/)
+    }
+    const e = await rejectedWith(() => guardedFetch('https://pbs.twimg.com/loop', {}, fetchImpl, 3))
+    expect(e.reason).toMatch(/too many redirects/)
     expect(calls).toBe(4) // maxHops(3) + 1
   })
 })

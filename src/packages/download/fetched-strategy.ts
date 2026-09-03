@@ -167,7 +167,10 @@ export function makeFetchedStrategy(opts: {
                 await offscreen.closeDocument().catch(() => {})
               }
             })(),
-          catch: (cause) => new DownloadError({ id: req.id, reason: errorReason(cause) }),
+          catch: (cause) => {
+            const reason = cause instanceof Error ? cause : String(cause)
+            return new DownloadError({ id: req.id, reason: errorReason(reason) })
+          },
         })
 
         return { kind: 'browser' as const, id: downloadId }
@@ -177,10 +180,8 @@ export function makeFetchedStrategy(opts: {
 
 /** Chrome permissions port for production wiring. */
 export function makePermissionsPort(): PermissionsPort {
-  const req = {
-    permissions: ['offscreen'] as Browser.runtime.ManifestPermission[],
-    origins: [...FETCHED_HOST_PATTERNS],
-  }
+  const permissions: Browser.runtime.ManifestPermission[] = ['offscreen']
+  const req = { permissions, origins: [...FETCHED_HOST_PATTERNS] }
   return {
     contains: () => browser.permissions.contains(req),
     request: () => browser.permissions.request(req),
@@ -219,6 +220,27 @@ let offscreenOpening: Promise<void> | null = null
 // document ("offscreen save failed"). Close only once the last save settles.
 let offscreenSaves = 0
 
+/** The client-side mirror of the offscreen document's `OffscreenSaveRequest`
+ *  (src/entrypoints/offscreen/main.ts) — kept in sync by hand since the two
+ *  sides of a `runtime.sendMessage` cannot literally share a type. */
+interface OffscreenSaveRequestMessage {
+  readonly _tag: 'OffscreenSaveRequest'
+  readonly bytes: ReadonlyArray<number>
+  readonly mimeType: string
+  readonly filename: string
+}
+
+/** The offscreen document's reply to {@link OffscreenSaveRequestMessage}. */
+interface OffscreenSaveReply {
+  readonly downloadId?: number
+  readonly error?: string
+}
+
+/** Narrow a reply to one that actually carries the completed download's id. */
+function hasDownloadId(res: OffscreenSaveReply): res is { downloadId: number } {
+  return typeof res.downloadId === 'number'
+}
+
 /** Offscreen port backed by chrome.offscreen + runtime messaging. */
 export function makeOffscreenPort(): OffscreenPort {
   return {
@@ -238,13 +260,16 @@ export function makeOffscreenPort(): OffscreenPort {
       return offscreenOpening
     },
     saveBlob: async ({ bytes, mimeType, filename }) => {
-      const res = (await browser.runtime.sendMessage({
+      const res = await browser.runtime.sendMessage<
+        OffscreenSaveRequestMessage,
+        OffscreenSaveReply
+      >({
         _tag: 'OffscreenSaveRequest',
         bytes: Array.from(bytes),
         mimeType,
         filename,
-      })) as { downloadId?: number; error?: string }
-      if (typeof res.downloadId !== 'number') {
+      })
+      if (!hasDownloadId(res)) {
         throw new OffscreenSaveError({ message: res.error ?? 'offscreen save failed' })
       }
       return res.downloadId

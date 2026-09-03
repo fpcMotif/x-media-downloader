@@ -717,7 +717,7 @@ describe('focusedTweetArticle', () => {
       <article data-testid="tweet">
         <a href="/alice/status/5" tabindex="0"><time>now</time></a>
       </article>`)
-    ;(document.querySelector('a') as HTMLElement).focus()
+    document.querySelector('a')!.focus()
     expect(focusedTweetArticle(document)?.matches(ARTICLE)).toBe(true)
   })
 
@@ -730,7 +730,7 @@ describe('focusedTweetArticle', () => {
       <article data-testid="tweet">
         <a href="/bob/status/7"><time>now</time></a>
       </article>`)
-    ;(document.querySelector('button') as HTMLElement).focus()
+    document.querySelector('button')!.focus()
     const tweet = focusedTweetArticle(document)
     expect(tweet?.querySelector('a')?.getAttribute('href')).toBe('/alice/status/6')
   })
@@ -742,7 +742,7 @@ describe('focusedTweetArticle', () => {
         <button>like</button>
         <a href="/alice/status/11"><time>t</time></a>
       </article>`)
-    ;(document.querySelector('button') as HTMLElement).focus()
+    document.querySelector('button')!.focus()
     const tweet = focusedTweetArticle(document)
     expect(tweet?.querySelector('a')?.getAttribute('href')).toBe('/alice/status/11')
   })

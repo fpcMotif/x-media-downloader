@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { fakeBrowser } from 'wxt/testing'
+import { fakeBrowser } from 'wxt/testing/fake-browser'
 import { MAX_TEACHING_OPENS, markDone, recordOpen, shouldShowIntro } from './first-run'
 
 describe('shouldShowIntro (pure)', () => {

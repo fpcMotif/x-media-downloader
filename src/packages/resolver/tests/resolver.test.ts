@@ -325,7 +325,7 @@ describe('resolveTweetMedia × url-guard composition', () => {
           },
         },
       ],
-    } as Parameters<typeof resolveTweetMedia>[0])
+    })
     const { allowed, rejected } = partitionAllowedMediaItems(items)
     expect(allowed).toHaveLength(items.length)
     expect(allowed.length).toBeGreaterThan(0)
@@ -337,7 +337,7 @@ describe('resolveTweetMedia × url-guard composition', () => {
       tweetId: '1791',
       handle: 'mallory',
       media: [{ type: 'photo', media_url_https: 'https://attacker.example/media/E.jpg' }],
-    } as Parameters<typeof resolveTweetMedia>[0])
+    })
     const { allowed, rejected } = partitionAllowedMediaItems(items)
     expect(allowed).toEqual([])
     expect(rejected).toHaveLength(1)

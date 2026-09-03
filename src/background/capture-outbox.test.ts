@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
 import { makeCaptureOutbox, type LedgerStorage } from './capture-outbox'
-import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import {
+  type JsonObject,
+  type JsonValue,
+  Settings as SettingsSchema,
+  type Settings,
+} from '@/packages/schema'
 import { decodeLedger, readyJobs } from '@/packages/sync/captures'
 import type { TweetRecord } from '@/packages/capture/record'
 
@@ -34,16 +39,16 @@ const mk = (tweetId: string): TweetRecord => ({
 })
 
 function fakeLedger(
-  initial: unknown = null,
+  initial: JsonValue = null,
   opts: { delay?: boolean } = {},
-): LedgerStorage & { value: unknown } {
+): LedgerStorage & { value: JsonValue } {
   const box = {
     value: initial,
     async get() {
       if (opts.delay) await tick()
       return box.value
     },
-    async set(value: unknown) {
+    async set(value: JsonValue) {
       if (opts.delay) await tick()
       box.value = value
     },
@@ -60,7 +65,7 @@ describe('makeCaptureOutbox — ADR-0018 gate (default OFF, separate from media 
     const getSettings = vi.fn<() => Promise<Settings>>(async () =>
       cfg({ captureMirrorEnabled: false }),
     )
-    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const mutation = vi.fn<(name: string, args: JsonObject) => Promise<JsonValue>>(async () => ({}))
     const outbox = makeCaptureOutbox({
       getSettings,
       ledger,
@@ -79,7 +84,7 @@ describe('makeCaptureOutbox — ADR-0018 gate (default OFF, separate from media 
   it('sends nothing when Cloud Sync is not configured', async () => {
     const ledger = fakeLedger()
     const getSettings = vi.fn<() => Promise<Settings>>(async () => cfg({ cloudSyncEnabled: false }))
-    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const mutation = vi.fn<(name: string, args: JsonObject) => Promise<JsonValue>>(async () => ({}))
     const outbox = makeCaptureOutbox({
       getSettings,
       ledger,
@@ -98,7 +103,7 @@ describe('makeCaptureOutbox — ADR-0018 gate (default OFF, separate from media 
   it('sends nothing for an empty batch even when fully enabled', async () => {
     const ledger = fakeLedger()
     const getSettings = vi.fn<() => Promise<Settings>>(async () => cfg())
-    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const mutation = vi.fn<(name: string, args: JsonObject) => Promise<JsonValue>>(async () => ({}))
     const outbox = makeCaptureOutbox({
       getSettings,
       ledger,
@@ -118,7 +123,7 @@ describe('makeCaptureOutbox — ADR-0018 gate (default OFF, separate from media 
 describe('makeCaptureOutbox — drain', () => {
   it('enqueues and sends the batch once to captures:recordCaptures, then stops', async () => {
     const ledger = fakeLedger()
-    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const mutation = vi.fn<(name: string, args: JsonObject) => Promise<JsonValue>>(async () => ({}))
     const outbox = makeCaptureOutbox({
       getSettings: async () => cfg(),
       ledger,
@@ -131,7 +136,7 @@ describe('makeCaptureOutbox — drain', () => {
     await tick()
 
     expect(mutation).toHaveBeenCalledTimes(1)
-    const [name, args] = mutation.mock.calls[0] as [string, { captures: unknown[]; secret: string }]
+    const [name, args] = mutation.mock.calls[0]!
     expect(name).toBe('captures:recordCaptures')
     expect(args.secret).toBe('sek')
     expect(args.captures).toHaveLength(2)
@@ -141,7 +146,7 @@ describe('makeCaptureOutbox — drain', () => {
 
   it('best-effort: a control-plane error is swallowed and events stay for retry', async () => {
     const ledger = fakeLedger()
-    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => {
+    const mutation = vi.fn<(name: string, args: JsonObject) => Promise<JsonValue>>(async () => {
       throw new Error('503')
     })
     const outbox = makeCaptureOutbox({
@@ -161,7 +166,7 @@ describe('makeCaptureOutbox — drain', () => {
 
   it('serializes interleaved mirror batches so neither capture is lost', async () => {
     const ledger = fakeLedger(null, { delay: true })
-    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const mutation = vi.fn<(name: string, args: JsonObject) => Promise<JsonValue>>(async () => ({}))
     const outbox = makeCaptureOutbox({
       getSettings: async () => cfg(),
       ledger,
@@ -173,6 +178,9 @@ describe('makeCaptureOutbox — drain', () => {
     outbox.mirrorCaptures([mk('2')])
 
     await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(2))
+    // SAFETY: `mutation` only ever receives the wire shape `toWireCapture` builds
+    // (asserted by the two interleaved `mirrorCaptures` calls above), so `captures`
+    // is always this array of wire capture events, never arbitrary JSON.
     const sent = mutation.mock.calls.flatMap(
       ([, args]) => (args as { captures: ReadonlyArray<{ tweetId: string }> }).captures,
     )
@@ -180,7 +188,7 @@ describe('makeCaptureOutbox — drain', () => {
   })
 
   it('caps each Convex wire batch at 64 captures', async () => {
-    const mutation = vi.fn<(name: string, args: unknown) => Promise<unknown>>(async () => ({}))
+    const mutation = vi.fn<(name: string, args: JsonObject) => Promise<JsonValue>>(async () => ({}))
     const outbox = makeCaptureOutbox({
       getSettings: async () => cfg(),
       ledger: fakeLedger(),
@@ -191,7 +199,7 @@ describe('makeCaptureOutbox — drain', () => {
     outbox.mirrorCaptures(Array.from({ length: 65 }, (_, i) => mk(String(i))))
 
     await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(2))
-    expect((mutation.mock.calls[0]![1] as { captures: unknown[] }).captures).toHaveLength(64)
-    expect((mutation.mock.calls[1]![1] as { captures: unknown[] }).captures).toHaveLength(1)
+    expect(mutation.mock.calls[0]![1].captures).toHaveLength(64)
+    expect(mutation.mock.calls[1]![1].captures).toHaveLength(1)
   })
 })

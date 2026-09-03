@@ -14,6 +14,9 @@
  * already-located post-shaped object.
  */
 
+import type { JsonObject, JsonValue } from '@/packages/schema'
+import { isJsonNumber, isJsonObject, isJsonString } from '../json-predicates'
+
 export interface MetaMediaCandidate {
   readonly url: string
   readonly width?: number
@@ -27,11 +30,24 @@ export interface MetaMediaNode {
   readonly height?: number
 }
 
-type Obj = Record<string, unknown>
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
+/** A raw candidate JSON node carrying at least the `url` a {@link MetaMediaCandidate}
+ *  needs — asserting the full interface directly (`width`/`height` unchecked)
+ *  isn't a sound type predicate over `JsonValue`, so {@link toCandidate} reads
+ *  the optional dimensions out explicitly instead. */
+const isCandidate = (v: JsonValue | undefined): v is JsonObject & { readonly url: string } =>
+  isJsonObject(v) && isJsonString(v['url'])
 
-const isCandidate = (v: unknown): v is MetaMediaCandidate =>
-  isObj(v) && typeof v['url'] === 'string'
+/** `exactOptionalPropertyTypes` forbids an explicit `undefined` on `width`/
+ *  `height`, so each is only added when it decodes to a real number. */
+const toCandidate = (v: JsonObject & { readonly url: string }): MetaMediaCandidate => {
+  const width = v['width']
+  const height = v['height']
+  return {
+    url: v.url,
+    ...(isJsonNumber(width) ? { width } : {}),
+    ...(isJsonNumber(height) ? { height } : {}),
+  }
+}
 
 /**
  * The largest candidate by width×height (undimensioned candidates rank as
@@ -49,8 +65,8 @@ export function pickLargestCandidate(
   return candidates.reduce((best, c) => (candidateArea(c) > candidateArea(best) ? c : best))
 }
 
-const candidatesOf = (v: unknown): MetaMediaCandidate[] =>
-  Array.isArray(v) ? v.filter(isCandidate) : []
+const candidatesOf = (v: JsonValue | undefined): MetaMediaCandidate[] =>
+  Array.isArray(v) ? v.filter(isCandidate).map(toCandidate) : []
 
 /** Build a MetaMediaNode from a picked candidate — `width`/`height` are added
  *  only when present (exactOptionalPropertyTypes forbids an explicit
@@ -73,10 +89,13 @@ const nodeFromCandidate = (kind: 'photo' | 'video', c: MetaMediaCandidate): Meta
  * recursion against a circular reference (fails closed — returns `[]` for the
  * repeat visit — rather than a stack overflow; mirrors the identical guard on
  * `post-node.ts`'s `forEachPostNode`. Not reachable via the real JSON.parse
- * call path, but this function takes arbitrary `unknown`).
+ * call path, but this function takes an arbitrary parsed {@link JsonValue}).
  */
-export function mediaNodesFromPost(node: unknown, visiting = new WeakSet<Obj>()): MetaMediaNode[] {
-  if (!isObj(node)) return []
+export function mediaNodesFromPost(
+  node: JsonValue | undefined,
+  visiting = new WeakSet<JsonObject>(),
+): MetaMediaNode[] {
+  if (!isJsonObject(node)) return []
   if (visiting.has(node)) return []
   visiting.add(node)
 
@@ -94,7 +113,9 @@ export function mediaNodesFromPost(node: unknown, visiting = new WeakSet<Obj>())
   }
 
   const imageVersions2 = node['image_versions2']
-  const imageCandidates = isObj(imageVersions2) ? candidatesOf(imageVersions2['candidates']) : []
+  const imageCandidates = isJsonObject(imageVersions2)
+    ? candidatesOf(imageVersions2['candidates'])
+    : []
   if (imageCandidates.length > 0) {
     const best = pickLargestCandidate(imageCandidates)
     /* v8 ignore next -- imageCandidates.length > 0 guarantees pickLargestCandidate returns a value */

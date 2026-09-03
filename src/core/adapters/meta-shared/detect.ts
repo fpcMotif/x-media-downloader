@@ -1,6 +1,6 @@
-import type { MediaItem, Platform } from '@/packages/schema'
+import type { JsonObject, JsonValue, MediaItem, Platform } from '@/packages/schema'
 import { mediaNodesFromPost } from './media-node'
-import { forEachPostNode, isPostShaped } from './post-node'
+import { forEachPostNode, hasPostIdentity } from './post-node'
 
 /* v8 ignore next -- String.split always yields a non-empty array; `?? url` is unreachable */
 const stripQuery = (url: string): string => url.split('?')[0] ?? url
@@ -31,10 +31,10 @@ function extFromUrl(url: string, fallback: string): string {
  *  double-count them under BOTH the outer post and their own. Cheap for the
  *  overwhelmingly common case (no carousel, or a carousel of plain media
  *  nodes): `Array.isArray` + an already-required object check, no-op copy. */
-function ownMediaNode(node: Record<string, unknown>): Record<string, unknown> {
+function ownMediaNode(node: JsonObject) {
   const carousel = node['carousel_media']
   if (!Array.isArray(carousel)) return node
-  const filtered = carousel.filter((child) => !isPostShaped(child))
+  const filtered = carousel.filter((child) => !hasPostIdentity(child))
   if (filtered.length === carousel.length) return node
   return { ...node, carousel_media: filtered }
 }
@@ -59,7 +59,7 @@ function ownMediaNode(node: Record<string, unknown>): Record<string, unknown> {
  * a live Instagram/Threads response — real adapter integration must
  * re-verify the envelope/media shapes against live network captures.
  */
-export function detectMediaItems(json: unknown, platform: Platform): MediaItem[] {
+export function detectMediaItems(json: JsonValue, platform: Platform): MediaItem[] {
   const out: MediaItem[] = []
   const seenByPost = new Map<string, Set<string>>()
   let postsFound = 0
@@ -110,7 +110,7 @@ export function detectMediaItems(json: unknown, platform: Platform): MediaItem[]
  * into `detectMediaItems`'s signature) so that function's existing, already-
  * tested `MediaItem[]` return shape stays untouched.
  */
-export function postCodesInResponse(json: unknown): ReadonlyMap<string, string> {
+export function postCodesInResponse(json: JsonValue): ReadonlyMap<string, string> {
   const out = new Map<string, string>()
   forEachPostNode(json, (ctx) => out.set(ctx.postId, ctx.code))
   return out

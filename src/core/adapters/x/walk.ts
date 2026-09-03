@@ -1,7 +1,11 @@
 import type { RawMedia } from '@/packages/resolver'
+import type { JsonObject, JsonValue } from '@/packages/schema'
+import { isJsonNumber, isJsonObject, isJsonString } from '../json-predicates'
 
-type Obj = Record<string, unknown>
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
+/** Tweet ids arrive as strings (`id_str`) or numbers. Anything else is a malformed
+ *  node, and must read as absent rather than stringify to `[object Object]`. */
+const idString = (v: JsonValue | undefined): string =>
+  isJsonString(v) ? v : isJsonNumber(v) ? String(v) : ''
 
 /** The author of a tweet node, resolved from its `core.user_results.result`. */
 export type Author = { handle: string; name?: string; userId?: string }
@@ -14,12 +18,17 @@ export const NESTED_TWEET_KEYS: ReadonlySet<string> = new Set([
   'retweeted_status_result',
 ])
 
-/** A `core.user_results.result` carries an author when its `legacy.screen_name`
- *  is a string; X serializes a quoted/retweeted tweet's own author there too, so
- *  {@link NESTED_TWEET_KEYS} subtrees are pruned before this stop fires. */
-const isUserResult = (n: Obj): boolean => {
+/** `n`'s `handle`/`legacy` when `n` is a `core.user_results.result` node — i.e.
+ *  its `legacy.screen_name` is a string; X serializes a quoted/retweeted tweet's
+ *  own author there too, so {@link NESTED_TWEET_KEYS} subtrees are pruned before
+ *  this stop fires. Carries `legacy` back out already narrowed, so the caller
+ *  never has to re-check `screen_name`'s type to read `name`/`rest_id` from the
+ *  same subtree. */
+const userResultAuthor = (n: JsonObject): { handle: string; legacy: JsonObject } | undefined => {
   const legacy = n['legacy']
-  return isObj(legacy) && typeof legacy['screen_name'] === 'string'
+  if (!isJsonObject(legacy)) return undefined
+  const screenName = legacy['screen_name']
+  return isJsonString(screenName) ? { handle: screenName, legacy } : undefined
 }
 
 /**
@@ -31,23 +40,24 @@ const isUserResult = (n: Obj): boolean => {
  * `name`, and `rest_id` from the SAME `core.user_results.result` subtree so a
  * quoted tweet's name/userId can never leak into the outer record.
  */
-export function findAuthor(node: unknown): Author {
+export function findAuthor(node: JsonValue): Author {
   let found: Author | undefined
-  const scan = (n: unknown): void => {
+  const scan = (n: JsonValue): void => {
     if (found !== undefined) return
     if (Array.isArray(n)) {
       for (const v of n) scan(v)
       return
     }
-    if (!isObj(n)) return
-    if (isUserResult(n)) {
-      const legacy = n['legacy'] as Obj
+    if (!isJsonObject(n)) return
+    const userResult = userResultAuthor(n)
+    if (userResult) {
+      const { handle, legacy } = userResult
       const name = legacy['name']
       const userId = n['rest_id']
       found = {
-        handle: legacy['screen_name'] as string,
-        ...(typeof name === 'string' ? { name } : {}),
-        ...(typeof userId === 'string' ? { userId } : {}),
+        handle,
+        ...(isJsonString(name) ? { name } : {}),
+        ...(isJsonString(userId) ? { userId } : {}),
       }
       return
     }
@@ -65,16 +75,22 @@ export function findAuthor(node: unknown): Author {
  *  node. A tweet's `legacy` is NOT a user's (no `screen_name`) — the discriminator
  *  between a Tweet result and the nested `user_results.result` (a User) that also
  *  has `rest_id` + `legacy`. */
-const tweetLegacy = (n: Obj): Obj | null => {
+const tweetLegacy = (n: JsonObject): JsonObject | null => {
   const legacy = n['legacy']
-  return isObj(legacy) && typeof legacy['screen_name'] !== 'string' ? legacy : null
+  return isJsonObject(legacy) && !isJsonString(legacy['screen_name']) ? legacy : null
 }
 
-const tweetIdOf = (n: Obj, legacy: Obj): string => String(n['rest_id'] ?? legacy['id_str'] ?? '')
+const tweetIdOf = (n: JsonObject, legacy: JsonObject): string =>
+  idString(n['rest_id']) || idString(legacy['id_str'])
 
-const mediaOf = (legacy: Obj): RawMedia[] => {
+const mediaOf = (legacy: JsonObject): RawMedia[] => {
   const ee = legacy['extended_entities']
-  const media = isObj(ee) ? ee['media'] : undefined
+  const media = isJsonObject(ee) ? ee['media'] : undefined
+  // SAFETY: `media` is only ever X's own `extended_entities.media` array — each
+  // entry is a `type`/`media_url_https`(+ optional `video_info`) object per X's
+  // GraphQL schema. This walker reads it defensively (never assumes a caller
+  // already validated it), same posture as the module doc's "walk, don't
+  // schema-decode" stance for undocumented third-party payloads.
   return Array.isArray(media) ? (media as RawMedia[]) : []
 }
 
@@ -86,21 +102,21 @@ const mediaOf = (legacy: Obj): RawMedia[] => {
  * Quoted/retweeted tweets are visited independently as their own tweet nodes.
  */
 export function forEachTweetNode(
-  json: unknown,
+  json: JsonValue,
   visit: (n: {
-    node: Obj
+    node: JsonObject
     tweetId: string
     handle: string
     author: Author
     mediaRaw: RawMedia[]
   }) => void,
 ): void {
-  const walk = (node: unknown): void => {
+  const walk = (node: JsonValue | undefined): void => {
     if (Array.isArray(node)) {
       for (const v of node) walk(v)
       return
     }
-    if (!isObj(node)) return
+    if (!isJsonObject(node)) return
     if (node['__typename'] === 'TweetTombstone') return
     if (node['__typename'] === 'TweetWithVisibilityResults') {
       walk(node['tweet'])
@@ -131,7 +147,7 @@ export function forEachTweetNode(
  * response is a genuine server-side member of that list, whether or not it
  * carries downloadable media — a text-only bookmarked post must still count.
  */
-export function timelineTweetIds(json: unknown): ReadonlySet<string> {
+export function timelineTweetIds(json: JsonValue): ReadonlySet<string> {
   const ids = new Set<string>()
   forEachTweetNode(json, ({ tweetId }) => ids.add(tweetId))
   return ids

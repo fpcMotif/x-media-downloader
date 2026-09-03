@@ -75,7 +75,9 @@ describe('applyTransition', () => {
 describe('decodeStore', () => {
   it('round-trips a valid store', () => {
     const s = upsert(emptyStore, rec('1-0', 100))
-    expect(decodeStore(s)).toEqual(s)
+    // Mimics the real boundary: `storage.local` round-trips through JSON, so the
+    // raw value `decodeStore` actually sees is JSON-shaped, not the live `DownloadStore`.
+    expect(decodeStore(JSON.parse(JSON.stringify(s)))).toEqual(s)
   })
 
   it('recovers to an empty store on corrupt input', () => {

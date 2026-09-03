@@ -83,6 +83,54 @@ describe('enumerateNavColumns', () => {
     expect(columns[0]?.container).toBe(root.querySelector('#later'))
     expect(columns[1]?.container).toBe(root.querySelector('#earlier'))
   })
+
+  it('treats a large flat feed as one implicit column (no grouping ancestor)', () => {
+    root.innerHTML = `<main>${threadsPost.repeat(20)}</main>`
+    const columns = enumerateNavColumns(root, THREADS_POST)
+    expect(columns).toHaveLength(1)
+    expect(columns[0]?.container).toBeNull()
+    expect(columns[0]?.posts).toHaveLength(20)
+  })
+
+  it('resolves nested column groups to the innermost qualifying ancestor', () => {
+    root.innerHTML = `<main>
+      <div id="outerA">
+        <section id="innerA1">${threadsPost}${threadsPost}</section>
+        <section id="innerA2">${threadsPost}${threadsPost}</section>
+      </div>
+      <div id="outerB">
+        <section id="innerB1">${threadsPost}${threadsPost}</section>
+        <section id="innerB2">${threadsPost}${threadsPost}</section>
+      </div>
+    </main>`
+    const columns = enumerateNavColumns(root, THREADS_POST)
+    // The innermost <section>s each hold >1 post and have a sibling section
+    // that also holds posts, so grouping resolves at the inner level, not
+    // the outer <div>s (which would also technically qualify).
+    expect(columns).toHaveLength(4)
+    expect(columns.map((c) => c.container)).toEqual([
+      root.querySelector('#innerA1'),
+      root.querySelector('#innerA2'),
+      root.querySelector('#innerB1'),
+      root.querySelector('#innerB2'),
+    ])
+  })
+
+  it('finds a post inside a non-post wrapper inside a column', () => {
+    root.innerHTML = `<main>
+      <section id="colA">
+        <div class="wrapper"><span class="inner">${threadsPost}</span></div>
+        <div class="wrapper"><span class="inner">${threadsPost}</span></div>
+      </section>
+      <section id="colB">${threadsPost}${threadsPost}</section>
+    </main>`
+    const columns = enumerateNavColumns(root, THREADS_POST)
+    expect(columns).toHaveLength(2)
+    expect(columns[0]?.container).toBe(root.querySelector('#colA'))
+    expect(columns[0]?.posts).toHaveLength(2)
+    expect(columns[1]?.container).toBe(root.querySelector('#colB'))
+    expect(columns[1]?.posts).toHaveLength(2)
+  })
 })
 
 describe('buildNavSnapshot', () => {
@@ -105,7 +153,10 @@ describe('buildNavSnapshot', () => {
 
 describe('carouselControlsByAria', () => {
   it('finds prev/next buttons inside a carousel post', () => {
-    root.innerHTML = `${threadsPost.replace('></div>', `><button aria-label="Go back"></button><button aria-label="Next"></button></div>`)}`
+    root.innerHTML = threadsPost.replace(
+      '></div>',
+      `><button aria-label="Go back"></button><button aria-label="Next"></button></div>`,
+    )
     const post = root.querySelector(THREADS_POST)!
     const controls = carouselControlsByAria(post)
     expect(controls.prev?.getAttribute('aria-label')).toBe('Go back')
@@ -121,7 +172,10 @@ describe('carouselControlsByAria', () => {
 
 describe('actionControlByAria', () => {
   it('returns the first control matching any of the labels', () => {
-    root.innerHTML = `${threadsPost.replace('></div>', `><span aria-label="Reply"></span><span aria-label="Like"></span></div>`)}`
+    root.innerHTML = threadsPost.replace(
+      '></div>',
+      `><span aria-label="Reply"></span><span aria-label="Like"></span></div>`,
+    )
     const post = root.querySelector(THREADS_POST)!
     expect(actionControlByAria(post, ['Like'])?.getAttribute('aria-label')).toBe('Like')
     expect(actionControlByAria(post, ['Reply'])?.getAttribute('aria-label')).toBe('Reply')

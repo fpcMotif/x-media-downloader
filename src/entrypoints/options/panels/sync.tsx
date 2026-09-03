@@ -17,6 +17,12 @@ const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
 }
 
+/** The live value of the `<input>` that fired `e` — narrows `EventTarget | null`
+ *  instead of asserting it, since every caller below binds this to a real
+ *  `HTMLInputElement`'s `onChange`. */
+const inputValue = (e: Event): string =>
+  e.target instanceof HTMLInputElement ? e.target.value : ''
+
 export function SyncPanel({ settings, update, reload }: PanelProps) {
   const [convexGranted, setConvexGranted] = useState<boolean | null>(null)
   const [testingSync, setTestingSync] = useState(false)
@@ -44,7 +50,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
     }
     void browser.runtime
       .sendMessage({ _tag: 'SyncStatusRequest' })
-      .then((s) => setSyncStatus((s as SyncStatus | null) ?? null))
+      .then((s: SyncStatus | null) => setSyncStatus(s ?? null))
       .catch(() => {})
   }, [cloudOn])
   useEffect(() => {
@@ -60,7 +66,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
     const poll = (): void => {
       void browser.runtime
         .sendMessage({ _tag: 'CloudStatusRequest' })
-        .then((s) => setCloudStatus((s as CloudUploadStatus | null) ?? null))
+        .then((s: CloudUploadStatus | null) => setCloudStatus(s ?? null))
         .catch(() => {})
     }
     poll()
@@ -77,8 +83,8 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   const testConvexConnection = async (): Promise<void> => {
     setTestingSync(true)
     try {
-      const res = await browser.runtime.sendMessage({ _tag: 'SyncTestRequest' })
-      setSyncStatus((res as SyncStatus | null) ?? null)
+      const res: SyncStatus | null = await browser.runtime.sendMessage({ _tag: 'SyncTestRequest' })
+      setSyncStatus(res ?? null)
     } catch {
       setSyncStatus({ ok: false, detail: 'The extension background did not respond.', pending: 0 })
     } finally {
@@ -100,9 +106,9 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         )
         return
       }
-      const res = (await browser.runtime
+      const res: { ok?: boolean; detail?: string } | null = await browser.runtime
         .sendMessage({ _tag: 'CloudConnectRequest', provider, clientId })
-        .catch(() => null)) as { ok?: boolean; detail?: string } | null
+        .catch(() => null)
       await reload()
       setConnectMsg(res?.detail ?? 'The extension background did not respond.')
     } finally {
@@ -118,9 +124,9 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 
   const backfillUploads = async (): Promise<void> => {
     setConnectMsg('Queuing past downloads…')
-    const res = (await browser.runtime
+    const res: { detail?: string } | null = await browser.runtime
       .sendMessage({ _tag: 'CloudBackfillRequest' })
-      .catch(() => null)) as { detail?: string } | null
+      .catch(() => null)
     setConnectMsg(res?.detail ?? 'The extension background did not respond.')
   }
 
@@ -162,9 +168,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
                 id="convexUrl"
                 placeholder="https://<deployment>.convex.cloud"
                 value={settings.convexUrl}
-                onChange={(e: Event) =>
-                  void update({ convexUrl: (e.target as HTMLInputElement).value })
-                }
+                onChange={(e: Event) => void update({ convexUrl: inputValue(e) })}
               />
             </Field>
             <Field>
@@ -174,9 +178,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
                 type="password"
                 placeholder="must match the deployment's SYNC_SHARED_SECRET"
                 value={settings.convexSyncSecret}
-                onChange={(e: Event) =>
-                  void update({ convexSyncSecret: (e.target as HTMLInputElement).value })
-                }
+                onChange={(e: Event) => void update({ convexSyncSecret: inputValue(e) })}
               />
             </Field>
             <div className="flex flex-wrap items-center gap-2">
@@ -349,7 +351,7 @@ function CloudProviderRow({
           id={`${provider}ClientId`}
           placeholder={provider === 'gdrive' ? 'xxxx.apps.googleusercontent.com' : 'your app key'}
           value={draft}
-          onChange={(e: Event) => setDraft((e.target as HTMLInputElement).value)}
+          onChange={(e: Event) => setDraft(inputValue(e))}
         />
         <FieldDescription>
           <a

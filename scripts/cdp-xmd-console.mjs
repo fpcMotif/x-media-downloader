@@ -30,6 +30,8 @@ const argToStr = (a) => {
   return a.type ?? ''
 }
 
+const ensureString = (data) => String(data)
+
 async function targets() {
   const res = await fetch(`http://localhost:${PORT}/json`)
   return res.json()
@@ -46,7 +48,7 @@ function attach(src, wsUrl) {
   ws.addEventListener('message', (ev) => {
     let msg
     try {
-      msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data.toString())
+      msg = JSON.parse(ensureString(ev.data))
     } catch {
       return
     }
@@ -62,14 +64,15 @@ function attach(src, wsUrl) {
     }
   })
   ws.addEventListener('close', () => stamp('cdp', `${src} socket closed`))
-  ws.addEventListener('error', (e) => stamp('cdp', `${src} socket error ${e?.message ?? 'unknown'}`))
+  ws.addEventListener('error', (e) =>
+    stamp('cdp', `${src} socket error ${e?.message ?? 'unknown'}`),
+  )
   return ws
 }
 
 const list = await targets()
 for (const t of list) {
-  const isThreadsOrIg =
-    t.type === 'page' && /https:\/\/www\.(threads|instagram)\.com/.test(t.url)
+  const isThreadsOrIg = t.type === 'page' && /https:\/\/www\.(threads|instagram)\.com/.test(t.url)
   const isSw = t.type === 'service_worker' && t.url.includes('background.js')
   if ((isThreadsOrIg || isSw) && t.webSocketDebuggerUrl) {
     attach(isSw ? 'sw' : 'page', t.webSocketDebuggerUrl)

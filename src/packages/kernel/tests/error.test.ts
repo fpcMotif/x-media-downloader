@@ -11,10 +11,7 @@ describe('errorReason', () => {
     expect(errorReason(new MyError('nope'))).toBe('nope')
   })
 
-  it('stringifies a thrown non-Error value', () => {
+  it('passes a string reason through unchanged', () => {
     expect(errorReason('raw string')).toBe('raw string')
-    expect(errorReason(42)).toBe('42')
-    expect(errorReason(undefined)).toBe('undefined')
-    expect(errorReason(null)).toBe('null')
   })
 })

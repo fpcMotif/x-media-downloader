@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import type { JsonValue } from '@/packages/schema'
 import { pickLargestCandidate, mediaNodesFromPost } from './media-node'
 
 describe('pickLargestCandidate', () => {
@@ -144,8 +145,9 @@ describe('mediaNodesFromPost', () => {
   })
 
   it('fails closed (does not throw) on a circular carousel_media reference', () => {
-    const node: Record<string, unknown> = { carousel_media: [] }
-    ;(node['carousel_media'] as unknown[]).push(node)
+    const carousel: JsonValue[] = []
+    const node = { carousel_media: carousel }
+    carousel.push(node)
     expect(() => mediaNodesFromPost(node)).not.toThrow()
     expect(mediaNodesFromPost(node)).toEqual([])
   })

@@ -146,6 +146,21 @@ export interface DetectionStore {
   clear(): void
 }
 
+const indexAdd = (index: Map<string, Set<string>>, postId: string, member: string): void => {
+  let set = index.get(postId)
+  if (!set) {
+    set = new Set()
+    index.set(postId, set)
+  }
+  set.add(member)
+}
+const indexRemove = (index: Map<string, Set<string>>, postId: string, member: string): void => {
+  const set = index.get(postId)
+  if (!set) return
+  set.delete(member)
+  if (set.size === 0) index.delete(postId)
+}
+
 export function makeDetectionStore(deps: {
   readonly mediaKeyFromUrl: MediaKeyDeriver
   /** Optional recovery scan — `PlatformAdapter.findMediaNeedingRecovery`'s own
@@ -161,6 +176,35 @@ export function makeDetectionStore(deps: {
   const byKey = new Map<string, MediaItem>()
   const recoveredKeys = new Set<string>()
   const attempted = new Set<string>()
+  // Secondary indices so valuesForTweet/keysForTweet don't scan the whole
+  // detected set per call — postId -> the ids/keys currently attributed to
+  // it. Kept correct through every byId/byKey mutation (below helpers are
+  // the ONLY places that touch byId/byKey directly) including the case an
+  // id or key gets reassigned to an item of a DIFFERENT postId (an
+  // overwrite, or registerPostCode/syncPostVideoKey re-linking a post-level
+  // key from one item to another). Set (not array) so an id/key already
+  // indexed under its own current postId is a no-op re-add, not a reorder —
+  // insertion order is preserved to match the old scan-and-filter order.
+  const idsByPost = new Map<string, Set<string>>()
+  const keysByPost = new Map<string, Set<string>>()
+
+  const setById = (id: string, item: MediaItem): void => {
+    const prev = byId.get(id)
+    if (prev && prev.postId !== item.postId) indexRemove(idsByPost, prev.postId, id)
+    byId.set(id, item)
+    indexAdd(idsByPost, item.postId, id)
+  }
+  const setByKey = (key: string, item: MediaItem): void => {
+    const prev = byKey.get(key)
+    if (prev && prev.postId !== item.postId) indexRemove(keysByPost, prev.postId, key)
+    byKey.set(key, item)
+    indexAdd(keysByPost, item.postId, key)
+  }
+  const deleteByKey = (key: string): void => {
+    const prev = byKey.get(key)
+    if (prev) indexRemove(keysByPost, prev.postId, key)
+    byKey.delete(key)
+  }
   // Video MediaItems seen so far, grouped by postId, keyed by each video's OWN
   // per-post `MediaItem.index` (not itemId) — index doubles as both the map's
   // dedup key (a post's own slide occupies exactly one index) and the exact
@@ -183,8 +227,8 @@ export function makeDetectionStore(deps: {
 
     for (const code of codesForPost) {
       const codeKey = postVideoKey(code)
-      if (single) byKey.set(codeKey, single)
-      else byKey.delete(codeKey)
+      if (single) setByKey(codeKey, single)
+      else deleteByKey(codeKey)
     }
 
     // Indexed + dom-slot keys: clear whatever this postId previously
@@ -194,15 +238,15 @@ export function makeDetectionStore(deps: {
     const prevIndices = registeredIndicesByPost.get(postId) ?? new Set<number>()
     for (const index of prevIndices) {
       for (const code of codesForPost) {
-        byKey.delete(postVideoKeyIndexed(code, index))
-        byKey.delete(postVideoKeyByDomSlot(code, index))
+        deleteByKey(postVideoKeyIndexed(code, index))
+        deleteByKey(postVideoKeyByDomSlot(code, index))
       }
     }
     const nextIndices = new Set<number>()
     for (const [index, item] of videos ?? []) {
       for (const code of codesForPost) {
-        byKey.set(postVideoKeyIndexed(code, index), item)
-        byKey.set(postVideoKeyByDomSlot(code, index), item)
+        setByKey(postVideoKeyIndexed(code, index), item)
+        setByKey(postVideoKeyByDomSlot(code, index), item)
       }
       nextIndices.add(index)
     }
@@ -218,8 +262,8 @@ export function makeDetectionStore(deps: {
       // would otherwise be counted twice — suppress by recovered key.
       if (keys.some((k) => recoveredKeys.has(k))) continue
       if (!byId.has(item.id)) added.push(item)
-      byId.set(item.id, item)
-      for (const key of keys) byKey.set(key, item)
+      setById(item.id, item)
+      for (const key of keys) setByKey(key, item)
       if (item.type === 'video') {
         let videos = videosByPost.get(item.postId)
         if (!videos) {
@@ -248,9 +292,9 @@ export function makeDetectionStore(deps: {
       // Already known to the tee or DOM → nothing to recover.
       if (keys.some((k) => byKey.has(k))) continue
       added.push(item)
-      byId.set(item.id, item)
+      setById(item.id, item)
       for (const key of keys) {
-        byKey.set(key, item)
+        setByKey(key, item)
         recoveredKeys.add(key)
       }
     }
@@ -274,11 +318,19 @@ export function makeDetectionStore(deps: {
     keyIndex: () => byKey,
     get: (id) => byId.get(id),
     values: () => [...byId.values()],
-    valuesForTweet: (tweetId) => [...byId.values()].filter((i) => i.postId === tweetId),
-    keysForTweet: (tweetId) => {
-      const out: string[] = []
-      for (const [key, item] of byKey) if (item.postId === tweetId) out.push(key)
+    valuesForTweet: (tweetId) => {
+      const ids = idsByPost.get(tweetId)
+      if (!ids) return []
+      const out: MediaItem[] = []
+      for (const id of ids) {
+        const item = byId.get(id)
+        if (item) out.push(item)
+      }
       return out
+    },
+    keysForTweet: (tweetId) => {
+      const keys = keysByPost.get(tweetId)
+      return keys ? [...keys] : []
     },
     registerPostCode: (postId, code) => {
       codeToPostId.set(code, postId)
@@ -297,6 +349,8 @@ export function makeDetectionStore(deps: {
       videosByPost.clear()
       codeToPostId.clear()
       registeredIndicesByPost.clear()
+      idsByPost.clear()
+      keysByPost.clear()
     },
   }
 }

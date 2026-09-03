@@ -6,6 +6,7 @@ import { makeFetchServiceLive } from '@/packages/kernel/fetch-service'
 import { makeSourceFetchLive } from './source-fetch'
 import { FolderCacheLive } from './folder-cache'
 import { guessMime, type CloudProviderId, type UploadInput, type UploadOutcome } from '../types'
+import { fetchStub } from './fetch-stub'
 import {
   claim,
   enqueue,
@@ -79,23 +80,24 @@ function makeTwimgFetch(opts: {
   status?: number
   contentLength?: number | null
 }) {
-  return (async (url: string | URL) => {
-    void url
+  return fetchStub(async () => {
     const status = opts.status ?? 200
     if (status >= 400) return new Response(null, { status })
-    const headers: Record<string, string> = { 'content-type': 'image/jpeg' }
     const body = opts.body ?? new Uint8Array(1024)
-    if (opts.contentLength !== null)
-      headers['content-length'] = String(opts.contentLength ?? body.length)
+    const headers = {
+      'content-type': 'image/jpeg',
+      ...(opts.contentLength !== null
+        ? { 'content-length': String(opts.contentLength ?? body.length) }
+        : {}),
+    }
     return new Response(body, { status, headers })
-  }) as unknown as typeof fetch
+  })
 }
 
 /** Google Drive REST mock (folder list/create + multipart + resumable). */
 function makeDriveProviderFetch() {
   let putCount = 0
-  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
-    const u = String(url)
+  const fetchImpl = fetchStub(async (u, init) => {
     const method = init?.method ?? 'GET'
     if (u.includes('uploadType=multipart'))
       return new Response(JSON.stringify({ id: 'drive-mp' }), { status: 200 })
@@ -103,7 +105,7 @@ function makeDriveProviderFetch() {
       return new Response(null, { status: 200, headers: { location: 'https://drive.sess/put' } })
     if (u === 'https://drive.sess/put') {
       putCount += 1
-      const range = ((init?.headers ?? {}) as Record<string, string>)['content-range'] ?? ''
+      const range = new Headers(init?.headers).get('content-range') ?? ''
       return range.endsWith('/*')
         ? new Response(null, { status: 308 })
         : new Response(JSON.stringify({ id: 'drive-rs' }), { status: 200 })
@@ -113,14 +115,13 @@ function makeDriveProviderFetch() {
     if (u.includes('/drive/v3/files?') && method === 'POST')
       return new Response(JSON.stringify({ id: 'folder-x' }), { status: 200 })
     return new Response('unexpected', { status: 500 })
-  }) as unknown as typeof fetch
+  })
   return { fetchImpl, putCount: () => putCount }
 }
 
 /** Dropbox content API mock (simple upload + upload session). */
 function makeDropboxProviderFetch() {
-  const fetchImpl = (async (url: string | URL) => {
-    const u = String(url)
+  const fetchImpl = fetchStub(async (u) => {
     if (u.endsWith('files/upload'))
       return new Response(JSON.stringify({ id: 'db-simple', size: 1024, path_display: '/p' }), {
         status: 200,
@@ -133,7 +134,7 @@ function makeDropboxProviderFetch() {
         status: 200,
       })
     return new Response('unexpected', { status: 500 })
-  }) as unknown as typeof fetch
+  })
   return { fetchImpl }
 }
 
@@ -246,8 +247,7 @@ describe('upload pipeline (e2e: ledger × SSRF guard × provider adapter)', () =
     const twimg = makeTwimgFetch({ body: new Uint8Array(512) })
     let provider500 = true
     // Provider 500s on the first attempt, then recovers.
-    const flaky = (async (url: string | URL, init?: RequestInit) => {
-      const u = String(url)
+    const flaky = fetchStub(async (u, init) => {
       if (u.includes('uploadType=multipart')) {
         if (provider500) return new Response('temporary', { status: 500 })
         return new Response(JSON.stringify({ id: 'drive-mp' }), { status: 200 })
@@ -255,7 +255,7 @@ describe('upload pipeline (e2e: ledger × SSRF guard × provider adapter)', () =
       if (u.includes('/drive/v3/files?') && (init?.method ?? 'GET') === 'GET')
         return new Response(JSON.stringify({ files: [{ id: 'f' }] }), { status: 200 })
       return new Response('x', { status: 500 })
-    }) as unknown as typeof fetch
+    })
     const upload = makeUploader(flaky, twimg)
 
     let ledger = enqueue([], specFromItem(photo(), 'gdrive'), 0)
@@ -276,10 +276,9 @@ describe('upload pipeline (e2e: ledger × SSRF guard × provider adapter)', () =
     const drive = makeDriveProviderFetch().fetchImpl
     const db = makeDropboxProviderFetch().fetchImpl
     // One fetch capability routes by host (Drive vs Dropbox), as the SW's fetch would.
-    const providerFetch = (async (url: string | URL, init?: RequestInit) =>
-      String(url).includes('dropboxapi.com')
-        ? db(String(url), init)
-        : drive(String(url), init)) as unknown as typeof fetch
+    const providerFetch = fetchStub(async (url, init) =>
+      url.includes('dropboxapi.com') ? db(url, init) : drive(url, init),
+    )
     const upload = makeUploader(providerFetch, twimg)
 
     let ledger: JobLedger = []

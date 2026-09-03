@@ -124,7 +124,9 @@ export function resolveHoverMedia(
   x: number,
   y: number,
 ): HoverMediaElement | null {
-  const direct = target?.closest('img,video') as HoverMediaElement | null
+  const closest = target?.closest('img,video') ?? null
+  const direct =
+    closest !== null && (isImageElement(closest) || isVideoElement(closest)) ? closest : null
   if (direct) return direct
   return mediaAtPoint(stack, x, y) ?? videoAnchorAt(target, stack)
 }

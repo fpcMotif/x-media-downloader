@@ -4,14 +4,18 @@ import { DropboxUploader, DropboxUploaderLive } from './dropbox'
 import { FetchService } from '@/packages/kernel/fetch-service'
 import { SourceFetch } from './lib/source-fetch'
 import type { UploadInput } from './types'
+import { fetchStub } from './lib/fetch-stub'
 
 const sourceResponse = (
   bytes: Uint8Array<ArrayBuffer>,
   opts: { status?: number; contentLength?: number | null } = {},
 ): Response => {
-  const headers: Record<string, string> = { 'content-type': 'video/mp4' }
-  if (opts.contentLength !== null)
-    headers['content-length'] = String(opts.contentLength ?? bytes.length)
+  const headers = {
+    'content-type': 'video/mp4',
+    ...(opts.contentLength !== null
+      ? { 'content-length': String(opts.contentLength ?? bytes.length) }
+      : {}),
+  }
   return new Response(opts.status && opts.status >= 400 ? null : bytes, {
     status: opts.status ?? 200,
     headers,
@@ -87,13 +91,16 @@ const routeSessionEmptyMeta: Route = (endpoint) =>
   endpoint.endsWith('upload_session/start')
     ? sessionStarted()
     : new Response(JSON.stringify({}), { status: 200 })
+// SAFETY: `dropboxFail`/`errText` only ever read `res.ok`, `res.status`, and (on a
+// non-2xx) `res.text()` — never any other `Response` member — so this partial stub
+// is a sound substitute for the one path under test.
 const routeErrTextRejects: Route = () =>
   ({
     ok: false,
     status: 500,
     text: () => Promise.reject(new Error('read failed')),
     headers: new Headers(),
-  }) as unknown as Response
+  }) as Response
 
 interface Call {
   readonly endpoint: string
@@ -106,15 +113,18 @@ const harness = (route: Route, src: Layer.Layer<SourceFetch>) => {
   const calls: Call[] = []
   const record = (url: string, init?: RequestInit): Response => {
     const endpoint = url.replace('https://content.dropboxapi.com/2/', '')
-    const argRaw = ((init?.headers ?? {}) as Record<string, string>)['dropbox-api-arg'] ?? '{}'
-    const body = init?.body as Uint8Array | undefined
+    // `Headers` normalizes every `HeadersInit` shape `rpc()` could ever hand it, so
+    // reading the header needs no cast.
+    const argRaw = new Headers(init?.headers).get('dropbox-api-arg') ?? '{}'
+    // `rpc()` always sends its chunk as a raw `Uint8Array` body — never the wider
+    // `BodyInit` shapes `RequestInit['body']` allows.
+    const body = init?.body instanceof Uint8Array ? init.body : undefined
     calls.push({ endpoint, arg: JSON.parse(argRaw), argRaw, bodyLen: body?.byteLength ?? 0 })
     return route(endpoint, init, body)
   }
   const fetchLayer = Layer.succeed(FetchService, {
     fetch: (url, init) => Effect.sync(() => record(url, init)),
-    fetchPromise: (async (url: string | URL, init?: RequestInit) =>
-      record(String(url), init)) as typeof fetch,
+    fetchPromise: fetchStub((url, init) => Promise.resolve(record(url, init))),
   })
   const app = DropboxUploaderLive.pipe(Layer.provide(Layer.mergeAll(fetchLayer, src)))
   const rt = ManagedRuntime.make(app)
@@ -147,8 +157,7 @@ describe('DropboxUploader.upload', () => {
     })
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0]!.endpoint).toBe('files/upload')
-    expect((h.calls[0]!.arg as { path: string; mode: string }).path).toBe('/alice/t1_0.mp4')
-    expect((h.calls[0]!.arg as { mode: string }).mode).toBe('add')
+    expect(h.calls[0]!.arg).toMatchObject({ path: '/alice/t1_0.mp4', mode: 'add' })
   })
 
   it('large/unknown media → session start → append(s) → finish in order', async () => {
@@ -167,9 +176,7 @@ describe('DropboxUploader.upload', () => {
       endpoints.filter((e) => e === 'files/upload_session/append_v2').length,
     ).toBeGreaterThanOrEqual(1)
     const finish = h.calls.at(-1)!
-    expect((finish.arg as { cursor: { offset: number } }).cursor.offset).toBe(
-      20 * 1024 * 1024 - finish.bodyLen,
-    )
+    expect(finish.arg).toMatchObject({ cursor: { offset: 20 * 1024 * 1024 - finish.bodyLen } })
   })
 
   it('escapes non-ASCII path chars in the Dropbox-API-Arg header', async () => {
@@ -179,7 +186,7 @@ describe('DropboxUploader.upload', () => {
     )
     await h.upload(input('日本/t1.mp4'))
     const header = h.calls[0]!.argRaw
-    expect([...header].every((ch) => ch.charCodeAt(0) <= 127)).toBe(true) // pure ASCII
+    expect(/^[\u0020-\u007E]*$/.test(header)).toBe(true) // printable ASCII only
     expect(header).toContain('\\u')
   })
 
@@ -202,10 +209,10 @@ describe('DropboxUploader.upload', () => {
       'files/upload_session/start',
       'files/upload_session/finish',
     ])
-    expect((h.calls[0]!.arg as { close: boolean }).close).toBe(true)
+    expect(h.calls[0]!.arg).toMatchObject({ close: true })
     expect(h.calls[0]!.bodyLen).toBe(1024)
     expect(h.calls[1]!.bodyLen).toBe(0)
-    expect((h.calls[1]!.arg as { cursor: { offset: number } }).cursor.offset).toBe(1024)
+    expect(h.calls[1]!.arg).toMatchObject({ cursor: { offset: 1024 } })
   })
 
   it('simple-upload HTTP error → failure (never throws)', async () => {
@@ -214,8 +221,10 @@ describe('DropboxUploader.upload', () => {
       sourceStub(() => sourceResponse(new Uint8Array(64))),
     )
     const out = await h.upload(input())
-    expect(out).toMatchObject({ kind: 'failure' })
-    expect((out as { reason: string }).reason).toMatch(/dropbox HTTP 401/)
+    expect(out).toMatchObject({
+      kind: 'failure',
+      reason: expect.stringMatching(/dropbox HTTP 401/),
+    })
   })
 
   it('session start failure → failure', async () => {
@@ -257,7 +266,7 @@ describe('DropboxUploader.upload', () => {
     )
     const out = await h.upload(input('alice/small.mp4'))
     expect(out).toMatchObject({ kind: 'success', bytes: 1024, remotePath: '/alice/small.mp4' })
-    expect((out as { remoteId?: string }).remoteId).toBeUndefined()
+    expect(out).not.toHaveProperty('remoteId')
   })
 
   it("errText falls back to '' when the error body read itself fails", async () => {
@@ -275,7 +284,7 @@ describe('DropboxUploader.upload', () => {
     )
     const out = await h.upload(input('alice/t1_0.mp4'))
     expect(out).toMatchObject({ kind: 'success', bytes: 2048, remotePath: '/alice/t1_0.mp4' })
-    expect((out as { remoteId?: string }).remoteId).toBeUndefined()
+    expect(out).not.toHaveProperty('remoteId')
   })
 })
 

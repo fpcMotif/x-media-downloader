@@ -201,12 +201,12 @@ export const contextLabel = (ctx: ContextLabelInput, scope?: ContextLabelScope):
 
 export type QuickGrabModifier = 'alt' | 'shift' | 'ctrl' | 'meta'
 
-const MODIFIER_LABEL: Record<QuickGrabModifier, string> = {
+const MODIFIER_LABEL = {
   alt: 'Alt',
   shift: 'Shift',
   ctrl: 'Control',
   meta: 'Cmd',
-}
+} satisfies Record<QuickGrabModifier, string>
 
 /** `{mod}` — the quick-grab modifier's display name, same mapping saving.tsx
  *  uses for its Select options (just shorter labels for prose). */

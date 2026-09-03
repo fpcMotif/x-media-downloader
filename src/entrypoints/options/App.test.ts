@@ -58,7 +58,7 @@ describe('hash aliases (§3.2 — add-only, every old deep-link must still resol
   })
 
   it('resolves through a lookup table, not the old single-ternary alias', () => {
-    expect(appSource).toContain('HASH_ALIASES[hash] ?? hash')
+    expect(appSource).toContain('isHashAlias(hash) ? HASH_ALIASES[hash] : hash')
     expect(appSource).not.toMatch(/hash === 'worklist' \? 'clearing' : hash/)
   })
 })

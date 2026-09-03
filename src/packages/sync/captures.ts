@@ -1,5 +1,6 @@
 import { Schema } from 'effect'
 import type { TweetRecord } from '@/packages/capture/record'
+import type { JsonValue } from '@/packages/schema'
 
 /** Beyond this many queued capture events the oldest are dropped (prolonged offline). */
 export const DEFAULT_CAP = 2000
@@ -8,8 +9,8 @@ export const DEFAULT_BATCH = 64
 
 const CaptureLinkSchema = Schema.Struct({
   expandedUrl: Schema.String,
-  title: Schema.optional(Schema.String),
-  domain: Schema.optional(Schema.String),
+  title: Schema.optionalKey(Schema.String),
+  domain: Schema.optionalKey(Schema.String),
 })
 
 /**
@@ -23,11 +24,11 @@ export const SyncCaptureEvent = Schema.Struct({
   eventId: Schema.String,
   tweetId: Schema.String,
   conversationId: Schema.String,
-  inReplyToTweetId: Schema.optional(Schema.String),
+  inReplyToTweetId: Schema.optionalKey(Schema.String),
   handle: Schema.String,
   text: Schema.String,
-  createdAt: Schema.optional(Schema.Number),
-  links: Schema.optional(Schema.Array(CaptureLinkSchema)),
+  createdAt: Schema.optionalKey(Schema.Number),
+  links: Schema.optionalKey(Schema.Array(CaptureLinkSchema)),
   sourceRank: Schema.Number,
   at: Schema.Number,
 })
@@ -37,7 +38,7 @@ const LedgerSchema = Schema.Array(SyncCaptureEvent)
 export type CaptureLedger = ReadonlyArray<SyncCaptureEvent>
 
 const optionalEntry = <K extends string, V>(key: K, v: V | undefined): Record<K, V> | object =>
-  v !== undefined ? ({ [key]: v } as Record<K, V>) : {}
+  v !== undefined ? { [key]: v } : {}
 
 /** Deterministic idempotency key `${deviceId}/${tweetId}` — makes at-least-once exactly-once. */
 export function captureEventId(deviceId: string, tweetId: string): string {
@@ -109,7 +110,7 @@ export function capLedger(ledger: CaptureLedger, cap: number = DEFAULT_CAP): Cap
 }
 
 /** Decode a persisted ledger; fall back to empty on corrupt data (outbox idiom). */
-export function decodeLedger(raw: unknown): CaptureLedger {
+export function decodeLedger(raw: JsonValue | undefined): CaptureLedger {
   try {
     return Schema.decodeUnknownSync(LedgerSchema)(raw ?? [])
   } catch {

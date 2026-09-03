@@ -20,8 +20,7 @@
 //   hoverSeconds default 6 — how long the Option+Cmd pointer stays on the photo
 
 const PORT = 9222
-const POST_URL =
-  process.argv[2] ?? 'https://www.threads.com/@uiuxandrii/post/DcVelsgCBu2'
+const POST_URL = process.argv[2] ?? 'https://www.threads.com/@uiuxandrii/post/DcVelsgCBu2'
 const HOVER_MS = Number(process.argv[3] ?? 6) * 1000
 // Quick Grab dwell is 500 ms; give slow feeds headroom before calling it dead.
 const ARM_BUDGET_MS = HOVER_MS + 8000
@@ -41,7 +40,7 @@ function connect(wsUrl) {
   const pending = new Map()
   const listeners = []
   ws.addEventListener('message', (ev) => {
-    const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data.toString())
+    const msg = JSON.parse(String(ev.data))
     if (msg.id !== undefined && pending.has(msg.id)) {
       const { resolve: done, reject } = pending.get(msg.id)
       pending.delete(msg.id)
@@ -91,8 +90,7 @@ async function photoCenter(cdp) {
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
 const stages = []
-const saw = (...names) =>
-  stages.some((s) => names.some((n) => s.includes(`quickgrab ${n}`)))
+const saw = (...names) => stages.some((s) => names.some((n) => s.includes(`quickgrab ${n}`)))
 
 async function main() {
   const all = await targets()
@@ -111,9 +109,7 @@ async function main() {
 
   cdp.onEvent((msg) => {
     if (msg.method !== 'Runtime.consoleAPICalled') return
-    const text = (msg.params.args ?? [])
-      .map((a) => a.value ?? a.description ?? '')
-      .join(' ')
+    const text = (msg.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ')
     if (text.includes('[XMD]')) {
       stamp(text)
       stages.push(text)
@@ -152,7 +148,11 @@ async function main() {
   const verdictDeadline = Date.now() + ARM_BUDGET_MS - HOVER_MS
   while (Date.now() < verdictDeadline) {
     if (saw('queued', 'started', 'saved')) {
-      stamp(saw('whole-post') ? 'GREEN · whole-post grab queued/started (#92 fixed)' : 'GREEN · grab queued/started (#92 fixed)')
+      stamp(
+        saw('whole-post')
+          ? 'GREEN · whole-post grab queued/started (#92 fixed)'
+          : 'GREEN · grab queued/started (#92 fixed)',
+      )
       process.exit(0)
     }
     if (saw('grab-target-stale')) {
@@ -161,9 +161,11 @@ async function main() {
     }
     await sleep(250)
   }
-  stamp(saw('armed')
-    ? 'RED · armed but never fired within budget'
-    : 'RED · never armed (modifier flags or hover target missed)')
+  stamp(
+    saw('armed')
+      ? 'RED · armed but never fired within budget'
+      : 'RED · never armed (modifier flags or hover target missed)',
+  )
   process.exit(1)
 }
 

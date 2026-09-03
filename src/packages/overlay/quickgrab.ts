@@ -16,40 +16,40 @@ export const quickGrabDwellMs = 500
 
 export type QuickGrabUiPhase = 'charging' | 'queued' | 'saved' | 'noted' | 'failed'
 
-const BADGE_LABEL: Record<QuickGrabUiPhase, string> = {
+const BADGE_LABEL = {
   charging: 'Grabbing',
   queued: 'Queued',
   saved: 'Started',
   noted: 'Already queued',
   failed: 'Failed',
-}
+} satisfies Record<QuickGrabUiPhase, string>
 
-const ALL_BADGE_LABEL: Record<QuickGrabUiPhase, (count: number) => string> = {
+const ALL_BADGE_LABEL = {
   charging: () => 'Grab all',
   queued: (n) => `${n} queued`,
   saved: (n) => `${n} started`,
   noted: () => 'Already queued',
   failed: () => 'Failed',
-}
+} satisfies Record<QuickGrabUiPhase, (count: number) => string>
 
 export function quickGrabBadgeLabel(phase: QuickGrabUiPhase, all?: { count: number }): string {
   return all ? ALL_BADGE_LABEL[phase](all.count) : BADGE_LABEL[phase]
 }
 
-const FLAG: Record<GrabModifier, keyof ModifierFlags> = {
+const FLAG = {
   alt: 'altKey',
   shift: 'shiftKey',
   ctrl: 'ctrlKey',
   meta: 'metaKey',
-}
+} satisfies Record<GrabModifier, keyof ModifierFlags>
 
 /** `KeyboardEvent.key` for each modifier (for keydown/keyup detection). */
-const KEY_NAME: Record<GrabModifier, string> = {
+const KEY_NAME = {
   alt: 'Alt',
   shift: 'Shift',
   ctrl: 'Control',
   meta: 'Meta',
-}
+} satisfies Record<GrabModifier, string>
 
 /** Whether the chosen modifier is currently held on this event. */
 export function modifierHeld(e: ModifierFlags, mod: GrabModifier): boolean {

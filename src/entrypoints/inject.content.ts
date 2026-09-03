@@ -38,6 +38,14 @@ export default defineContentScript({
 
     const isTrackedUrl = (url: string): boolean => adapter.isTrackedResponseUrl(url)
 
+    const isStringXhrBody = (
+      body: Document | XMLHttpRequestBodyInit | null | undefined,
+    ): body is string => typeof body === 'string'
+    const isStringFetchInput = (input: RequestInfo | URL): input is string =>
+      typeof input === 'string'
+    const isStringInitBody = (body: BodyInit | null | undefined): body is string =>
+      typeof body === 'string'
+
     // Shared across both tee legs. Only the fetch paths take a lease: `clone()`
     // pins the whole body in the PAGE's heap until it is drained, so an unbounded
     // number of concurrent clones is the real leak. XHR's `responseText` is a
@@ -110,7 +118,12 @@ export default defineContentScript({
     // never completes (`load` never fires) can never leak its body.
     const xhrMutationBody = new WeakMap<XMLHttpRequest, string>()
 
-    const origOpen = XMLHttpRequest.prototype.open
+    // SAFETY: `open` is overloaded (2-arg vs. 5-arg forms), so TS can't match a
+    // spread `...rest: unknown[]` tail against either signature. `rest` only ever
+    // holds the async/username/password args this wrapper's own caller already
+    // passed to `open()` — they are forwarded untouched, never inspected or
+    // constructed here, so the cast changes nothing about what reaches the browser.
+    const origOpen = XMLHttpRequest.prototype.open as (...args: unknown[]) => void
     XMLHttpRequest.prototype.open = function (
       this: XMLHttpRequest,
       method: string,
@@ -153,7 +166,7 @@ export default defineContentScript({
           xhrMutationBody.delete(this)
         })
       }
-      ;(origOpen as (...args: unknown[]) => void).apply(this, [method, url, ...rest])
+      origOpen.apply(this, [method, url, ...rest])
     }
 
     const origSend = XMLHttpRequest.prototype.send
@@ -161,7 +174,7 @@ export default defineContentScript({
       this: XMLHttpRequest,
       body?: Document | XMLHttpRequestBodyInit | null,
     ): void {
-      if (typeof body === 'string') xhrMutationBody.set(this, body)
+      if (isStringXhrBody(body)) xhrMutationBody.set(this, body)
       origSend.call(this, body)
     }
 
@@ -169,8 +182,11 @@ export default defineContentScript({
     window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const promise = origFetch(input, init)
       try {
-        const reqUrl =
-          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+        const reqUrl = isStringFetchInput(input)
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url
         if (isTrackedUrl(reqUrl)) {
           if (import.meta.env.DEV)
             console.debug(`[XMD] tee fetch intercept · ${adapter.platform} · ${reqUrl}`)
@@ -189,7 +205,7 @@ export default defineContentScript({
           })
         }
         if (isMutationUrl(reqUrl)) {
-          const requestBody = typeof init?.body === 'string' ? init.body : null
+          const requestBody = isStringInitBody(init?.body) ? init.body : null
           void promise
             .then((res) =>
               readTeeBody(res).then((body) => {

@@ -100,15 +100,17 @@ export const noHoverFocus: HoverFocus = { media: null, key: null }
  */
 export type FocusVerdict = 'unchanged' | 'arm' | 'clear'
 
-export function focusTransition(
-  current: HoverFocus,
-  next: HoverFocus,
-  grabActive: boolean,
-): { readonly focus: HoverFocus; readonly verdict: FocusVerdict } {
+export function focusTransition(current: HoverFocus, next: HoverFocus, grabActive: boolean) {
   if (next.key === current.key && next.media === current.media)
-    return { focus: current, verdict: 'unchanged' }
+    return { focus: current, verdict: 'unchanged' } satisfies {
+      readonly focus: HoverFocus
+      readonly verdict: FocusVerdict
+    }
   const verdict: FocusVerdict = grabActive && next.media && next.key ? 'arm' : 'clear'
-  return { focus: next, verdict }
+  return { focus: next, verdict } satisfies {
+    readonly focus: HoverFocus
+    readonly verdict: FocusVerdict
+  }
 }
 
 /**

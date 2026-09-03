@@ -1,18 +1,19 @@
 import { describe, expect, it } from 'vitest'
+import type { JsonValue } from '@/packages/schema'
 import { makeSerialQueue } from '../serial-queue'
 import { runSerializedRmw, type DurableStore } from '../durable-store'
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
-const decodeStrings = (raw: unknown): string[] => (Array.isArray(raw) ? raw.map(String) : [])
+const decodeStrings = (raw: JsonValue): string[] => (Array.isArray(raw) ? raw.map(String) : [])
 
-function delayedStore(initial: unknown): DurableStore & { value: unknown } {
+function delayedStore(initial: JsonValue): DurableStore & { value: JsonValue } {
   const box = {
     value: initial,
     async get() {
       await tick()
       return box.value
     },
-    async set(value: unknown) {
+    async set(value: JsonValue) {
       await tick()
       box.value = value
     },

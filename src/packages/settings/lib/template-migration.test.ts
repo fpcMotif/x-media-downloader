@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { Effect } from 'effect'
+import { Effect, Schema } from 'effect'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
 import { LEGACY_DEFAULT_TEMPLATES, normalizeFilenameTemplate } from './template-migration'
 import { CURRENT_DEFAULT_TEMPLATE } from '@/packages/schema'
@@ -79,9 +79,16 @@ describe('decode seam migration (SettingsService.get)', () => {
       settings: { filenameTemplate: '{handle}/{tweetId}_{index}.{ext}' },
     })
     await run(Effect.flatMap(SettingsService, (svc) => svc.set({ downloadConcurrency: 4 })))
-    const raw = (await fakeBrowser.storage.local.get('settings')) as {
-      settings?: { filenameTemplate?: string }
-    }
+    // Decoded (not cast) — `storage.local.get` hands back an untyped blob, and this
+    // Schema states exactly the shape the assertion below actually reads.
+    const RawSettingsBlob = Schema.Struct({
+      settings: Schema.optional(
+        Schema.Struct({ filenameTemplate: Schema.optional(Schema.String) }),
+      ),
+    })
+    const raw = Schema.decodeUnknownSync(RawSettingsBlob)(
+      await fakeBrowser.storage.local.get('settings'),
+    )
     expect(raw.settings?.filenameTemplate).toBe(CURRENT_DEFAULT_TEMPLATE)
   })
 })

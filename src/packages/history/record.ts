@@ -16,10 +16,10 @@ export const DownloadRecord = Schema.Struct({
   filename: Schema.String,
   status: DownloadStatus,
   media: SyncMediaMeta,
-  bytesReceived: Schema.optional(Schema.Number),
-  bytesTotal: Schema.optional(Schema.Number),
+  bytesReceived: Schema.optionalKey(Schema.Number),
+  bytesTotal: Schema.optionalKey(Schema.Number),
   queuedAt: Schema.Number,
-  finishedAt: Schema.optional(Schema.Number),
+  finishedAt: Schema.optionalKey(Schema.Number),
 })
 export type DownloadRecord = typeof DownloadRecord.Type
 

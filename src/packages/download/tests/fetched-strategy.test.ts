@@ -366,12 +366,12 @@ describe('makeFetchPort', () => {
     // background wires `makeFetchPort(fetch)` with the bare global; an unbound
     // `fetchImpl(url)` runs with `this === undefined` → "Illegal invocation" in the
     // MV3 SW. A non-arrow stub exposes the dynamic `this`; bindFetch must detach it.
-    const brandChecked = function (this: unknown) {
+    const brandChecked: typeof fetch = function (this: typeof globalThis) {
       if (this !== globalThis) {
         throw new TypeError("Failed to execute 'fetch' on 'WorkerGlobalScope': Illegal invocation")
       }
       return Promise.resolve(new Response(jpegBytes, { headers: { 'content-type': 'image/jpeg' } }))
-    } as typeof fetch
+    }
     const port = makeFetchPort(brandChecked)
     const res = await port.fetch('https://pbs.twimg.com/media/AAA.jpg')
     expect(res.ok).toBe(true)
@@ -386,12 +386,15 @@ describe('makePermissionsPort', () => {
   })
 
   it('delegates contains/request to browser.permissions with offscreen + twimg origins', async () => {
-    const contains = vi
-      .spyOn(browser.permissions, 'contains')
-      .mockResolvedValue(true as never) as unknown as ReturnType<typeof vi.fn>
-    const request = vi
-      .spyOn(browser.permissions, 'request')
-      .mockResolvedValue(false as never) as unknown as ReturnType<typeof vi.fn>
+    // SAFETY: `contains`/`request` are overloaded (Promise-returning vs a legacy
+    // callback form whose overload resolves to `void`) — TS's `Parameters`
+    // inference for an overloaded function uses the LAST signature, so
+    // `mockResolvedValue` sees `void` as the resolved-value type regardless of
+    // which overload actually runs. `never` is assignable to that `void`
+    // without lying about a real value's shape.
+    const contains = vi.spyOn(browser.permissions, 'contains').mockResolvedValue(true as never)
+    // SAFETY: same overload-resolves-to-`void` reason as `contains` above.
+    const request = vi.spyOn(browser.permissions, 'request').mockResolvedValue(false as never)
 
     const port = makePermissionsPort()
     await expect(port.contains({})).resolves.toBe(true)
@@ -415,24 +418,31 @@ function stubOffscreen() {
   const createDocument = vi.fn<() => Promise<void>>(async () => {
     open = true
   })
-  browser.offscreen = {
+  // SAFETY: fakeBrowser has no `browser.offscreen` (the chrome.offscreen API has
+  // no test polyfill), so there is no real value to spread here — this stub only
+  // ever exercises `hasDocument`/`createDocument`/`closeDocument`, never `Reason`
+  // (the enum of offscreen-document justifications). `Partial<...>` keeps the
+  // assertion a single, non-chained step: it's the same interface, just missing
+  // members this test never calls.
+  const offscreenStub: Partial<typeof browser.offscreen> = {
     hasDocument: async () => open,
     createDocument,
     closeDocument,
-  } as unknown as typeof browser.offscreen
+  }
+  browser.offscreen = offscreenStub
 
   const gates: Array<() => void> = []
   // The offscreen save round-trips over runtime messaging. Each call parks on
   // a deferred (so the test can order completions), then — at the moment it
   // resolves — checks the live document state. A torn-down doc rejects, which
   // is exactly the production "offscreen save failed" symptom.
-  browser.runtime.sendMessage = (async () => {
+  browser.runtime.sendMessage = async () => {
     await new Promise<void>((resolve) => gates.push(resolve))
     if (!open) {
       throw new Error('Could not establish connection. Receiving end does not exist.')
     }
     return { downloadId: 42 }
-  }) as typeof browser.runtime.sendMessage
+  }
 
   return {
     createDocument,
@@ -449,14 +459,17 @@ describe('makeOffscreenPort — OffscreenSaveError', () => {
   })
 
   it('throws OffscreenSaveError when the offscreen response carries an error', async () => {
-    browser.offscreen = {
+    // SAFETY: same partial-stub justification as `stubOffscreen` above — no real
+    // `browser.offscreen` to spread, and this test never touches `Reason`.
+    const offscreenStub: Partial<typeof browser.offscreen> = {
       hasDocument: async () => true,
       createDocument: async () => {},
       closeDocument: async () => {},
-    } as unknown as typeof browser.offscreen
-    browser.runtime.sendMessage = (async () => ({
+    }
+    browser.offscreen = offscreenStub
+    browser.runtime.sendMessage = async () => ({
       error: 'disk full',
-    })) as typeof browser.runtime.sendMessage
+    })
 
     const port = makeOffscreenPort()
     await expect(

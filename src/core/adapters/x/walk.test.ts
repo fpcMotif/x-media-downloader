@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { RawMedia } from '@/packages/resolver'
+import type { JsonValue } from '@/packages/schema'
 import {
   forEachTweetNode,
   findAuthor,
@@ -18,14 +19,14 @@ type Visit = {
   mediaRaw: RawMedia[]
 }
 
-const collect = (json: unknown): Visit[] => {
+const collect = (json: JsonValue): Visit[] => {
   const out: Visit[] = []
   forEachTweetNode(json, (v) => out.push(v))
   return out
 }
 
 /** A minimal tweet result node carrying media, parameterized by id + author. */
-const photoTweet = (rest_id: string, screen_name: string): object => ({
+const photoTweet = (rest_id: string, screen_name: string) => ({
   __typename: 'Tweet',
   rest_id,
   core: { user_results: { result: { legacy: { screen_name } } } },
@@ -53,9 +54,8 @@ describe('forEachTweetNode', () => {
     expect(v.handle).toBe('alice')
     expect(v.author).toEqual({ handle: 'alice' })
     expect(v.mediaRaw).toHaveLength(1)
-    expect((v.mediaRaw[0] as { media_url_https: string }).media_url_https).toBe(
-      'https://pbs.twimg.com/media/1790.jpg',
-    )
+    const [media] = v.mediaRaw
+    expect(media?.media_url_https).toBe('https://pbs.twimg.com/media/1790.jpg')
   })
 
   it('derives tweetId from legacy.id_str when rest_id is absent', () => {

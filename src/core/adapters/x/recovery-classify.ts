@@ -1,4 +1,5 @@
-import type { MediaItem } from '@/packages/schema'
+import type { JsonValue, MediaItem } from '@/packages/schema'
+import { isJsonObject } from '../json-predicates'
 import { parseSyndicationTweet } from './syndication'
 
 /**
@@ -28,23 +29,21 @@ export type RecoveryClassification =
 
 export type RetryableReason = 'no-body' | 'unparseable' | 'wrong-tweet' | 'bad-shape'
 
-/** A tweet payload is a plain object — an array is drift, not a tweet. */
-const isTweetObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-
 export function classifyRecoveryReply(
   requestedId: string,
   body: string | undefined,
 ): RecoveryClassification {
   if (body === undefined) return { kind: 'retryable', reason: 'no-body' }
 
-  let json: unknown
+  let json: JsonValue
   try {
     json = JSON.parse(body)
   } catch {
     return { kind: 'retryable', reason: 'unparseable' }
   }
-  if (!isTweetObject(json)) return { kind: 'retryable', reason: 'unparseable' }
+  // A tweet payload is a plain object — an array (or any other JSON value) is
+  // drift, not a tweet.
+  if (!isJsonObject(json)) return { kind: 'retryable', reason: 'unparseable' }
 
   // `parseSyndicationTweet` trusts whatever `id_str` the payload carries and
   // never checks it against what we asked for, so a reply for a DIFFERENT tweet

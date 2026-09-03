@@ -10,8 +10,17 @@ import { VIDEO_PLAYER_SEL } from './x/dom'
 
 // Stub for getBoundingClientRect (happy-dom computes no layout, so every real
 // rect is all-zero); pattern precedent: hover-resolve.test.ts / instagram/adapter.test.ts.
-const rect = (left: number, top: number, width: number, height: number) => (): DOMRect =>
-  ({ top, left, right: left + width, bottom: top + height, width, height }) as DOMRect
+const rect = (left: number, top: number, width: number, height: number) => (): DOMRect => ({
+  x: left,
+  y: top,
+  top,
+  left,
+  right: left + width,
+  bottom: top + height,
+  width,
+  height,
+  toJSON: () => ({}),
+})
 
 // happy-dom only reflects inline `pointer-events` through getComputedStyle when
 // the element is attached to the document (which real hovered media always is).
@@ -26,7 +35,7 @@ afterEach(() => {
 
 describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () => {
   it('1. Threads carousel slide — pointer-events:none img, absolute, inside 5 nested divs (2026-08-23, threads.com/@uiuxandrii/post/DcVelsgCBu2); stack = the 5 divs, no img', () => {
-    const img = document.createElement('img') as HTMLImageElement
+    const img = document.createElement('img')
     img.src = 'https://scontent.cdninstagram.com/v/carousel-slide.jpg'
     img.style.pointerEvents = 'none'
     img.style.position = 'absolute'
@@ -52,7 +61,7 @@ describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () =
   })
 
   it('2. Threads single photo — pointer-events:none img, static, inside <picture> (2026-08-23, threads.com/.../DcVw7MhlOqF); stack = picture + wrappers', () => {
-    const img = document.createElement('img') as HTMLImageElement
+    const img = document.createElement('img')
     img.src = 'https://scontent.cdninstagram.com/v/single-photo.jpg'
     img.style.pointerEvents = 'none'
     img.getBoundingClientRect = rect(0, 0, 100, 100)
@@ -72,7 +81,7 @@ describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () =
   })
 
   it('3. Threads video card — interactive video, absolute, directly in the stack (2026-08-23, threads.com/.../DcV5mBgE_f-)', () => {
-    const video = document.createElement('video') as HTMLVideoElement
+    const video = document.createElement('video')
     video.style.position = 'absolute'
     video.getBoundingClientRect = rect(0, 0, 100, 100)
     mount(video)
@@ -83,7 +92,7 @@ describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () =
   })
 
   it('4. Instagram feed photo — interactive img directly in the stack (2026-07-05 note in hover-resolve.ts)', () => {
-    const img = document.createElement('img') as HTMLImageElement
+    const img = document.createElement('img')
     img.src = 'https://scontent.cdninstagram.com/v/feed-photo.jpg'
     img.getBoundingClientRect = rect(0, 0, 100, 100)
     mount(img)
@@ -94,7 +103,7 @@ describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () =
   })
 
   it('5. X photo — a transparent hit-target div above the img contains it, so it still arms and holds', () => {
-    const img = document.createElement('img') as HTMLImageElement
+    const img = document.createElement('img')
     img.src = 'https://pbs.twimg.com/media/ABC.jpg'
     img.getBoundingClientRect = rect(0, 0, 100, 100)
 
@@ -116,7 +125,7 @@ describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () =
 
     const hit = document.createElement('div')
     hit.className = 'hit-target'
-    const video = document.createElement('video') as HTMLVideoElement
+    const video = document.createElement('video')
     video.style.visibility = 'hidden'
     player.appendChild(hit)
     player.appendChild(video)
@@ -134,7 +143,7 @@ describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () =
     const scrim = document.createElement('div')
     scrim.style.background = 'rgba(0,0,0,0.5)'
     scrim.getBoundingClientRect = rect(0, 0, 100, 100)
-    const video = document.createElement('video') as HTMLVideoElement
+    const video = document.createElement('video')
     video.getBoundingClientRect = rect(0, 0, 100, 100)
     wrap.appendChild(scrim)
     wrap.appendChild(video)
@@ -150,7 +159,7 @@ describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () =
     dialog.setAttribute('aria-modal', 'true')
     const scrim = document.createElement('div')
     scrim.getBoundingClientRect = rect(0, 0, 200, 200)
-    const img = document.createElement('img') as HTMLImageElement
+    const img = document.createElement('img')
     img.src = 'https://scontent.cdninstagram.com/v/lightbox.jpg'
     img.getBoundingClientRect = rect(0, 0, 200, 200)
     dialog.appendChild(scrim)
@@ -170,7 +179,7 @@ describe('hover-resolve — live-observed DOM shapes (ARM/FIRE agreement)', () =
     dialog.getBoundingClientRect = rect(0, 0, 200, 200)
     mount(dialog)
 
-    const img = document.createElement('img') as HTMLImageElement
+    const img = document.createElement('img')
     img.src = 'https://scontent.cdninstagram.com/v/behind-lightbox.jpg'
     img.getBoundingClientRect = rect(0, 0, 200, 200)
     mount(img)

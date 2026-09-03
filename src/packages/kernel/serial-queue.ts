@@ -19,7 +19,7 @@
  */
 export interface SerialQueue {
   /** Enqueue a fire-and-forget task; failures are routed to `onError`. */
-  readonly push: (task: () => Promise<unknown>) => void
+  readonly push: <T>(task: () => Promise<T>) => void
   /**
    * Enqueue a task and get its outcome back: the returned promise resolves with
    * the task's value or rejects with its error. The caller MUST handle it — use
@@ -28,22 +28,35 @@ export interface SerialQueue {
   readonly run: <T>(task: () => Promise<T>) => Promise<T>
 }
 
-export function makeSerialQueue(onError?: (error: unknown) => void): SerialQueue {
+export function makeSerialQueue(onError?: (error: Error) => void): SerialQueue {
   let tail: Promise<unknown> = Promise.resolve()
-  const observe = (error: unknown): void => {
+  // A task's promise can reject with any value at all (JS lets `throw`/`reject`
+  // carry anything) — normalizing to an `Error` HERE keeps `onError`'s own contract
+  // honest instead of pushing `unknown` further downstream. For an already-`Error`
+  // rejection (every real task in this codebase) it's the exact same reference, so
+  // `.message`-reading observers see byte-identical output either way.
+  const observe = (error: Error | string): void => {
+    const err = error instanceof Error ? error : new Error(error)
     try {
-      onError?.(error)
+      onError?.(err)
     } catch {
       /* an observer must never poison the chain */
     }
   }
   return {
+    // `.then`'s rejection handler receives whatever the task rejected with —
+    // narrow it inline, right at this boundary (`String` is idempotent on an
+    // already-`string` value), before it ever reaches `observe`.
     push(task) {
-      tail = tail.then(task).then(undefined, observe)
+      tail = tail
+        .then(task)
+        .then(undefined, (reason) => observe(reason instanceof Error ? reason : String(reason)))
     },
     run(task) {
       const result = tail.then(task)
-      tail = result.then(undefined, observe)
+      tail = result.then(undefined, (reason) =>
+        observe(reason instanceof Error ? reason : String(reason)),
+      )
       return result
     },
   }

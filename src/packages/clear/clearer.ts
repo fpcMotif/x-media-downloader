@@ -30,13 +30,10 @@ export type ClearOrigin = 'settle' | 'drain' | 'manual'
 
 /** X's `data-testid`s per membership scope: the control shown while the tweet IS
  *  a member (the one we click), and the control it flips to once cleared. */
-export const CLEAR_TESTID: Record<
-  MembershipScope,
-  { readonly active: string; readonly cleared: string }
-> = {
+export const CLEAR_TESTID = {
   bookmark: { active: 'removeBookmark', cleared: 'bookmark' },
   like: { active: 'unlike', cleared: 'like' },
-}
+} satisfies Record<MembershipScope, { readonly active: string; readonly cleared: string }>
 
 export const TWEET_ARTICLE_SEL = 'article[data-testid="tweet"]'
 
@@ -253,6 +250,11 @@ export function actionTestids(article: Element): string[] {
   )
 }
 
+type FlipClassification = {
+  readonly arm: 'testid' | 'detached'
+  readonly reresolved: 'gone' | 'member' | 'cleared' | 'ambiguous'
+}
+
 /** WHICH disjunct of `flipConfirmed` authorized a "cleared" verdict, plus a FRESH
  *  re-resolve taken right after — the evidence that separates a genuine flip from
  *  a fabricated one. `arm` is read from the CAPTURED node's own `isConnected`
@@ -273,10 +275,7 @@ export function classifyFlip(
   article: Element,
   tweetId: string,
   scope: MembershipScope,
-): {
-  readonly arm: 'testid' | 'detached'
-  readonly reresolved: 'gone' | 'member' | 'cleared' | 'ambiguous'
-} {
+): FlipClassification {
   const arm = article.isConnected ? 'testid' : 'detached'
   const fresh = findArticle(document, tweetId)
   const reresolved = Option.isNone(fresh)

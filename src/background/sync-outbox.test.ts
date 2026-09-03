@@ -7,7 +7,7 @@ import {
   type SyncOutboxDeps,
 } from './sync-outbox'
 import type { ConvexPort } from './convex-port'
-import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { Settings as SettingsSchema, type JsonValue, type Settings } from '@/packages/schema'
 import { append, decodeOutbox, emptyOutbox, type OutboxState } from '@/packages/sync/outbox'
 import { outcomeEvent } from '@/packages/sync/events'
 import type { SyncStatus } from '@/packages/sync/status'
@@ -65,14 +65,17 @@ const fakeAlarms = (): AlarmPort => ({
   create: vi.fn<AlarmPort['create']>(async () => {}),
   clear: vi.fn<AlarmPort['clear']>(async () => {}),
 })
-const dummyFetch = (async () => new Response()) as unknown as typeof fetch
+// SAFETY: `fetchImpl` is only ever forwarded to `defaultConnect`, which every
+// test here overrides via `connect` — this stub is never actually called, so
+// its shape only needs to satisfy `typeof fetch`'s type, not its full contract.
+const dummyFetch = (async () => new Response()) as typeof fetch
 
 /** Construct the shell with safe fake seams by default; a test overrides what it asserts on. */
 const makeSO = (over: Partial<SyncOutboxDeps> = {}) =>
   makeSyncOutbox({
     queueError: () => () => {},
     fetchImpl: dummyFetch,
-    outbox: fakeStore<unknown>(null),
+    outbox: fakeStore<JsonValue>(null),
     status: fakeStore<SyncStatus | null>(null),
     connect: okPort,
     permissions: grant(true),
@@ -83,13 +86,13 @@ const makeSO = (over: Partial<SyncOutboxDeps> = {}) =>
 
 describe('drainOutbox', () => {
   it('drains ready events to sync:recordEvents and records an ok status', async () => {
-    const outbox = fakeStore<unknown>(seededOutbox('e1', 'e2'))
+    const outbox = fakeStore<JsonValue>(seededOutbox('e1', 'e2'))
     const status = fakeStore<SyncStatus | null>(null)
     const mutation = vi.fn<ConvexPort['mutation']>(async () => ({}))
     const so = makeSO({ outbox, status, connect: () => ({ mutation }) })
     await so.drainOutbox(configured())
     expect(mutation).toHaveBeenCalledTimes(1)
-    const [name, args] = mutation.mock.calls[0] as [string, { events: unknown[]; secret: string }]
+    const [name, args] = mutation.mock.calls[0]!
     expect(name).toBe('sync:recordEvents')
     expect(args.secret).toBe('sek')
     expect(args.events).toHaveLength(2)
@@ -101,7 +104,7 @@ describe('drainOutbox', () => {
   })
 
   it('stops at the first failure, arms backoff, and records a not-ok status', async () => {
-    const outbox = fakeStore<unknown>(seededOutbox('e1'))
+    const outbox = fakeStore<JsonValue>(seededOutbox('e1'))
     const status = fakeStore<SyncStatus | null>(null)
     const alarms = fakeAlarms()
     const mutation = vi.fn<ConvexPort['mutation']>(async () => {
@@ -123,13 +126,13 @@ describe('drainOutbox', () => {
     // 65 events > DEFAULT_BATCH (64): the loop must take 64, drop them, and continue
     // to drain the remainder — else a post-offline backlog stalls one batch short.
     const ids = Array.from({ length: 65 }, (_, i) => `e${i}`)
-    const outbox = fakeStore<unknown>(seededOutbox(...ids))
+    const outbox = fakeStore<JsonValue>(seededOutbox(...ids))
     const mutation = vi.fn<ConvexPort['mutation']>(async () => ({}))
     const so = makeSO({ outbox, connect: () => ({ mutation }) })
     await so.drainOutbox(configured())
     expect(mutation).toHaveBeenCalledTimes(2)
-    expect((mutation.mock.calls[0]![1] as { events: unknown[] }).events).toHaveLength(64)
-    expect((mutation.mock.calls[1]![1] as { events: unknown[] }).events).toHaveLength(1)
+    expect(mutation.mock.calls[0]![1].events).toHaveLength(64)
+    expect(mutation.mock.calls[1]![1].events).toHaveLength(1)
     expect(decodeOutbox(outbox.value).pending).toHaveLength(0)
   })
 
@@ -139,7 +142,7 @@ describe('drainOutbox', () => {
       consecutiveFailures: 1,
       nextAttemptAt: NOW + 5000,
     }
-    const outbox = fakeStore<unknown>(backedOff)
+    const outbox = fakeStore<JsonValue>(backedOff)
     const alarms = fakeAlarms()
     const mutation = vi.fn<ConvexPort['mutation']>(async () => ({}))
     const so = makeSO({ outbox, alarms, connect: () => ({ mutation }) })
@@ -150,7 +153,7 @@ describe('drainOutbox', () => {
 
   it('clears the wake alarm after the outbox drains', async () => {
     const alarms = fakeAlarms()
-    const so = makeSO({ outbox: fakeStore<unknown>(seededOutbox('e1')), alarms })
+    const so = makeSO({ outbox: fakeStore<JsonValue>(seededOutbox('e1')), alarms })
     await so.drainOutbox(configured())
     expect(alarms.clear).toHaveBeenCalledWith(so.syncAlarm)
   })
@@ -201,7 +204,7 @@ describe('runSyncConnectionTest — precondition ladder', () => {
     const res = await so.runSyncConnectionTest(configured())
     expect(res.ok).toBe(true)
     // zero-write: an EMPTY events batch is sent.
-    const [name, args] = mutation.mock.calls[0] as [string, { events: unknown[] }]
+    const [name, args] = mutation.mock.calls[0]!
     expect(name).toBe('sync:recordEvents')
     expect(args.events).toHaveLength(0)
     await tick() // the status write is pushed onto the outbox queue
@@ -225,7 +228,7 @@ describe('runSyncConnectionTest — precondition ladder', () => {
 
 describe('recordSync — gating', () => {
   it('does nothing when Cloud Sync is not configured', async () => {
-    const outbox = fakeStore<unknown>(null)
+    const outbox = fakeStore<JsonValue>(null)
     makeSO({ outbox }).recordSync(configured({ cloudSyncEnabled: false }), [evt('e1')])
     await tick()
     expect(outbox.gets).toBe(0)
@@ -233,14 +236,14 @@ describe('recordSync — gating', () => {
   })
 
   it('does nothing for an empty event batch', async () => {
-    const outbox = fakeStore<unknown>(null)
+    const outbox = fakeStore<JsonValue>(null)
     makeSO({ outbox }).recordSync(configured(), [])
     await tick()
     expect(outbox.sets).toBe(0)
   })
 
   it('appends and drains when configured', async () => {
-    const outbox = fakeStore<unknown>(null)
+    const outbox = fakeStore<JsonValue>(null)
     const mutation = vi.fn<ConvexPort['mutation']>(async () => ({}))
     makeSO({ outbox, connect: () => ({ mutation }) }).recordSync(configured(), [evt('e1')])
     await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
@@ -248,9 +251,12 @@ describe('recordSync — gating', () => {
   })
 
   it('serializes interleaved recordSync calls so neither event is lost', async () => {
-    const outbox = fakeStore<unknown>(null, { delay: true })
+    const outbox = fakeStore<JsonValue>(null, { delay: true })
     const sent: string[] = []
     const mutation = vi.fn<ConvexPort['mutation']>(async (_name, args) => {
+      // SAFETY: this mock only ever answers the `recordSync` path under test, whose
+      // `sync:recordEvents` call always sends `{ events: SyncEvent[], secret }` —
+      // asserted by the two interleaved `recordSync` calls below, never arbitrary JSON.
       for (const e of (args as { events: ReadonlyArray<{ requestId: string }> }).events)
         sent.push(e.requestId)
       return {}
@@ -268,7 +274,7 @@ describe('recordSync — gating', () => {
 
 describe('clearOutbox / getSyncStatus', () => {
   it('clearOutbox clears both the durable outbox and the ephemeral status', async () => {
-    const outbox = fakeStore<unknown>(seededOutbox('e1'))
+    const outbox = fakeStore<JsonValue>(seededOutbox('e1'))
     const status = fakeStore<SyncStatus | null>({ ok: true, detail: 'x', pending: 0 })
     const alarms = fakeAlarms()
     const so = makeSO({ outbox, status, alarms })

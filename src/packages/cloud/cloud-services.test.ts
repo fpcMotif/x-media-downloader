@@ -4,10 +4,11 @@ import { makeCloudServicesLive } from './cloud-services'
 import { FetchService } from '@/packages/kernel/fetch-service'
 import { SourceFetch } from './lib/source-fetch'
 import { FolderCache } from './lib/folder-cache'
+import { fetchStub } from './lib/fetch-stub'
 
 describe('makeCloudServicesLive', () => {
   it('builds one layer that provides FetchService, SourceFetch, and FolderCache', async () => {
-    const fetchImpl = (async () => new Response('ok')) as typeof fetch
+    const fetchImpl = fetchStub(async () => new Response('ok'))
     // Provide the merged graph to an Effect that reads all three services from R —
     // the SW-life cloud runtime reads exactly these (ADR-0017).
     const present = await Effect.runPromise(

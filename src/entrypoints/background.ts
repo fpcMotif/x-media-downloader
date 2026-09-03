@@ -84,6 +84,7 @@ import {
   appendManyReleaseDiagnostics,
   decodeReleaseDiagnostics,
   composeDiagnosticsExport,
+  type ReleaseDiagnosticsLog,
 } from '@/packages/clear/diagnostics'
 import {
   computeReleaseCorrelationCounters,
@@ -96,7 +97,12 @@ import {
   type CorrelationState,
 } from '@/packages/clear/correlate'
 import { runSerializedRmw } from '@/packages/kernel/durable-store'
-import type { ClearScope, SweepEnqueueResponse } from '@/packages/schema'
+import type {
+  ClearDownloadMonitorResponse,
+  ClearScope,
+  JsonValue,
+  SweepEnqueueResponse,
+} from '@/packages/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
 import { makeSyncOutbox } from '../background/sync-outbox'
@@ -165,9 +171,9 @@ const requestMetaById = new Map<string, RequestMeta>()
 // immediately instead of auto-retrying. Ids the retry queue owns are restored from
 // `session:interruptRetries` instead (see `planMetaReconcile`), never from here;
 // they stay mirrored while pending and are reaped at settle.
-// `unknown` + `decodeRequestMetaStore` at every read (mirrors `historyItem`'s
+// `JsonValue` + `decodeRequestMetaStore` at every read (mirrors `historyItem`'s
 // `decodeStore` pattern) — a corrupt/foreign value never throws, it decodes empty.
-const requestMetaItem = storage.defineItem<unknown>('session:requestMeta', {
+const requestMetaItem = storage.defineItem<JsonValue>('session:requestMeta', {
   fallback: emptyRequestMetaStore,
 })
 const retryQueueItem = storage.defineItem<ReadonlyArray<PendingInterruptRetry>>(
@@ -300,6 +306,42 @@ let releaseDiagnosticsFlushTimer: ReturnType<typeof setTimeout> | undefined
 let releaseDiagnosticsSummaryCache: MetricsSnapshot['releaseDiagnostics']
 let releaseDiagnosticsSummaryDirty = true
 
+/** Turns `{ prop?: T | undefined }` into `{ prop?: T }` — same optionality, minus the
+ *  explicit `undefined` `exactOptionalPropertyTypes` bakes into every Effect Schema
+ *  `.Type` with an optional field (`Schema.optional`). That explicit `undefined` is
+ *  what trips `JsonValue`'s index-signature check below, even though the real JSON
+ *  shape (an omitted key) is fine either way — a genuinely-absent field and an
+ *  `undefined`-valued field serialize identically. Paired with `toJsonValue` below,
+ *  which does the matching RUNTIME drop (this type alone only makes the
+ *  declaration compile; the value must actually lose the key too). */
+type WithoutExplicitUndefined<T> = { [K in keyof T]: T[K] } extends infer O
+  ? { [K in keyof O as undefined extends O[K] ? never : K]: O[K] } & {
+      [K in keyof O as undefined extends O[K] ? K : never]?: Exclude<O[K], undefined>
+    }
+  : never
+
+/** A Schema-derived domain value can carry Effect's `exactOptionalPropertyTypes`-
+ *  widened optional fields, which fail `JsonValue`'s index-signature check even
+ *  though the real JSON shape (an omitted key) is identical to an `undefined`-
+ *  valued one. This round-trip is the real fix, not a relabeling: it drops any
+ *  genuinely-`undefined`-valued key before the value reaches a `JsonValue`-typed
+ *  boundary (durable storage), so the result really does satisfy the type the
+ *  caller declares for it. Generic over the caller's own type — never `unknown`. */
+const toJsonValue = <T, R extends JsonValue>(value: T & WithoutExplicitUndefined<T>): R =>
+  JSON.parse(JSON.stringify(value))
+
+/** Structural twin of `packages/clear/diagnostics.ts`'s `ReleaseDiagnosticsLog` — a
+ *  plain `type` alias, not that module's `interface`, so `runSerializedRmw`'s
+ *  `S extends JsonValue` constraint can be satisfied: TS never treats a named
+ *  `interface` as satisfying an index-signature constraint regardless of its actual
+ *  field types, but a structurally identical `type` does. */
+type ReleaseDiagnosticsLogValue = {
+  readonly events: ReadonlyArray<WithoutExplicitUndefined<DownloadTraceEntry>>
+  readonly evicted: number
+  readonly appended: number
+  readonly decodeDropped: number
+}
+
 /** Drain the buffer into the durable log in ONE serialized read-modify-write.
  *  Awaitable so the export handler can flush before it reads — a user clicking
  *  "Export diagnostics" must never race the tail of their own Release run. */
@@ -313,14 +355,15 @@ const flushReleaseDiagnostics = async (): Promise<void> => {
   // next flush, not this one, or they'd be dropped by the reassignment below.
   const batch = releaseDiagnosticsBuffer
   releaseDiagnosticsBuffer = []
+  const toLogValue = (log: ReleaseDiagnosticsLog): ReleaseDiagnosticsLogValue => toJsonValue(log)
   await runSerializedRmw(
     releaseDiagnosticsQueue,
     {
       get: () => releaseDiagnosticsItem.getValue(),
       set: (v) => releaseDiagnosticsItem.setValue(v),
     },
-    decodeReleaseDiagnostics,
-    (log) => appendManyReleaseDiagnostics(log, batch),
+    (raw) => toLogValue(decodeReleaseDiagnostics(raw)),
+    (log) => toLogValue(appendManyReleaseDiagnostics(log, batch)),
   ).catch(queueError('release-diagnostics'))
 }
 
@@ -393,8 +436,13 @@ const RELEASE_QUEUE_LABELS = new Set(['clear', 'clear-settle', 'worklist', 'rele
 // instead. Observe-and-log only — never re-throw, or the chain would wedge.
 const queueError =
   (label: string) =>
-  (err: unknown): void => {
-    const detail = err instanceof Error ? err.message : String(err)
+  // `makeSerialQueue`'s onError always normalizes to `Error` before calling this,
+  // but the two direct `.catch(queueError(...))` sites (release-diagnostics flush,
+  // the sync alarm IIFE) attach to a raw task promise that can reject with
+  // anything JS lets you `throw` — `Error | string` keeps that path honest instead
+  // of assuming every rejection is already an `Error`.
+  (err: Error | string): void => {
+    const detail = err instanceof Error ? err.message : err
     if (RELEASE_QUEUE_LABELS.has(label))
       traceBackground('clear-queue-error', {
         detail: `label=${label} reason=${redactTraceDetail(detail)}`,
@@ -415,7 +463,7 @@ const persistTransfers = (): void => {
 // Awaitable flush for the two terminal handlers that must observe the settle
 // land before their durable sync/history writes (closes the recycle re-fire
 // window); ordered on the same chain as the fire-and-forget persists.
-const flushTransfers = (): Promise<unknown> =>
+const flushTransfers = (): Promise<void> =>
   transfersQueue.run(() => transfersItem.setValue(transfersState))
 
 // Same serialized-write shape as `transfersQueue`, for `requestMetaById`'s durable
@@ -468,7 +516,7 @@ async function recoverSyndicationBody(tweetId: string): Promise<string | null> {
 // Durable local download history (opt-in `downloadHistoryEnabled`): the
 // local-first twin of Convex `media_state`, fed from the SAME outcome points as
 // the Sync Events above so the two never diverge. `local:` survives SW recycle.
-const historyItem = storage.defineItem<unknown>('local:downloadHistory', { fallback: null })
+const historyItem = storage.defineItem<JsonValue>('local:downloadHistory', { fallback: null })
 const historyQueue = makeSerialQueue(queueError('history'))
 // Serialized read-modify-write, like the outbox, so interleaved SW events can't
 // lose an update. Gated by the toggle; orthogonal to Cloud Sync.
@@ -510,7 +558,7 @@ const { recordComplete: recordClearComplete, recordFailure: recordClearFailure }
 // closing the browser — it must survive a full browser restart, not just an SW
 // recycle. Ring-capped by `appendReleaseDiagnostics` (packages/clear/diagnostics.ts),
 // so it can't grow unbounded over the extension's lifetime.
-const releaseDiagnosticsItem = storage.defineItem<unknown>('local:releaseDiagnostics', {
+const releaseDiagnosticsItem = storage.defineItem<JsonValue>('local:releaseDiagnostics', {
   fallback: [],
 })
 const releaseDiagnosticsQueue = makeSerialQueue(queueError('release-diagnostics'))
@@ -1231,16 +1279,17 @@ const handleDownload = (
           }),
           enqueuePorts,
         )
+        const externalCompleteDetail = sweep
+          ? o.handle
+            ? `scope=${sweep.scope} strategy=aria2 gid=${o.handle.gid}`
+            : `scope=${sweep.scope} strategy=external`
+          : o.handle
+            ? `aria2 ${o.handle.gid}`
+            : undefined
         traceBackground(traceStageForSweep('external-complete', sweep), {
           itemId: o.id,
           elapsedMs: now - (requestStartedAt.get(o.id) ?? startedAt),
-          detail: sweep
-            ? o.handle
-              ? `scope=${sweep.scope} strategy=aria2 gid=${o.handle.gid}`
-              : `scope=${sweep.scope} strategy=external`
-            : o.handle
-              ? `aria2 ${o.handle.gid}`
-              : undefined,
+          ...(externalCompleteDetail === undefined ? {} : { detail: externalCompleteDetail }),
         })
       }
     }
@@ -1367,7 +1416,7 @@ const onDownloadChanged = async (delta: Browser.downloads.DownloadDelta): Promis
  *  every in-flight/correlation/retry/ledger set and the persisted snapshot.
  *  Kept as a named function (not inlined into the handler table) — large and
  *  stateful. Returns the popup-facing ClearDownloadMonitorResponse. */
-const clearDownloadMonitor = async (): Promise<unknown> => {
+const clearDownloadMonitor = async (): Promise<ClearDownloadMonitorResponse> => {
   const snap = (await metricsItem.getValue()) ?? ZERO_SNAPSHOT
   if (snap.active > 0) {
     return {
@@ -1424,126 +1473,174 @@ const captureRecentLimit = 20
 /** The slice of the message sender the handlers need: the originating tab id, so a
  *  download's clear can be sent back to the tab it came from. */
 type MsgSender = { readonly tab?: { readonly id?: number | undefined } | undefined }
-type MessageHandlers = Partial<
-  Record<Message['_tag'], (msg: Message, sender: MsgSender) => Promise<unknown>>
->
+/** Not every `Message['_tag']` has an entry below (broadcast/UI-only tags are
+ *  routed elsewhere), so the lookup below is by arbitrary key over a WIDER key
+ *  union than the literal keys actually present. A plain object literal can't
+ *  express that (indexing it by a tag absent from its own keys is a compile
+ *  error, and annotating the binding with a `Partial<Record<...>>` dictionary
+ *  type to allow it is its own anti-slop finding: it discards the known,
+ *  per-tag return-type evidence `satisfies` would otherwise keep). A `Map` is
+ *  the shape built for exactly this: keyed by the full tag union, looked up
+ *  with `.get`, no dictionary-typed binding required. */
+type MessageHandlerFn = (msg: Message, sender: MsgSender) => Promise<JsonValue>
 const handle =
   <T extends Message['_tag']>(
-    fn: (msg: Extract<Message, { _tag: T }>, sender: MsgSender) => Promise<unknown>,
+    fn: (msg: Extract<Message, { _tag: T }>, sender: MsgSender) => Promise<JsonValue>,
   ) =>
-  (msg: Message, sender: MsgSender): Promise<unknown> =>
-    fn(msg as Extract<Message, { _tag: T }>, sender)
+  (msg: Message, sender: MsgSender): Promise<JsonValue> => {
+    // SAFETY: The type parameter T is bound to Message['_tag'], so Extract<Message, { _tag: T }>
+    // narrows msg to the specific message type with that tag. The assertion is sound.
+    return fn(msg as Extract<Message, { _tag: T }>, sender)
+  }
 
-const messageHandlers: MessageHandlers = {
-  DownloadRequest: handle<'DownloadRequest'>((msg, sender) =>
-    Effect.runPromise(handleDownload(msg.items, undefined, msg.clearExpect, sender.tab?.id)),
-  ),
-  MetricsRequest: async () => {
-    const base = (await metricsItem.getValue()) ?? currentSnapshot(Date.now())
-    const releaseDiagnostics = await releaseDiagnosticsSummary()
-    return releaseDiagnostics === undefined ? base : { ...base, releaseDiagnostics }
-  },
+const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
+  [
+    'DownloadRequest',
+    handle<'DownloadRequest'>((msg, sender) =>
+      Effect.runPromise(handleDownload(msg.items, undefined, msg.clearExpect, sender.tab?.id)),
+    ),
+  ],
+  [
+    'MetricsRequest',
+    async () => {
+      const base = (await metricsItem.getValue()) ?? currentSnapshot(Date.now())
+      const releaseDiagnostics = await releaseDiagnosticsSummary()
+      return releaseDiagnostics === undefined ? base : { ...base, releaseDiagnostics }
+    },
+  ],
   // NOTE: this projection is an allowlist — a field added to `traceFields` but NOT
   // added here is silently dropped for every content-script event. `tabId` is taken
   // from `sender`, never from `msg`, so the page can't forge it (and the popup/options
   // legs, which have no `sender.tab`, simply omit it).
-  DownloadTraceEvent: handle<'DownloadTraceEvent'>(async (msg, sender) => {
-    recordTrace({
-      source: msg.source,
-      stage: msg.stage,
-      t: msg.t,
-      ...(msg.itemId !== undefined ? { itemId: msg.itemId } : {}),
-      ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
-      ...(msg.type !== undefined ? { type: msg.type } : {}),
-      ...(msg.elapsedMs !== undefined ? { elapsedMs: msg.elapsedMs } : {}),
-      ...(msg.detail !== undefined ? { detail: msg.detail } : {}),
-      ...(sender.tab?.id !== undefined ? { tabId: sender.tab.id } : {}),
-    })
-    await persistSnapshot(Date.now())
-    return { ok: true }
-  }),
-  ClearDownloadMonitorRequest: () => clearDownloadMonitor(),
+  [
+    'DownloadTraceEvent',
+    handle<'DownloadTraceEvent'>(async (msg, sender) => {
+      recordTrace({
+        source: msg.source,
+        stage: msg.stage,
+        t: msg.t,
+        ...(msg.itemId !== undefined ? { itemId: msg.itemId } : {}),
+        ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
+        ...(msg.type !== undefined ? { type: msg.type } : {}),
+        ...(msg.elapsedMs !== undefined ? { elapsedMs: msg.elapsedMs } : {}),
+        ...(msg.detail !== undefined ? { detail: msg.detail } : {}),
+        ...(sender.tab?.id !== undefined ? { tabId: sender.tab.id } : {}),
+      })
+      await persistSnapshot(Date.now())
+      return { ok: true }
+    }),
+  ],
+  ['ClearDownloadMonitorRequest', () => clearDownloadMonitor()],
   // Both of these go through `historyQueue`, like `recordHistory` — reading or
   // erasing outside it races the queued read-modify-write. A `recordHistory`
   // task that already read the store, then an erase, then that task's write:
   // the erased records come back. The read is queued for the weaker reason —
   // otherwise the popup can render a store that a queued write is about to
   // replace.
-  HistoryRequest: () =>
-    historyQueue.run(async () => ({
-      records: decodeStore(await historyItem.getValue()).records,
-    })),
-  SavedStatusRequest: handle<'SavedStatusRequest'>((msg) => savedStatusCoordinator.handle(msg)),
-  ClearHistoryRequest: () =>
-    historyQueue.run(async () => {
-      await historyItem.setValue(emptyStore)
-      return { ok: true } as const
-    }),
-  SyncTestRequest: async () => runSyncConnectionTest(await getSettings()),
-  SyncStatusRequest: () => syncOutbox.getSyncStatus(),
-  CloudConnectRequest: handle<'CloudConnectRequest'>((msg) =>
-    cloudUpload.runOAuthConnect(msg.provider, msg.clientId),
-  ),
-  CloudDisconnectRequest: handle<'CloudDisconnectRequest'>((msg) =>
-    cloudUpload.disconnectProvider(msg.provider),
-  ),
-  CloudStatusRequest: () => cloudUpload.cloudUploadStatus(),
-  CloudRetryRequest: () => cloudUpload.retryDeadUploads(),
-  CloudBackfillRequest: () => cloudUpload.backfillCloudUploads(),
-  SweepEnqueueRequest: handle<'SweepEnqueueRequest'>((msg, sender) =>
-    handleSweepEnqueue(msg.scope, msg.posts, sender.tab?.id),
-  ),
+  [
+    'HistoryRequest',
+    () =>
+      historyQueue.run(async () => ({
+        records: decodeStore(await historyItem.getValue()).records,
+      })),
+  ],
+  ['SavedStatusRequest', handle<'SavedStatusRequest'>((msg) => savedStatusCoordinator.handle(msg))],
+  [
+    'ClearHistoryRequest',
+    () =>
+      historyQueue.run(async () => {
+        await historyItem.setValue(emptyStore)
+        return { ok: true } as const
+      }),
+  ],
+  ['SyncTestRequest', async () => runSyncConnectionTest(await getSettings())],
+  ['SyncStatusRequest', () => syncOutbox.getSyncStatus()],
+  [
+    'CloudConnectRequest',
+    handle<'CloudConnectRequest'>((msg) => cloudUpload.runOAuthConnect(msg.provider, msg.clientId)),
+  ],
+  [
+    'CloudDisconnectRequest',
+    handle<'CloudDisconnectRequest'>((msg) => cloudUpload.disconnectProvider(msg.provider)),
+  ],
+  ['CloudStatusRequest', () => cloudUpload.cloudUploadStatus()],
+  ['CloudRetryRequest', () => cloudUpload.retryDeadUploads()],
+  ['CloudBackfillRequest', () => cloudUpload.backfillCloudUploads()],
+  [
+    'SweepEnqueueRequest',
+    handle<'SweepEnqueueRequest'>((msg, sender) =>
+      handleSweepEnqueue(msg.scope, msg.posts, sender.tab?.id),
+    ),
+  ],
   // Recover an un-teed tweet's media via the syndication endpoint (videos the
   // DOM can't expose). Reply with the raw body; the content script parses it.
-  RecoverTweetMediaRequest: handle<'RecoverTweetMediaRequest'>(async (msg) => {
-    const body = await recoverSyndicationBody(msg.tweetId)
-    return { _tag: 'RecoverTweetMediaResponse', ...(body !== null ? { body } : {}) }
-  }),
+  [
+    'RecoverTweetMediaRequest',
+    handle<'RecoverTweetMediaRequest'>(async (msg) => {
+      const body = await recoverSyndicationBody(msg.tweetId)
+      return { _tag: 'RecoverTweetMediaResponse', ...(body !== null ? { body } : {}) }
+    }),
+  ],
   // Knowledge Capture (spec §8/§9/§10/§12). The dispatcher persists the batch to
   // the durable IndexedDB store (source of truth), then offers it to the opt-in
   // Convex mirror fire-and-forget — `mirrorCaptures` gates internally and never
   // affects the `{ stored }` reply.
-  CaptureTweets: handle<'CaptureTweets'>(async (msg) => {
-    await captureDb.putRecords(msg.records)
-    const total = await captureDb.count()
-    console.info(`[XMD] capture received ${msg.records.length} record(s); store total=${total}`)
-    captureOutbox.mirrorCaptures(msg.records)
-    return { stored: msg.records.length }
-  }),
+  [
+    'CaptureTweets',
+    handle<'CaptureTweets'>(async (msg) => {
+      await captureDb.putRecords(msg.records)
+      const total = await captureDb.count()
+      console.info(`[XMD] capture received ${msg.records.length} record(s); store total=${total}`)
+      captureOutbox.mirrorCaptures(msg.records)
+      return { stored: msg.records.length }
+    }),
+  ],
   // Streams the store through a cursor fold — the harvest can be tens of
   // thousands of records, and `getAll()` materialized every one of them in SW
   // memory on each popup open just to compute three aggregates.
-  CaptureSummaryRequest: handle<'CaptureSummaryRequest'>(async (msg) =>
-    finishCaptureSummary(
-      await captureDb.fold(emptyCaptureSummary(), foldCaptureSummary),
-      msg.limit ?? captureRecentLimit,
+  [
+    'CaptureSummaryRequest',
+    handle<'CaptureSummaryRequest'>(async (msg) =>
+      finishCaptureSummary(
+        await captureDb.fold(emptyCaptureSummary(), foldCaptureSummary),
+        msg.limit ?? captureRecentLimit,
+      ),
     ),
-  ),
-  ExportCaptureRequest: handle<'ExportCaptureRequest'>(async (msg) => {
-    const records = await captureDb.allRecords()
-    const built = composeCaptureExport(records, msg.kind, msg.conversationId, Date.now())
-    if (built === null) return { ok: false, filename: '', text: '' }
-    console.info(
-      `[XMD] capture export ${msg.kind} → ${built.filename} (${built.text.length} bytes)`,
-    )
-    return { ok: true, filename: built.filename, text: built.text }
-  }),
-  ClearCaptureRequest: async () => {
-    const cleared = await captureDb.count()
-    await captureDb.clear()
-    return { cleared }
-  },
+  ],
+  [
+    'ExportCaptureRequest',
+    handle<'ExportCaptureRequest'>(async (msg) => {
+      const records = await captureDb.allRecords()
+      const built = composeCaptureExport(records, msg.kind, msg.conversationId, Date.now())
+      if (built === null) return { ok: false, filename: '', text: '' }
+      console.info(
+        `[XMD] capture export ${msg.kind} → ${built.filename} (${built.text.length} bytes)`,
+      )
+      return { ok: true, filename: built.filename, text: built.text }
+    }),
+  ],
+  [
+    'ClearCaptureRequest',
+    async () => {
+      const cleared = await captureDb.count()
+      await captureDb.clear()
+      return { cleared }
+    },
+  ],
   // Build the Release diagnostics export from the durable capped log
   // (mirrors ExportCaptureRequest's SW-builds/options-page-downloads split above).
-  ExportDiagnosticsRequest: handle<'ExportDiagnosticsRequest'>(async () => {
-    // Flush the trailing buffer FIRST — otherwise the export silently omits the last
-    // few hundred ms of the run, which is exactly where a failing Release ends.
-    await flushReleaseDiagnostics()
-    const log = await releaseDiagnosticsQueue.run(async () =>
-      decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue()),
-    )
-    return composeDiagnosticsExport(log, Date.now())
-  }),
+  [
+    'ExportDiagnosticsRequest',
+    handle<'ExportDiagnosticsRequest'>(async () => {
+      // Flush the trailing buffer FIRST — otherwise the export silently omits the last
+      // few hundred ms of the run, which is exactly where a failing Release ends.
+      await flushReleaseDiagnostics()
+      const log = await releaseDiagnosticsQueue.run(async () =>
+        decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue()),
+      )
+      return composeDiagnosticsExport(log, Date.now())
+    }),
+  ],
   // Release diagnostics (spec #59 ticket #63): one observed bookmark/like mutation,
   // already re-validated by the overlay before it ever reached this message (the
   // content script only sends this tag while `releaseMutationDiagnosticsEnabled`
@@ -1551,14 +1648,17 @@ const messageHandlers: MessageHandlers = {
   // into the durable Release diagnostics log via `isReleaseDiagnosticsEvent`,
   // exactly like every other Release trace line — no separate storage, no
   // separate export path.
-  ReleaseMutationEvent: handle<'ReleaseMutationEvent'>(async (msg) => {
-    traceBackground('clear-mutation', {
-      ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
-      detail: `op=${msg.op} status=${msg.status} error=${msg.error}`,
-    })
-    return { _tag: 'ReleaseMutationAck' }
-  }),
-}
+  [
+    'ReleaseMutationEvent',
+    handle<'ReleaseMutationEvent'>(async (msg) => {
+      traceBackground('clear-mutation', {
+        ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
+        detail: `op=${msg.op} status=${msg.status} error=${msg.error}`,
+      })
+      return { _tag: 'ReleaseMutationAck' }
+    }),
+  ],
+])
 
 export default defineBackground(() => {
   // Boot marker: prints on every service-worker start. If you DON'T see this line
@@ -1599,8 +1699,8 @@ export default defineBackground(() => {
       const p = planConvexEnvSeed(
         s,
         {
-          url: import.meta.env.WXT_CONVEX_URL as string | undefined,
-          secret: import.meta.env.WXT_CONVEX_SECRET as string | undefined,
+          url: import.meta.env.WXT_CONVEX_URL,
+          secret: import.meta.env.WXT_CONVEX_SECRET,
         },
         () => crypto.randomUUID(),
       )
@@ -1611,8 +1711,8 @@ export default defineBackground(() => {
     // Upload OAuth client IDs (public, not secrets). Gated on an empty field so a
     // user edit is never overridden; a normal build has neither var.
     const cloudPatch = planCloudEnvSeed(s, {
-      gdriveClientId: import.meta.env.WXT_GDRIVE_CLIENT_ID as string | undefined,
-      dropboxAppKey: import.meta.env.WXT_DROPBOX_APP_KEY as string | undefined,
+      gdriveClientId: import.meta.env.WXT_GDRIVE_CLIENT_ID,
+      dropboxAppKey: import.meta.env.WXT_DROPBOX_APP_KEY,
     })
     if (cloudPatch) s = await setSettings(cloudPatch)
     // Resume any cloud byte-uploads left pending from a previous SW life, and
@@ -1651,9 +1751,15 @@ export default defineBackground(() => {
     // invariant.
     const decoded = Schema.decodeUnknownResult(Message)(message)
     if (Result.isFailure(decoded)) {
-      const rawTag = (message as { _tag?: unknown } | null)?._tag
-      if (typeof rawTag === 'string')
-        console.warn(`[XMD] message ${rawTag} FAILED schema decode (dropped):`, decoded.failure)
+      // Best-effort re-decode against a minimal shape, purely to name the tag in
+      // the warning below — `message` already failed the real `Message` decode
+      // above, so this can't (and doesn't need to) recover a domain type from it.
+      const tagOnly = Schema.decodeUnknownResult(Schema.Struct({ _tag: Schema.String }))(message)
+      if (Result.isSuccess(tagOnly))
+        console.warn(
+          `[XMD] message ${tagOnly.success._tag} FAILED schema decode (dropped):`,
+          decoded.failure,
+        )
       return false
     }
     const msg = decoded.success
@@ -1666,7 +1772,7 @@ export default defineBackground(() => {
       )
       return false
     }
-    const h = messageHandlers[msg._tag]
+    const h = messageHandlers.get(msg._tag)
     if (!h) return false
     // A rejected handler must still resolve the channel: without this `.catch` the
     // reply never lands, the port closes, and the caller sees a generic "port

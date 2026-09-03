@@ -2,11 +2,15 @@ import { describe, it, expect } from 'vitest'
 import { canResolveHoverItem, resolveHoverItem } from './index'
 import type { MediaItem } from '@/packages/schema'
 
-/** Build a detached subtree and return its first `<img>`/`<video>`. */
-const el = (html: string): Element => {
+/** Build a detached subtree and return its first element, typed by the caller
+ *  (e.g. `el<HTMLImageElement>('<img />')`) — every call site's markup root tag
+ *  matches the type parameter it asks for. */
+const el = <T extends Element = Element>(html: string): T => {
   const root = document.createElement('div')
   root.innerHTML = html.trim()
-  return root.firstElementChild!
+  // SAFETY: see the doc comment above — the caller's own type argument names
+  // the tag its markup's root element actually is.
+  return root.firstElementChild as T
 }
 
 const videoItem: MediaItem = {
@@ -39,9 +43,9 @@ describe('resolveHoverItem', () => {
   })
 
   it('falls back to DOM photo resolution when the key is unknown to the tee', () => {
-    const img = el(
+    const img = el<HTMLImageElement>(
       '<img src="https://pbs.twimg.com/media/P0?format=jpg&name=small" />',
-    ) as HTMLImageElement
+    )
     const item = resolveHoverItem(img, 'P0', new Map(), '/alice/status/1790')
     expect(item).toMatchObject({ type: 'photo', postId: '1790', author: 'alice' })
     expect(item!.url).toContain('name=orig')
@@ -91,7 +95,7 @@ describe('canResolveHoverItem', () => {
   it('prefers currentSrc over src for a responsive image (the loaded source)', () => {
     // src points at a non-grabbable profile image, but the actually-rendered
     // `currentSrc` is a grabbable media photo — `currentSrc || src` must read it.
-    const img = el('<img src="https://pbs.twimg.com/profile_images/zzz.jpg" />') as HTMLImageElement
+    const img = el<HTMLImageElement>('<img src="https://pbs.twimg.com/profile_images/zzz.jpg" />')
     Object.defineProperty(img, 'currentSrc', {
       value: 'https://pbs.twimg.com/media/P0?format=jpg&name=small',
       configurable: true,
@@ -101,9 +105,9 @@ describe('canResolveHoverItem', () => {
 
   it('falls back to src when currentSrc is empty (not-yet-loaded image)', () => {
     // `currentSrc` is '' before the image loads → the `|| element.src` arm decides.
-    const img = el(
+    const img = el<HTMLImageElement>(
       '<img src="https://pbs.twimg.com/media/P0?format=jpg&name=small" />',
-    ) as HTMLImageElement
+    )
     Object.defineProperty(img, 'currentSrc', { value: '', configurable: true })
     expect(canResolveHoverItem(img, 'P0', new Map())).toBe(true)
   })

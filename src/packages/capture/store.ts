@@ -9,6 +9,13 @@ export type RecentConversation = {
   lastAt: number
 }
 
+/** The `CaptureSummaryRequest` reply: counts + the `n` newest threads. */
+export type CaptureSummaryReply = {
+  tweets: number
+  conversations: number
+  recent: RecentConversation[]
+}
+
 /**
  * Pick the winner between an existing and incoming snapshot (spec §6.4). Keep
  * `incoming` iff its `sourceRank` is higher, or equal rank with a `capturedAt`
@@ -84,14 +91,10 @@ export function foldCaptureSummary(acc: CaptureSummaryAcc, r: TweetRecord): Capt
   return acc
 }
 
-/** The `CaptureSummaryRequest` reply: counts + the `n` newest threads. */
-export function finishCaptureSummary(
-  acc: CaptureSummaryAcc,
-  n: number,
-): { tweets: number; conversations: number; recent: RecentConversation[] } {
+export function finishCaptureSummary(acc: CaptureSummaryAcc, n: number) {
   return {
     tweets: acc.tweets,
     conversations: acc.byConversation.size,
     recent: newestFirst(acc.byConversation, n),
-  }
+  } satisfies CaptureSummaryReply
 }

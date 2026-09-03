@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PROVIDERS, revokeViaRecipe } from '../provider'
 import { DROPBOX_HOST_PATTERNS, DROPBOX_OAUTH, GDRIVE_HOST_PATTERNS, GDRIVE_OAUTH } from '../types'
+import { fetchStub } from '../lib/fetch-stub'
 
 describe('PROVIDERS registry', () => {
   it('describes Google Drive as a record (oauth, host patterns, label, fields)', () => {
@@ -28,10 +29,12 @@ describe('PROVIDERS registry', () => {
 describe('revokeViaRecipe', () => {
   it('revokes the refresh token at the Google endpoint via a form body (gdrive)', async () => {
     const calls: { url: string; body: string }[] = []
-    const fetchImpl = (async (url: string, init?: RequestInit) => {
-      calls.push({ url: String(url), body: String(init?.body) })
+    const fetchImpl = fetchStub(async (url, init) => {
+      // SAFETY: the recipe always posts a URL-encoded string body — never the wider
+      // `BodyInit` shapes `RequestInit['body']` allows.
+      calls.push({ url, body: init?.body as string })
       return new Response('', { status: 200 })
-    }) as unknown as typeof fetch
+    })
     await revokeViaRecipe(
       PROVIDERS.gdrive.revoke,
       { accessToken: 'AT', refreshToken: 'RT' },
@@ -45,11 +48,13 @@ describe('revokeViaRecipe', () => {
   it('revokes via the access token in an auth header at the Dropbox endpoint', async () => {
     let url = ''
     let auth = ''
-    const fetchImpl = (async (u: string, init?: RequestInit) => {
-      url = String(u)
-      auth = ((init?.headers ?? {}) as Record<string, string>)['authorization'] ?? ''
+    const fetchImpl = fetchStub(async (u, init) => {
+      url = u
+      // `Headers` normalizes every `HeadersInit` shape `authHeader()` could ever
+      // hand it, so reading the header needs no cast at all.
+      auth = new Headers(init?.headers).get('authorization') ?? ''
       return new Response('', { status: 200 })
-    }) as unknown as typeof fetch
+    })
     await revokeViaRecipe(
       PROVIDERS.dropbox.revoke,
       { accessToken: 'AT', refreshToken: '' },
@@ -61,10 +66,10 @@ describe('revokeViaRecipe', () => {
 
   it('no-ops when the recipe credential is empty', async () => {
     let called = false
-    const fetchImpl = (async () => {
+    const fetchImpl = fetchStub(async () => {
       called = true
       return new Response('', { status: 200 })
-    }) as unknown as typeof fetch
+    })
     await revokeViaRecipe(
       PROVIDERS.gdrive.revoke,
       { accessToken: 'AT', refreshToken: '' },
@@ -79,9 +84,9 @@ describe('revokeViaRecipe', () => {
   })
 
   it('swallows network errors (best-effort; local clear proceeds regardless)', async () => {
-    const fetchImpl = (async () => {
+    const fetchImpl = fetchStub(async () => {
       throw new Error('offline')
-    }) as unknown as typeof fetch
+    })
     await expect(
       revokeViaRecipe(
         PROVIDERS.gdrive.revoke,

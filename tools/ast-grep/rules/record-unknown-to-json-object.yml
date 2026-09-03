@@ -1,0 +1,19 @@
+# anti-slop/no-unsafe-dictionary-type
+#
+# `Record<string, unknown>` states only that values exist — it gives callers no
+# contract, so every read then needs an assertion. Swap it for the shared
+# third-party-JSON contract in `@/packages/schema` (src/packages/schema/json.ts).
+#
+# ast-grep rewrites the type reference only. The `import { type JsonObject } from
+# '@/packages/schema'` and any narrowing the stricter type now demands are a
+# follow-up pass — run `bun run typecheck` after applying.
+#
+#   sg scan -r tools/ast-grep/rules/record-unknown-to-json-object.yml src        # preview
+#   sg scan -r tools/ast-grep/rules/record-unknown-to-json-object.yml src -U     # apply
+id: record-unknown-to-json-object
+language: typescript
+rule:
+  pattern:
+    context: 'type T = Record<string, unknown>'
+    selector: generic_type
+fix: JsonObject

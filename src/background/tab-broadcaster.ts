@@ -1,6 +1,6 @@
 import { Option } from 'effect'
 import { adapterForUrl, allAdapterHostMatch } from '../core/adapters/registry'
-import type { Message } from '@/packages/schema'
+import type { Message, TabMessage, JsonValue } from '@/packages/schema'
 import type { ClearTweetResponse } from '@/packages/schema'
 import type { TabMessagingPort } from '@/packages/download/media-url-refresh'
 import type { Scope } from '@/packages/clear/ledger'
@@ -69,8 +69,10 @@ export interface TabsPort {
   /** The numeric ids of every open tab on a registered platform (not X-only —
    *  `defaultTabsPort` below queries `allAdapterHostMatch()`). */
   queryXTabs(): Promise<number[]>
-  /** Send a message to one tab; resolves to its response (or undefined). */
-  sendTabMessage(tabId: number, message: unknown): Promise<unknown>
+  /** Send a message to one tab; resolves to its response (or undefined). Every
+   *  reply shape differs by message tag, so callers narrow the `JsonValue` result
+   *  themselves right after the call (see `sendClearToTabs`/`releaseViaStatusTab`). */
+  sendTabMessage(tabId: number, message: Message | TabMessage): Promise<JsonValue | undefined>
   /** One tab's current url, or `undefined` when the tab is gone / its url is out of
    *  reach. Read at SEED time to name the ORIGIN page's list scope, which is then
    *  PINNED for the life of that clear: the `/i/web/status/{id}` permalink owns no list
@@ -117,8 +119,8 @@ export interface TabBroadcasterDeps {
  *  module must not reach into. Urls collapse to `url` BEFORE the kebab pass, so a
  *  browser-authored message that happens to quote a media/page url can't leak a path
  *  into the durable log; the cap keeps one bad message from eating the event budget. */
-const compactReason = (error: unknown): string => {
-  const raw = error instanceof Error ? error.message : String(error)
+const compactReason = (error: Error | string): string => {
+  const raw = error instanceof Error ? error.message : error
   const compact = raw
     .replace(/https?:\/\/\S+|blob:\S+|www\.\S+/gi, 'url')
     .toLowerCase()
@@ -305,6 +307,9 @@ export const makeTabBroadcaster = (
 
   const makeTabMessagingPort = (): TabMessagingPort => ({
     queryTabs: async () => (await queryXTabs()).map((id) => ({ id })),
+    // SAFETY: this port only ever sends `RefreshMediaUrlRequest`, whose receiver
+    // (the overlay content script) always answers `RefreshMediaUrlResponse`
+    // (`{ url? }`) or nothing — never any other tagged message's reply shape.
     sendTabMessage: (tabId, message) =>
       tabs.sendTabMessage(tabId, message) as Promise<{ readonly url?: string } | undefined>,
   })
@@ -438,7 +443,11 @@ export const makeTabBroadcaster = (
     try {
       tabId = await tabs.navigateReleaseTab(releaseUrl(tweetId))
     } catch (error) {
-      trace('clear-tab-error', `phase=release-nav reason=${compactReason(error)}`, tweetId)
+      trace(
+        'clear-tab-error',
+        `phase=release-nav reason=${compactReason(error instanceof Error ? error : String(error))}`,
+        tweetId,
+      )
       trace(
         'clear-release-poll',
         formatReleasePoll(undefined, 0, 0, 0, undefined, false, 0, 'nav-failed'),
@@ -481,6 +490,9 @@ export const makeTabBroadcaster = (
         // `probe: true` from the 2nd attempt: the first bare attempt still proves the
         // tab reached the tweet at all, so the trace shows that once; every later
         // attempt is expected noise the content script silences on its own side.
+        // SAFETY: a `ClearTweetRequest` is always answered with `ClearTweetResponse`
+        // (or the tab dies and this throws instead) — the overlay's dispatch gate
+        // never replies to this tag with any other shape.
         res = (await tabs.sendTabMessage(tabId, {
           _tag: 'ClearTweetRequest',
           tweetId,
@@ -532,37 +544,37 @@ export const makeTabBroadcaster = (
       lastPage = res?.page ?? lastPage
       const erroring = res?.page?.error === true
       errorStreak = erroring ? errorStreak + 1 : 0
-      if (erroring) {
-        if (errorStreak >= 2) {
-          if (!reloaded) {
-            try {
-              await tabs.reloadReleaseTab(tabId)
-            } catch {
-              /* tab gone — the next probe throws and the loop degrades to unreachable/exhausted */
-            }
-            reloaded = true
-            errorStreak = 0
-            stuckSince = undefined
-            continue
+      // One erroring probe is noise; only a streak acts. `errorStreak` resets to 0
+      // whenever a probe is not erroring, so `>= 2` already implies `erroring`.
+      if (erroring && errorStreak < 2) continue
+      if (errorStreak >= 2) {
+        if (!reloaded) {
+          try {
+            await tabs.reloadReleaseTab(tabId)
+          } catch {
+            /* tab gone — the next probe throws and the loop degrades to unreachable/exhausted */
           }
-          backoffUntil = clock.now() + RELEASE_BACKOFF_MS
-          trace(
-            'clear-release-poll',
-            formatReleasePoll(
-              tabId,
-              probes,
-              threw,
-              unmounted,
-              lastPage,
-              reloaded,
-              elapsed,
-              'page-error',
-            ),
-            tweetId,
-          )
-          return { ok: false, tabId }
+          reloaded = true
+          errorStreak = 0
+          stuckSince = undefined
+          continue
         }
-        continue
+        backoffUntil = clock.now() + RELEASE_BACKOFF_MS
+        trace(
+          'clear-release-poll',
+          formatReleasePoll(
+            tabId,
+            probes,
+            threw,
+            unmounted,
+            lastPage,
+            reloaded,
+            elapsed,
+            'page-error',
+          ),
+          tweetId,
+        )
+        return { ok: false, tabId }
       }
       const stuck =
         lastPage !== undefined &&
@@ -687,6 +699,9 @@ export const makeTabBroadcaster = (
     for (const id of ordered) {
       tried.push(id)
       try {
+        // SAFETY: a `ClearTweetRequest` is always answered with `ClearTweetResponse`
+        // (or the tab dies and this throws instead) — the overlay's dispatch gate
+        // never replies to this tag with any other shape.
         const res = (await tabs.sendTabMessage(id, {
           _tag: 'ClearTweetRequest',
           tweetId,
@@ -706,7 +721,7 @@ export const makeTabBroadcaster = (
       } catch (error) {
         answered.push(`${id}:no-receiver`)
         recordOrphanMiss(id)
-        const reason = compactReason(error)
+        const reason = compactReason(error instanceof Error ? error : String(error))
         clearErrors.set(reason, (clearErrors.get(reason) ?? 0) + 1)
       }
     }

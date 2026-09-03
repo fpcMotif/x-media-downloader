@@ -1,3 +1,5 @@
+import { ConvexFunctionError, ConvexHttpError, ConvexMalformedError } from './convex'
+
 /**
  * Make Cloud Sync failures legible. The outbox drains fire-and-forget
  * (ADR-0009) and the background swallows every error so downloads never block
@@ -6,8 +8,12 @@
  * actionable line, and shape the status the popup polls.
  */
 
-/** Result of a connection test or the latest drain attempt, as the popup sees it. */
-export interface SyncStatus {
+/** Result of a connection test or the latest drain attempt, as the popup sees it.
+ *  A `type` alias, not an `interface`: this crosses the background↔popup message
+ *  boundary as a `JsonValue`, and only a `type`'s object-literal shape gets
+ *  TypeScript's implicit index signature there — a same-shape `interface` fails
+ *  that assignability with "index signature for type 'string' is missing". */
+export type SyncStatus = {
   /** Whether the last drain/test reached the deployment and was accepted. */
   readonly ok: boolean
   /** One human-actionable line — what happened and what to do about it. */
@@ -18,28 +24,27 @@ export interface SyncStatus {
 
 /**
  * Map an error thrown by `makeConvexHttpPort` (or a raw `fetch` rejection) to a
- * message that names the likely cause and the fix. The port throws tagged errors
- * (`ConvexHttpError` with the edge `status`, `ConvexFunctionError` with the
- * server `errorMessage`, `ConvexMalformedError`), so HTTP cases switch on the
- * status code rather than re-parsing strings — no regex-order dependence. A
- * server function error still carries free-form text (the function never got
- * pushed → "Could not find public function…", the fail-closed secret check →
- * "unauthorized…"), so those stay content-matched. A raw `fetch` rejection
- * (missing host permission, unparseable host) is untagged and lands in the
- * reachability fallback.
+ * message that names the likely cause and the fix. The port throws tagged error
+ * classes (`ConvexHttpError` with the edge `status`, `ConvexFunctionError` with
+ * the server `errorMessage`, `ConvexMalformedError`), so HTTP cases switch on
+ * `instanceof` and the status code rather than re-parsing strings — no
+ * regex-order dependence. A server function error still carries free-form text
+ * (the function never got pushed → "Could not find public function…", the
+ * fail-closed secret check → "unauthorized…"), so those stay content-matched. A
+ * raw `fetch` rejection (missing host permission, unparseable host) is an
+ * untagged `Error`, and a caller may also hand in a bare thrown string — both
+ * land in the reachability fallback.
  */
-export function classifySyncError(err: unknown): string {
-  const tag = isTagged(err) ? err._tag : undefined
-  if (tag === 'ConvexHttpError') return classifyHttpStatus((err as { status: number }).status)
-  if (tag === 'ConvexMalformedError') return MALFORMED_HINT
-  if (tag === 'ConvexFunctionError') {
-    const fnMsg = (err as { errorMessage: string }).errorMessage
-    return classifyFunctionMessage(fnMsg) ?? unreachableHint(fnMsg)
+export function classifySyncError(err: Error | string): string {
+  if (err instanceof ConvexHttpError) return classifyHttpStatus(err.status)
+  if (err instanceof ConvexMalformedError) return MALFORMED_HINT
+  if (err instanceof ConvexFunctionError) {
+    return classifyFunctionMessage(err.errorMessage) ?? unreachableHint(err.errorMessage)
   }
 
-  // Untagged input (raw fetch rejection, or a plain Error passed straight in):
-  // fall back to text matching so the legacy classification is preserved.
-  const msg = err instanceof Error ? err.message : String(err)
+  // Untagged input (raw fetch rejection, or a plain Error/string passed straight
+  // in): fall back to text matching so the legacy classification is preserved.
+  const msg = err instanceof Error ? err.message : err
   const fn = classifyFunctionMessage(msg)
   if (fn !== undefined) return fn
   const httpMatch = /HTTP (\d{3})/.exec(msg)
@@ -71,10 +76,6 @@ function classifyHttpStatus(status: number, raw: string = `convex: HTTP ${status
 
 function unreachableHint(msg: string): string {
   return `Could not reach the deployment — check the URL and that access is granted (${msg}).`
-}
-
-function isTagged(err: unknown): err is { _tag: string } {
-  return typeof err === 'object' && err !== null && '_tag' in err
 }
 
 /** Phrase a successful drain/test for the popup. */

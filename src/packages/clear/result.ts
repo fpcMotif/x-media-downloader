@@ -35,11 +35,11 @@ export function flippedScopes(results: ReadonlyArray<ClearScopeResult>): Scope[]
   return results.filter((r) => clearVerdict(r) === 'flipped').map((r) => r.scope)
 }
 
-const VERDICT_TOKEN: Record<ReturnType<typeof clearVerdict>, string> = {
+const VERDICT_TOKEN = {
   flipped: 'ok',
   skipped: 'noop',
   failed: 'fail',
-}
+} satisfies Record<ReturnType<typeof clearVerdict>, string>
 
 /** Trace vocabulary: space-joined `scope:ok|noop|fail` tokens (exact tokens are load-bearing —
  *  existing tests/greps match them). */

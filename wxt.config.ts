@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { defineConfig } from 'wxt'
-import preact from '@preact/preset-vite'
+import preactPreset from '@preact/preset-vite'
 import tailwindcss from '@tailwindcss/vite'
 import { allAdapterHostMatch, cdnMatchPatternsForAllAdapters } from './src/core/adapters/registry'
 
@@ -99,6 +99,6 @@ export default defineConfig({
     ],
   },
   vite: () => ({
-    plugins: [preact(), tailwindcss()],
+    plugins: [preactPreset(), tailwindcss()],
   }),
 })

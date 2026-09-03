@@ -9,7 +9,7 @@
  * gate and drain are testable without IndexedDB, wxt storage, or the network.
  */
 import { storage } from 'wxt/utils/storage'
-import type { Settings } from '@/packages/schema'
+import type { JsonValue, Settings } from '@/packages/schema'
 import { getSettings } from '@/packages/settings'
 import type { TweetRecord } from '@/packages/capture/record'
 import {
@@ -127,7 +127,7 @@ const toWireCapture = (
 /** Default ledger: the durable `local:captureOutbox` key, capped on the reducer so
  *  a prolonged offline can't grow it without bound. */
 function defaultLedger(): LedgerStorage {
-  const item = storage.defineItem<unknown>('local:captureOutbox', { fallback: null })
+  const item = storage.defineItem<JsonValue>('local:captureOutbox', { fallback: null })
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 

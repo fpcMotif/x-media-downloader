@@ -39,7 +39,7 @@ export const idleKeymap: KeymapState = { pendingG: false }
 
 /** Input types that do NOT take text — keyboard nav stays live while one of
  *  these has focus (vim users expect j/k to work with a button focused). */
-const NON_TEXT_INPUT_TYPES: Readonly<Record<string, true>> = {
+const NON_TEXT_INPUT_TYPES = {
   checkbox: true,
   radio: true,
   button: true,
@@ -49,7 +49,7 @@ const NON_TEXT_INPUT_TYPES: Readonly<Record<string, true>> = {
   image: true,
   range: true,
   hidden: true,
-}
+} satisfies Readonly<Record<string, true>>
 
 /**
  * Whether a key event originated in a text-entry surface, where every nav
@@ -67,23 +67,26 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 
 /** Single-key commands — no chord state. Shifted letters arrive uppercase and
  *  simply miss every entry here (except the intentional `'G'`), so a held
- *  Shift never fires an accidental action. */
-const SINGLE_KEY_COMMANDS: Readonly<Record<string, NavCommand>> = {
-  j: 'nextPost',
-  ArrowDown: 'nextPost',
-  k: 'prevPost',
-  ArrowUp: 'prevPost',
-  ArrowLeft: 'spatialLeft',
-  h: 'spatialLeft',
-  ArrowRight: 'spatialRight',
-  o: 'openPost',
-  Enter: 'openPost',
-  d: 'downloadPost',
-  l: 'likePost',
-  r: 'replyPost',
-  t: 'repostPost',
-  G: 'lastPost',
-}
+ *  Shift never fires an accidental action. A `Map`, not a `Record`: looking up
+ *  an arbitrary key event's `key` string needs a plain "present or not" read
+ *  (`.get` returns `NavCommand | undefined` for any string), not a dictionary
+ *  contract for keys that are only ever these ten literals. */
+const SINGLE_KEY_COMMANDS = new Map<string, NavCommand>([
+  ['j', 'nextPost'],
+  ['ArrowDown', 'nextPost'],
+  ['k', 'prevPost'],
+  ['ArrowUp', 'prevPost'],
+  ['ArrowLeft', 'spatialLeft'],
+  ['h', 'spatialLeft'],
+  ['ArrowRight', 'spatialRight'],
+  ['o', 'openPost'],
+  ['Enter', 'openPost'],
+  ['d', 'downloadPost'],
+  ['l', 'likePost'],
+  ['r', 'replyPost'],
+  ['t', 'repostPost'],
+  ['G', 'lastPost'],
+])
 
 /**
  * Map one key event to a {@link NavCommand}. Modified keypresses
@@ -92,17 +95,13 @@ const SINGLE_KEY_COMMANDS: Readonly<Record<string, NavCommand>> = {
  * chord is cancelled. A pending chord otherwise completes on the second `g`
  * (`firstPost`) or falls through, evaluating the new key normally.
  */
-export function commandForKey(
-  state: KeymapState,
-  key: string,
-  ctx: KeyContext,
-): { state: KeymapState; command: NavCommand | null } {
+export function commandForKey(state: KeymapState, key: string, ctx: KeyContext) {
   if (ctx.ctrlKey || ctx.metaKey || ctx.altKey) return { state: idleKeymap, command: null }
   if (state.pendingG) {
     return key === 'g'
       ? { state: idleKeymap, command: 'firstPost' }
-      : { state: idleKeymap, command: SINGLE_KEY_COMMANDS[key] ?? null }
+      : { state: idleKeymap, command: SINGLE_KEY_COMMANDS.get(key) ?? null }
   }
   if (key === 'g') return { state: { pendingG: true }, command: null }
-  return { state, command: SINGLE_KEY_COMMANDS[key] ?? null }
+  return { state, command: SINGLE_KEY_COMMANDS.get(key) ?? null }
 }

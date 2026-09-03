@@ -14,6 +14,11 @@ import {
 import { makeConvexHttpPort, type ConvexPort } from '../convex'
 import { classifySyncError, describeSyncOk } from '../status'
 import { makeFetchServiceLive, type FetchService } from '@/packages/kernel/fetch-service'
+import type { JsonValue } from '@/packages/schema'
+
+/** `RequestInit.body` is `BodyInit | null | undefined`; every request this port
+ *  sends is JSON-stringified text, so narrow to that before `JSON.parse`. */
+const isStringBody = (body: BodyInit | null | undefined): body is string => typeof body === 'string'
 
 /**
  * End-to-end metadata sync (ADR-0009): the REAL outbox reducer feeds the REAL
@@ -53,15 +58,15 @@ function fakeDeployment(opts: { secret?: string; failTimes?: number; http503?: b
   const store = new Map<string, SyncEvent>()
   let remainingFailures = opts.failTimes ?? 0
   const requiredSecret = opts.secret
-  const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+  const fetchImpl: typeof fetch = async (_url, init) => {
     if (remainingFailures > 0) {
       remainingFailures -= 1
       if (opts.http503) return new Response('', { status: 503 })
       return new Response('', { status: 200 }) // network ok but...
     }
-    const { args } = JSON.parse(String(init?.body)) as {
-      args: { events: SyncEvent[]; secret?: string }
-    }
+    const body = init?.body
+    if (!isStringBody(body)) throw new Error('expected a string request body')
+    const { args }: { args: { events: SyncEvent[]; secret?: string } } = JSON.parse(body)
     if (requiredSecret !== undefined && args.secret !== requiredSecret) {
       return new Response(
         JSON.stringify({
@@ -81,19 +86,39 @@ function fakeDeployment(opts: { secret?: string; failTimes?: number; http503?: b
       JSON.stringify({ status: 'success', value: { received: args.events.length, inserted } }),
       { status: 200 },
     )
-  }) as unknown as typeof fetch
+  }
   return { layer: makeFetchServiceLive(fetchImpl), store }
 }
 
 const sendBatch = (
   port: ConvexPort,
   layer: Layer.Layer<FetchService>,
-  events: unknown[],
+  events: ReadonlyArray<SyncEvent>,
   secret: string,
-): Promise<unknown> =>
+): Promise<JsonValue> =>
   Effect.runPromise(
-    port.mutation('sync:recordEvents', { events, secret }).pipe(Effect.provide(layer)),
+    port
+      // `events` may carry an absent optional `media` field, which JsonValue
+      // can't express as a type — round-trip through JSON once, exactly as it
+      // will anyway once `port.mutation` serializes it for the wire.
+      .mutation('sync:recordEvents', JSON.parse(JSON.stringify({ events, secret })))
+      .pipe(Effect.provide(layer)),
   )
+
+/** Result of one drain attempt: the updated outbox, whether it succeeded, and —
+ *  on failure — the error `classifySyncError` can turn into an actionable line. */
+interface DrainResult {
+  readonly state: OutboxState
+  readonly ok: boolean
+  readonly error?: Error | string
+}
+
+/** Narrow a `DrainResult`'s optional error for `classifySyncError` — every call
+ *  site below asserts a drain that actually failed with a caught error. */
+function requireError(result: DrainResult): Error | string {
+  if (result.error === undefined) throw new Error('expected drainOnce to have captured an error')
+  return result.error
+}
 
 /** One drain attempt against the port; updates outbox + returns what happened. */
 async function drainOnce(
@@ -102,12 +127,12 @@ async function drainOnce(
   layer: Layer.Layer<FetchService>,
   secret: string,
   now: number,
-): Promise<{ state: OutboxState; ok: boolean; error?: unknown }> {
+): Promise<DrainResult> {
   if (!isReady(state, now)) return { state, ok: false }
   const batch = takeBatch(state)
   if (batch.length === 0) return { state, ok: true }
   try {
-    await sendBatch(port, layer, batch as unknown[], secret)
+    await sendBatch(port, layer, batch, secret)
     return {
       state: markDrained(
         state,
@@ -116,7 +141,8 @@ async function drainOnce(
       ok: true,
     }
   } catch (error) {
-    return { state: markFailed(state, now), ok: false, error }
+    const reason = error instanceof Error ? error : String(error)
+    return { state: markFailed(state, now), ok: false, error: reason }
   }
 }
 
@@ -143,7 +169,7 @@ describe('sync pipeline (e2e: events × outbox × convex port × idempotent back
     const dep = fakeDeployment({ secret: 's' })
 
     const first = await drainOnce(state, port, dep.layer, 's', 2_000)
-    await sendBatch(port, dep.layer, state.pending as unknown[], 's') // buggy re-send: no-op server-side
+    await sendBatch(port, dep.layer, state.pending, 's') // buggy re-send: no-op server-side
     expect(first.state.pending).toHaveLength(0)
     expect(dep.store.size).toBe(1) // deduped by eventId
   })
@@ -157,7 +183,7 @@ describe('sync pipeline (e2e: events × outbox × convex port × idempotent back
     expect(failed.ok).toBe(false)
     expect(failed.state.consecutiveFailures).toBe(1)
     expect(failed.state.pending).toHaveLength(1) // not dropped
-    expect(classifySyncError(failed.error)).toMatch(/try again shortly/)
+    expect(classifySyncError(requireError(failed))).toMatch(/try again shortly/)
 
     expect(isReady(failed.state, failed.state.nextAttemptAt - 1)).toBe(false)
 
@@ -175,7 +201,7 @@ describe('sync pipeline (e2e: events × outbox × convex port × idempotent back
 
     const r = await drainOnce(state, port, dep.layer, 'WRONG', 2_000)
     expect(r.ok).toBe(false)
-    expect(classifySyncError(r.error)).toMatch(/Secret rejected/)
+    expect(classifySyncError(requireError(r))).toMatch(/Secret rejected/)
     expect(dep.store.size).toBe(0)
   })
 

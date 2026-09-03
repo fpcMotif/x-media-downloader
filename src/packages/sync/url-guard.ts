@@ -104,13 +104,17 @@ export interface RejectedMediaItemUrl {
   readonly reason: string
 }
 
+/** Split result of {@link partitionAllowedMediaItems}: the items that passed the
+ *  CDN allow-list and those rejected (with reasons). */
+export interface PartitionedMediaItems {
+  readonly allowed: MediaItem[]
+  readonly rejected: RejectedMediaItemUrl[]
+}
+
 /** Fail-closed trust boundary for page-derived Media Items: split `items` into
  *  those whose URLs pass the CDN allow-list and those rejected (with reasons).
  *  A mixed batch keeps its valid items; non-guard errors still propagate. */
-export function partitionAllowedMediaItems(items: ReadonlyArray<MediaItem>): {
-  readonly allowed: MediaItem[]
-  readonly rejected: RejectedMediaItemUrl[]
-} {
+export function partitionAllowedMediaItems(items: ReadonlyArray<MediaItem>): PartitionedMediaItems {
   const allowed: MediaItem[] = []
   const rejected: RejectedMediaItemUrl[] = []
 

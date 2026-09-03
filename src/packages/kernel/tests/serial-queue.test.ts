@@ -3,7 +3,7 @@ import { makeSerialQueue } from '../serial-queue'
 
 const deferred = <T = void>() => {
   let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
+  let reject!: (reason: Error) => void
   const promise = new Promise<T>((res, rej) => {
     resolve = res
     reject = rej
@@ -44,7 +44,7 @@ describe('makeSerialQueue', () => {
   })
 
   it('routes a rejected pushed task to onError', async () => {
-    const onError = vi.fn<(error: unknown) => void>()
+    const onError = vi.fn<(error: Error) => void>()
     const q = makeSerialQueue(onError)
     const err = new Error('boom')
     q.push(async () => {
@@ -85,7 +85,7 @@ describe('makeSerialQueue', () => {
   })
 
   it('run rejects to the caller, still observes via onError, and the chain survives', async () => {
-    const onError = vi.fn<(error: unknown) => void>()
+    const onError = vi.fn<(error: Error) => void>()
     const log: number[] = []
     const q = makeSerialQueue(onError)
     const err = new Error('nope')
@@ -118,7 +118,7 @@ describe('makeSerialQueue', () => {
   })
 
   it('run: dropping the returned promise of a rejecting task still observes and survives', async () => {
-    const onError = vi.fn<(error: unknown) => void>()
+    const onError = vi.fn<(error: Error) => void>()
     const log: number[] = []
     const q = makeSerialQueue(onError)
     const err = new Error('dropped')
@@ -144,7 +144,7 @@ describe('makeSerialQueue', () => {
   })
 
   it('routes a synchronous throw inside a pushed task to onError and survives', async () => {
-    const onError = vi.fn<(error: unknown) => void>()
+    const onError = vi.fn<(error: Error) => void>()
     const log: number[] = []
     const q = makeSerialQueue(onError)
     const err = new Error('sync-throw')

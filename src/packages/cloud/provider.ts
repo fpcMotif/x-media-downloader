@@ -92,10 +92,10 @@ const DROPBOX_PROVIDER: CloudProvider = {
 }
 
 /** The provider registry — the single source of provider identity, keyed by id. */
-export const PROVIDERS: Record<CloudProviderId, CloudProvider> = {
+export const PROVIDERS = {
   gdrive: GDRIVE_PROVIDER,
   dropbox: DROPBOX_PROVIDER,
-}
+} satisfies Record<CloudProviderId, CloudProvider>
 
 /** Best-effort revocation per a provider's {@link RevokeRecipe}. Never throws —
  *  the caller clears local tokens regardless; skips an empty credential. */

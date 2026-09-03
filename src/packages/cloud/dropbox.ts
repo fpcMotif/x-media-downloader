@@ -1,10 +1,11 @@
 import { Context, Effect, Layer } from 'effect'
 import { streamInChunks } from './lib/chunk'
-import { authHeader, CloudHttpError, errText, okJson, runUpload } from './lib/http'
+import { authHeader, CloudHttpError, errText, jsonAs, okJson, runUpload } from './lib/http'
 import { FetchService } from '@/packages/kernel/fetch-service'
 import { SourceFetch } from './lib/source-fetch'
 import { parseSource } from './lib/source'
 import { type UploadInput, type UploadOutcome } from './types'
+import type { JsonValue } from '@/packages/schema'
 
 /**
  * Dropbox v2 upload adapter (ADR-0013 §5, ADR-0017). Small media
@@ -29,7 +30,7 @@ interface FileMetadata {
 }
 
 /** Dropbox-API-Arg must be ASCII; escape any non-ASCII char as \uXXXX. */
-function asciiArg(obj: unknown): string {
+function asciiArg(obj: JsonValue): string {
   // oxlint-disable-next-line no-control-regex -- intentionally match all non-ASCII
   return JSON.stringify(obj).replace(/[^\x00-\x7F]/g, (c) => {
     const code = c.charCodeAt(0)
@@ -74,7 +75,7 @@ export const DropboxUploaderLive = Layer.effect(
     const rpc = (
       accessToken: string,
       endpoint: string,
-      arg: unknown,
+      arg: JsonValue,
       body: Uint8Array<ArrayBuffer>,
     ): Promise<Response> =>
       http.fetchPromise(`${CONTENT}/${endpoint}`, {
@@ -136,7 +137,7 @@ export const DropboxUploaderLive = Layer.effect(
                   status: res.status,
                   body: await errText(res),
                 })
-              sessionId = ((await res.json()) as { session_id: string }).session_id
+              sessionId = (await jsonAs<{ session_id: string }>(res)).session_id
               cursorOffset = chunk.length
               startedClosed = info.isLast
               return
@@ -155,7 +156,7 @@ export const DropboxUploaderLive = Layer.effect(
                   status: res.status,
                   body: await errText(res),
                 })
-              meta = (await res.json()) as FileMetadata
+              meta = await jsonAs<FileMetadata>(res)
               cursorOffset += chunk.length
               return
             }
@@ -188,7 +189,7 @@ export const DropboxUploaderLive = Layer.effect(
                 status: res.status,
                 body: await errText(res),
               })
-            meta = (await res.json()) as FileMetadata
+            meta = await jsonAs<FileMetadata>(res)
           }
           /* v8 ignore next -- streamInChunks always emits a final chunk, so meta is set */
           if (meta === null) throw new Error('dropbox: session finished without metadata')

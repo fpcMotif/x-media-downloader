@@ -28,6 +28,11 @@ export interface TabMessagingPort {
   ) => Promise<{ readonly url?: string } | undefined>
 }
 
+/** Narrow a tab's reply to one that actually carries a non-empty fresh url. */
+function hasFreshUrl(res: { readonly url?: string } | undefined): res is { readonly url: string } {
+  return typeof res?.url === 'string' && res.url.length > 0
+}
+
 /** Ask an open X tab's content script for a fresher CDN url before retry. */
 export async function refreshMediaUrlFromTabs(
   item: MediaItem,
@@ -45,7 +50,7 @@ export async function refreshMediaUrlFromTabs(
     try {
       // oxlint-disable-next-line no-await-in-loop -- sequential: first tab to answer wins; don't fan out to every tab
       const res = await port.sendTabMessage(tab.id, message)
-      if (typeof res?.url === 'string' && res.url.length > 0) return res.url
+      if (hasFreshUrl(res)) return res.url
     } catch {
       /* tab has no injected content script */
     }

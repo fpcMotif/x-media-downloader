@@ -60,11 +60,11 @@ export interface MutationEvent {
  *  module's OWN emitted format, but parsing it back is still worth failing safe on,
  *  the same posture `bodyHasErrorSignal`/`tweetIdFromMutationRequestBody` take on
  *  page-controlled input. */
-function parseTokens(detail: string): Record<string, string> {
-  const out: Record<string, string> = {}
+function parseTokens(detail: string): ReadonlyMap<string, string> {
+  const out = new Map<string, string>()
   for (const tok of detail.split(' ')) {
     const eq = tok.indexOf('=')
-    if (eq > 0) out[tok.slice(0, eq)] = tok.slice(eq + 1)
+    if (eq > 0) out.set(tok.slice(0, eq), tok.slice(eq + 1))
   }
   return out
 }
@@ -78,6 +78,18 @@ const MUTATION_OPS: ReadonlySet<string> = new Set([
   'UnfavoriteTweet',
 ])
 
+function isMembershipScope(val: string): val is MembershipScope {
+  return MEMBERSHIP_SCOPES.has(val)
+}
+
+function isClearOrigin(val: string): val is ClearOrigin {
+  return CLEAR_ORIGINS.has(val)
+}
+
+function isReleaseMutationOp(val: string): val is ReleaseMutationOp {
+  return MUTATION_OPS.has(val)
+}
+
 /** A resolve event, parsed back from the `clear-flip` / `clear-already-cleared` line
  *  it was originally emitted as — `null` for every other stage, an already-cleared
  *  line with `alreadyCleared=false` (not actually a resolve), or a line with
@@ -90,27 +102,27 @@ export function parseClearResolveEvent(entry: DownloadTraceEntry): ClearResolveE
   if (entry.tweetId === undefined) return null
   if (entry.stage !== 'clear-flip' && entry.stage !== 'clear-already-cleared') return null
   const tokens = parseTokens(entry.detail ?? '')
-  const scope = tokens['scope']
-  const origin = tokens['origin']
-  if (scope === undefined || !MEMBERSHIP_SCOPES.has(scope)) return null
-  if (origin === undefined || !CLEAR_ORIGINS.has(origin)) return null
+  const scope = tokens.get('scope')
+  const origin = tokens.get('origin')
+  if (scope === undefined || !isMembershipScope(scope)) return null
+  if (origin === undefined || !isClearOrigin(origin)) return null
   if (entry.stage === 'clear-already-cleared') {
-    if (tokens['alreadyCleared'] !== 'true') return null
+    if (tokens.get('alreadyCleared') !== 'true') return null
     return {
       tweetId: entry.tweetId,
-      scope: scope as MembershipScope,
+      scope,
       t: entry.t,
-      origin: origin as ClearOrigin,
+      origin,
       confirmBranch: 'already-cleared',
     }
   }
-  const arm = tokens['arm']
+  const arm = tokens.get('arm')
   if (arm !== 'testid' && arm !== 'detached') return null
   return {
     tweetId: entry.tweetId,
-    scope: scope as MembershipScope,
+    scope,
     t: entry.t,
-    origin: origin as ClearOrigin,
+    origin,
     confirmBranch: arm,
   }
 }
@@ -123,15 +135,15 @@ export function parseMutationEvent(entry: DownloadTraceEntry): MutationEvent | n
   if (entry.tweetId === undefined) return null
   if (entry.stage !== 'clear-mutation') return null
   const tokens = parseTokens(entry.detail ?? '')
-  const op = tokens['op']
-  const status = tokens['status']
-  const error = tokens['error']
-  if (op === undefined || !MUTATION_OPS.has(op)) return null
+  const op = tokens.get('op')
+  const status = tokens.get('status')
+  const error = tokens.get('error')
+  if (op === undefined || !isReleaseMutationOp(op)) return null
   if (status === undefined || !/^\d+$/.test(status)) return null
   if (error !== 'true' && error !== 'false') return null
   return {
     tweetId: entry.tweetId,
-    op: op as ReleaseMutationOp,
+    op,
     status: Number(status),
     error: error === 'true',
     t: entry.t,
@@ -177,6 +189,11 @@ export type CorrelationVerdict =
       readonly mutation: MutationEvent
     }
 
+type FormattedCorrelationVerdict = {
+  readonly stage: string
+  readonly detail: string
+}
+
 /** Correlate ONE mutation against the current resolve table. Pure: never mutates
  *  `state` (the caller decides separately whether/when to `recordResolve`), issues
  *  nothing, retries nothing, touches no Ledger/Worklist state — passive bookkeeping
@@ -213,19 +230,16 @@ export function correlateMutation(
  *  (mirrors every other `clear-*` emitter in this codebase, which never bakes its
  *  own timestamp into the detail string twice). `elapsedMs` is signed: negative
  *  means the mutation preceded the resolve. */
-export function formatCorrelationVerdict(verdict: CorrelationVerdict): {
-  readonly stage: string
-  readonly detail: string
-} {
+export function formatCorrelationVerdict(verdict: CorrelationVerdict) {
   const { resolve, mutation } = verdict
   const head = `scope=${resolve.scope} origin=${resolve.origin} confirmBranch=${resolve.confirmBranch} resolvedAt=${resolve.t} elapsedMs=${mutation.t - resolve.t}`
   if (verdict.kind === 'server-reject') {
     return {
       stage: 'clear-server-reject',
       detail: `${head} status=${mutation.status} error=${mutation.error}`,
-    }
+    } satisfies FormattedCorrelationVerdict
   }
-  return { stage: 'clear-re-add-fingerprint', detail: head }
+  return { stage: 'clear-re-add-fingerprint', detail: head } satisfies FormattedCorrelationVerdict
 }
 
 /** Running mismatch counters — DERIVED fresh from a `DownloadTraceEntry[]` (the

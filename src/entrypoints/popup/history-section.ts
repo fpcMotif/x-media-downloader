@@ -21,17 +21,17 @@ export function groupByAuthor(
 }
 
 /** Project a record into the fields the popup renders (display time = finished ?? queued). */
-export function formatRecord(r: DownloadRecord): {
-  title: string
-  link: string
-  status: DownloadRecord['status']
-  whenMs: number
-} {
+export function formatRecord(r: DownloadRecord) {
   return {
     title: r.filename,
     link: r.media.url,
     status: r.status,
     whenMs: r.finishedAt ?? r.queuedAt,
+  } satisfies {
+    title: string
+    link: string
+    status: DownloadRecord['status']
+    whenMs: number
   }
 }
 
@@ -52,6 +52,11 @@ export const confirmEraseHistoryCopy = (count: number): string =>
 export async function fetchHistory(): Promise<ReadonlyArray<DownloadRecord>> {
   return browser.runtime
     .sendMessage({ _tag: 'HistoryRequest' })
-    .then((r) => (r as { records?: ReadonlyArray<DownloadRecord> } | null)?.records ?? [])
+    .then((r) => {
+      // SAFETY: `HistoryRequest`'s only handler (background.ts) always replies
+      // with `{ records: DownloadRecord[] }` decoded from the history store —
+      // never a different shape or a missing `records` field.
+      return (r as { records?: ReadonlyArray<DownloadRecord> } | null)?.records ?? []
+    })
     .catch(() => [])
 }

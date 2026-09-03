@@ -1,11 +1,11 @@
 import { Context, Effect, Layer, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { Settings as SettingsSchema, type Settings, type JsonValue } from '@/packages/schema'
 import { normalizeFilenameTemplate } from './lib/template-migration'
 
 const defaults: Settings = Schema.decodeUnknownSync(SettingsSchema)({})
 
-const item = storage.defineItem<unknown>('local:settings', { fallback: {} })
+const item = storage.defineItem<JsonValue>('local:settings', { fallback: {} })
 
 /** Decode stored settings; fall back to defaults on a SchemaError (corrupt data).
  *  Also heals a persisted LEGACY DEFAULT `filenameTemplate` (any default this
@@ -14,7 +14,7 @@ const item = storage.defineItem<unknown>('local:settings', { fallback: {} })
  *  through (get/set/watch), so every reader sees the migrated value without
  *  needing its own normalization pass. Pure + idempotent: a user-customized
  *  template is never touched. */
-function decode(raw: unknown): Settings {
+function decode(raw: JsonValue): Settings {
   try {
     /* v8 ignore next -- defineItem's fallback ({}) means raw is never null/undefined here; `?? {}` is unreachable */
     const decoded = Schema.decodeUnknownSync(SettingsSchema)(raw ?? {})

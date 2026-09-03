@@ -10,16 +10,37 @@ import {
 } from './hover'
 
 // Stub for getBoundingClientRect (happy-dom computes no layout) — the
-// hover-resolve.test.ts idiom.
-const rect = (left: number, top: number, width: number, height: number) => (): DOMRect =>
-  ({ top, left, right: left + width, bottom: top + height, width, height }) as DOMRect
+// hover-resolve.test.ts idiom: every DOMRect member present, so this is a
+// real DOMRect and needs no cast.
+const rect = (left: number, top: number, width: number, height: number) => (): DOMRect => ({
+  x: left,
+  y: top,
+  top,
+  left,
+  right: left + width,
+  bottom: top + height,
+  width,
+  height,
+  toJSON: () => ({}),
+})
 
-const adapter = {
+// holdsKey only touches mediaKeyFromUrl; the rest are inert stubs so this
+// builds a real, fully-typed PlatformAdapter with no cast (hover-resolve.test.ts idiom).
+const adapter: PlatformAdapter = {
+  platform: 'threads',
+  hostMatch: [],
+  cdnHosts: [],
+  matchesUrl: () => false,
   mediaKeyFromUrl: (url: string) => {
     const m = /\/([^/?#]+)\.(?:jpg|webp|png)(?:\?|$)/.exec(url)
     return m ? m[1]! : null
   },
-} as unknown as PlatformAdapter
+  isTrackedResponseUrl: () => false,
+  detectFromResponse: () => [],
+  detectRenderedMedia: () => [],
+  resolveHoverItem: () => null,
+  canResolveHoverItem: () => false,
+}
 
 afterEach(() => {
   document.body.innerHTML = ''

@@ -1,4 +1,4 @@
-import type { MediaItem, Platform } from '@/packages/schema'
+import type { JsonValue, MediaItem, Platform } from '@/packages/schema'
 
 /** One CDN host a platform serves Original-quality media bytes from.
  *  `includeSubdomains` extends the exact `host` to dot-anchored subdomains
@@ -53,7 +53,7 @@ export interface PlatformAdapter {
   isTrackedResponseUrl(url: string, requestHeaders?: Readonly<Record<string, string>>): boolean
 
   /** Parse a tracked response body into MediaItems. */
-  detectFromResponse(url: string, json: unknown): MediaItem[]
+  detectFromResponse(url: string, json: JsonValue): MediaItem[]
 
   /** DOM layer: media already rendered in a timeline/list, for the initial
    *  paint before any network capture lands. */
@@ -92,7 +92,7 @@ export interface PlatformAdapter {
    * Instagram's numeric `pk` vs its `/p/{code}/` shortcode). X has no such
    * split (its tweetId IS its DOM-derivable id), so it omits this.
    */
-  extractPostCodes?(json: unknown): ReadonlyMap<string, string>
+  extractPostCodes?(json: JsonValue): ReadonlyMap<string, string>
 
   /**
    * Optional: a DOM-derived, STABLE (across repeated calls on the same

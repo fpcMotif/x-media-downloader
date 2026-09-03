@@ -16,10 +16,10 @@
  *  reversible-by-toggling-back action (250ms). */
 export type GuardKind = 'one-shot' | 'pre-committed'
 
-const GUARD_MS: Record<GuardKind, number> = {
+const GUARD_MS = {
   'one-shot': 450,
   'pre-committed': 250,
-}
+} satisfies Record<GuardKind, number>
 
 const AUTO_DISARM_MS = 8000
 const UNDERLINE_LEAD_MS = 2000

@@ -1,3 +1,5 @@
+import type { JsonObject, JsonValue } from '@/packages/schema'
+
 /** The Promise-land background Convex transport seam — one `mutation` call, built
  *  per drain from settings, shared by `sync-outbox.ts` (metadata mirror) and
  *  `capture-outbox.ts` (tweet-harvest mirror). Its canonical live implementation is
@@ -6,5 +8,5 @@
  *  `CloudRuntimePort` (a different transport, for byte uploads) — do not fold that into
  *  this one. */
 export interface ConvexPort {
-  mutation(name: string, args: unknown): Promise<unknown>
+  mutation(name: string, args: JsonObject): Promise<JsonValue>
 }

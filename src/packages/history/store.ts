@@ -1,4 +1,5 @@
 import { Schema } from 'effect'
+import type { JsonValue } from '@/packages/schema'
 import { DownloadRecord, applyOutcome } from './record'
 
 /** Beyond this many records the oldest are ring-evicted. */
@@ -12,7 +13,7 @@ export type DownloadStore = typeof DownloadStoreSchema.Type
 export const emptyStore: DownloadStore = { records: [] }
 
 /** Decode stored history; fall back to empty on a SchemaError (corrupt data). */
-export function decodeStore(raw: unknown): DownloadStore {
+export function decodeStore(raw: JsonValue): DownloadStore {
   try {
     return Schema.decodeUnknownSync(DownloadStoreSchema)(raw)
   } catch {

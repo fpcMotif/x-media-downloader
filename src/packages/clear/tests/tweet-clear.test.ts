@@ -53,7 +53,7 @@ describe.each([
     log = withLog ? vi.fn<(...args: unknown[]) => void>() : undefined
     escapes = []
     onKey = (e) => {
-      if ((e as KeyboardEvent).key === 'Escape') escapes.push('esc')
+      if (e instanceof KeyboardEvent && e.key === 'Escape') escapes.push('esc')
     }
     document.addEventListener('keydown', onKey)
   })
@@ -446,10 +446,8 @@ describe('makeTweetClearer diagnostics ports', () => {
     const activeSel = `[data-testid="${CLEAR_TESTID.bookmark.active}"]`
     const real = art.querySelectorAll.bind(art)
     let reads = 0
-    art.querySelectorAll = ((selectors: string) =>
-      selectors === activeSel && ++reads > 1
-        ? real('[data-xmd-no-such-attr]')
-        : real(selectors)) as typeof art.querySelectorAll
+    art.querySelectorAll = (selectors: string) =>
+      selectors === activeSel && ++reads > 1 ? real('[data-xmd-no-such-attr]') : real(selectors)
     const { clock, sleeps } = makeClock()
     expect(await make(clock).clearScope('1', 'bookmark', 'settle')).toBe(false)
     expect(sole()).toEqual([
@@ -562,5 +560,109 @@ describe('makeTweetClearer diagnostics ports', () => {
     expect(await run(true)).toEqual(bare)
     expect(trace).toHaveBeenCalledTimes(scenarios.length)
     expect(onFlip).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * The `witness` port's precedence over the DOM (spec: server mutation verdict >
+ * DOM flip). `makeMutationWitness` is exercised for real in mutation-witness.test.ts;
+ * here a hand-scripted stub pins exactly WHICH poll tick the verdict lands on, so
+ * the sleep-count assertions prove the witness is consulted BEFORE the DOM check on
+ * every iteration, not just eventually.
+ */
+describe('makeTweetClearer witness precedence', () => {
+  const BOOKMARKED = '<button data-testid="removeBookmark"></button>'
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  /** A `Pick<MutationWitness,'outcome'>` stub returning one scripted verdict per
+   *  call, in order (the last entry repeats once exhausted). */
+  const scriptedWitness = (results: ReadonlyArray<'ok' | 'error' | 'none'>) => {
+    let i = 0
+    return {
+      outcome: vi.fn<() => 'ok' | 'error' | 'none'>(
+        () => results[Math.min(i++, results.length - 1)] ?? 'none',
+      ),
+    } satisfies { outcome: ReturnType<typeof vi.fn<() => 'ok' | 'error' | 'none'>> }
+  }
+
+  it('witness ok on poll 2 with no DOM flip ⇒ true, arm=mutation traced, onFlip called', async () => {
+    document.body.append(tweet('1', BOOKMARKED)) // never flips in the DOM
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const onFlip = vi.fn<NonNullable<TweetClearerDeps['onFlip']>>()
+    const witness = scriptedWitness(['none', 'ok'])
+    const { clock, sleeps } = makeClock()
+    const clearer = makeTweetClearer({ document, clock, trace, onFlip, witness })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(true)
+    // Stopped at poll 2 — never burned the rest of the DOM poll budget.
+    expect(sleeps).toEqual([200, 200])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![0]).toBe('clear-flip')
+    expect(trace.mock.calls[0]![1]).toContain('arm=mutation')
+    expect(onFlip.mock.calls).toEqual([['1', 'bookmark', 'settle']])
+  })
+
+  it('witness error despite an ALREADY-present DOM flip ⇒ false, reason=mutation-error', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const { clock, sleeps, onTick } = makeClock()
+    // The DOM flips on the very first tick — proves the witness check, which runs
+    // BEFORE `flipConfirmed` on every iteration, wins even when the DOM would also
+    // have confirmed on this same tick.
+    onTick((n) => {
+      if (n === 1) art.querySelector('[data-testid="removeBookmark"]')!.remove()
+    })
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const onFlip = vi.fn<NonNullable<TweetClearerDeps['onFlip']>>()
+    const witness = scriptedWitness(['error'])
+    const clearer = makeTweetClearer({ document, clock, trace, onFlip, witness })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(false)
+    expect(sleeps).toEqual([200])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![0]).toBe('clear-attempt-fail')
+    expect(trace.mock.calls[0]![1]).toContain('reason=mutation-error')
+    expect(onFlip).not.toHaveBeenCalled()
+  })
+
+  it('witness stays "none" through the whole DOM budget ⇒ falls through to the ordinary no-flip failure', async () => {
+    document.body.append(tweet('1', BOOKMARKED))
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const witness = scriptedWitness(['none'])
+    const { clock } = makeClock()
+    const clearer = makeTweetClearer({ document, clock, trace, witness })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(false)
+    // 6 DOM polls + 4 extra witness-only polls, every one consulting the witness.
+    expect(witness.outcome).toHaveBeenCalledTimes(10)
+    expect(trace.mock.calls.at(-1)?.[0]).toBe('clear-attempt-fail')
+    expect(trace.mock.calls.at(-1)?.[1]).toContain('reason=no-flip')
+  })
+
+  it('extra witness-only polls confirm a late mutation after the DOM budget exhausts', async () => {
+    document.body.append(tweet('1', BOOKMARKED)) // never flips in the DOM
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const onFlip = vi.fn<NonNullable<TweetClearerDeps['onFlip']>>()
+    // 6 DOM-poll 'none's, then 'none' + 'ok' in the extra witness-only polls.
+    const witness = scriptedWitness(['none', 'none', 'none', 'none', 'none', 'none', 'none', 'ok'])
+    const { clock, sleeps } = makeClock()
+    const clearer = makeTweetClearer({ document, clock, trace, onFlip, witness })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(true)
+    // 6×200ms DOM polls, then 2×250ms extra witness-only polls before the 'ok'.
+    expect(sleeps).toEqual([200, 200, 200, 200, 200, 200, 250, 250])
+    expect(trace.mock.calls.at(-1)?.[0]).toBe('clear-flip')
+    expect(trace.mock.calls.at(-1)?.[1]).toContain('arm=mutation')
+    expect(onFlip.mock.calls).toEqual([['1', 'bookmark', 'settle']])
+  })
+
+  it('no witness supplied ⇒ unchanged: no extra polls ever run, DOM-only verdict stands', async () => {
+    document.body.append(tweet('1', BOOKMARKED))
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const { clock, sleeps } = makeClock()
+    const clearer = makeTweetClearer({ document, clock, trace })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(false)
+    expect(sleeps).toEqual([200, 200, 200, 200, 200, 200])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![1]).toContain('reason=no-flip')
   })
 })

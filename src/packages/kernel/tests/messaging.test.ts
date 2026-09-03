@@ -32,11 +32,9 @@ describe('isContextInvalidatedError', () => {
     }
   })
 
-  it('handles non-Error values without throwing', () => {
+  it('handles a thrown string without throwing', () => {
     expect(isContextInvalidatedError('Extension context invalidated')).toBe(true)
     expect(isContextInvalidatedError('just a string')).toBe(false)
-    expect(isContextInvalidatedError(null)).toBe(false)
-    expect(isContextInvalidatedError(undefined)).toBe(false)
   })
 })
 

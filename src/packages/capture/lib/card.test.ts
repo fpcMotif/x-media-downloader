@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { expandText, linksFromEntities, cardMeta, type Link } from './card'
+import { expandText, linksFromEntities, cardMeta, type Link, type UrlEntity } from './card'
 import cardFixture from '@/test/fixtures/tweet-with-card.json'
+import type { JsonValue } from '@/packages/schema'
 
 describe('expandText', () => {
   it('replaces every t.co inline by its expanded_url with an astral/emoji char before the offset', () => {
@@ -11,18 +12,20 @@ describe('expandText', () => {
     const fullText = `👍 ${first} and ${second} fin`
     const i1 = fullText.indexOf(first)
     const i2 = fullText.indexOf(second)
-    const urlEntities = [
+    // Contextually typed as `UrlEntity[]` so `indices` tuple-infers from the
+    // array literal position — no per-entry assertion needed.
+    const urlEntities: UrlEntity[] = [
       {
         url: first,
         expanded_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
         display_url: 'youtube.com/watch?v=dQw4w9…',
-        indices: [i1, i1 + first.length] as [number, number],
+        indices: [i1, i1 + first.length],
       },
       {
         url: second,
         expanded_url: 'https://arxiv.org/abs/1706.03762',
         display_url: 'arxiv.org/abs/1706.03762',
-        indices: [i2, i2 + second.length] as [number, number],
+        indices: [i2, i2 + second.length],
       },
     ]
 
@@ -71,13 +74,14 @@ describe('linksFromEntities', () => {
   })
 })
 
-const cardNodeOf = (key: 'flatCardTweet' | 'unifiedCardTweet') =>
-  (cardFixture as Record<string, { data: { tweetResult: { result: { card: unknown } } } }>)[key]!
-    .data.tweetResult.result.card
+// The fixture's own JSON-inferred type already has both keys, so indexing by
+// the literal union needs no assertion.
+const cardNodeOf = (key: 'flatCardTweet' | 'unifiedCardTweet'): JsonValue =>
+  cardFixture[key].data.tweetResult.result.card
 
 /** A card node whose `unified_card` binding carries `inner` verbatim — the lever for
  *  driving the unified-card reader's every malformed-shape branch. */
-const unifiedWith = (inner: unknown) =>
+const unifiedWith = (inner: JsonValue) =>
   cardMeta({
     legacy: {
       binding_values: [{ key: 'unified_card', value: { string_value: JSON.stringify(inner) } }],

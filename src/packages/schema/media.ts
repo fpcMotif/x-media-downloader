@@ -21,11 +21,11 @@ export const MediaItem = Schema.Struct({
   author: Schema.String,
   type: MediaType,
   url: Schema.String,
-  previewUrl: Schema.optional(Schema.String),
+  previewUrl: Schema.optionalKey(Schema.String),
   ext: Schema.String,
   index: Schema.Number,
-  width: Schema.optional(Schema.Number),
-  height: Schema.optional(Schema.Number),
-  bitrate: Schema.optional(Schema.Number),
+  width: Schema.optionalKey(Schema.Number),
+  height: Schema.optionalKey(Schema.Number),
+  bitrate: Schema.optionalKey(Schema.Number),
 })
 export type MediaItem = typeof MediaItem.Type

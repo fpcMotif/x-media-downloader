@@ -5,7 +5,11 @@ import type { UploadSummary } from './upload-job'
  * The drain is fire-and-forget so downloads never block on a cloud upload; these
  * helpers turn ledger counts + the last error into one actionable line.
  */
-export interface CloudUploadStatus {
+/** A `type` alias, not an `interface`: this crosses the background↔popup message
+ *  boundary as a `JsonValue`, and only a `type`'s object-literal shape gets
+ *  TypeScript's implicit index signature there — a same-shape `interface` fails
+ *  that assignability with "index signature for type 'string' is missing". */
+export type CloudUploadStatus = {
   readonly summary: UploadSummary
   /** The most recent non-skipped failure reason, if any. */
   readonly lastError: string | null

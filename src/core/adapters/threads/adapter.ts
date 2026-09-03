@@ -151,16 +151,16 @@ export function isTrackedThreadsResponseUrl(
  *  aria-labels from Meta's shared design system — a non-English UI simply
  *  resolves no control, and the command fails safe (nothing happens, never a
  *  wrong click). */
-const THREADS_NAV_ACTION_LABELS: Readonly<Record<NavAction, readonly string[]>> = {
+const THREADS_NAV_ACTION_LABELS = {
   like: ['Like'],
   reply: ['Reply'],
   repost: ['Repost'],
-}
+} satisfies Readonly<Record<NavAction, readonly string[]>>
 
-const THREADS_NAV_FLIPPED_LABELS: Readonly<Record<'like' | 'repost', string>> = {
+const THREADS_NAV_FLIPPED_LABELS = {
   like: 'Unlike',
   repost: 'Reposted',
-}
+} satisfies Readonly<Record<'like' | 'repost', string>>
 
 const threadsNav: AdapterNav = {
   postSelector: THREADS_POST_SELECTOR,

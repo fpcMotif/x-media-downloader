@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Option } from 'effect'
 import { streamInChunks } from './lib/chunk'
-import { authHeader, CloudHttpError, errText, okJson, runUpload } from './lib/http'
+import { authHeader, CloudHttpError, errText, jsonAs, okJson, runUpload } from './lib/http'
 import { FetchService, type FetchError } from '@/packages/kernel/fetch-service'
 import { FolderCache } from './lib/folder-cache'
 import { SourceFetch } from './lib/source-fetch'
@@ -187,7 +187,7 @@ export const DriveUploaderLive = Layer.effect(
                     status: res.status,
                     body: await errText(res),
                   })
-                fileId = ((await res.json()) as { id?: string }).id ?? null
+                fileId = (await jsonAs<{ id?: string }>(res)).id ?? null
               } else if (res.status !== 308) {
                 throw new CloudHttpError({
                   provider: 'drive',

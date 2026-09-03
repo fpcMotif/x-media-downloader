@@ -1,5 +1,5 @@
 import { storage } from 'wxt/utils/storage'
-import { CLOUD_PROVIDERS, type Settings } from '@/packages/schema'
+import { CLOUD_PROVIDERS, type JsonValue, type Settings } from '@/packages/schema'
 import { setSettings } from '@/packages/settings'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { makeConvexHttpPort } from '@/packages/sync/convex'
@@ -95,12 +95,14 @@ export interface CloudRuntimePort {
   }): Promise<{ readonly accessToken: string; readonly expiresAt: number }>
   /** Run the control-plane mirror mutation. The gate + the best-effort swallow stay
    *  on the SHELL side (mirrorUploadJob), so a test injects a throwing mirror to
-   *  prove the drain survives. */
+   *  prove the drain survives. The resolved value is never read — only whether
+   *  the call succeeded or threw — so the contract is `void`, not the mutation's
+   *  actual (unread) response body. */
   mirror(input: {
     readonly deploymentUrl: string
     readonly jobs: ReadonlyArray<ReturnType<typeof toWireUploadJob>>
     readonly secret: string
-  }): Promise<unknown>
+  }): Promise<void>
 }
 
 /** Durable wake-up alarm seam (one backoff alarm; the entrypoint owns the listener). */
@@ -153,7 +155,7 @@ export interface CloudUpload {
 
 export interface CloudUploadDeps {
   /** Build the queue's error observer (traces through the background's chain). */
-  readonly queueError: (label: string) => (err: unknown) => void
+  readonly queueError: (label: string) => (err: Error) => void
   /** Read the current settings blob. */
   readonly getSettings: () => Promise<Settings>
   /** The fetch the provider/Convex ports use (bound for the MV3 SW; see fetch.ts).
@@ -208,7 +210,7 @@ interface ProviderTokens {
 
 /** The live UploadJob-ledger store: the durable `local:cloudUploadJobs` wxt item. */
 const defaultLedgerStore = (): LedgerStore => {
-  const item = storage.defineItem<unknown>('local:cloudUploadJobs', { fallback: null })
+  const item = storage.defineItem<JsonValue>('local:cloudUploadJobs', { fallback: null })
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
@@ -233,7 +235,9 @@ const defaultRuntimePort = (fetchImpl: typeof fetch): CloudRuntimePort => {
     refreshAccessToken: (input) => runtime.runPromise(refreshAccessToken(input)),
     mirror: ({ deploymentUrl, jobs, secret }) => {
       const port = makeConvexHttpPort({ deploymentUrl })
-      return runtime.runPromise(port.mutation('uploads:recordUploadJobs', { jobs, secret }))
+      return runtime
+        .runPromise(port.mutation('uploads:recordUploadJobs', { jobs, secret }))
+        .then(() => undefined)
     },
   }
 }
@@ -282,6 +286,11 @@ const cloudTargetFor = (m: { readonly ext: string }, filename: string): UploadTa
 
 const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
   const f = PROVIDERS[p].fields
+  // SAFETY: `f.*` are `keyof Settings`, so `s[f.*]` types as the UNION of every
+  // Settings field's value type; each `PROVIDERS[p].fields` entry is wired (in
+  // provider.ts) to a specific string/number Settings key, so the actual runtime
+  // value always matches the annotation here even though the static type can't
+  // narrow through a computed key.
   return {
     clientId: s[f.clientId] as string,
     accessToken: s[f.accessToken] as string,
@@ -306,7 +315,9 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
   // Durable local UploadJob ledger (the source of truth) — drained FIFO through a
   // serialized chain like the metadata outbox. Bytes go extension → provider
-  // (Drive/Dropbox) directly; nothing here transits Convex.
+  // (Drive/Dropbox) directly; nothing here transits Convex. `makeSerialQueue`
+  // itself normalizes a rejection to a real `Error` before calling `onError`, so
+  // `deps.queueError`'s own `(err: Error) => void` contract needs no wrapper here.
   const uploadQueue = makeSerialQueue(deps.queueError('upload'))
   const storeQueue = makeSerialQueue(deps.queueError('uploadStore'))
   const readLedger = (): Promise<JobLedger> =>
@@ -495,7 +506,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
     if (!ranOut) {
       // Guard hit with work likely remaining — continue on a fresh serialized task.
-      void uploadQueue.push(() => drainUploadJobs())
+      uploadQueue.push(() => drainUploadJobs())
       return
     }
     // Nothing ready now: arm a wake-up for the soonest backoff deadline (if any),

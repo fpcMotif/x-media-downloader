@@ -8,7 +8,7 @@ import {
   type CloudRuntimePort,
   type CloudUploadDeps,
 } from './cloud-upload'
-import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { Settings as SettingsSchema, type Settings, type JsonValue } from '@/packages/schema'
 import { PROVIDERS } from '@/packages/cloud/provider'
 import {
   decodeLedger,
@@ -74,9 +74,9 @@ const seedJobs = (n: number): JobLedger => {
 
 /** An in-memory ledger box — the LedgerStore seam's test adapter. `delay` widens the
  *  read-modify-write window so a serialization regression would surface as a lost update. */
-function fakeLedger(initial: unknown = null, opts: { delay?: boolean } = {}) {
+function fakeLedger(initial: JsonValue = null, opts: { delay?: boolean } = {}) {
   const box = {
-    value: initial as unknown,
+    value: initial,
     gets: 0,
     sets: 0,
     async get() {
@@ -84,7 +84,7 @@ function fakeLedger(initial: unknown = null, opts: { delay?: boolean } = {}) {
       if (opts.delay) await tick()
       return box.value
     },
-    async set(value: unknown) {
+    async set(value: JsonValue) {
       box.sets += 1
       if (opts.delay) await tick()
       box.value = value
@@ -109,7 +109,7 @@ const fakeRuntime = (over: Partial<CloudRuntimePort> = {}): CloudRuntimePort => 
     accessToken: 'fresh-access',
     expiresAt: NOW + 3_600_000,
   })),
-  mirror: vi.fn<CloudRuntimePort['mirror']>(async () => ({})),
+  mirror: vi.fn<CloudRuntimePort['mirror']>(async () => {}),
   ...over,
 })
 
@@ -131,7 +131,10 @@ const fakeAuthFlow = (over: Partial<AuthFlowPort> = {}): AuthFlowPort => ({
   ...over,
 })
 
-const dummyFetch = (async () => new Response()) as unknown as typeof fetch
+// SAFETY: `fetchImpl` is only ever forwarded to the default cloud runtime, which
+// every test here overrides via `runtime`/`ledger` — this stub is never actually
+// called, so its shape only needs to satisfy `typeof fetch`'s type.
+const dummyFetch = (async () => new Response()) as typeof fetch
 
 /** Construct the shell with safe fake ports by default; a test overrides what it asserts on. */
 const makeCU = (over: Partial<CloudUploadDeps> = {}) =>
@@ -415,7 +418,9 @@ describe('disconnectProvider', () => {
   it('revokes at the provider BEFORE wiping local tokens', async () => {
     const order: string[] = []
     const fetchImpl = vi.fn<typeof fetch>(async (url) => {
-      order.push(`revoke:${String(url)}`)
+      // SAFETY: `revokeViaRecipe` (the only caller here) always builds its request
+      // from a plain string endpoint URL, never a `Request`/`URL` object.
+      order.push(`revoke:${url as string}`)
       return new Response()
     })
     const setSettings = vi.fn<NonNullable<CloudUploadDeps['setSettings']>>(async (patch) => {

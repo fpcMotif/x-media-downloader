@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fakeBrowser } from 'wxt/testing'
+import { fakeBrowser } from 'wxt/testing/fake-browser'
 import { Schema } from 'effect'
 import { makeClearSession, type ClearSessionDeps, type SettleClock } from './clear-session'
-import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { Settings as SettingsSchema, type Settings, type JsonValue } from '@/packages/schema'
 import { decodeWorklist, isCleared } from '@/packages/clear/worklist'
 
 // ── Settle Port seam ──
@@ -394,7 +394,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
   })
 
   it('resolves an authorized Drain result through the claim and worklist', async () => {
-    let stored: unknown = null
+    let stored: JsonValue = null
     const { deps, settleProbe, clock } = makeDeps({
       worklistStorage: {
         get: async () => stored,
@@ -419,7 +419,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
   })
 
   it('a noop Drain result never marks the worklist cleared', async () => {
-    let stored: unknown = null
+    let stored: JsonValue = null
     const { deps, settleProbe, clock } = makeDeps({
       dispatchClear: vi.fn<ClearSessionDeps['dispatchClear']>(async () => [
         { scope: 'bookmark' as const, ok: true, noop: true },
@@ -489,7 +489,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
 const linesFor = (
   trace: ReturnType<typeof vi.fn<ClearSessionDeps['trace']>>,
   stage: string,
-): string[] => trace.mock.calls.filter((c) => c[0] === stage).map((c) => String(c[1]?.detail ?? ''))
+): string[] => trace.mock.calls.filter((c) => c[0] === stage).map((c) => c[1]?.detail ?? '')
 
 const traceSpy = () => vi.fn<ClearSessionDeps['trace']>()
 
@@ -659,7 +659,7 @@ describe('Release diagnostics', () => {
   })
 
   it('returns the ids the worklist skipped, not just how many', async () => {
-    let stored: unknown = null
+    let stored: JsonValue = null
     const { deps } = makeDeps({
       worklistStorage: {
         get: async () => stored,
@@ -690,7 +690,7 @@ describe('Release diagnostics', () => {
   })
 
   it('keeps each list independent — a bookmark release never skips the likes sweep', async () => {
-    let stored: unknown = null
+    let stored: JsonValue = null
     const { deps } = makeDeps({
       worklistStorage: {
         get: async () => stored,

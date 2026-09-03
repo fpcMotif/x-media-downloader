@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "off",
+    "suspicious": "off",
+    "perf": "off",
+    "pedantic": "off",
+    "style": "off",
+    "restriction": "off",
+    "nursery": "off"
+  },
+  "rules": {
+    "complexity": ["warn", { "max": 15, "variant": "modified" }]
+  },
+  "ignorePatterns": [".output", ".wxt", "study", ".agents", ".claude", "backend", "src/components/ui"]
+}

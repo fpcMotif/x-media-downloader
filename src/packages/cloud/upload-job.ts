@@ -1,6 +1,6 @@
 import { Schema } from 'effect'
 import { type BackoffPolicy, expBackoffMs } from '@/packages/kernel/backoff'
-import { CLOUD_PROVIDERS } from '@/packages/schema'
+import { CLOUD_PROVIDERS, type JsonValue } from '@/packages/schema'
 import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
 
 /**
@@ -75,8 +75,8 @@ export const UploadJobSchema = Schema.Struct({
   leaseSeq: Schema.Number,
   verifiedAt: Schema.NullOr(Schema.Number),
   error: Schema.NullOr(Schema.String),
-  remoteId: Schema.optional(Schema.String),
-  bytes: Schema.optional(Schema.Number),
+  remoteId: Schema.optionalKey(Schema.String),
+  bytes: Schema.optionalKey(Schema.Number),
 })
 export type UploadJob = typeof UploadJobSchema.Type
 
@@ -127,7 +127,7 @@ const UPLOAD_BACKOFF = {
 export const backoffMs = (attempts: number): number => expBackoffMs(attempts - 1, UPLOAD_BACKOFF)
 
 /** Decode a persisted ledger; fall back to empty on corrupt data (outbox idiom). */
-export function decodeLedger(raw: unknown): JobLedger {
+export function decodeLedger(raw: JsonValue): JobLedger {
   try {
     return Schema.decodeUnknownSync(LedgerSchema)(raw ?? [])
   } catch {
@@ -343,7 +343,7 @@ export function applyUploadOutcome(
   token: number,
   now: number,
   outcome: UploadOutcome,
-): { readonly ledger: JobLedger; readonly settled: UploadJob | undefined } {
+) {
   let next: JobLedger
   if (outcome.kind === 'success') {
     next = recordSuccess(ledger, jobId, token, now, {
@@ -375,7 +375,11 @@ export function retry(ledger: JobLedger, jobId: string, now: number): Transition
   return { ledger: replaceJob(ledger, reset), changed: true }
 }
 
-export interface UploadSummary {
+/** A `type` alias, not an `interface`: nested inside `CloudUploadStatus`, which
+ *  crosses the background↔popup message boundary as a `JsonValue` — only a
+ *  `type`'s object-literal shape gets TypeScript's implicit index signature
+ *  there. */
+export type UploadSummary = {
   readonly pending: number
   readonly uploading: number
   readonly succeeded: number
@@ -420,8 +424,8 @@ export const WireUploadJob = Schema.Struct({
   attempts: Schema.Number,
   at: Schema.Number,
   remotePath: Schema.String,
-  bytes: Schema.optional(Schema.Number),
-  error: Schema.optional(Schema.String),
+  bytes: Schema.optionalKey(Schema.Number),
+  error: Schema.optionalKey(Schema.String),
 })
 export type WireUploadJob = typeof WireUploadJob.Type
 

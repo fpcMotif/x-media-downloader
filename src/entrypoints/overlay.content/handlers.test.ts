@@ -17,9 +17,33 @@ import {
   savedStatusVisible,
   dispatchOverlayMessage,
 } from './handlers'
-import type { HandlerDeps, ReleaseRun, TrackedSendResult } from './handlers'
-import type { MediaItem } from '@/packages/schema'
+import type { HandlerDeps, SendResponse, TrackedSendResult } from './handlers'
+import type { ClearTweetResponse, MediaItem } from '@/packages/schema'
+import type { PlatformAdapter } from '../../core/adapters/types'
+import type { makeDetectionStore } from '../../core/adapters/detection-store'
+import type { BadgeState } from '@/packages/overlay/badge'
 import { findArticle } from '@/packages/clear/clearer'
+
+/** What a test actually wants to fix about `HandlerDeps` for one scenario. Every
+ *  nested port (`adapter`, `location`, `store`, `getBadge`'s return) stays partial
+ *  too, since no test ever needs a real `PlatformAdapter`/`Location`/`DetectionStore`
+ *  /`BadgeState`, only the one or two fields the handler under test reads off them. */
+type HandlerDepsOverrides = Partial<
+  Omit<HandlerDeps, 'adapter' | 'location' | 'store' | 'getBadge'>
+> & {
+  readonly adapter?: Partial<PlatformAdapter>
+  readonly location?: Partial<Location>
+  readonly store?: Partial<ReturnType<typeof makeDetectionStore>>
+  readonly getBadge?: () => Partial<BadgeState>
+}
+
+/** Build a `HandlerDeps` test double from only the fields a scenario needs.
+ *  SAFETY: every field left unset here is simply never read by the handler(s)
+ *  exercised in this suite — each call site (or the shared `makeDeps`/`depsWith`
+ *  helpers below) documents which fields matter for its path, same contract the
+ *  old per-call-site `as unknown as HandlerDeps` casts asserted individually. */
+const makeHandlerDeps = (overrides: HandlerDepsOverrides = {}): HandlerDeps =>
+  overrides as HandlerDeps
 
 // handleClearTweet is the (previously untested) wiring that decides WHICH scopes
 // actually click on a clear: page-scoped by default, membership-driven under
@@ -50,10 +74,10 @@ function tweetArticle(opts: {
   return el
 }
 
-/** Only the fields handleClearTweet reads — cast a partial (it never touches the
- *  badge/launcher/store state the full HandlerDeps carries). `platform` defaults to
- *  'x' so every pre-existing call site (all X-DOM scenarios) is unaffected by the
- *  gate; tests proving the off-X no-op override it. */
+/** Only the fields handleClearTweet reads (it never touches the badge/launcher/store
+ *  state the full HandlerDeps carries). `platform` defaults to 'x' so every
+ *  pre-existing call site (all X-DOM scenarios) is unaffected by the gate; tests
+ *  proving the off-X no-op override it. */
 const makeDeps = (over: {
   clearScope: HandlerDeps['clearScope']
   pathname: string
@@ -61,15 +85,15 @@ const makeDeps = (over: {
   reportClear?: HandlerDeps['reportClear']
   platform?: 'x' | 'instagram' | 'threads'
 }): HandlerDeps =>
-  ({
+  makeHandlerDeps({
     adapter: { platform: over.platform ?? 'x' },
     document,
-    location: { pathname: over.pathname } as Location,
+    location: { pathname: over.pathname },
     clearScope: over.clearScope,
     clearLog: () => {},
     reportClear: over.reportClear ?? (() => {}),
     runDrain: over.runDrain ?? (async () => []),
-  }) as unknown as HandlerDeps
+  })
 
 /** Drive the handler to completion (it returns true sync, then resolves async). */
 const run = (
@@ -81,14 +105,13 @@ const run = (
     asPageScope?: 'bookmark' | 'like'
     probe?: boolean
   },
-): Promise<{
-  mounted: boolean
-  drainEligible: boolean
-  results: { scope: string; ok: boolean; noop?: boolean }[]
-  page?: { articles: number; cells: number; ready: string; error: boolean }
-}> =>
+): Promise<ClearTweetResponse> =>
   new Promise((resolve) => {
-    handleClearTweet(message, deps, (r) => resolve(r as never))
+    // SAFETY: handleClearTweet only ever answers its sendResponse with a
+    // ClearTweetResponse (see every `sendResponse({ _tag: 'ClearTweetResponse', ... })`
+    // call in its implementation) — this helper exists solely to await that one
+    // handler's async reply for the tests below.
+    handleClearTweet(message, deps, (r) => resolve(r as ClearTweetResponse))
   })
 
 const ALL: string[] = ['bookmark', 'like', 'notInterested']
@@ -107,11 +130,11 @@ const mediaItem = (id: string, postId: string): MediaItem => ({
 /** The two inputs `handleSavedStatusUpdate` actually reads — the setting gate and the
  *  platform tag; everything else on HandlerDeps is unreachable from that path. */
 const depsWith = (active: boolean, platform: 'x' | 'instagram' | 'threads' = 'x'): HandlerDeps =>
-  ({
+  makeHandlerDeps({
     adapter: { platform },
     document,
     savedStatusActive: () => active,
-  }) as unknown as HandlerDeps
+  })
 
 describe('handleClearTweet — scope wiring', () => {
   beforeEach(() => {
@@ -564,13 +587,13 @@ describe('handleClearVisible — platform gate', () => {
 
   it('REGRESSION: non-x adapter short-circuits to a not-x reason, never scans the DOM', () => {
     document.body.append(tweetArticle({ tweetId: '201', bookmarked: true }))
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'instagram' },
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       clearLog: () => {},
-    } as unknown as HandlerDeps
+    })
     const querySpy = vi.spyOn(document, 'querySelectorAll')
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    const sendResponse = vi.fn<SendResponse>()
     const kept = handleClearVisible({}, deps, sendResponse)
     expect(sendResponse).toHaveBeenCalledWith({
       _tag: 'ClearVisibleResponse',
@@ -590,14 +613,14 @@ describe('handleClearWholeList — platform gate', () => {
 
   it('REGRESSION: non-x adapter short-circuits to a not-x reason, never scrolls or scans', () => {
     document.body.append(tweetArticle({ tweetId: '202', bookmarked: true }))
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'threads' },
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       document,
       clearLog: () => {},
-    } as unknown as HandlerDeps
+    })
     const querySpy = vi.spyOn(document, 'querySelectorAll')
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    const sendResponse = vi.fn<SendResponse>()
     const kept = handleClearWholeList({}, deps, sendResponse)
     expect(sendResponse).toHaveBeenCalledWith({
       _tag: 'ClearWholeListResponse',
@@ -626,14 +649,14 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
   it('ClearVisibleRequest emits clear-visible-start and clear-visible-end with the cleared count', async () => {
     document.body.append(tweetArticle({ tweetId: '301', bookmarked: true }))
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       clearLog: () => {},
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = handleClearVisible({}, deps, sendResponse)
     expect(kept).toBe(true)
     await vi.runAllTimersAsync()
@@ -658,14 +681,14 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
       )
     document.body.append(article)
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       clearLog: () => {},
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     handleClearVisible({}, deps, sendResponse)
     await vi.runAllTimersAsync()
 
@@ -679,14 +702,14 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
   it('ClearVisibleRequest traces clear-attempt-fail reason=no-flip with origin=manual when the control never changes', async () => {
     document.body.append(tweetArticle({ tweetId: '311', bookmarked: true }))
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       clearLog: () => {},
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     handleClearVisible({}, deps, sendResponse)
     await vi.runAllTimersAsync()
 
@@ -707,14 +730,14 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
       document.body.append(tweetArticle({ tweetId: '312', bookmarked: true }))
     })
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       clearLog: () => {},
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     handleClearVisible({}, deps, sendResponse)
     await vi.runAllTimersAsync()
 
@@ -726,14 +749,14 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
 
   it('ClearVisibleRequest off a list page emits a terminal clear-visible-skip, never a dangling start', async () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/home' } as Location,
+      location: { pathname: '/home' },
       clearLog: () => {},
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     handleClearVisible({}, deps, sendResponse)
     await vi.runAllTimersAsync()
 
@@ -751,15 +774,15 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
   // and `releasedListResult` each branch on this one literal, so a rename on one side
   // only would silently return that row to rendering a success-shaped count.
   it('REGRESSION: both Release refusals off a list page carry the identical not-list-page reason', async () => {
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/home' } as Location,
+      location: { pathname: '/home' },
       clearLog: () => {},
       reportClear: () => {},
-    } as unknown as HandlerDeps
-    const visible = vi.fn<(r: unknown) => void>()
-    const list = vi.fn<(r: unknown) => void>()
+    })
+    const visible = vi.fn<SendResponse>()
+    const list = vi.fn<SendResponse>()
     handleClearVisible({}, deps, visible)
     handleClearWholeList({}, deps, list)
     await vi.runAllTimersAsync()
@@ -773,13 +796,13 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
 
   it('ClearWholeListRequest on a bookmarks-page fake emits clear-list stage events through reportClear', async () => {
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'x' },
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = handleClearWholeList({}, deps, sendResponse)
     expect(kept).toBe(true)
     await vi.runAllTimersAsync()
@@ -795,20 +818,20 @@ describe('handleClearVisible / handleClearWholeList — production trace (report
     document.body.append(article)
     // A mutable Location stand-in: the SPA route change happens DURING the run, which
     // is exactly what the request-time closure could not see.
-    const location = { pathname: '/jack/likes' } as Location
+    const location = { pathname: '/jack/likes' }
     const clicks = vi.fn<() => void>()
     article.addEventListener('click', () => {
       clicks()
       location.pathname = '/i/bookmarks'
     })
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'x' },
       document,
       location,
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = handleClearWholeList({}, deps, sendResponse)
     expect(kept).toBe(true)
     await vi.runAllTimersAsync()
@@ -838,21 +861,21 @@ describe('handleDrainPage — Release diagnostics', () => {
     })
     const sendTracked = vi.fn<HandlerDeps['sendTracked']>(() => sendDone)
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       store: { values: () => items },
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       clearLog: () => {},
       sendTracked,
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
 
     const kept = handleDrainPage({}, deps, sendResponse)
 
     expect(kept).toBe(true)
     // The run is minted HERE and handed down: that argument, not the page URL, is what
     // authorizes the single terminal (written by sendTracked).
-    const release = sendTracked.mock.calls[0]![1] as ReleaseRun
+    const release = sendTracked.mock.calls[0]![1]!
     expect(release).toEqual({ scope: 'bookmark', items: 2, run: expect.any(String) })
     expect(reportClear.mock.calls).toEqual([
       ['clear-download-page-start', `scope=bookmark run=${release.run} items=2`],
@@ -885,14 +908,14 @@ describe('handleDrainPage — Release diagnostics', () => {
       throw new Error('background boom')
     })
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       store: { values: () => items },
-      location: { pathname: '/jack/likes' } as Location,
+      location: { pathname: '/jack/likes' },
       clearLog: () => {},
       sendTracked,
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
 
     handleDrainPage({}, deps, sendResponse)
     await Promise.resolve()
@@ -906,7 +929,7 @@ describe('handleDrainPage — Release diagnostics', () => {
       ok: false,
       onList: true,
     })
-    const release = sendTracked.mock.calls[0]![1] as ReleaseRun
+    const release = sendTracked.mock.calls[0]![1]!
     expect(reportClear.mock.calls).toEqual([
       ['clear-download-page-start', `scope=like run=${release.run} items=1`],
       [
@@ -924,21 +947,21 @@ describe('handleDrainPage — Release diagnostics', () => {
       skipped: 0,
     }))
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       store: { values: () => items },
       // A profile timeline: pageScope is None, so the page owns no list to release.
-      location: { pathname: '/lambda_functor' } as Location,
+      location: { pathname: '/lambda_functor' },
       clearLog: () => {},
       sendTracked,
       reportClear,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
 
     handleDrainPage({}, deps, sendResponse)
     await Promise.resolve()
     await Promise.resolve()
 
-    const release = sendTracked.mock.calls[0]![1] as ReleaseRun
+    const release = sendTracked.mock.calls[0]![1]!
     // `scope: null` is what makes the terminal a skip — and the items still go out.
     expect(release.scope).toBeNull()
     expect(sendTracked).toHaveBeenCalledWith(items, release)
@@ -966,14 +989,14 @@ describe('handleDrainPage — Release diagnostics', () => {
       admitted: 0,
       skipped: 3,
     }))
-    const deps = {
+    const deps = makeHandlerDeps({
       store: { values: () => items },
-      location: { pathname: '/jack/likes' } as Location,
+      location: { pathname: '/jack/likes' },
       clearLog: () => {},
       sendTracked,
       reportClear: vi.fn<HandlerDeps['reportClear']>(),
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
 
     handleDrainPage({}, deps, sendResponse)
     await Promise.resolve()
@@ -996,21 +1019,21 @@ describe('handleDrainPage — Release diagnostics', () => {
       admitted: 0,
       skipped: 0,
     }))
-    const deps = {
+    const deps = makeHandlerDeps({
       store: { values: () => [] },
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       clearLog: () => {},
       sendTracked,
       reportClear: vi.fn<HandlerDeps['reportClear']>(),
-    } as unknown as HandlerDeps
+    })
 
-    handleDrainPage({}, deps, vi.fn<(r: unknown) => void>())
-    handleDrainPage({}, deps, vi.fn<(r: unknown) => void>())
+    handleDrainPage({}, deps, vi.fn<SendResponse>())
+    handleDrainPage({}, deps, vi.fn<SendResponse>())
     await Promise.resolve()
     await Promise.resolve()
 
-    const first = (sendTracked.mock.calls[0]![1] as ReleaseRun).run
-    const second = (sendTracked.mock.calls[1]![1] as ReleaseRun).run
+    const first = sendTracked.mock.calls[0]![1]!.run
+    const second = sendTracked.mock.calls[1]![1]!.run
     expect(second).not.toBe(first)
   })
 })
@@ -1058,14 +1081,18 @@ describe('handleSweepPage — Release diagnostics', () => {
     )
     const items601 = [mediaItem('m601a', '601'), mediaItem('m601b', '601')]
     const items602 = [mediaItem('m602', '602')]
-    const sendMessage = vi.fn<(_message: unknown) => Promise<{ queued: number; skipped: number }>>(
-      async () => ({ queued: 2, skipped: 1 }),
-    )
+    // No parameter: this stub never reads what's sent, and a zero-arg function
+    // assigns cleanly to every overload of the real (multi-overload) sendMessage —
+    // unlike a one-parameter stub, which forces a choice among them.
+    const sendMessage = vi.fn<() => Promise<{ queued: number; skipped: number }>>(async () => ({
+      queued: 2,
+      skipped: 1,
+    }))
     vi.spyOn(browser.runtime, 'sendMessage').mockImplementation(sendMessage)
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       store: {
         valuesForTweet: (tweetId: string) =>
           tweetId === '601' ? items601 : tweetId === '602' ? items602 : [],
@@ -1073,7 +1100,7 @@ describe('handleSweepPage — Release diagnostics', () => {
       clearLog: () => {},
       notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
       reportClear,
-    } as unknown as HandlerDeps
+    })
 
     const response = await new Promise<unknown>((resolve) => {
       expect(handleSweepPage({}, deps, resolve)).toBe(true)
@@ -1099,20 +1126,21 @@ describe('handleSweepPage — Release diagnostics', () => {
   it('Sweep reports failure when the queue channel is gone', async () => {
     document.body.append(tweetArticle({ tweetId: '603', bookmarked: true }))
     const items603 = [mediaItem('m603', '603')]
-    const sendMessage = vi.fn<(_message: unknown) => Promise<never>>(async () => {
+    // No parameter — see the sibling test above for why.
+    const sendMessage = vi.fn<() => Promise<never>>(async () => {
       throw new Error('Extension context invalidated')
     })
     vi.spyOn(browser.runtime, 'sendMessage').mockImplementation(sendMessage)
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
     const notifyContextLost = vi.fn<HandlerDeps['notifyContextLost']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       store: { valuesForTweet: () => items603 },
       clearLog: () => {},
       notifyContextLost,
       reportClear,
-    } as unknown as HandlerDeps
+    })
 
     const response = await new Promise<unknown>((resolve) => {
       handleSweepPage({}, deps, resolve)
@@ -1141,19 +1169,19 @@ describe('handleSweepPage — Release diagnostics', () => {
   it('Sweep reports failure when the background answers its handler-failed envelope', async () => {
     document.body.append(tweetArticle({ tweetId: '604', bookmarked: true }))
     const items604 = [mediaItem('m604', '604')]
-    vi.spyOn(browser.runtime, 'sendMessage').mockImplementation((async () => ({
+    vi.spyOn(browser.runtime, 'sendMessage').mockImplementation(async () => ({
       ok: false,
       error: 'handler failed',
-    })) as never)
+    }))
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       store: { valuesForTweet: () => items604 },
       clearLog: () => {},
       notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
       reportClear,
-    } as unknown as HandlerDeps
+    })
 
     const response = await new Promise<unknown>((resolve) => {
       handleSweepPage({}, deps, resolve)
@@ -1177,19 +1205,19 @@ describe('handleSweepPage — Release diagnostics', () => {
   // nothing still answers a well-formed reply, and must keep the empty-sweep copy.
   it('Sweep treats a genuine zero-queued reply as a real, successful answer', async () => {
     document.body.append(tweetArticle({ tweetId: '605', bookmarked: true }))
-    vi.spyOn(browser.runtime, 'sendMessage').mockImplementation((async () => ({
+    vi.spyOn(browser.runtime, 'sendMessage').mockImplementation(async () => ({
       queued: 0,
       skipped: 0,
-    })) as never)
+    }))
     const reportClear = vi.fn<HandlerDeps['reportClear']>()
-    const deps = {
+    const deps = makeHandlerDeps({
       document,
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       store: { valuesForTweet: () => [mediaItem('m605', '605')] },
       clearLog: () => {},
       notifyContextLost: vi.fn<HandlerDeps['notifyContextLost']>(),
       reportClear,
-    } as unknown as HandlerDeps
+    })
 
     const response = await new Promise<unknown>((resolve) => {
       handleSweepPage({}, deps, resolve)
@@ -1246,7 +1274,7 @@ describe('sweepSavedStatus — Saved ✓ chip', () => {
   it('fail-safe: an empty reply marks nothing', async () => {
     document.body.append(tweetArticle({ tweetId: '1' }))
     const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(
-      async () => [] as string[],
+      async (): Promise<string[]> => [],
     )
 
     await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
@@ -1373,13 +1401,13 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
       index: 0,
       type: 'photo',
     }
-    const deps = {
+    const deps = makeHandlerDeps({
       store: { get: () => undefined, addDetected: () => [], values: () => [] },
       adapter: { platform: 'x', detectRenderedMedia: () => [] },
       document,
-      location: { pathname: '/home' } as Location,
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+      location: { pathname: '/home' },
+    })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = dispatchOverlayMessage(raw, deps, sendResponse)
     expect(kept).toBe(true)
     expect(sendResponse).toHaveBeenCalledWith({ _tag: 'RefreshMediaUrlResponse' })
@@ -1392,13 +1420,13 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
       scopes: ['bookmark', 'like'],
       allLists: true,
     }
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'instagram' },
       document,
-      location: { pathname: '/jack' } as Location,
+      location: { pathname: '/jack' },
       clearLog: () => {},
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     dispatchOverlayMessage(raw, deps, sendResponse)
     expect(sendResponse).toHaveBeenCalledWith({
       _tag: 'ClearTweetResponse',
@@ -1410,12 +1438,12 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
 
   it('ClearVisibleRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
     const raw = { _tag: 'ClearVisibleRequest' }
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'threads' },
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       clearLog: () => {},
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     dispatchOverlayMessage(raw, deps, sendResponse)
     expect(sendResponse).toHaveBeenCalledWith({
       _tag: 'ClearVisibleResponse',
@@ -1426,13 +1454,13 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
 
   it('ClearWholeListRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
     const raw = { _tag: 'ClearWholeListRequest' }
-    const deps = {
+    const deps = makeHandlerDeps({
       adapter: { platform: 'threads' },
-      location: { pathname: '/i/bookmarks' } as Location,
+      location: { pathname: '/i/bookmarks' },
       document,
       clearLog: () => {},
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = dispatchOverlayMessage(raw, deps, sendResponse)
     expect(kept).toBe(true)
     expect(sendResponse).toHaveBeenCalledWith({
@@ -1444,9 +1472,9 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
 
   it('DrainPageRequest — the real popup usePageAction literal ({ _tag }) dispatches', async () => {
     const raw = { _tag: 'DrainPageRequest' }
-    const deps = {
+    const deps = makeHandlerDeps({
       store: { values: () => [] },
-      location: { pathname: '/home' } as Location,
+      location: { pathname: '/home' },
       clearLog: () => {},
       sendTracked: vi.fn<HandlerDeps['sendTracked']>(async () => ({
         ok: true,
@@ -1454,8 +1482,8 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
         skipped: 0,
       })),
       reportClear: vi.fn<HandlerDeps['reportClear']>(),
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = dispatchOverlayMessage(raw, deps, sendResponse)
     expect(kept).toBe(true)
     // The reply is TERMINAL now — it lands only after the send settles.
@@ -1473,12 +1501,12 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
 
   it('SweepPageRequest — the real popup usePageAction literal ({ _tag }) dispatches', () => {
     const raw = { _tag: 'SweepPageRequest' }
-    const deps = {
-      location: { pathname: '/jack' } as Location, // not a Likes/Bookmarks list page
+    const deps = makeHandlerDeps({
+      location: { pathname: '/jack' }, // not a Likes/Bookmarks list page
       clearLog: () => {},
       reportClear: vi.fn<HandlerDeps['reportClear']>(),
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = dispatchOverlayMessage(raw, deps, sendResponse)
     expect(kept).toBe(true)
     expect(sendResponse).toHaveBeenCalledWith({
@@ -1492,14 +1520,14 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
 
   it('a Message-union broadcast tag the table also handles (TransferOutcome) still dispatches', () => {
     const raw = { _tag: 'TransferOutcome', requestId: 'req-1', outcome: 'complete', at: 1234 }
-    const deps = {
+    const deps = makeHandlerDeps({
       getBadge: () => ({ key: null }),
       getBadgeMedia: () => null,
       getBadgeRequestId: () => null,
       getBadgeRequestKey: () => null,
       getLauncherBatchIds: () => new Set<string>(),
-    } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    })
+    const sendResponse = vi.fn<SendResponse>()
     // handleTransferOutcome is fire-and-forget: `false`, distinct from the
     // `undefined` a DROPPED (decode-failed / unmapped) message returns below.
     expect(dispatchOverlayMessage(raw, deps, sendResponse)).toBe(false)
@@ -1507,8 +1535,8 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
 
   it('drops a malformed known-tag payload without dispatching, and warns UNCONDITIONALLY (parity with background.ts)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const deps = { adapter: { platform: 'x' } } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    const deps = makeHandlerDeps({ adapter: { platform: 'x' } })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = dispatchOverlayMessage(
       { _tag: 'ClearTweetRequest', tweetId: 5 },
       deps,
@@ -1524,8 +1552,8 @@ describe('dispatchOverlayMessage — decode gate + table dispatch', () => {
 
   it('drops an unknown/garbage tag without dispatching (warns only when a string tag exists to name)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const deps = { adapter: { platform: 'x' } } as unknown as HandlerDeps
-    const sendResponse = vi.fn<(r: unknown) => void>()
+    const deps = makeHandlerDeps({ adapter: { platform: 'x' } })
+    const sendResponse = vi.fn<SendResponse>()
     const kept = dispatchOverlayMessage({ _tag: 'NotARealTag', foo: 1 }, deps, sendResponse)
     expect(kept).toBeUndefined()
     expect(sendResponse).not.toHaveBeenCalled()
@@ -1565,7 +1593,7 @@ describe('clearMountedForScope — ghost-row skip', () => {
     document.body.innerHTML = ''
   })
 
-  it(`skips an id after ${'GHOST_NOFLIP_LIMIT'} consecutive no-flips and says so`, async () => {
+  it(`skips an id after GHOST_NOFLIP_LIMIT consecutive no-flips and says so`, async () => {
     const art = mountedPost('2085341199993565645')
     const ghosts = new Map<string, number>()
     const lines: Array<{ stage: string; tweetId?: string }> = []

@@ -6,6 +6,7 @@
  */
 import { Data, Effect, Option } from 'effect'
 import { FetchService, FetchError, makeFetchServiceLive } from '@/packages/kernel/fetch-service'
+import { type JsonObject, type JsonValue, isJsonObject } from '@/packages/schema'
 
 /**
  * A non-2xx answer from the deployment edge. `status` is the HTTP code so the
@@ -16,7 +17,7 @@ import { FetchService, FetchError, makeFetchServiceLive } from '@/packages/kerne
 export class ConvexHttpError extends Data.TaggedError('ConvexHttpError')<{
   readonly status: number
 }> {
-  get message(): string {
+  override get message(): string {
     return `convex: HTTP ${this.status}`
   }
 }
@@ -28,7 +29,7 @@ export class ConvexHttpError extends Data.TaggedError('ConvexHttpError')<{
 export class ConvexFunctionError extends Data.TaggedError('ConvexFunctionError')<{
   readonly errorMessage: string
 }> {
-  get message(): string {
+  override get message(): string {
     return this.errorMessage
   }
 }
@@ -37,7 +38,7 @@ export class ConvexFunctionError extends Data.TaggedError('ConvexFunctionError')
 export class ConvexMalformedError extends Data.TaggedError('ConvexMalformedError')<{
   readonly detail: string
 }> {
-  get message(): string {
+  override get message(): string {
     return this.detail
   }
 }
@@ -52,21 +53,21 @@ export type ConvexMutationError =
 export interface ConvexPort {
   readonly mutation: (
     path: string,
-    args: Record<string, unknown>,
-  ) => Effect.Effect<unknown, ConvexMutationError, FetchService>
+    args: JsonObject,
+  ) => Effect.Effect<JsonValue, ConvexMutationError, FetchService>
   readonly query: (
     path: string,
-    args: Record<string, unknown>,
-  ) => Effect.Effect<unknown, ConvexMutationError, FetchService>
+    args: JsonObject,
+  ) => Effect.Effect<JsonValue, ConvexMutationError, FetchService>
 }
 
 export interface ConvexFunctionCall {
   readonly path: string
-  readonly args: Record<string, unknown>
+  readonly args: JsonObject
   readonly format: 'json'
 }
 
-export function buildFunctionCall(path: string, args: Record<string, unknown>): ConvexFunctionCall {
+export function buildFunctionCall(path: string, args: JsonObject): ConvexFunctionCall {
   return { path, args, format: 'json' }
 }
 
@@ -84,13 +85,21 @@ export function convexOriginPattern(deploymentUrl: string): Option.Option<string
   }
 }
 
+/** Narrow one field of a parsed Convex envelope to a string. `| undefined`
+ *  because every property read off a `JsonObject` index signature can be
+ *  absent (`noUncheckedIndexedAccess`) — a missing key is exactly as
+ *  untrustworthy as a present-but-wrong-shaped one. Reused for both
+ *  `status`/`errorMessage` (here) and each element of a `string[]` query
+ *  result (`isJsonStringArray` below). */
+const isJsonString = (value: JsonValue | undefined): value is string => typeof value === 'string'
+
 /** Build a ConvexPort backed by HTTP against a Convex deployment. */
 export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): ConvexPort {
   const base = cfg.deploymentUrl.replace(/\/+$/, '')
   // Shared request+parse for both endpoints so `mutation` and `query` can never
   // drift in how they POST the envelope or classify a failure. `endpoint` is the
   // path after `/api` (`mutation` vs `query`).
-  const call = (endpoint: 'mutation' | 'query', path: string, args: Record<string, unknown>) =>
+  const call = (endpoint: 'mutation' | 'query', path: string, args: JsonObject) =>
     Effect.gen(function* () {
       const http = yield* FetchService
       const res = yield* http.fetch(`${base}/api/${endpoint}`, {
@@ -104,23 +113,39 @@ export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): Con
       // the other failures so the drain loop classifies it as a sync error instead
       // of surfacing an opaque parser stack trace.
       const body = yield* Effect.tryPromise({
-        try: () =>
-          res.json() as Promise<{ status?: string; value?: unknown; errorMessage?: string }>,
+        try: (): Promise<JsonValue> => res.json(),
         catch: () =>
           new ConvexMalformedError({ detail: 'convex: malformed response (invalid JSON body)' }),
       })
-      if (body.status === 'error')
-        return yield* new ConvexFunctionError({
-          errorMessage: body.errorMessage ?? 'convex: function error',
-        })
+      // The documented envelope is always an object; anything else (an array, a
+      // bare string/number) is a shape this port doesn't understand.
+      if (!isJsonObject(body))
+        return yield* new ConvexMalformedError({ detail: 'convex: malformed response' })
+      if (body.status === 'error') {
+        const errorMessage = isJsonString(body.errorMessage)
+          ? body.errorMessage
+          : 'convex: function error'
+        return yield* new ConvexFunctionError({ errorMessage })
+      }
       if (body.status !== 'success')
         return yield* new ConvexMalformedError({ detail: 'convex: malformed response' })
-      return body.value
+      // `value` is absent only on a malformed success envelope the schema never
+      // actually produces; `null` is the JSON-native "nothing here" already used
+      // throughout this module's own error detail literals.
+      return body.value ?? null
     })
   return {
     mutation: (path, args) => call('mutation', path, args),
     query: (path, args) => call('query', path, args),
   }
+}
+
+/** The Promise-land shape {@link makeConvexPromisePort} builds — a named contract
+ *  (mirrors the background's own `ConvexPort` seam) rather than an inline object
+ *  type, so its `mutation` return value keeps carrying `JsonValue` instead of
+ *  being reconstructed as an anonymous, evidence-discarding type. */
+export interface ConvexPromisePort {
+  readonly mutation: (name: string, args: JsonObject) => Promise<JsonValue>
 }
 
 /** The Effect→Promise airlock: the canonical live implementation of the background's
@@ -130,15 +155,34 @@ export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): Con
 export function makeConvexPromisePort(
   cfg: { readonly deploymentUrl: string },
   fetchImpl: typeof fetch,
-): { mutation: (name: string, args: unknown) => Promise<unknown> } {
+): ConvexPromisePort {
   const port = makeConvexHttpPort(cfg)
   const layer = makeFetchServiceLive(fetchImpl)
   return {
     mutation: (name, args) =>
-      Effect.runPromise(
-        port.mutation(name, args as Record<string, unknown>).pipe(Effect.provide(layer)),
-      ),
+      Effect.runPromise(port.mutation(name, args).pipe(Effect.provide(layer))),
   }
+}
+
+/** Narrow a query envelope value to `string[]` — every element checked, not just
+ *  the array shape, since the value crossed the same untyped JSON boundary as
+ *  the rest of the envelope. */
+const isJsonStringArray = (value: JsonValue): value is string[] =>
+  Array.isArray(value) && value.every(isJsonString)
+
+/** A query answered with something other than the documented `string[]` — the
+ *  deployment's own contract broke, so this is a malformed response, not a
+ *  crash at the call site. */
+function expectStringArray(
+  effect: Effect.Effect<JsonValue, ConvexMutationError, FetchService>,
+): Effect.Effect<string[], ConvexMutationError, FetchService> {
+  return effect.pipe(
+    Effect.flatMap((value) =>
+      isJsonStringArray(value)
+        ? Effect.succeed(value)
+        : Effect.fail(new ConvexMalformedError({ detail: 'convex: expected a string[] value' })),
+    ),
+  )
 }
 
 /**
@@ -150,11 +194,7 @@ export function queryDownloadedAmong(
   secret: string,
   tweetIds: string[],
 ): Effect.Effect<string[], ConvexMutationError, FetchService> {
-  return port.query('sync:downloadedAmong', { secret, tweetIds }) as Effect.Effect<
-    string[],
-    ConvexMutationError,
-    FetchService
-  >
+  return expectStringArray(port.query('sync:downloadedAmong', { secret, tweetIds }))
 }
 
 /**
@@ -168,9 +208,5 @@ export function queryDownloadedMediaIdsAmong(
   secret: string,
   mediaIds: string[],
 ): Effect.Effect<string[], ConvexMutationError, FetchService> {
-  return port.query('sync:downloadedMediaIdsAmong', { secret, mediaIds }) as Effect.Effect<
-    string[],
-    ConvexMutationError,
-    FetchService
-  >
+  return expectStringArray(port.query('sync:downloadedMediaIdsAmong', { secret, mediaIds }))
 }

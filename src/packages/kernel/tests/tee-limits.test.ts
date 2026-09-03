@@ -10,6 +10,7 @@ import {
   TEE_DROP_EVENT,
   TEE_DROP_CAPS,
   type TeeLease,
+  type ProbedResponse,
 } from '../tee-limits'
 
 /** A lease that always grants — isolates the streaming cap from the budget. */
@@ -174,12 +175,14 @@ describe('readBoundedUtf8Response', () => {
   })
 
   it('drops when cloning throws instead of letting it break the page', async () => {
-    const hostile = {
+    // No cast needed: `readBoundedUtf8Response` takes `ProbedResponse`
+    // (only `headers.get(...)` and `clone()`), exactly this stub's shape.
+    const hostile: ProbedResponse = {
       headers: { get: () => null },
       clone: () => {
         throw new TypeError('body already read')
       },
-    } as unknown as Response
+    }
     await expect(readBoundedUtf8Response(hostile, openLease(), 1024)).resolves.toBeNull()
   })
 })

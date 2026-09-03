@@ -68,7 +68,7 @@ describe('canGrab', () => {
     fc.assert(
       fc.property(keysArb, (keys) => {
         const state = markAllGrabbed(pressModifier(idleQuickGrab), keys)
-        return keys.every((key) => canGrab(state, key) === false)
+        return keys.every((key) => !canGrab(state, key))
       }),
     )
   })
@@ -82,9 +82,9 @@ describe('releaseModifier', () => {
         const released = releaseModifier()
         const repressed = pressModifier(released)
         return (
-          released.active === false &&
+          !released.active &&
           released.grabbed.size === 0 &&
-          repressed.active === true &&
+          repressed.active &&
           repressed.grabbed.size === 0
         )
       }),
@@ -118,8 +118,6 @@ describe('allAugmentModifier', () => {
 
 describe('postGrabActive', () => {
   it('is false whenever the base modifier is not active, regardless of the flags or chosen modifier', () => {
-    fc.assert(
-      fc.property(flagsArb, modArb, (flags, mod) => postGrabActive(false, flags, mod) === false),
-    )
+    fc.assert(fc.property(flagsArb, modArb, (flags, mod) => !postGrabActive(false, flags, mod)))
   })
 })

@@ -134,17 +134,7 @@ export interface ReleaseRecheckDeps {
   readonly attempts?: number | undefined
 }
 
-export function makeReleaseRecheck(deps: ReleaseRecheckDeps): {
-  /**
-   * Watch a confirmed release. `MembershipScope`, not `ClearScope`, on purpose:
-   * `notInterested` has no membership control at all (see `clearer.ts`), so re-probing
-   * it could only ever yield `absent` — a reappeared "Not interested" post would read
-   * exactly like one that stuck. It also never reaches here: `tweet-clear` returns from
-   * its `notInterested` branch BEFORE the flip poll that fires `onFlip`.
-   */
-  readonly arm: (tweetId: string, scope: MembershipScope, origin: ClearOrigin) => void
-  readonly cancelAll: () => void
-} {
+export function makeReleaseRecheck(deps: ReleaseRecheckDeps) {
   const interval = deps.intervalMs ?? RELEASE_RECHECK_INTERVAL_MS
   const attempts = deps.attempts ?? RELEASE_RECHECK_ATTEMPTS
   // One pending probe chain per (tweetId, scope) — the same post can be released from
@@ -154,10 +144,7 @@ export function makeReleaseRecheck(deps: ReleaseRecheckDeps): {
   /** Read the post's CURRENT classification, never throwing: the watchdog is pure
    *  observability, so a faulting probe must degrade to a logged token and never take
    *  down the timer (or, worse, surface as an unhandled rejection on the X page). */
-  function read(
-    tweetId: string,
-    scope: MembershipScope,
-  ): { state: string; articles: number; page: string } {
+  function read(tweetId: string, scope: MembershipScope) {
     try {
       const { state, articles, path } = deps.probe(tweetId, scope)
       return { state, articles, page: pageToken(path) }
@@ -238,5 +225,12 @@ export function makeReleaseRecheck(deps: ReleaseRecheckDeps): {
     pending.clear()
   }
 
+  /**
+   * Watch a confirmed release. `MembershipScope`, not `ClearScope`, on purpose:
+   * `notInterested` has no membership control at all (see `clearer.ts`), so re-probing
+   * it could only ever yield `absent` — a reappeared "Not interested" post would read
+   * exactly like one that stuck. It also never reaches here: `tweet-clear` returns from
+   * its `notInterested` branch BEFORE the flip poll that fires `onFlip`.
+   */
   return { arm, cancelAll }
 }

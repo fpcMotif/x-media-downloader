@@ -23,14 +23,19 @@
 const DEAD_CONTEXT =
   /extension context invalidated|context invalidated|message port closed|receiving end does not exist|must be loaded in a web extension environment|cannot read prop\w+ of (?:undefined|null) \(reading '(?:sendMessage|runtime)'\)/i
 
-/** Whether an error means the extension context is gone (reload needed), not a real failure. */
-export const isContextInvalidatedError = (err: unknown): boolean =>
-  DEAD_CONTEXT.test(err instanceof Error ? err.message : String(err))
+/**
+ * Whether an error means the extension context is gone (reload needed), not a
+ * real failure. Takes `Error | string`, not `unknown` — a JS throw or
+ * rejection can carry any value, so narrow it at the catch site with
+ * `err instanceof Error ? err : String(err)` before calling this.
+ */
+export const isContextInvalidatedError = (err: Error | string): boolean =>
+  DEAD_CONTEXT.test(err instanceof Error ? err.message : err)
 
 export type SendOutcome<R> =
   | { readonly status: 'ok'; readonly reply: R }
   | { readonly status: 'context-invalidated' }
-  | { readonly status: 'error'; readonly error: unknown }
+  | { readonly status: 'error'; readonly error: Error | string }
 
 /**
  * Run a message-send thunk, capturing BOTH the synchronous context-invalidated
@@ -41,9 +46,15 @@ export const safeSend = async <R>(send: () => Promise<R>): Promise<SendOutcome<R
   try {
     return { status: 'ok', reply: await send() }
   } catch (error) {
-    return isContextInvalidatedError(error)
+    // The catch boundary: `error` can be any thrown value, so narrow it here,
+    // once, into the `Error | string` this module's outcomes actually carry.
+    // `String` is idempotent on an already-`string` value, so this one check
+    // is both the `Error`/non-`Error` split and the only stringification a
+    // non-`Error` needs.
+    const reason = error instanceof Error ? error : String(error)
+    return isContextInvalidatedError(reason)
       ? { status: 'context-invalidated' }
-      : { status: 'error', error }
+      : { status: 'error', error: reason }
   }
 }
 
@@ -51,7 +62,7 @@ export type ReplyExpectation<R> =
   | { readonly status: 'ok'; readonly reply: R }
   | { readonly status: 'unclaimed' }
   | { readonly status: 'context-invalidated' }
-  | { readonly status: 'error'; readonly error: unknown }
+  | { readonly status: 'error'; readonly error: Error | string }
 
 /**
  * Reclassifies a `safeSend` outcome: an `'ok'` status whose `reply` is

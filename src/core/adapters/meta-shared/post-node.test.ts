@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import type { JsonValue } from '@/packages/schema'
 import { forEachPostNode } from './post-node'
 
 describe('forEachPostNode', () => {
@@ -71,13 +72,15 @@ describe('forEachPostNode', () => {
   })
 
   it('fails closed (does not throw) on a circular object reference', () => {
-    const node: Record<string, unknown> = { a: {} }
-    ;(node['a'] as Record<string, unknown>)['b'] = node
+    const inner: Record<string, JsonValue> = {}
+    const node: Record<string, JsonValue> = {}
+    node['a'] = inner
+    inner['b'] = node
     expect(() => forEachPostNode(node, () => {})).not.toThrow()
   })
 
   it('still visits a post node reachable alongside a cycle elsewhere in the tree', () => {
-    const cyclic: Record<string, unknown> = {}
+    const cyclic: Record<string, JsonValue> = {}
     cyclic['self'] = cyclic
     const json = { cyclic, post: { code: 'OK', user: { username: 'frank' } } }
     const visited: unknown[] = []

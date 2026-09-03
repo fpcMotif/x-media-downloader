@@ -49,14 +49,21 @@ const isSectionId = (value: string): value is SectionId =>
 // Add-only: every hash a bookmark, an old popup build, or a stale deep-link
 // might carry still has to resolve (spec §3.2). Never delete an entry once
 // shipped — new clusters get new aliases, they don't reclaim old ones.
-const HASH_ALIASES: Record<string, SectionId> = {
+const HASH_ALIASES = {
   worklist: 'release', // legacy alias, pre-R4
   clearing: 'release', // popup deep-link (openClearingSettings) + R4-era links
   general: 'saving',
   downloads: 'saving',
   filters: 'saving',
   cloud: 'sync',
-}
+} satisfies Record<string, SectionId>
+
+/** Whether a raw location hash is one of the legacy aliases above, rather than
+ *  already being a live section id (or junk). Narrows so the table read below is
+ *  a checked lookup instead of an open-dictionary index that silently yields
+ *  `undefined` for everything else. */
+const isHashAlias = (hash: string): hash is keyof typeof HASH_ALIASES =>
+  Object.hasOwn(HASH_ALIASES, hash)
 
 export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
@@ -67,7 +74,7 @@ export function App() {
     void getSettings().then(setSettingsState)
     const handleHash = () => {
       const hash = location.hash.replace(/^#/, '')
-      const target = HASH_ALIASES[hash] ?? hash
+      const target = isHashAlias(hash) ? HASH_ALIASES[hash] : hash
       if (isSectionId(target)) setSection(target)
     }
     handleHash()

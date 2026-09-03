@@ -1,5 +1,5 @@
 import { storage } from 'wxt/utils/storage'
-import type { DownloadTraceEntry, Settings } from '@/packages/schema'
+import type { DownloadTraceEntry, JsonValue, Settings } from '@/packages/schema'
 import {
   createEntry,
   hookScopes,
@@ -78,13 +78,14 @@ const realSettleClock: SettleClock = {
   },
 }
 
+/** The CAS-updated entry (the caller MUST persist it — the rebind carries the won
+ *  claims) plus the list of scopes actually claimed. */
+type ClaimedScopes = { readonly entry: LedgerEntry; readonly claimed: Scope[] }
+
 /** CAS-claim each still-enabled scope, returning the CAS-updated entry (the
  *  caller MUST persist `entry` — the rebind carries the won claims) and the list
  *  of scopes actually claimed. */
-const claimEnabledScopes = (
-  entry: LedgerEntry,
-  enabled: Set<Scope>,
-): { entry: LedgerEntry; claimed: Scope[] } => {
+const claimEnabledScopes = (entry: LedgerEntry, enabled: Set<Scope>): ClaimedScopes => {
   let e = entry
   const claimed: Scope[] = []
   for (const scope of e.scopes) {
@@ -141,7 +142,7 @@ export interface ClearSession {
 
 export interface ClearSessionDeps {
   /** Build the queue's error observer (traces through the background's chain). */
-  readonly queueError: (label: string) => (err: unknown) => void
+  readonly queueError: (label: string) => (err: Error) => void
   /** Read the current settings blob. */
   readonly getSettings: () => Promise<Settings>
   /** Trace through the background's accumulator. */
@@ -168,8 +169,8 @@ export interface ClearSessionDeps {
   readonly settleProbe: (downloadId: number) => Promise<DownloadProbe | undefined>
   /** Durable sweep worklist port. Defaults to extension local storage. */
   readonly worklistStorage?: {
-    readonly get: () => Promise<unknown>
-    readonly set: (value: unknown) => Promise<void>
+    readonly get: () => Promise<JsonValue>
+    readonly set: (value: JsonValue) => Promise<void>
   }
   /** Injected timer port for the settle-confirm window. Defaults to the real
    *  `setTimeout` wrapper when omitted — tests supply a hand-rolled fake instead. */
@@ -187,6 +188,9 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
   // serialized chain (the outbox pattern) so interleaved completion events and the
   // clear round-trip can't double-fire on a tweet.
   const clearLedger = new Map<string, LedgerEntry>()
+  // `makeSerialQueue` itself normalizes a rejection to a real `Error` before
+  // calling `onError`, so `deps.queueError`'s own `(err: Error) => void` contract
+  // needs no wrapper here.
   const clearQueue = makeSerialQueue(deps.queueError('clear'))
   const settleCancels = new Set<() => void>()
   const clearOriginTab = new Map<string, ClearOrigin>()
@@ -213,10 +217,10 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
   // write goes through one serialized chain (the outbox pattern). FUTURE: back this
   // with Convex sync as the state store — core/clear/worklist is storage-agnostic,
   // so the swap lives at this I/O boundary, not in the logic.
-  const sweepWorklistItem = storage.defineItem<unknown>('local:clearWorklist', { fallback: null })
+  const sweepWorklistItem = storage.defineItem<JsonValue>('local:clearWorklist', { fallback: null })
   const worklistStorage = deps.worklistStorage ?? {
     get: () => sweepWorklistItem.getValue(),
-    set: (value: unknown) => sweepWorklistItem.setValue(value),
+    set: (value: JsonValue) => sweepWorklistItem.setValue(value),
   }
   const worklistQueue = makeSerialQueue(deps.queueError('worklist'))
 

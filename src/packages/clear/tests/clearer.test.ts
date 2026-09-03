@@ -182,11 +182,13 @@ describe('clearer DOM helpers', () => {
   })
 
   it('pageEvidence passes readyState through unchanged for every DocumentReadyState', () => {
-    const fake = {
+    // Matches pageEvidence's actual parameter contract exactly, so no assertion is
+    // needed: only readyState varies, and querySelectorAll returns a genuine (empty)
+    // NodeListOf from the real jsdom document rather than a plain array stand-in.
+    const fake: Pick<Document, 'querySelectorAll' | 'readyState'> = {
       readyState: 'loading',
-      querySelectorAll: () => [],
-      querySelector: () => null,
-    } as unknown as Document
+      querySelectorAll: () => document.querySelectorAll(':not(*)'),
+    }
     expect(pageEvidence(fake).ready).toBe('loading')
   })
 

@@ -55,6 +55,6 @@ describe('Lesson 5 — fetchImpl as a Layer-provided service (the R / Reader cha
 
   it('the FetchServiceLive layer exists for production wiring (not exercised here)', () => {
     // Provided at the edge: Effect.runPromise(Effect.provide(program, FetchServiceLive))
-    expect(typeof FetchServiceLive).toBe('object')
+    expect(FetchServiceLive).toBeDefined()
   })
 })

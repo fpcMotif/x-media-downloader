@@ -1,6 +1,12 @@
 import { Schema } from 'effect'
 import { findAuthor, type Author } from '@/core/adapters/x/walk'
 import { resolveTweetMedia, type RawMedia } from '@/packages/resolver'
+// Imported from the dependency-free leaf module, not the `@/packages/schema`
+// barrel: that barrel imports `TweetRecord` FROM this file, so importing it back
+// here (even type-only) creates a cycle that breaks Effect Schema's module-init
+// order (`schema/index.ts`'s `Schema.Array(TweetRecord)` reads `TweetRecord`
+// before this module finishes evaluating).
+import type { JsonObject, JsonValue } from '@/packages/schema/json'
 import { cardMeta, expandText, linksFromEntities, type Link, type UrlEntity } from './lib/card'
 
 /** The tee path a record came from; ranks a rich TweetDetail over a thin timeline. */
@@ -61,29 +67,35 @@ export const TweetRecord = Schema.Struct({
 })
 export type TweetRecord = typeof TweetRecord.Type
 
-type Obj = Record<string, unknown>
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null
+const isObj = (v: JsonValue | undefined): v is JsonObject => typeof v === 'object' && v !== null
 
-const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
+const isString = (v: JsonValue | undefined): v is string => typeof v === 'string'
+
+const str = (v: JsonValue | undefined): string | undefined => (isString(v) ? v : undefined)
 
 const optionalEntry = <K extends string, V>(key: K, v: V | undefined): Record<K, V> | object =>
-  v !== undefined ? ({ [key]: v } as Record<K, V>) : {}
+  v !== undefined ? { [key]: v } : {}
 
-const nestedRestId = (node: Obj, key: string): string | undefined => {
+const nestedRestId = (node: JsonObject, key: string): string | undefined => {
   const wrap = node[key]
   const result = isObj(wrap) ? wrap['result'] : undefined
   return isObj(result) ? str(result['rest_id']) : undefined
 }
 
-const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
+const arr = (v: JsonValue | undefined): ReadonlyArray<JsonValue> => (Array.isArray(v) ? v : [])
 
-const urlEntities = (legacy: Obj): UrlEntity[] => {
+const urlEntities = (legacy: JsonObject): UrlEntity[] => {
   const entities = legacy['entities']
   const urls = isObj(entities) ? entities['urls'] : undefined
+  // SAFETY: every UrlEntity field but `url`/`expanded_url` is optional, so this
+  // only asserts the array holds JSON object nodes — `.filter(isObj)` on the
+  // line above already proved that. Callers (`linksFromEntities`, `expandText`)
+  // read each field defensively, so an entity missing `url`/`expanded_url`
+  // degrades to `undefined` reads rather than a bad access.
   return arr(urls).filter(isObj) as UrlEntity[]
 }
 
-const mentions = (legacy: Obj): string[] => {
+const mentions = (legacy: JsonObject): string[] => {
   const entities = legacy['entities']
   const ms = isObj(entities) ? entities['user_mentions'] : undefined
   return arr(ms)
@@ -91,7 +103,7 @@ const mentions = (legacy: Obj): string[] => {
     .filter((s): s is string => s !== undefined)
 }
 
-const hashtags = (legacy: Obj): string[] => {
+const hashtags = (legacy: JsonObject): string[] => {
   const entities = legacy['entities']
   const hs = isObj(entities) ? entities['hashtags'] : undefined
   return arr(hs)
@@ -101,10 +113,10 @@ const hashtags = (legacy: Obj): string[] => {
 
 /** Join each card's `{ title, description, domain }` onto the link whose source
  *  `t.co` matches the card url (`card.legacy.url`). */
-const joinedLinks = (legacy: Obj, card: unknown): Link[] => {
+const joinedLinks = (legacy: JsonObject, card: JsonValue | undefined): Link[] => {
   const entities = urlEntities(legacy)
   const links = linksFromEntities(entities)
-  const cardLegacy = isObj(card) && isObj(card['legacy']) ? (card['legacy'] as Obj) : undefined
+  const cardLegacy = isObj(card) && isObj(card['legacy']) ? card['legacy'] : undefined
   const cardUrl = cardLegacy ? str(cardLegacy['url']) : undefined
   const target = entities.findIndex((e) => e.url === cardUrl)
   if (cardUrl === undefined || target < 0) return links
@@ -112,18 +124,27 @@ const joinedLinks = (legacy: Obj, card: unknown): Link[] => {
   return links.map((link, i) => (i === target ? Object.assign({}, link, meta) : link))
 }
 
-const createdAtMs = (legacy: Obj): number | undefined => {
+const createdAtMs = (legacy: JsonObject): number | undefined => {
   const raw = str(legacy['created_at'])
   if (raw === undefined) return undefined
   const ms = Date.parse(raw)
   return Number.isNaN(ms) ? undefined : ms
 }
 
-const mediaRefs = (tweetId: string, handle: string, mediaRaw: unknown[]): MediaRef[] =>
+/** Runtime guard against a malformed media entry: `x/walk.ts`'s `mediaOf` only
+ *  proves the `media` field is an array, not that every element is really an
+ *  object — a bad entry here degrades to "skipped" rather than a crash below. */
+const isMediaObject = (v: RawMedia): v is RawMedia => typeof v === 'object' && v !== null
+
+const mediaRefs = (
+  tweetId: string,
+  handle: string,
+  mediaRaw: ReadonlyArray<RawMedia>,
+): MediaRef[] =>
   resolveTweetMedia({
     tweetId,
     handle,
-    media: mediaRaw.filter(isObj) as unknown as RawMedia[],
+    media: mediaRaw.filter(isMediaObject),
   }).map((m) =>
     Object.assign(
       { id: m.id, type: m.type, url: m.url, ext: m.ext, index: m.index },
@@ -142,12 +163,16 @@ const mediaRefs = (tweetId: string, handle: string, mediaRaw: unknown[]): MediaR
 export function tweetRecordFromNode(args: {
   node: object
   author: Author
-  mediaRaw: unknown[]
+  mediaRaw: ReadonlyArray<RawMedia>
   source: Source
   capturedAt: number
 }): TweetRecord | null {
   const { node, author, mediaRaw, source, capturedAt } = args
-  const tweet = node as Obj
+  // SAFETY: every read on `tweet` below is defensive (`isObj`/`str`/optional
+  // chaining), so a node whose fields don't match JsonObject's shape degrades to
+  // `undefined` reads rather than a bad access — the same loose contract `object`
+  // already promised the caller.
+  const tweet = node as JsonObject
   const legacy = tweet['legacy']
   if (!isObj(legacy)) return null
 

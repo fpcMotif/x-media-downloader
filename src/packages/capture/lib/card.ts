@@ -4,6 +4,12 @@
  * both the flat `summary` binding-values encoding and the `unified_card` JSON
  * blob. Best-effort: never throws on malformed input.
  */
+// Imported from the dependency-free leaf module, not the `@/packages/schema`
+// barrel: that barrel imports `TweetRecord` FROM `../record.ts`, which imports
+// THIS file, so importing the barrel here (even type-only) creates a cycle that
+// breaks Effect Schema's module-init order.
+import { type JsonObject, type JsonValue } from '@/packages/schema/json'
+
 export type Link = {
   expandedUrl: string
   displayUrl?: string
@@ -45,39 +51,48 @@ export function linksFromEntities(urlEntities: ReadonlyArray<Omit<UrlEntity, 'in
   }))
 }
 
-type BindingValue = { key?: unknown; value?: { string_value?: unknown } }
+type BindingValue = { key?: JsonValue; value?: { string_value?: JsonValue } }
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
+/** `{title?, description?, domain?}` recovered from a card node — the shared return
+ *  shape of {@link unifiedMeta} and {@link cardMeta}. Named so their return-type
+ *  annotations reference an owner contract instead of an anonymous object literal. */
+export type CardMeta = {
+  readonly title?: string
+  readonly description?: string
+  readonly domain?: string
+}
+
+const isRecord = (v: JsonValue | undefined): v is JsonObject => typeof v === 'object' && v !== null
+
+const isString = (v: JsonValue | undefined): v is string => typeof v === 'string'
 
 const bindingString = (values: ReadonlyArray<BindingValue>, key: string): string | undefined => {
   const hit = values.find((b) => b.key === key)
   const s = hit?.value?.string_value
-  return typeof s === 'string' ? s : undefined
+  return isString(s) ? s : undefined
 }
 
-const firstValue = (node: unknown): Record<string, unknown> | undefined => {
+const firstValue = (node: JsonValue | undefined): JsonObject | undefined => {
   if (!isRecord(node)) return undefined
   for (const v of Object.values(node)) if (isRecord(v)) return v
   return undefined
 }
 
-const unifiedMeta = (json: string): { title?: string; description?: string; domain?: string } => {
-  const parsed: unknown = JSON.parse(json)
+const unifiedMeta = (json: string): CardMeta => {
+  const parsed: JsonValue = JSON.parse(json)
   if (!isRecord(parsed)) return {}
   const component = firstValue(parsed.component_objects)
   const data = isRecord(component?.data) ? component.data : undefined
   const title =
-    isRecord(data?.title) && typeof data.title.content === 'string' ? data.title.content : undefined
+    isRecord(data?.title) && isString(data.title.content) ? data.title.content : undefined
   const description =
-    isRecord(data?.subtitle) && typeof data.subtitle.content === 'string'
-      ? data.subtitle.content
-      : undefined
+    isRecord(data?.subtitle) && isString(data.subtitle.content) ? data.subtitle.content : undefined
   const destination = firstValue(parsed.destination_objects)
   const urlData =
     isRecord(destination?.data) && isRecord(destination.data.url_data)
       ? destination.data.url_data
       : undefined
-  const domain = typeof urlData?.vanity === 'string' ? urlData.vanity : undefined
+  const domain = isString(urlData?.vanity) ? urlData.vanity : undefined
   return {
     ...(title !== undefined ? { title } : {}),
     ...(description !== undefined ? { description } : {}),
@@ -92,16 +107,17 @@ const unifiedMeta = (json: string): { title?: string; description?: string; doma
  * structural mismatch or parse failure yields the fields it could read (or none),
  * never throwing.
  */
-export function cardMeta(cardNode: unknown): {
-  title?: string
-  description?: string
-  domain?: string
-} {
+export function cardMeta(cardNode: JsonValue | undefined): CardMeta {
   try {
     if (!isRecord(cardNode)) return {}
     const legacy = isRecord(cardNode.legacy) ? cardNode.legacy : cardNode
     const values = legacy.binding_values
     if (!Array.isArray(values)) return {}
+    // SAFETY: every BindingValue field is optional, so this only asserts the
+    // array holds JSON object/scalar nodes — exactly what `Array.isArray` above
+    // already proved. `bindingString` re-validates `key`/`string_value` itself
+    // (typeof/isString checks), so a malformed element degrades to `undefined`
+    // rather than reading garbage.
     const bindings = values as ReadonlyArray<BindingValue>
 
     const unified = bindingString(bindings, 'unified_card')

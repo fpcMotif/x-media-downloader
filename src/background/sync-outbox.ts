@@ -1,6 +1,6 @@
 import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import type { Settings } from '@/packages/schema'
+import type { JsonValue, Settings } from '@/packages/schema'
 import type { SyncEvent } from '@/packages/sync/events'
 import {
   append,
@@ -59,7 +59,7 @@ export interface SyncOutbox {
 
 export interface SyncOutboxDeps {
   /** Build the queue's error observer (traces through the background's chain). */
-  readonly queueError: (label: string) => (err: unknown) => void
+  readonly queueError: (label: string) => (err: Error) => void
   /** The fetch the Convex port uses (bound for the MV3 SW; see fetch.ts). Only
    *  consumed to build the default Convex transport; ignored when `connect` is injected. */
   readonly fetchImpl: typeof fetch
@@ -83,7 +83,7 @@ const SYNC_ALARM = 'sync-outbox-drain'
 
 /** The live durable outbox store: the `local:syncOutbox` key (ADR-0005). */
 const defaultOutboxStore = (): OutboxStorage => {
-  const item = storage.defineItem<unknown>('local:syncOutbox', { fallback: null })
+  const item = storage.defineItem<JsonValue>('local:syncOutbox', { fallback: null })
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
@@ -126,6 +126,9 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
   // Outbox read-modify-writes are serialized through this chain: SW event
   // handlers interleave, and a lost update could drop a drained marker. Re-sent
   // batches are harmless regardless — eventIds are idempotent server-side.
+  // `makeSerialQueue` itself normalizes a rejection to a real `Error` before
+  // calling `onError`, so `deps.queueError`'s own `(err: Error) => void` contract
+  // needs no wrapper here.
   const outboxQueue = makeSerialQueue(deps.queueError('outbox'))
   const storeQueue = makeSerialQueue(deps.queueError('outboxStore'))
 
@@ -178,7 +181,7 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
         )
         await status.set({
           ok: false,
-          detail: classifySyncError(err),
+          detail: classifySyncError(err instanceof Error ? err : new Error(String(err))),
           pending: next.pending.length,
         })
         await scheduleSyncWake(next)
@@ -215,7 +218,11 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
       outboxQueue.push(() => status.set(ok))
       return ok
     } catch (err) {
-      const failed: SyncStatus = { ok: false, detail: classifySyncError(err), pending }
+      const failed: SyncStatus = {
+        ok: false,
+        detail: classifySyncError(err instanceof Error ? err : new Error(String(err))),
+        pending,
+      }
       outboxQueue.push(() => status.set(failed))
       return failed
     }

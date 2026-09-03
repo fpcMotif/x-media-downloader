@@ -21,10 +21,7 @@ type RecentConversation = {
   lastAt: number
 }
 
-function summarize(records: ReadonlyArray<TweetRecord>): {
-  tweets: number
-  conversations: number
-} {
+function summarize(records: ReadonlyArray<TweetRecord>) {
   const tweets = new Set<string>()
   const conversations = new Set<string>()
   for (const r of records) {

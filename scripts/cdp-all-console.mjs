@@ -6,6 +6,7 @@
 // is "is the content script's isolated world even there / is anything logging at
 // all", since it filters nothing.
 const PORT = 9222
+
 const argToStr = (a) => {
   if (a === undefined) return ''
   if (a.value !== undefined) return String(a.value)
@@ -33,7 +34,8 @@ ws.addEventListener('open', () => {
 ws.addEventListener('message', (ev) => {
   let msg
   try {
-    msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data.toString())
+    const dataStr = ev.data instanceof Buffer ? ev.data.toString() : ev.data
+    msg = JSON.parse(dataStr)
   } catch {
     return
   }

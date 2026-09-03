@@ -32,8 +32,7 @@ export interface ScriptLike {
  */
 export function inlineDataPayloads(scripts: ArrayLike<ScriptLike>): string[] {
   const out: string[] = []
-  for (let i = 0; i < scripts.length; i++) {
-    const script = scripts[i] as ScriptLike
+  for (const script of Array.from(scripts)) {
     if (script.type !== 'application/json') continue
     if (!script.textContent) continue
     out.push(script.textContent)

@@ -147,8 +147,17 @@ async function cancelQuietly(reader: ReadableStreamDefaultReader<Uint8Array>): P
  * so callers have one "nothing to emit" path. `fatal: true` on the decoder is
  * deliberate: a body that isn't valid UTF-8 is not a media response we can trust.
  */
+/** The only `Response` surface this function touches — `headers.get(...)` and
+ *  `clone()` — narrower than the full DOM `Response` so a test double proving the
+ *  "clone throws" edge case doesn't need a same-shape stand-in for every other
+ *  member. A real `Response` always satisfies this. */
+export type ProbedResponse = {
+  readonly headers: Pick<Headers, 'get'>
+  readonly clone: Response['clone']
+}
+
 export async function readBoundedUtf8Response(
-  response: Response,
+  response: ProbedResponse,
   lease: TeeLease,
   maxBytes: number = MAX_TEE_BODY_BYTES,
 ): Promise<string | null> {

@@ -12,8 +12,17 @@ import { resolveMetaImageElement } from '../meta-shared/dom'
 
 /** A stubbed `getBoundingClientRect` — happy-dom computes no layout, so every
  *  viewport-dominance assertion has to hand the adapter its own geometry. */
-const rect = (top: number, left: number, width: number, height: number) => () =>
-  ({ top, left, right: left + width, bottom: top + height, width, height }) as DOMRect
+const rect = (top: number, left: number, width: number, height: number) => (): DOMRect => ({
+  x: left,
+  y: top,
+  top,
+  left,
+  right: left + width,
+  bottom: top + height,
+  width,
+  height,
+  toJSON: () => ({}),
+})
 
 describe('INSTAGRAM_HOST_MATCH / isInstagramUrl', () => {
   it('is the single www.instagram.com host pattern', () => {

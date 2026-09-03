@@ -19,6 +19,11 @@ export interface ExportOutcome {
   readonly detail: string
 }
 
+/** Shared with `diagnostics-export.ts` — both extension-side "build text in the
+ *  SW, download it here" exports gate on the same non-empty-string check. */
+export const isNonEmptyString = (v: string | undefined): v is string =>
+  typeof v === 'string' && v.length > 0
+
 export async function runCaptureExport(
   kind: CaptureExportKind,
   conversationId?: string,
@@ -27,6 +32,9 @@ export async function runCaptureExport(
 
   let res: ExportResponse | null = null
   try {
+    // SAFETY: the background's `ExportCaptureRequest` handler always answers
+    // `{ ok, filename, text }` via `sendResponse` (or the channel dies and this
+    // throws instead); every field is read defensively below regardless.
     res = (await browser.runtime.sendMessage({
       _tag: 'ExportCaptureRequest',
       kind,
@@ -42,7 +50,7 @@ export async function runCaptureExport(
     filename: res?.filename,
     bytes: res?.text?.length ?? 0,
   })
-  if (!res?.ok || typeof res.text !== 'string' || res.text.length === 0) {
+  if (!res?.ok || !isNonEmptyString(res.text)) {
     return { ok: false, detail: 'Nothing harvested yet — turn on Capture and browse X.' }
   }
 
@@ -87,5 +95,10 @@ export const fetchCaptureSummary = (limit?: number): Promise<CaptureSummary | nu
         ? { _tag: 'CaptureSummaryRequest' }
         : { _tag: 'CaptureSummaryRequest', limit },
     )
-    .then((s) => (s as CaptureSummary | null) ?? null)
+    .then((s) => {
+      // SAFETY: the background's `CaptureSummaryRequest` handler always answers
+      // `{ tweets, conversations, recent }` via `sendResponse`, or the channel
+      // dies and `.catch` below already covers that with `null`.
+      return (s as CaptureSummary | null) ?? null
+    })
     .catch(() => null)

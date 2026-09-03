@@ -100,6 +100,9 @@ function makeIndexedDbStore(): CaptureStore {
             for (const incoming of records) {
               const get = store.get(incoming.tweetId)
               get.addEventListener('success', () => {
+                // SAFETY: this object store is written to exclusively via
+                // `store.put(winner)` below with a `TweetRecord`, so any existing
+                // value under a `tweetId` key is always a `TweetRecord` (or absent).
                 const existing = get.result as TweetRecord | undefined
                 const winner = merge(existing, incoming)
                 if (winner !== existing) store.put(winner)
@@ -126,6 +129,8 @@ function makeIndexedDbStore(): CaptureStore {
             resolve(acc)
             return
           }
+          // SAFETY: this object store is written to exclusively with `TweetRecord`
+          // values (see `upsert` above), so every cursor value is a `TweetRecord`.
           acc = step(acc, cursor.value as TweetRecord)
           cursor.continue()
         })
