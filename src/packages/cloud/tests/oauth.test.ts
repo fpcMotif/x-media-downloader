@@ -17,7 +17,7 @@ import { classifyUploadError } from '../status'
 import { errorReason } from '@/packages/kernel/error'
 import { makeFetchServiceLive } from '@/packages/kernel/fetch-service'
 import type { JsonValue } from '@/packages/schema'
-import { fetchStub } from '../lib/fetch-stub'
+import { fetchStub } from '../fetch-stub'
 
 const REDIRECT = 'https://abcdef.chromiumapp.org/'
 

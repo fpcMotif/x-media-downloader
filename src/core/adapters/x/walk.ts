@@ -1,5 +1,5 @@
 import type { RawMedia } from '@/packages/resolver'
-import type { JsonObject, JsonValue } from '@/packages/schema'
+import type { JsonObject, JsonValue } from '@/packages/schema/json'
 import { isJsonNumber, isJsonObject, isJsonString } from '../json-predicates'
 
 /** Tweet ids arrive as strings (`id_str`) or numbers. Anything else is a malformed

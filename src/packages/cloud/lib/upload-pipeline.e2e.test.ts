@@ -6,7 +6,7 @@ import { makeFetchServiceLive } from '@/packages/kernel/fetch-service'
 import { makeSourceFetchLive } from './source-fetch'
 import { FolderCacheLive } from './folder-cache'
 import { guessMime, type CloudProviderId, type UploadInput, type UploadOutcome } from '../types'
-import { fetchStub } from './fetch-stub'
+import { fetchStub } from '../fetch-stub'
 import {
   claim,
   enqueue,

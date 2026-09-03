@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PROVIDERS, revokeViaRecipe } from '../provider'
 import { DROPBOX_HOST_PATTERNS, DROPBOX_OAUTH, GDRIVE_HOST_PATTERNS, GDRIVE_OAUTH } from '../types'
-import { fetchStub } from '../lib/fetch-stub'
+import { fetchStub } from '../fetch-stub'
 
 /** `RequestInit.body` is `BodyInit | null | undefined`; the recipe under test always
  *  posts a URL-encoded string body, so narrow to that before recording the call. */

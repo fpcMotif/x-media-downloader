@@ -5,7 +5,7 @@ import { FetchService } from '@/packages/kernel/fetch-service'
 import { SourceFetch } from './lib/source-fetch'
 import { FolderCacheLive } from './lib/folder-cache'
 import type { UploadInput } from './types'
-import { fetchStub } from './lib/fetch-stub'
+import { fetchStub } from './fetch-stub'
 
 const input = (path = 'alice/t1_0.jpg', folder = 'alice'): UploadInput => ({
   url: 'https://pbs.twimg.com/media/x.jpg',

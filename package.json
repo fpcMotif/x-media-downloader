@@ -11,7 +11,7 @@
     "typecheck": "wxt prepare && tsgo --noEmit",
     "lint": "oxlint --type-aware",
     "lint:ci": "oxlint --type-aware --deny-warnings",
-    "lint:boundaries": "depcruise src",
+    "lint:boundaries": "bun scripts/lint-boundaries.ts",
     "lint:complexity": "oxlint -c .oxlintrc.complexity.json --disable-nested-config",
     "fmt": "oxfmt --write src",
     "fmt:check": "oxfmt --check src",
@@ -25,7 +25,7 @@
     "env:audit": "varlock audit src backend",
     "env:check": "varlock load",
     "env:scan": "varlock scan",
-    "check": "oxfmt --check src && oxlint --type-aware && varlock audit src backend && wxt prepare && tsgo --noEmit && depcruise src && vitest run"
+    "check": "oxfmt --check src && oxlint --type-aware && varlock audit src backend && wxt prepare && tsgo --noEmit && bun scripts/lint-boundaries.ts && vitest run"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -42,9 +42,9 @@
     "@tailwindcss/vite": "^4.3.3",
     "@typescript/native-preview": "^7.0.0-dev.20260707.2",
     "@vitest/coverage-v8": "4.1.11",
-    "dependency-cruiser": "^18.2.0",
     "fast-check": "4.9.0",
     "happy-dom": "^20.12.0",
+    "oxc-parser": "^0.148.0",
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0",
     "oxlint-tsgolint": "^7.0.2001",

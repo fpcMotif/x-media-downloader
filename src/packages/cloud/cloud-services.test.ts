@@ -4,7 +4,7 @@ import { makeCloudServicesLive } from './cloud-services'
 import { FetchService } from '@/packages/kernel/fetch-service'
 import { SourceFetch } from './lib/source-fetch'
 import { FolderCache } from './lib/folder-cache'
-import { fetchStub } from './lib/fetch-stub'
+import { fetchStub } from './fetch-stub'
 
 describe('makeCloudServicesLive', () => {
   it('builds one layer that provides FetchService, SourceFetch, and FolderCache', async () => {

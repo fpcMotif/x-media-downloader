@@ -8,6 +8,7 @@ Packages are deep modules — see [src/packages/README.md](./src/packages/README
 
 - `bun run lint` — oxlint with type-aware rules. Needs `oxlint-tsgolint`.
 - `bun run lint:complexity` — advisory cyclomatic-complexity report (max 15). Also runs on every commit via prek; it warns, it never blocks.
+- `bun run lint:boundaries` — [scripts/lint-boundaries.ts](./scripts/lint-boundaries.ts), which enforces the deep-module rule above. It replaced dependency-cruiser, which resolves through the `typescript` compiler API, refuses >= 7, and so cruised **zero** modules on this repo while still exiting 0 — a green check that parsed nothing and hid four real violations. If you ever change the checker, prove it still fails on a deliberate violation before trusting a pass.
 - Package manager is **bun**. Never npm/npx.
 
 ## Never game a lint rule

@@ -11,7 +11,7 @@
  * key reads the same as `undefined`, so a walker's "is this present and an
  * object/string/number" check is one call, not an `undefined` guard plus one.
  */
-import type { JsonObject, JsonValue } from '@/packages/schema'
+import type { JsonObject, JsonValue } from '@/packages/schema/json'
 // Value import reaches past the `@/packages/schema` barrel straight to its
 // dependency-free `json.ts`: this module is reachable from `wxt.config.ts`'s
 // eager `registry.ts` import chain, loaded through jiti — jiti has no `@/`

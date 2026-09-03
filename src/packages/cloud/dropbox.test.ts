@@ -4,7 +4,7 @@ import { DropboxUploader, DropboxUploaderLive } from './dropbox'
 import { FetchService } from '@/packages/kernel/fetch-service'
 import { SourceFetch } from './lib/source-fetch'
 import type { UploadInput } from './types'
-import { fetchStub } from './lib/fetch-stub'
+import { fetchStub } from './fetch-stub'
 
 const sourceResponse = (
   bytes: Uint8Array<ArrayBuffer>,
