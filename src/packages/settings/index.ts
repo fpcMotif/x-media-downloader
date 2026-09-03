@@ -49,7 +49,10 @@ const provide = <A, E>(eff: Effect.Effect<A, E, SettingsService>): Promise<A> =>
 
 /** Promise helpers for UI contexts (popup) — thin wrappers over the service. */
 export const getSettings = (): Promise<Settings> =>
-  provide(Effect.flatMap(SettingsService, (s) => s.get))
+  provide(Effect.flatMap(SettingsService, (s) => s.get)).catch((err: unknown) => {
+    console.warn('[XMD] getSettings failed, falling back to defaults:', err)
+    return defaults
+  })
 export const setSettings = (patch: Partial<Settings>): Promise<Settings> =>
   provide(Effect.flatMap(SettingsService, (s) => s.set(patch)))
 
