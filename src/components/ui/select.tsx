@@ -5,7 +5,7 @@ import * as React from 'react'
 import { Select as SelectPrimitive } from '@base-ui/react/select'
 
 import { cn } from '@/lib/utils'
-import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from 'lucide-react'
+import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from '@/components/icons'
 
 // Radix's <Select.Value/> mirrors the selected <Select.ItemText>. Base UI instead
 // resolves the label from the Root's `items` / `itemToStringLabel`, so a bare

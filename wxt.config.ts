@@ -100,5 +100,8 @@ export default defineConfig({
   },
   vite: () => ({
     plugins: [preact(), tailwindcss()],
+    build: {
+      target: 'chrome120',
+    },
   }),
 })
