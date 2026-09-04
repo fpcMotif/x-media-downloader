@@ -118,65 +118,78 @@ export default defineContentScript({
     // never completes (`load` never fires) can never leak its body.
     const xhrMutationBody = new WeakMap<XMLHttpRequest, string>()
 
-    // SAFETY: `open` is overloaded (2-arg vs. 5-arg forms), so TS can't match a
-    // spread `...rest: unknown[]` tail against either signature. `rest` only ever
-    // holds the async/username/password args this wrapper's own caller already
-    // passed to `open()` — they are forwarded untouched, never inspected or
-    // constructed here, so the cast changes nothing about what reaches the browser.
-    const origOpen = XMLHttpRequest.prototype.open as (...args: unknown[]) => void
-    XMLHttpRequest.prototype.open = function (
-      this: XMLHttpRequest,
-      method: string,
-      url: string | URL,
-      ...rest: unknown[]
-    ): void {
-      if (isTrackedUrl(String(url))) {
-        if (import.meta.env.DEV)
-          console.debug(`[XMD] tee XHR intercept · ${adapter.platform} · ${method} ${url}`)
-        this.addEventListener('load', () => {
-          if (this.status === 200) {
+    // Class method bodies don't inherit the `!adapter` early-return narrowing the
+    // way arrow functions do, so the class reads the platform through this capture.
+    const teePlatform = adapter.platform
+
+    // A subclass instead of patching `XMLHttpRequest.prototype.open`/`send` in
+    // place: `super.open(...)`/`super.send(...)` reach the native methods with
+    // `this` bound by construction, so no unbound method reference ever exists
+    // (typescript/unbound-method). Coverage is the same — this script runs at
+    // document_start in the MAIN world, before any page script, so every XHR
+    // the page constructs resolves `XMLHttpRequest` to this class.
+    class TeeXMLHttpRequest extends XMLHttpRequest {
+      // `rest` is a union of the two native `open()` arities so the super call
+      // forwards the caller's exact argument count: appending an explicit
+      // `undefined` async arg would flip a 2-arg call to synchronous XHR.
+      override open(
+        method: string,
+        url: string | URL,
+        ...rest:
+          | []
+          | [
+              async: boolean,
+              username?: string | null | undefined,
+              password?: string | null | undefined,
+            ]
+      ): void {
+        if (isTrackedUrl(String(url))) {
+          if (import.meta.env.DEV)
+            console.debug(`[XMD] tee XHR intercept · ${teePlatform} · ${method} ${url}`)
+          this.addEventListener('load', () => {
+            if (this.status === 200) {
+              try {
+                const body = this.responseText
+                if (withinTeeBudget(body, 'xhr body'))
+                  emit(new URL(this.responseURL).pathname, body)
+              } catch {
+                /* never break the page */
+              }
+            } else if (import.meta.env.DEV) {
+              console.debug(
+                `[XMD] tee XHR non-200 · ${teePlatform} · status=${this.status} · ${url}`,
+              )
+            }
+          })
+        }
+        if (isMutationUrl(String(url))) {
+          this.addEventListener('load', () => {
             try {
               const body = this.responseText
-              if (withinTeeBudget(body, 'xhr body')) emit(new URL(this.responseURL).pathname, body)
+              const requestBody = xhrMutationBody.get(this) ?? null
+              // A mutation body is a small GraphQL envelope; anything at this size
+              // is not the evidence #63 is looking for.
+              if (
+                withinTeeBudget(body, 'xhr mutation body') &&
+                (requestBody === null || withinTeeBudget(requestBody, 'xhr mutation request'))
+              )
+                emitMutation(new URL(this.responseURL).pathname, this.status, body, requestBody)
             } catch {
               /* never break the page */
             }
-          } else if (import.meta.env.DEV) {
-            console.debug(
-              `[XMD] tee XHR non-200 · ${adapter.platform} · status=${this.status} · ${url}`,
-            )
-          }
-        })
+            xhrMutationBody.delete(this)
+          })
+        }
+        if (rest.length === 0) super.open(method, url)
+        else super.open(method, url, ...rest)
       }
-      if (isMutationUrl(String(url))) {
-        this.addEventListener('load', () => {
-          try {
-            const body = this.responseText
-            const requestBody = xhrMutationBody.get(this) ?? null
-            // A mutation body is a small GraphQL envelope; anything at this size
-            // is not the evidence #63 is looking for.
-            if (
-              withinTeeBudget(body, 'xhr mutation body') &&
-              (requestBody === null || withinTeeBudget(requestBody, 'xhr mutation request'))
-            )
-              emitMutation(new URL(this.responseURL).pathname, this.status, body, requestBody)
-          } catch {
-            /* never break the page */
-          }
-          xhrMutationBody.delete(this)
-        })
-      }
-      origOpen.apply(this, [method, url, ...rest])
-    }
 
-    const origSend = XMLHttpRequest.prototype.send
-    XMLHttpRequest.prototype.send = function (
-      this: XMLHttpRequest,
-      body?: Document | XMLHttpRequestBodyInit | null,
-    ): void {
-      if (isStringXhrBody(body)) xhrMutationBody.set(this, body)
-      origSend.call(this, body)
+      override send(body?: Document | XMLHttpRequestBodyInit | null): void {
+        if (isStringXhrBody(body)) xhrMutationBody.set(this, body)
+        super.send(body)
+      }
     }
+    window.XMLHttpRequest = TeeXMLHttpRequest
 
     const origFetch = window.fetch
     window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
