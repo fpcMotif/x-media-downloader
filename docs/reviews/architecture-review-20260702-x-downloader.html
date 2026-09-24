@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture Review — X Media Downloader — 2026-07-02</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
+<style>
+  body { background: #0b0f14; color: #d7dde5; font-feature-settings: "ss01"; }
+  .card { background: #11161d; border: 1px solid #1f2833; border-radius: 14px; }
+  .chip { font-size: 10.5px; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px; font-weight: 600; text-transform: uppercase; }
+  .chip-high   { background:#3b1219; color:#ff9aa8; border:1px solid #5c1f2b; }
+  .chip-med    { background:#3a2a12; color:#ffcf87; border:1px solid #5c4520; }
+  .chip-low    { background:#12283a; color:#8fc7ff; border:1px solid #204a6b; }
+  .chip-conf   { background:#0f2f1d; color:#7fe0a7; border:1px solid #1d5436; }
+  .chip-weak   { background:#2b2440; color:#c4b3f5; border:1px solid #463a6b; }
+  .chip-strong { background:#0f2f1d; color:#7fe0a7; border:1px solid #1d5436; }
+  .chip-explore{ background:#12283a; color:#8fc7ff; border:1px solid #204a6b; }
+  .files { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #8b98a9; }
+  .lesson { background: #0f2417; border-left: 3px solid #2f9e63; border-radius: 8px; }
+  .boxd { border:1px solid #2a3644; border-radius:10px; }
+  .shallow { background: repeating-linear-gradient(45deg,#1a2230,#1a2230 6px,#141b26 6px,#141b26 12px); }
+  h2 { scroll-margin-top: 20px; }
+  .knum { color:#5c6b7d; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body class="antialiased">
+<div class="max-w-5xl mx-auto px-6 py-10">
+
+<!-- ============ HEADER ============ -->
+<header class="mb-10">
+  <p class="text-xs tracking-widest uppercase text-sky-400/80 font-semibold mb-2">Architecture Review · Round 3</p>
+  <h1 class="text-3xl font-bold text-white">X Media Downloader — Codebase Quality &amp; Deepening Review</h1>
+  <p class="mt-3 text-sm text-slate-400 leading-relaxed max-w-3xl">
+    Chrome MV3 extension (WXT · Preact · Effect v4 · optional Convex). Focus: code landed after the 2026-06-30 review rounds —
+    the popup redesign, options/Settings page, whole-list Clear, Knowledge Capture, and the cloud-upload / sync-outbox seam relocations.
+    All 11 previously-refuted candidates were blacklisted; nothing here re-litigates an ADR.
+  </p>
+  <div class="mt-5 flex flex-wrap gap-3 text-xs text-slate-400">
+    <span class="card px-3 py-1.5">49 agents · 4 phases</span>
+    <span class="card px-3 py-1.5">37 raw → 33 curated → <b class="text-emerald-400">32 survived</b> · 1 refuted</span>
+    <span class="card px-3 py-1.5">every survivor adversarially verified against the live tree</span>
+    <span class="card px-3 py-1.5">4 top findings re-verified first-hand by the synthesizer</span>
+  </div>
+  <div class="mt-4 flex gap-2 text-[11px] text-slate-500">
+    <span class="chip chip-conf">confirmed</span><span>= verifier reproduced the evidence at the cited lines</span>
+    <span class="chip chip-weak ml-3">weakened</span><span>= real, but the verifier corrected scope or severity (shown as corrected)</span>
+  </div>
+</header>
+
+<!-- ============ NAV ============ -->
+<nav class="mb-10 card p-4 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+  <a class="text-sky-400 hover:underline" href="#weak">20 points to improve</a>
+  <a class="text-sky-400 hover:underline" href="#strong">5 strengths &amp; lessons</a>
+  <a class="text-sky-400 hover:underline" href="#candidates">Deepening candidates</a>
+  <a class="text-sky-400 hover:underline" href="#top">Top recommendation</a>
+</nav>
+
+<!-- ============ 20 WEAKNESSES ============ -->
+<h2 id="weak" class="text-2xl font-bold text-white mb-1">The not-good part — 20 points, and why</h2>
+<p class="text-sm text-slate-400 mb-6">Grouped by theme; numbering runs 1–20. Each states the friction in seam/locality terms and the exact improvement.</p>
+
+<h3 class="text-base font-semibold text-rose-300/90 mt-8 mb-3 uppercase tracking-wide text-[13px]">A · Contracts &amp; reliability</h3>
+
+<div class="space-y-4">
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">1</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">ListClear.run() leaves its rejection mode undefined — a latent popup hang on the one destructive, long-running action</h4><span class="chip chip-med">medium</span><span class="chip chip-weak">weakened</span></div>
+  <p class="files mt-1">core/clear/list-clear.ts:54-83 · overlay.content/handlers.ts:295-297 · popup/App.tsx:82</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> the interface <code>run(): Promise&lt;ListClearResult&gt;</code> documents no rejection mode, yet the body is <code>try/finally</code> with no <code>catch</code>, the handler IIFE that calls <code>sendResponse</code> has no <code>.catch</code>, and the popup awaits the reply with no timeout. “The sweep body never throws” is an unstated invariant enforced nowhere and tested nowhere — any future throwing dependency added inside the 400-pass sweep silently converts into a frozen “Clearing entire list…” button. (Verifier correction: not reachable today — <code>element.click()</code> swallows page exceptions and context teardown rejects into the popup’s existing catch — hence medium, not high.)</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> catch inside <code>run()</code>, return a <code>{ cleared, reason:'error' }</code>-shaped failure so <code>sendResponse</code> always fires; extend the popup’s <code>format()</code> reason branch; add the test that feeds a rejecting <code>clearVisibleForPage</code> and asserts run() still settles and restores scroll.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">2</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">core/settings declares an infallible interface its storage adapter can’t honor — a rejected write is a silent no-op toggle</h4><span class="chip chip-med">medium</span><span class="chip chip-weak">weakened</span></div>
+  <p class="files mt-1">core/settings/index.ts:22-34 · popup/App.tsx:256-260 · options/App.tsx:84-88</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> <code>Effect.promise</code> (error channel: <i>never</i>) wraps a <code>storage.local</code> write that <em>can</em> reject (disk IO, context invalidation mid-write). The lie escapes as an untyped unhandled rejection behind all ~42 <code>void update(…)</code> call sites — a flipped Switch renders on, saves nothing, shows no error. Low likelihood (unlimitedStorage granted), but the failure is invisible by construction.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> fix at the seam, not 42 call sites: <code>Effect.tryPromise</code> + a typed StorageError (honest interface), or absorb in <code>set()</code> and return a discriminated result; one catch in each shared <code>update()</code> surfacing failure through the existing saved-badge machinery.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">3</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">capture.tsx hand-rolls a 2-term copy of isSyncConfigured — already drifted, UI contradicts the backend</h4><span class="chip chip-med">medium</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">options/panels/capture.tsx:34 · background/sync-config.ts:7-8</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> the documented single-source-of-truth predicate is 3-term (<code>cloudSyncEnabled && convexUrl && convexSyncSecret</code>); the options panel re-derives it with 2 terms, dropping <code>cloudSyncEnabled</code>. Reachable today: disable Cloud Sync (credentials persist) → the “Mirror to Convex” switch stays enabled with affirmative copy while the real gate (capture-outbox.ts:101) silently refuses to mirror. Classic drift from copying a seam’s decision into a caller. <span class="text-slate-500">(Re-verified first-hand by the synthesizer.)</span></p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> delete the copy; import the shared predicate (net-negative lines). Slightly better: hoist it to <code>src/core/sync/</code> so it sits under the coverage gate and options never imports from src/background.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">4</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">The content-script page-action boundary never Schema-decodes — 8 message tags have no written interface at all</h4><span class="chip chip-med">medium</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">overlay.content/index.tsx:1625 · handlers.ts:414 · core/schema/index.ts · tab-broadcaster.ts:116</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> the background’s Message union is a real seam — decode-or-drop, malformed payloads fail closed. The content script’s parallel channel has an absent contract: 8 tags exist nowhere in core/schema, and even schema-defined <code>ClearTweetRequest</code> is dispatched via an unchecked cast. A stale popup build or a <code>_tag</code> typo produces undefined-field reads deep in a handler instead of a decode failure at the door.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> add TaggedStructs for the 4 page-action request/response pairs and gate <code>handleRuntimeMessage</code> through <code>Schema.decodeUnknownResult</code> over a content-script union — exactly the pattern background.ts:1261 already uses.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">5</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">Sweep is one logical operation crossing two seams — but only the background leg has a written interface</h4><span class="chip chip-low">low</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">core/schema/index.ts · overlay.content/handlers.ts:356 · popup/App.tsx</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> <code>SweepEnqueue*</code> (content→background) is a documented TaggedStruct; <code>SweepPage*</code> (popup→content) is an inline generic plus an untyped cast. A reader reconstructs half the operation’s interface from adapter code; the codebase’s own convention (ClearTweetResponse is schema-defined despite riding sendResponse) is applied inconsistently.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> give SweepPage* the same TaggedStruct treatment, cross-referencing the relay relationship. Folds into point 4’s decode gate; no new runtime seam.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">6</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">UI surfaces discard or swallow the background’s reply — false “cleared” states and unloggable dead-worker failures</h4><span class="chip chip-low">low</span><span class="chip chip-weak">weakened</span></div>
+  <p class="files mt-1">options/panels/history.tsx:23-26 · capture.tsx:28-32 · components/capture-export.ts (fetchCaptureSummary)</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> History/Capture panels render the cleared state after <code>.catch(() =&gt; {})</code>, ignoring the <code>ok</code>/<code>cleared</code> reply the interface already carries — a failed clear shows empty until remount, data reappears unexplained. And <code>fetchCaptureSummary</code> maps worker-unreachable to <code>null</code> unlogged, indistinguishable from an empty store. The same file’s siblings (cloud.tsx, popup clearMonitor) consume replies correctly — this is drift within one codebase, not a missing capability.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> gate each optimistic reset on the reply (mirror clearMonitor’s <code>if (res?.ok)</code>); on rejection reuse cloud.tsx’s “background did not respond” copy; one <code>console.warn</code> before returning null.</p>
+</div></div></div>
+</div>
+
+<h3 class="text-base font-semibold text-amber-300/90 mt-10 mb-3 uppercase tracking-wide text-[13px]">B · Seams &amp; duplication</h3>
+
+<div class="space-y-4">
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">7</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">The Promise-facing Convex mutation airlock is built differently in each outbox — two adapters at a seam that never got extracted, already drifted</h4><span class="chip chip-med">medium</span><span class="chip chip-weak">weakened</span></div>
+  <p class="files mt-1">background/sync-outbox.ts:95-106 · capture-outbox.ts:137-149 · core/sync/convex.ts</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> a byte-identical <code>ConvexPort</code> interface is declared twice, and the airlock (makeConvexHttpPort + FetchService layer + <code>Effect.runPromise∘provide</code>) is hand-rolled twice with divergent construction — sync-outbox injects <code>fetchImpl</code>, capture-outbox hardcodes global <code>fetch</code> (only <code>bindFetch</code> inside fetch-service.ts:37 keeps that from being an MV3 illegal-invocation bug). The deletion-test signature of an unextracted seam: delete either copy and the logic reappears — as a <em>different</em> construction. Three declarations named ConvexPort, two shapes (Promise vs Effect): a caller checks the import path to know what <code>mutation</code> returns.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> see <a class="text-sky-400 hover:underline" href="#cand-a">Candidate A</a> — one <code>makeConvexPromisePort</code> factory in core/sync/convex.ts; both outboxes’ defaultConnect become one-liners.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">8</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">Live ScrollPort + Clock construction pasted at both overlay wiring sites</h4><span class="chip chip-low">low</span><span class="chip chip-weak">weakened</span></div>
+  <p class="files mt-1">overlay.content/index.tsx:337-349 · handlers.ts:258-270 · core/clear/scroll-drain.ts:40-56</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> the port interface already has two core consumers (makeScrollDrain, makeListClear) — a real seam — but the ~14-line live adapter is retyped at each wiring site (Clock byte-identical; ScrollPort differs only in window source). The next scroll-loop feature pastes a third.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> export <code>makeLiveScrollPort(view: Window = window)</code> + <code>liveClock</code> from core/clear — preserving the handler’s injected-document window source.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">9</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">The “Harvest tweets” master toggle binding is duplicated verbatim between popup and options</h4><span class="chip chip-low">low</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">popup/App.tsx:517-523 · options/panels/capture.tsx:144</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> one Settings field, two independent Switch bindings (id, aria-label, checked source, write side-effect) — identical but unenforced. Any a11y or write-path change must be repeated; drift is silent. Same root cause as the clear-scope toggles split across popup/worklist.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> a shared presentational CaptureToggle in src/components/ (the capture-export.ts neutral-home precedent); fold into one pass with the clear-scope toggles.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">10</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">Status→Badge-variant decision and Download Record row markup duplicated between popup Recent and options History</h4><span class="chip chip-low">low</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">popup/App.tsx:545-550 · options/panels/history.tsx:63-68 · popup/history-section.ts:23-35</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> <code>formatRecord</code> shares the projection, but depth stops one level short — both call sites re-implement the identical status→variant ternary and near-identical row JSX (only a text-size token differs). A new status class is hand-applied twice.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> pure <code>statusVariant()</code> next to formatRecord (character-identical at both sites today); optionally a DownloadRecordRow with a size prop.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">11</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">The shared history display module still lives in — and is named for — the popup entrypoint</h4><span class="chip chip-low">low</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">popup/history-section.ts · options/panels/history.tsx</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> a genuine two-adapter seam (popup Recent card + options History panel) presented as the popup’s private helper (“the fields the popup renders”). A maintainer editing “popup code” can silently break the options page. The same redesign wave set the correct convention — capture-export.ts in src/components/ with a both-consumers doc-comment — so this is inconsistency against the codebase’s own pattern.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> relocate to src/components/ (or the pure projections to core/history/ under the gate, keeping only fetchHistory surface-side); fix the docstring.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">12</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">CaptureDb’s read methods are verbatim pass-throughs — and conversation() is dead</h4><span class="chip chip-low">low</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">background/capture-db.ts</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> three of five methods add zero behaviour per unit of interface (shallow surface on an otherwise deep write path — the writes seam legitimately hides mergeRecord + serial queue + IDB adapter); <code>conversation()</code>’s only caller is its own test. Reads also bypass the writes serial queue — verified staleness-only today, but an unstated ordering property of the interface.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> next touch: drop <code>conversation()</code> from the interface; route reads through the queue only if a call site ever needs read-after-queued-write.</p>
+</div></div></div>
+</div>
+
+<h3 class="text-base font-semibold text-sky-300/90 mt-10 mb-3 uppercase tracking-wide text-[13px]">C · Test surface</h3>
+
+<div class="space-y-4">
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">13</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">Three UI test files assert on raw source text (readFileSync + toContain) — testing at the wrong seam entirely</h4><span class="chip chip-med">medium</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">popup/popup-layout.test.ts · options/App.test.ts · worklist.test.ts</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> the tests couple to implementation text, not the component interface. Behavior-neutral refactors (renaming a local, hoisting a string constant) break the suite, while real regressions pass: an inverted whole-list-clear disabled gate satisfies <code>toContain('onListPage')</code> either way; <code>usePageAction.run</code> is never invoked by any test. The worst of both worlds — brittle <em>and</em> blind.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> move the behavior-bearing assertions to the repo’s own idioms: extract the inlined logic to plain modules tested behaviorally (the history-section.ts precedent), and/or mount App with fakeBrowser. See <a class="text-sky-400 hover:underline" href="#cand-b">Candidate B</a>.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">14</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">clearMountedForScope — the click-loop engine behind BOTH popup clears — has zero direct tests at any layer</h4><span class="chip chip-med">medium</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">overlay.content/handlers.ts:197-218</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> the seam is asymmetrically tested: the loop side (makeListClear) has thorough coverage against a pure fake, but the one production adapter — the only point of contact with X’s live DOM, doing the irreversible clicking — has none. A regression there passes list-clear.test.ts, handlers.test.ts, clearer.test.ts, and the coverage gate <em>simultaneously</em> while breaking both popup clears in production.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> the spec-promised direct test: happy-dom fixture (in-scope / out-of-scope / button-less-control articles), fake timers, assert targets clicked, paced by paceMs, count correct.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">15</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">Export-pipeline behavior sits outside the gate at both ends: buildCaptureExport stranded in background.ts; capture-export.ts classification untested</h4><span class="chip chip-med">medium</span><span class="chip chip-conf">confirmed + weakened</span></div>
+  <p class="files mt-1">entrypoints/background.ts (buildCaptureExport) · components/capture-export.ts:45-47</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> pure decision logic — format dispatch, date/conversationId filename templating, two distinct null modes — composed entirely from already-tested core/capture functions, but living in the entrypoint shell where the gate can’t see it, reachable only via a never-browser-verified handler. At the other end, the outcome classifier maps a changed reply contract to “Nothing harvested yet” with no failing test. (Verifier: do <em>not</em> extract a classifier seam — single caller, fails the deletion test; just test it in place.)</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> relocate buildCaptureExport as pure <code>buildExport(records, kind, conversationId)</code> in core/capture/export.ts (<a class="text-sky-400 hover:underline" href="#cand-c">Candidate C</a>); add a direct capture-export.test.ts (vitest already runs src/components tests; fakeBrowser stubs sendMessage per branch).</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">16</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">Popup App.tsx traps pure logic in the shell: the usePageAction skeleton and the fmt* formatters have never executed under any test</h4><span class="chip chip-med">medium</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">popup/App.tsx:58-92 (usePageAction) · App.tsx:30-45 (fmtRate/fmtBytes/fmtDuration/plural)</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> usePageAction passes the deletion test (its confirm→query-tab→send→format→catch→busy skeleton would reappear 4× across clearVisible / clearWholeList / drain / sweep) — a real module whose seam is trapped inside a Preact closure over useState/confirm/browser.tabs, invisible to the gate. The reason-code→copy branches and fmtDuration’s rollover/precision branches (59.96s → “1m 0s”?) have literally never run anywhere: not in tests, not in a browser.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> see <a class="text-sky-400 hover:underline" href="#cand-b">Candidate B</a> — extract the non-hook core behind injected ports; move formatters to src/lib under the gate.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">17</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">handleSweepPage’s post-collection loop is an untested composition of tested primitives — testable today, tested never</h4><span class="chip chip-low">low</span><span class="chip chip-weak">weakened</span></div>
+  <p class="files mt-1">overlay.content/handlers.ts:326-341</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> per-tweet Set dedup, the media-bearing join, and skip ordering compose covered core primitives into an uncovered decision. handlers.test.ts already drives sibling handlers with happy-dom fixtures and injected deps — this is a testing gap, not untestable structure. (Verifier: do <em>not</em> extract the loop — one caller, hypothetical seam.)</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> one handlers.test.ts case: mixed-scope articles, duplicate tweetIds, media-less posts; assert the SweepEnqueueRequest payload via faked sendMessage.</p>
+</div></div></div>
+</div>
+
+<h3 class="text-base font-semibold text-violet-300/90 mt-10 mb-3 uppercase tracking-wide text-[13px]">D · Domain language, tooling &amp; hygiene</h3>
+
+<div class="space-y-4">
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">18</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">One feature, three names — and a collision with the glossary’s narrower “Capture”</h4><span class="chip chip-med">medium</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">CONTEXT.md:34 · core/capture/harvest.ts · options copy (“Knowledge Capture” / “Harvest tweets”)</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> CONTEXT.md binds the ubiquitous language, yet the tweet-archive feature appears under none of its three names (“Capture” keys/dirs, “Harvest” modules, “Knowledge Capture” UI) — while its closest match, <b>Capture</b>, already means “a raw untrusted X response,” a meaning still live in tee.ts and the X adapter. A contributor reading the glossary will misread src/core/capture/ as the Passive-capture validation concern. The interface here is the vocabulary itself, and it is ambiguous.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> add a CONTEXT.md entry under one canonical name (“Knowledge Capture”, noting the code aliases), plus a disambiguation line beside “Capture”; align user-facing copy. Do <b>not</b> rename the settings keys — withDecodingDefaultKey means a rename silently resets users.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">19</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">bun run check silently skips the 100% coverage gate and the backend suite — and no CI enforces either</h4><span class="chip chip-med">medium</span><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">package.json:22 · vitest.config.ts · backend/</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> the script’s interface (“the pre-merge check”) is shallower than its name: green <code>check</code> ≠ coverage held ≠ backend passing. The gap is worked around by habit — session logs repeatedly record “check + coverage + build GREEN” as a manually-remembered triad. Interface debt pushed onto every caller (every future session/agent) instead of into the module. <span class="text-slate-500">(Re-verified: <code>check = oxfmt ∧ oxlint ∧ wxt prepare ∧ tsgo ∧ vitest run</code> — no <code>--coverage</code>, no backend.)</span></p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> fold <code>--coverage</code> + backend suite into <code>check</code> (or add <code>check:all</code>), and a minimal CI workflow so the gate lives in tooling, not memory.</p>
+</div></div></div>
+
+<div class="card p-5"><div class="flex items-start gap-3"><span class="knum text-lg font-bold">20</span><div class="flex-1">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-slate-100">Dead surface: two vestigial Message variants, two dead dependencies, one vestigial permission</h4><span class="chip chip-low">low</span><span class="chip chip-weak">weakened</span></div>
+  <p class="files mt-1">core/schema/index.ts:189-192 (DetectRequest, MediaDetected) · package.json (clsx, tailwind-merge) · wxt.config.ts:37 (activeTab)</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why not good:</b> each is an interface claiming more than the implementation uses. <code>MediaDetected</code> reads load-bearing but has zero producers or consumers; clsx/tailwind-merge are declared runtime deps with zero source imports since the cnfast migration (supply-chain interface dishonesty); <code>activeTab</code> grants per-popup-open host access nothing exercises — and the grounding doc explicitly specifies “No activeTab.” <span class="text-slate-500">(Deps re-verified first-hand.)</span></p>
+  <p class="text-sm text-slate-400 mt-2"><b>Improve:</b> delete all five declarations; each removal relocates zero complexity (the deletion test passes trivially). For activeTab, re-verify popup App.tsx:207 — <code>?? ''</code> already yields the correct onXTab=false on non-X tabs.</p>
+</div></div></div>
+</div>
+
+<!-- ============ STRENGTHS ============ -->
+<h2 id="strong" class="text-2xl font-bold text-white mt-14 mb-1">The good part — 5 strengths, and the lesson each teaches</h2>
+<p class="text-sm text-slate-400 mb-6">Each verified against the live tree; the lesson is the transferable rule, not praise.</p>
+
+<div class="space-y-4">
+<div class="card p-5 border-l-2 border-emerald-600/60">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-emerald-200">S1 · Option-returning DOM adapters at the irreversible-click boundary</h4><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">core/clear/clearer.ts (pageScope, tweetIdOfArticle, findArticle, findFeedbackButton → Option)</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why it’s good:</b> depth at exactly the seam where <code>Element | null</code> conventions fail silently. “Absent” is a first-class, exhaustively-checked case — the compiler refuses a caller that forgets the none-branch — at the single highest-consequence bug class in the codebase (clicking the wrong destructive thing).</p>
+  <div class="lesson p-3 mt-3 text-sm text-emerald-100/90"><b>Lesson:</b> when a module’s failure mode is “silently do the wrong destructive thing if a lookup was null and nobody checked,” return Option/Result instead of nullables. The type system becomes a reviewer for precisely the bug class that matters most.</div>
+</div>
+
+<div class="card p-5 border-l-2 border-emerald-600/60">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-emerald-200">S2 · Deterministic idempotency keys make Sync-Event replay safety a construction-time invariant</h4><span class="chip chip-conf">confirmed</span></div>
+  <p class="files mt-1">core/sync/events.ts (syncEventId over deviceId × requestId × kind)</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why it’s good:</b> “don’t double-record a re-sent batch” stops being an operational concern (dedup logic, upsert heuristics) and becomes a property of the id itself: same tuple → same eventId, so every at-least-once path (Outbox retry, backoff replay, offline flush) is idempotent at the consumer with zero coordination. Deleting it would re-scatter dedup heuristics across 3+ delivery boundaries.</p>
+  <div class="lesson p-3 mt-3 text-sm text-emerald-100/90"><b>Lesson:</b> at any durable outbox / at-least-once boundary, derive record identity deterministically from content + context, never a fresh id per attempt — an entire class of “did this already land?” bugs collapses into one pure function.</div>
+</div>
+
+<div class="card p-5 border-l-2 border-emerald-600/60">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-emerald-200">S3 · CloudProvider registry: identity as one data record, behavior behind its own adapter seam</h4><span class="chip chip-weak">weakened → still real</span></div>
+  <p class="files mt-1">core/cloud/provider.ts · consumed fork-free at 13 sites (cloud-upload.ts ×10, options cloud.tsx ×3) · RevokeRecipe + one interpreter</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why it’s good:</b> every identity-data read — Settings field names, OAuth config, label, revoke recipe — is a lookup on one keyed record; delete PROVIDERS and 13 call sites regrow hand-written gdrive/dropbox forks. The discipline is the boundary: the record holds identity <em>only</em>; per-provider behavior (byte uploaders) stays behind its own adapter seam per ADR-0017. Even OAuth teardown is data: RevokeRecipe’s enum-tagged shape + one generic interpreter, instead of N quirky revoke functions.</p>
+  <div class="lesson p-3 mt-3 text-sm text-emerald-100/90"><b>Lesson:</b> when N call sites fork on the same small enum, ask whether the fork is really per-variant <em>data</em> — if so, one keyed record kills all N conditionals. But keep per-variant <em>behavior</em> as adapters behind their own seam; stuffing closures into the record would turn a data table into a shallow grab-bag.</div>
+</div>
+
+<div class="card p-5 border-l-2 border-emerald-600/60">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-emerald-200">S4 · Optional-port-with-live-default injection, retrofitted onto shipped modules with zero caller edits</h4><span class="chip chip-weak">weakened → still real</span></div>
+  <p class="files mt-1">background/cloud-upload.ts · sync-outbox.ts (13 optional ports) · siblings: capture-outbox, clear-coordinator</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why it’s good:</b> production wiring stays trivially simple (background.ts passes only the required orchestrator deps), while a test overrides exactly the ports its scenario touches. Because the relocations kept the module interface byte-identical, commits 6ff69a5/7b5ef31 needed <em>zero</em> background.ts edits — proof the idiom retrofits without an interface-breaking rewrite. The sharp boundary rule: a port is optional exactly when its live binding is a global (storage item, browser API, clock); deps that close over caller state stay required.</p>
+  <div class="lesson p-3 mt-3 text-sm text-emerald-100/90"><b>Lesson:</b> for side-effecting collaborators inside an orchestrator, make the port optional and default it to its live global binding — zero DI ceremony in production, precise per-path control in tests, retrofittable later without touching callers.</div>
+</div>
+
+<div class="card p-5 border-l-2 border-emerald-600/60">
+  <div class="flex flex-wrap items-center gap-2"><h4 class="font-semibold text-emerald-200">S5 · Claim-state ledger gives the irreversible Clear at-most-once-per-scope semantics by construction</h4><span class="chip chip-weak">weakened → still real</span></div>
+  <p class="files mt-1">core/clear/ledger.ts (tryClaim: none|failed → clearing) · background/clear-coordinator.ts</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Why it’s good:</b> the pure reducer encodes the full claim lifecycle (cleared never re-claims; failed deliberately retryable), so any re-entry — duplicate settle tasks, partial multi-scope resolution, re-downloads — is at-most-once per (tweet, scope) by state construction, not ad-hoc guard flags. It <em>composes with</em> the serial queue rather than replacing it: the queue makes each read-modify-write atomic across awaits; the claim state dedupes logical duplicates that serialization alone would happily run twice.</p>
+  <div class="lesson p-3 mt-3 text-sm text-emerald-100/90"><b>Lesson:</b> when an irreversible action can be re-attempted by re-entrant async paths, encode attempt→won/lost as explicit claim state in a pure ledger — and pair it with serialized RMW, because a claim transition is only atomic while the read-claim-write window stays synchronous.</div>
+</div>
+</div>
+
+<p class="text-xs text-slate-500 mt-4">Honorable mentions (verified, not counted): the coverage gate scoped to the testable layer with its rationale written beside the thresholds in vitest.config.ts — undermined only by point 19; and RevokeRecipe, folded into S3.</p>
+
+<!-- ============ CANDIDATES ============ -->
+<h2 id="candidates" class="text-2xl font-bold text-white mt-14 mb-1">Deepening candidates</h2>
+<p class="text-sm text-slate-400 mb-6">Each passed the deletion test under adversarial verification. Before/after shows where the interface moves.</p>
+
+<!-- Candidate A -->
+<div id="cand-a" class="card p-6 mb-6">
+  <div class="flex flex-wrap items-center gap-2 mb-1"><h3 class="text-lg font-bold text-white">A · makeConvexPromisePort — one Promise-facing airlock factory in core/sync/convex.ts</h3><span class="chip chip-strong">Strong</span></div>
+  <p class="files">core/sync/convex.ts ← background/sync-outbox.ts:95-106 + capture-outbox.ts:137-149 · fixes point 7</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Problem:</b> the Effect→Promise airlock is hand-rolled twice, with a byte-identical interface declared twice and constructions that have already diverged (injected fetchImpl vs hardcoded global). <b>Two adapters = a real seam</b> that never got its module.</p>
+  <p class="text-sm text-slate-300 mt-1"><b>Solution:</b> export <code>makeConvexPromisePort(fetchImpl)</code> → <code>(cfg) =&gt; ConvexMutationPort</code> next to makeConvexHttpPort, wrapping port + FetchService layer + runPromise∘provide; export the single Promise interface as <code>ConvexMutationPort</code> so the Effect-shaped ConvexPort keeps its name. Both outboxes’ defaultConnect become one-liners. (Scope note from verification: do <em>not</em> fold in cloud-upload’s ManagedRuntime — that third variant is a different, ADR-0017-sanctioned shape.)</p>
+  <div class="grid md:grid-cols-2 gap-4 mt-4">
+    <div class="boxd p-4"><p class="text-xs uppercase tracking-wide text-rose-300/80 font-semibold mb-2">Before</p>
+      <div class="space-y-2 text-xs font-mono">
+        <div class="shallow boxd p-2">sync-outbox.ts<br><span class="text-slate-400">interface ConvexPort …<br>defaultConnect = fetchImpl ⇒ port+layer+runPromise</span></div>
+        <div class="shallow boxd p-2">capture-outbox.ts<br><span class="text-slate-400">interface ConvexPort …  <span class="text-rose-300">(byte-identical, redeclared)</span><br>defaultConnect = <span class="text-rose-300">global fetch hardcoded</span> ⇒ port+layer+runPromise</span></div>
+      </div>
+      <p class="text-[11px] text-slate-500 mt-2">Same airlock, two constructions, already drifted.</p>
+    </div>
+    <div class="boxd p-4"><p class="text-xs uppercase tracking-wide text-emerald-300/80 font-semibold mb-2">After</p>
+      <div class="boxd p-2 text-xs font-mono bg-emerald-950/30">core/sync/convex.ts<br><span class="text-emerald-200">ConvexMutationPort · makeConvexPromisePort(fetchImpl)</span><br><span class="text-slate-400">— the one place airlock construction lives</span></div>
+      <div class="mt-2 grid grid-cols-2 gap-2 text-[11px] font-mono">
+        <div class="boxd p-2">sync-outbox<br><span class="text-slate-400">connect = makeConvexPromisePort(f)</span></div>
+        <div class="boxd p-2">capture-outbox<br><span class="text-slate-400">connect = makeConvexPromisePort(f)</span></div>
+      </div>
+      <p class="text-[11px] text-slate-500 mt-2">Error-mapping / tracing / retry changes land once; interface named once.</p>
+    </div>
+  </div>
+  <p class="text-sm text-slate-400 mt-3"><b>Benefits:</b> locality — any airlock change lands once, not twice-divergently; leverage — a future third outbox is a one-liner; the tests keep their existing connect-injection seam untouched.</p>
+</div>
+
+<!-- Candidate B -->
+<div id="cand-b" class="card p-6 mb-6">
+  <div class="flex flex-wrap items-center gap-2 mb-1"><h3 class="text-lg font-bold text-white">B · Free the popup’s trapped pure logic: usePageAction core + formatters to src/lib</h3><span class="chip chip-strong">Strong</span></div>
+  <p class="files">popup/App.tsx:58-92, 30-45 → core (ports) + src/lib · fixes points 13 &amp; 16</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Problem:</b> the confirm→query-tab→send→format→catch→busy skeleton would reappear 4× if deleted (real module), but its seam lives inside a Preact hook closure the coverage gate can’t see; its error-copy branches and the fmt* formatters have never executed under any test. The current “tests” grep source text (point 13).</p>
+  <p class="text-sm text-slate-300 mt-1"><b>Solution:</b> extract the non-hook core (confirm gate, response→copy formatting, PAGE_UNREACHABLE mapping) into a plain function taking injected confirm/tabsQuery/sendMessage ports with live-binding defaults — the exact idiom S4 already landed five times. The hook shrinks to a thin Preact adapter owning only the busy useState. fmtRate/fmtBytes/fmtDuration/plural move to src/lib.</p>
+  <div class="grid md:grid-cols-2 gap-4 mt-4">
+    <div class="boxd p-4"><p class="text-xs uppercase tracking-wide text-rose-300/80 font-semibold mb-2">Before</p>
+      <div class="shallow boxd p-3 text-xs font-mono">App.tsx (619 lines, outside the gate)<br>
+      <span class="text-slate-400">├ usePageAction ── closure over useState · confirm · browser.tabs<br>│&nbsp;&nbsp;<span class="text-rose-300">4 actions × format/error branches — never executed</span><br>├ fmtDuration ── rollover branch, untested<br>└ tests: readFileSync(App.tsx).toContain(…)</span></div>
+    </div>
+    <div class="boxd p-4"><p class="text-xs uppercase tracking-wide text-emerald-300/80 font-semibold mb-2">After</p>
+      <div class="boxd p-2 text-xs font-mono bg-emerald-950/30">core/… runPageAction(ports, action) <span class="text-slate-400">· 100% gate</span></div>
+      <div class="boxd p-2 text-xs font-mono bg-emerald-950/30 mt-2">src/lib/format.ts <span class="text-slate-400">fmt* · plural · 100% gate</span></div>
+      <div class="boxd p-2 text-xs font-mono mt-2">App.tsx <span class="text-slate-400">thin adapter: busy state + JSX only</span></div>
+      <p class="text-[11px] text-slate-500 mt-2">Behavioral tests at the new interface replace the source-text greps (which get deleted).</p>
+    </div>
+  </div>
+  <p class="text-sm text-slate-400 mt-3"><b>Benefits:</b> the never-run branches finally execute under the gate; tests describe behaviour, so they survive internal refactors; the popup becomes what the redesign intended — a thin action surface.</p>
+</div>
+
+<!-- Candidate C -->
+<div id="cand-c" class="card p-6 mb-6">
+  <div class="flex flex-wrap items-center gap-2 mb-1"><h3 class="text-lg font-bold text-white">C · Relocate buildCaptureExport into core/capture/export.ts as pure buildExport()</h3><span class="chip chip-strong">Strong</span></div>
+  <p class="files">entrypoints/background.ts → core/capture/export.ts · fixes half of point 15</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Problem:</b> format dispatch + filename templating + two null modes, composed entirely from already-tested core functions, stranded in the shell — invisible to the gate, reachable only via a never-browser-verified handler. The deletion test confirms it’s a real module in the wrong home: inline it and 17 lines of decisions relocate <em>outside</em> the gate.</p>
+  <p class="text-sm text-slate-300 mt-1"><b>Solution:</b> pure <code>buildExport(records, kind, conversationId): { filename, text } | null</code> beside the siblings it composes. The handler shrinks to one read + one call. Semantics-preserving; the gate then requires its branches covered.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Benefits:</b> pure move with net-negative shell lines; a filename-template or dispatch bug now fails a test instead of shipping silently.</p>
+</div>
+
+<!-- Candidate D -->
+<div class="card p-6 mb-6">
+  <div class="flex flex-wrap items-center gap-2 mb-1"><h3 class="text-lg font-bold text-white">D · Decode-or-drop gate on the content-script message boundary</h3><span class="chip chip-explore">Worth exploring</span></div>
+  <p class="files">overlay.content/index.tsx:1625 + core/schema/index.ts · fixes points 4 &amp; 5</p>
+  <p class="text-sm text-slate-300 mt-2"><b>Problem/Solution:</b> mirror the background’s existing decode-or-drop seam: TaggedStructs for the 4 page-action pairs (+ SweepPage*), one <code>Schema.decodeUnknownResult</code> gate in handleRuntimeMessage, casts at handlers.ts:414 / tab-broadcaster.ts:116 replaced by schema types. The inverse deletion test passes: without the gate, shape-checking reappears as unchecked casts across 8 handlers and 4 producers — the current state.</p>
+  <p class="text-sm text-slate-400 mt-2"><b>Benefits:</b> malformed/stale messages fail closed at the door of the surface that performs irreversible DOM clicks; the schema file becomes the complete written interface of the extension’s messaging, not two-thirds of it. “Worth exploring” only because the tag inventory should be confirmed against a live tab before freezing shapes.</p>
+</div>
+
+<!-- Candidate E -->
+<div class="card p-6 mb-6">
+  <div class="flex flex-wrap items-center gap-2 mb-1"><h3 class="text-lg font-bold text-white">E · Direct adapter test for clearMountedForScope + shared live-ports factory</h3><span class="chip chip-explore">Worth exploring</span></div>
+  <p class="files">overlay.content/handlers.ts · core/clear (makeLiveScrollPort, liveClock) · fixes points 8 &amp; 14</p>
+  <p class="text-sm text-slate-300 mt-2">Not a new seam — the missing test at an existing one (the only production adapter of the clearVisibleForPage interface, the code that clicks), plus deduplicating the pasted live ScrollPort/Clock construction. Small, surgical, closes the scariest coverage asymmetry.</p>
+</div>
+
+<!-- ============ TOP RECOMMENDATION ============ -->
+<h2 id="top" class="text-2xl font-bold text-white mt-14 mb-4">Top recommendation</h2>
+<div class="card p-6 border border-emerald-700/40">
+  <p class="text-sm text-slate-200 leading-relaxed">
+    <b class="text-emerald-300">Start with the 30-minute hygiene batch, then Candidate B.</b>
+    The hygiene batch (points 3, 19, 20) is pure deletion + one script edit — the isSyncConfigured import fixes a user-visible contradiction,
+    and folding coverage + backend into <code>check</code> makes every subsequent change safer for zero design cost.
+    Then <b>Candidate B</b>: it is the highest-leverage structural item because it fixes two verified findings at once
+    (the trapped usePageAction/formatter logic <em>and</em> the wrong-seam source-text tests), uses an idiom this codebase has already
+    landed five times (S4), and covers the newest never-browser-verified surface — the destructive popup actions.
+    Candidate A is the cleanest classical deepening (a drifted two-adapter seam) and slots naturally after; C, D, E follow in any order.
+  </p>
+  <div class="mt-4 text-xs text-slate-400 font-mono boxd p-3">
+    goal loop (per candidate): 1) characterise at the target interface → green on today’s code<br>
+    2) deepen behind that interface → same tests stay green · 3) delete superseded shallow tests (the source-text greps) → suite green
+  </div>
+</div>
+
+<!-- ============ FOOTER ============ -->
+<footer class="mt-12 text-xs text-slate-500 leading-relaxed border-t border-slate-800 pt-6">
+  <p><b>Method.</b> 4-phase workflow, 49 agents: 6 readers (haiku/sonnet) → 9 dimension-scoped finders (sonnet) → 1 curator + 32 adversarial verifiers (Fable-tier), + 4 first-hand re-verifications by the synthesizer. One tooling-digest agent failed structured output and was excluded; its ground was independently covered by the config-tooling finder (points 19–20 carry first-hand re-verification).</p>
+  <p class="mt-2"><b>Refuted in verification (1):</b> “clear-scope toggle list drifted between popup and Worklist panel” — the popup’s omission of clearAllListsOnSave is <em>specified</em> in the 2026-07-01 design doc, not drift.</p>
+  <p class="mt-2"><b>Not re-litigated:</b> the 13 candidates refuted across the 2026-06-21/30 rounds (message-bus, handoff machine, boot() split, broad overlay decomposition, schema-by-consumer split, Drainer, …) and all 18 ADRs.</p>
+</footer>
+
+</div>
+</body>
+</html>
