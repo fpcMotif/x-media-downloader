@@ -16,6 +16,7 @@ export interface QueueStartEffects {
   readonly syncEvents: ReadonlyArray<SyncEvent>
   readonly historyActions: ReadonlyArray<HistoryAction>
   readonly uploadItems: ReadonlyArray<QueueStartUploadItem>
+  readonly diskRequests: ReadonlyArray<SaveRequest>
   readonly clearSeed: ClearSeedVerdict
   readonly persistSnapshot: true
 }
@@ -34,14 +35,18 @@ export function decideQueueStart(input: {
   readonly originTabId?: number
 }): QueueStartEffects {
   const { metrics, requests, mediaById, settings, startedAt } = input
+  // Metrics tracks DISK transfers; only the disk requests ever Settle, so
+  // Cloud-only (diskRequests empty) must not extend it — else its grabs sit as
+  // ghost actives that no terminal can ever clear.
+  const diskRequests = settings.saveToDisk ? requests : []
   const fresh = metrics === null || snapshot(metrics, startedAt).active === 0
   const nextMetrics = fresh
     ? emptyMetrics({
-        total: requests.length,
+        total: diskRequests.length,
         concurrencyCap: settings.downloadConcurrency,
         startedAt,
       })
-    : extendTotal(metrics, requests.length, settings.downloadConcurrency)
+    : extendTotal(metrics, diskRequests.length, settings.downloadConcurrency)
 
   const mirrorable = requests.flatMap((request) => {
     const item = mediaById.get(request.id)
@@ -62,6 +67,7 @@ export function decideQueueStart(input: {
       item,
       filename: request.filename,
     })),
+    diskRequests,
     clearSeed: planClearSeed({
       requests,
       mediaById,

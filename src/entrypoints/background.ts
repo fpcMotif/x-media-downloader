@@ -15,7 +15,7 @@ import {
   watchSettings,
 } from '@/packages/settings'
 import { planConvexEnvSeed, planCloudEnvSeed } from '@/packages/settings/env-seed'
-import type { SyncEvent } from '@/packages/sync/events'
+import { outcomeEvent, type SyncEvent } from '@/packages/sync/events'
 import { makeConvexHttpPort, queryDownloadedAmong } from '@/packages/sync/convex'
 import { makeSavedIndex, type QueryConvex } from '@/packages/sync/saved-index'
 import {
@@ -100,7 +100,7 @@ import type { ClearScope, SweepEnqueueResponse } from '@/packages/schema'
 import { isSyncConfigured } from '../background/sync-config'
 import { makeTabBroadcaster } from '../background/tab-broadcaster'
 import { makeSyncOutbox } from '../background/sync-outbox'
-import { makeCloudUpload } from '../background/cloud-upload'
+import { makeCloudUpload, type CloudHistoryNotice } from '../background/cloud-upload'
 import { makeSavedStatusCoordinator } from '../background/saved-status'
 import { makeAdmissionGate } from '../background/admission-gate'
 import { makeDailyBudgetStore } from '../background/daily-budget-store'
@@ -434,10 +434,50 @@ const { outboxQueue, recordSync, drainOutbox, runSyncConnectionTest } = syncOutb
 // Cloud upload (ADR-0013): client-side OAuth byte path. Owns its UploadJob ledger
 // + queue + the SW-side cloud-settings write chain; bytes go extension → provider
 // directly (nothing transits Convex). Backfill reads the durable history store.
+
+// Cloud-only Download History terminals (issue #95): media grabbed with Save to
+// this computer off never gets a Download Handle, so its terminal comes from the
+// Cloud drain instead of Settle. `cloudGrabs` maps the notice's media id back to
+// its item — the postId the timeline Saved chip needs — for this SW life only;
+// a post-recycle notice falls back to the durable history record's provenance.
+const cloudGrabs = new Map<string, MediaItem>()
+const cloudPostIdFromHistory = async (mediaId: string): Promise<string | undefined> =>
+  decodeStore(await historyItem.getValue()).records.find((r) => r.requestId === mediaId)?.media
+    .postId
+
+/** Apply one Cloud-only history verdict: history transition, Sync outcome event,
+ *  and — completed only — the saved marks. Disk-bound effects (tracker settle,
+ *  metrics, backlink, Clear, budget) have no counterpart here by construction. */
+const handleCloudHistoryNotice = async (notice: CloudHistoryNotice): Promise<void> => {
+  const item = cloudGrabs.get(notice.mediaId)
+  const settings = await getSettings()
+  await historyQueue.run(() =>
+    persistHistory(settings, [
+      {
+        kind: notice.kind === 'completed' ? 'cloud-completed' : 'cloud-failed',
+        requestId: notice.mediaId,
+        at: notice.at,
+      },
+    ]),
+  )
+  recordSync(settings, [
+    outcomeEvent(notice.mediaId, notice.kind, settings.cloudDeviceId, notice.at),
+  ])
+  if (notice.kind !== 'completed') return
+  savedMediaIndex.markSaved(notice.mediaId)
+  const postId =
+    item?.postId ??
+    requestMetaById.get(notice.mediaId)?.item?.postId ??
+    (await cloudPostIdFromHistory(notice.mediaId))
+  if (postId !== undefined) savedStatusCoordinator.onCompleted(postId)
+  cloudGrabs.delete(notice.mediaId)
+}
+
 const cloudUpload = makeCloudUpload({
   queueError,
   getSettings,
   fetchImpl: fetch,
+  onHistoryNotice: handleCloudHistoryNotice,
   // BackfillRecord.media keeps its own `handle`-named field (cloud-upload.ts is
   // untouched by the multi-platform rename) — map the generalized author onto it.
   getBackfillRecords: async () =>
@@ -474,11 +514,17 @@ const historyQueue = makeSerialQueue(queueError('history'))
 // lose an update. Gated by the toggle; orthogonal to Cloud Sync.
 const recordHistory = (settings: Settings, actions: ReadonlyArray<HistoryAction>): void => {
   if (!settings.downloadHistoryEnabled || actions.length === 0) return
-  historyQueue.push(async () => {
-    let store = decodeStore(await historyItem.getValue())
-    for (const a of actions) store = planHistory(store, settings, a)
-    await historyItem.setValue(store)
-  })
+  historyQueue.push(() => persistHistory(settings, actions))
+}
+
+const persistHistory = async (
+  settings: Settings,
+  actions: ReadonlyArray<HistoryAction>,
+): Promise<void> => {
+  if (!settings.downloadHistoryEnabled || actions.length === 0) return
+  let store = decodeStore(await historyItem.getValue())
+  for (const a of actions) store = planHistory(store, settings, a)
+  await historyItem.setValue(store)
 }
 
 // One worker-owned Clear lifecycle: planned seed, settle timers, origin tab,
@@ -1057,7 +1103,9 @@ const handleDownload = (
         planDownloads({
           template: settings.filenameTemplate,
           item,
-          sidecar: settings.sidecarMetadata,
+          // Sidecars are a disk artifact (issue #95): nothing is written to disk
+          // in Cloud-only, so no `.json` twin is planned.
+          sidecar: settings.sidecarMetadata && settings.saveToDisk,
         }),
       )
       .filter((r) => !inFlight.has(r.id))
@@ -1093,22 +1141,10 @@ const handleDownload = (
       }
     }
     const mediaById = new Map(admission.admitted.map((i) => [i.id, i]))
-    for (const r of requests) {
-      inFlight.add(r.id)
-      clearInterruptRetryState(r.id)
-      const item = mediaById.get(r.id)
-      requestMetaById.set(r.id, {
-        url: r.url,
-        filename: r.filename,
-        ...(item ? { item } : {}),
-      })
-    }
-    persistRequestMeta()
 
     // One pure start decision owns monitoring, queued mirrors/uploads, and B's
     // Clear seed verdict. The shell applies those effects before queue hand-off.
     const startedAt = Date.now()
-    for (const r of requests) requestStartedAt.set(r.id, startedAt)
     traceBackground(traceStageForSweep('queue-started', sweep), {
       elapsedMs: startedAt - requestReceivedAt,
       detail: sweep
@@ -1125,6 +1161,24 @@ const handleDownload = (
       ...(clearExpect ? { clearExpect } : {}),
       ...(originTabId === undefined ? {} : { originTabId }),
     })
+    // Only the DISK requests enter the browser-transfer bookkeeping — in-flight
+    // dedup, retry meta, elapsed-from stamps. They are the only requests a
+    // Download Handle (and thus Settle / interrupt-retry) can ever exist for;
+    // Cloud-only media (issue #95) dedups on the UploadJob idempotency key
+    // instead. Seeding stays in the same synchronous step as the in-flight
+    // filter above, so a concurrent grab cannot slip the same id through twice.
+    for (const r of startFx.diskRequests) {
+      inFlight.add(r.id)
+      clearInterruptRetryState(r.id)
+      requestStartedAt.set(r.id, startedAt)
+      const item = mediaById.get(r.id)
+      requestMetaById.set(r.id, {
+        url: r.url,
+        filename: r.filename,
+        ...(item ? { item } : {}),
+      })
+    }
+    if (startFx.diskRequests.length > 0) persistRequestMeta()
     live = yield* Effect.promise(() =>
       applyQueueStartEffects(startFx, startedAt, {
         resetCorrelation: () => requestIdByDownloadId.clear(),
@@ -1134,19 +1188,50 @@ const handleDownload = (
         persistSnapshot,
         recordSync: (events) => recordSync(settings, events),
         recordHistory: (actions) => recordHistory(settings, actions),
-        recordUploads: (uploadItems) =>
-          recordCloudUploads(
+        recordUploads: async (uploadItems) => {
+          if (!settings.saveToDisk) {
+            for (const { item } of uploadItems) cloudGrabs.set(item.id, item)
+          }
+          const recording = recordCloudUploads(
             settings,
             uploadItems.map(({ item, filename }) => ({
               item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
               filename,
             })),
-          ),
+          )
+          if (settings.saveToDisk) {
+            void recording.catch(queueError('upload'))
+            return
+          }
+          const accepted = await recording
+          const bytes = accepted.reduce(
+            (total, mediaId) => total + (admission.sizeById.get(mediaId) ?? 0),
+            0,
+          )
+          if (accepted.length > 0)
+            await budgetQueue.run(() => budgetStore.recordCompletion(bytes, accepted.length))
+        },
         seedClear: clearSession.seedLedger,
       }),
     )
 
-    const res = yield* queue.enqueue(requests)
+    // Cloud-only (issue #95): the Download Strategy never runs (`diskRequests`
+    // is empty), so there is nothing to enqueue or reconcile — the terminal
+    // comes from the Cloud drain via `handleCloudHistoryNotice`. The QueueUpdate
+    // reports the admitted media as both counts: `queue.enqueue([])` would answer
+    // {completed: 0, total: 0}, which the overlay reads as "nothing admitted",
+    // while everything admitted here WAS accepted — onto the upload ledger.
+    if (startFx.diskRequests.length === 0) {
+      return {
+        _tag: 'QueueUpdate' as const,
+        completed: startFx.uploadItems.length,
+        total: startFx.uploadItems.length + rejectFailures.length,
+        skipped,
+        ...(rejectFailures.length > 0 ? { failures: rejectFailures } : {}),
+      }
+    }
+
+    const res = yield* queue.enqueue(startFx.diskRequests)
 
     // Reconcile precise per-request outcomes: browser transfers go in-flight
     // (tracked by downloadId for the onChanged/search loop), aria2 hand-offs are
@@ -1478,7 +1563,7 @@ const messageHandlers: MessageHandlers = {
   SyncTestRequest: async () => runSyncConnectionTest(await getSettings()),
   SyncStatusRequest: () => syncOutbox.getSyncStatus(),
   CloudConnectRequest: handle<'CloudConnectRequest'>((msg) =>
-    cloudUpload.runOAuthConnect(msg.provider, msg.clientId),
+    cloudUpload.runOAuthConnect(msg.provider, msg.clientId, msg.clientSecret),
   ),
   CloudDisconnectRequest: handle<'CloudDisconnectRequest'>((msg) =>
     cloudUpload.disconnectProvider(msg.provider),
@@ -1609,11 +1694,19 @@ export default defineBackground(() => {
     // Resume any cloud byte-uploads left pending from a previous SW life, and
     // compact a historically-grown ledger once on boot (ADR-0013).
     if (s.cloudUploadEnabled) cloudUpload.resumeOnBoot()
+    // A Cloud-only mixed verdict (one provider succeeded, one dead) may have
+    // resolved while the SW was dead — sweep once so its Download History
+    // terminal fires without waiting for the next drain (issue #95).
+    void cloudUpload.reconcileCloudOnlyHistory().catch(queueError('cloudReconcile'))
   })()
   watchSettings((s) => {
     if (!s.cloudSyncEnabled) syncOutbox.clearOutbox()
     // Clear the upload-failure badge when Cloud upload is switched off.
     if (!s.cloudUploadEnabled) cloudUpload.clearUploadBadge()
+    // Pausing or disconnecting a provider can resolve a pending Cloud-only
+    // verdict (issue #95): sweep so its Download History terminal fires without
+    // waiting for the next drain.
+    void cloudUpload.reconcileCloudOnlyHistory().catch(queueError('cloudReconcile'))
   })
 
   // Listeners registered synchronously at the top of main() (grounding §b).

@@ -112,6 +112,35 @@ describe('isMessageAllowed', () => {
     expect(isMessageAllowed(CS_TAG, ui, OWN)).toBe(true)
   })
 
+  // Regression: the options page is declared `open_in_tab` (options/index.html),
+  // so Chrome sets `sender.tab` on every message it sends — the same shape as a
+  // content script. The guard therefore judged it by the content-script rules,
+  // where `chrome-extension://…` is not an allowed origin, and dropped ALL of
+  // it: CloudConnectRequest (Drive/Dropbox connect), SyncTestRequest,
+  // CloudStatusRequest, ClearHistoryRequest. The panel saw only an unanswered
+  // reply — "The extension background did not respond." The origin scheme, not
+  // the tab, separates internal UI from page script.
+  it('allows a UI-only tag from the options page, which runs in a tab', () => {
+    const optionsPage = {
+      id: OWN,
+      tab: { id: 7 },
+      url: `chrome-extension://${OWN}/options.html`,
+      origin: `chrome-extension://${OWN}`,
+    }
+    expect(isMessageAllowed(UI_TAG, optionsPage, OWN)).toBe(true)
+    expect(isMessageAllowed(CS_TAG, optionsPage, OWN)).toBe(true)
+  })
+
+  it('allows an extension page identified by url alone (no origin field)', () => {
+    expect(
+      isMessageAllowed(
+        UI_TAG,
+        { id: OWN, tab: { id: 7 }, url: `chrome-extension://${OWN}/options.html` },
+        OWN,
+      ),
+    ).toBe(true)
+  })
+
   it('allows a content-script tag from an x.com / twitter.com content script', () => {
     expect(
       isMessageAllowed(CS_TAG, { id: OWN, tab: { id: 1 }, origin: 'https://x.com' }, OWN),

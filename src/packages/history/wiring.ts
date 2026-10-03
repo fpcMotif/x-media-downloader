@@ -1,10 +1,12 @@
 import type { MediaItem, Settings } from '@/packages/schema'
 import { recordFromMediaItem } from './record'
-import { upsert, applyTransition, type DownloadStore } from './store'
+import { upsert, applyTransition, applyCloudTransition, type DownloadStore } from './store'
 
 /** A queued or terminal action the background derives at the same points it builds Sync Events. */
 export type HistoryAction =
   | { kind: 'queued'; item: MediaItem; filename: string; at: number }
+  | { kind: 'cloud-completed'; requestId: string; at: number }
+  | { kind: 'cloud-failed'; requestId: string; at: number }
   | {
       kind: 'completed' | 'failed'
       requestId: string
@@ -32,6 +34,14 @@ export function planHistory(
   if (action.kind === 'queued') {
     if (!isMirrorableRequest(action.item.id, true)) return store
     return upsert(store, recordFromMediaItem(action.item, action.filename, action.at))
+  }
+  if (action.kind === 'cloud-completed' || action.kind === 'cloud-failed') {
+    return applyCloudTransition(
+      store,
+      action.requestId,
+      action.kind === 'cloud-completed' ? 'completed' : 'failed',
+      action.at,
+    )
   }
   return applyTransition(store, action.requestId, action.kind, action.at, action.bytes)
 }

@@ -10,7 +10,7 @@ export interface QueueStartPorts {
   readonly persistSnapshot: (at: number) => Promise<void>
   readonly recordSync: (events: ReadonlyArray<SyncEvent>) => void
   readonly recordHistory: (actions: ReadonlyArray<HistoryAction>) => void
-  readonly recordUploads: (items: ReadonlyArray<QueueStartUploadItem>) => void
+  readonly recordUploads: (items: ReadonlyArray<QueueStartUploadItem>) => void | Promise<void>
   readonly seedClear: (verdict: ClearSeedVerdict) => Promise<void>
 }
 
@@ -25,7 +25,7 @@ export async function applyQueueStartEffects(
   await ports.persistSnapshot(startedAt)
   ports.recordSync(effects.syncEvents)
   ports.recordHistory(effects.historyActions)
-  ports.recordUploads(effects.uploadItems)
+  await ports.recordUploads(effects.uploadItems)
   await ports.seedClear(effects.clearSeed)
   return effects.metrics
 }

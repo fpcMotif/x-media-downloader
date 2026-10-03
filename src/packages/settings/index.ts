@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import { Settings as SettingsSchema, type Settings } from '@/packages/schema'
+import { destinationLostDelta } from './coupling'
 import { normalizeFilenameTemplate } from './lib/template-migration'
 
 const defaults: Settings = Schema.decodeUnknownSync(SettingsSchema)({})
@@ -35,10 +36,14 @@ export class SettingsService extends Context.Service<
 // Single-writer (background SW): read-modify-write is non-atomic (ADR-0005).
 export const SettingsServiceLive = Layer.succeed(SettingsService, {
   get: Effect.promise(() => item.getValue()).pipe(Effect.map(decode)),
+  // set applies the destination backstop: a write that leaves Cloud-only
+  // without a live Cloud destination forces Save to this computer back on,
+  // so a grab always has somewhere to put bytes (issue #95).
   set: (patch) =>
     Effect.gen(function* () {
       const current = decode(yield* Effect.promise(() => item.getValue()))
-      const next = decode({ ...current, ...patch })
+      const merged = { ...current, ...patch }
+      const next = decode({ ...merged, ...destinationLostDelta(merged) })
       yield* Effect.promise(() => item.setValue(next))
       return next
     }),

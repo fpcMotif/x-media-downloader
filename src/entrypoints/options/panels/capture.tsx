@@ -1,9 +1,67 @@
 import { useEffect, useState } from 'preact/hooks'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, Section, type PanelProps } from '../ui'
 import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
 import { plural } from '@/components/capture-copy'
+
+const HOVER = '@media (hover: hover)'
+const RING_FOCUS_VISIBLE =
+  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+
+const styles = stylex.create({
+  // font-mono
+  syncNotConfigured: {
+    fontFamily: tokens['--font-mono'],
+  },
+  // rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50 —
+  // the underline/hover come from app.css (keyed on data-slot="field-description").
+  syncLink: {
+    borderRadius: 'calc(var(--radius) - 4px)',
+    outlineStyle: 'none',
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+  },
+  // -mx-1 flex min-h-10 items-center justify-between gap-3
+  // rounded-[var(--xmd-radius-3)] px-1 py-0.5 text-sm no-underline outline-none
+  // transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50
+  // (no data-slot, so the utility's own 0.15s cubic-bezier timing wins; the
+  // element's own py-0.5 is overridden at runtime by the Section row rule in
+  // app.css exactly as before — this only needs to carry the element's values)
+  archiveLink: {
+    marginInline: '-0.25rem',
+    display: 'flex',
+    minHeight: '2.5rem',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.75rem',
+    borderRadius: tokens['--xmd-radius-3'],
+    paddingInline: '0.25rem',
+    paddingBlock: '0.125rem',
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    textDecorationLine: 'none',
+    outlineStyle: 'none',
+    transitionProperty:
+      'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to',
+    transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
+    transitionDuration: '0.15s',
+    backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+  },
+  // font-mono tabular-nums text-muted-foreground
+  archiveCounts: {
+    fontFamily: tokens['--font-mono'],
+    fontVariantNumeric: 'tabular-nums',
+    color: tokens['--muted-foreground'],
+  },
+  // shrink-0 text-primary
+  archiveCta: {
+    flexShrink: 0,
+    color: tokens['--primary'],
+  },
+})
 
 export function CapturePanel({ settings, update }: PanelProps) {
   const [summary, setSummary] = useState<CaptureSummary | null>(null)
@@ -61,11 +119,9 @@ export function CapturePanel({ settings, update }: PanelProps) {
                 'Also mirror captured tweets to your Convex deployment'
               ) : (
                 <>
-                  <span className="font-mono">Uses your Sync connection</span> — set that up first (
-                  <a
-                    href="#sync"
-                    className="rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                  >
+                  <span {...stylex.props(styles.syncNotConfigured)}>Uses your Sync connection</span>{' '}
+                  — set that up first (
+                  <a href="#sync" {...stylex.props(styles.syncLink)}>
                     Sync ›
                   </a>
                   )
@@ -83,15 +139,12 @@ export function CapturePanel({ settings, update }: PanelProps) {
       </Section>
 
       <Section title="Archive" description="Everything captured so far, on this device.">
-        <a
-          href="#archive"
-          className="-mx-1 flex min-h-10 items-center justify-between gap-3 rounded-[var(--xmd-radius-3)] px-1 py-0.5 text-sm no-underline outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-        >
-          <span className="font-mono tabular-nums text-muted-foreground">
+        <a href="#archive" {...stylex.props(styles.archiveLink)}>
+          <span {...stylex.props(styles.archiveCounts)}>
             {plural(summary?.tweets ?? 0, 'tweet')} ·{' '}
             {plural(summary?.conversations ?? 0, 'conversation')}
           </span>
-          <span className="shrink-0 text-primary">Open archive ›</span>
+          <span {...stylex.props(styles.archiveCta)}>Open archive ›</span>
         </a>
       </Section>
     </>

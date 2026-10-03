@@ -36,10 +36,25 @@ Copy that exact URL. You'll register it with both providers below.
 4. **APIs & Services → Credentials → Create credentials → OAuth client ID:**
    - Application type **Web application**.
    - Under **Authorized redirect URIs**, add the redirect URL from step 0.
-   - Create it, then copy the **Client ID** (looks like `xxxx.apps.googleusercontent.com`).
-     (A client secret is also issued — you do **not** need it; PKCE is used.)
-5. In the popup, paste the Client ID into **Google Drive → OAuth client ID** and
-   click **Connect**. Approve the consent screen.
+   - Create it, then copy **both** the **Client ID** (looks like
+     `xxxx.apps.googleusercontent.com`) and the **Client secret** (`GOCSPX-…`).
+5. In Options → Sync, paste the Client ID into **Google Drive → OAuth client ID**,
+   paste the secret into **Client secret**, then click **Connect**. Approve the
+   consent screen.
+
+> **Why Google needs a secret and Dropbox does not.** PKCE is meant to replace the
+> client secret for a public client. Google does not honour that for its *Web
+> application* client type: the token endpoint answers
+> `400 client_secret is missing` even when a valid `code_verifier` is sent. Its
+> *Chrome Extension* client type avoids the secret but only serves
+> `chrome.identity.getAuthToken`, which returns no refresh token and is
+> Chrome-only — so uploads would stop after an hour. The secret is therefore
+> required here, and it is stored in extension local storage, the same posture as
+> `aria2Secret` and `convexSyncSecret`. It never leaves your browser.
+>
+> Before a Web Store release, move the token exchange behind your own Convex
+> deployment (ADR-0009) so the bundle ships no secret. Dropbox is unaffected — it
+> implements PKCE correctly and receives no `client_secret` param at all.
 
 Files land in a per-handle subfolder under a **"X Media Downloader"** folder in
 your Drive.

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { cn } from '@/lib/utils'
-import { EraserIcon } from '@/components/icons'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
+import { EraserIcon, iconSize } from '@/components/icons'
 import { runCaptureExport, type CaptureSummary } from '@/components/capture-export'
 import {
   plural,
@@ -15,10 +16,192 @@ import { ConfirmStrip } from '@/components/confirm-strip'
 // slicing here is a defensive no-op, not a real pagination cut.
 const RECENT_LIMIT = 3
 
-// Invisible hit-slop for the compact JSON/Markdown/Export-all/Erase text-links
-// (spec §2.8) — matches the Switch idiom's after:-inset-y-3.
-const LINK_SLOP =
-  'relative rounded-sm outline-none transition-colors after:absolute after:-inset-x-1 after:-inset-y-3 focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97]'
+const HOVER = '@media (hover: hover)'
+
+// `transition-colors` (Tailwind v4) — verbatim property list.
+const TRANSITION_COLORS =
+  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to'
+// `focus-visible:ring-3 focus-visible:ring-ring/50` — five box-shadow layers.
+const FOCUS_RING =
+  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+
+// `animate-in fade-in slide-in-from-top-1`.
+const enterFadeSlideTop1 = stylex.keyframes({
+  '0%': {
+    opacity: 0,
+    transform: 'translate3d(0, calc(1 * 0.25rem * -1), 0) scale3d(1, 1, 1) rotate(0)',
+    filter: 'blur(0)',
+  },
+})
+
+const styles = stylex.create({
+  root: {
+    display: 'grid',
+    gap: '0.5rem',
+    borderTopStyle: 'solid',
+    borderTopWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingInline: '0.875rem',
+    paddingBlock: '1rem',
+  },
+  // `data-slot="button"` override baked in: transitionDuration '0.16s',
+  // transitionTimingFunction 'var(--xmd-ease)' (spec §3).
+  disclosureButton: {
+    display: 'flex',
+    minHeight: '2.5rem',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: tokens['--xmd-radius-3'],
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontWeight: 500,
+    color: {
+      default: 'color-mix(in oklab, var(--foreground) 80%, transparent)',
+      [HOVER]: { ':hover': tokens['--foreground'] },
+    },
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionDuration: '0.16s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    scale: { default: null, ':active': 0.97 },
+    boxShadow: { default: null, ':focus-visible': FOCUS_RING },
+  },
+  chevronWrap: {
+    position: 'relative',
+    display: 'inline-grid',
+    width: '0.75rem',
+    height: '0.75rem',
+    placeItems: 'center',
+  },
+  // No data-slot on these spans, so the 0.18s + var(--xmd-ease) utility
+  // values apply directly (no override).
+  chevronGlyph: {
+    gridColumnStart: 1,
+    gridRowStart: 1,
+    transitionProperty: 'opacity, transform',
+    transitionDuration: '0.18s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+  },
+  chevronVisible: {
+    scale: '100% 100%',
+    opacity: 1,
+  },
+  chevronHidden: {
+    scale: '90% 90%',
+    opacity: 0,
+  },
+  panel: {
+    display: 'grid',
+    gap: '0.625rem',
+    animationName: enterFadeSlideTop1,
+    animationDuration: '0.22s',
+    animationTimingFunction: 'var(--xmd-ease)',
+    // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
+    // (default `transition-property: all`).
+    transitionDuration: '0.22s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    animationDelay: '0s',
+    animationIterationCount: 1,
+    animationDirection: 'normal',
+    animationFillMode: 'none',
+  },
+  gridGap2: {
+    display: 'grid',
+    gap: '0.5rem',
+  },
+  recentRow: {
+    display: 'grid',
+    gap: '0.125rem',
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+  },
+  rowTop: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.5rem',
+  },
+  truncate: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  truncateMuted: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: tokens['--muted-foreground'],
+  },
+  fontMedium: {
+    fontWeight: 500,
+  },
+  meta: {
+    fontFamily: tokens['--font-mono'],
+    fontVariantNumeric: 'tabular-nums',
+    color: tokens['--muted-foreground'],
+  },
+  actionsWrap: {
+    display: 'flex',
+    flexShrink: 0,
+    alignItems: 'center',
+    gap: '0.375rem',
+  },
+  mutedForeground: {
+    color: tokens['--muted-foreground'],
+  },
+  emptyText: {
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    color: tokens['--muted-foreground'],
+  },
+  // Invisible hit-slop for the compact JSON/Markdown/Export-all/Erase
+  // text-links (spec §2.8) — matches the Switch idiom's after:-inset-y-3.
+  linkSlop: {
+    position: 'relative',
+    borderRadius: 'calc(var(--radius) - 4px)',
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionDuration: '0.16s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    '::after': {
+      content: '""',
+      position: 'absolute',
+      insetInline: '-0.25rem',
+      insetBlock: '-0.75rem',
+    },
+    boxShadow: { default: null, ':focus-visible': FOCUS_RING },
+    scale: { default: null, ':active': 0.97 },
+  },
+  textPrimaryUnderline: {
+    color: tokens['--primary'],
+    textDecorationLine: { default: null, [HOVER]: { ':hover': 'underline' } },
+  },
+  exportAllText: {
+    justifySelf: 'flex-start',
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontWeight: 500,
+    color: tokens['--primary'],
+    textDecorationLine: { default: null, [HOVER]: { ':hover': 'underline' } },
+  },
+  eraseText: {
+    display: 'flex',
+    alignItems: 'center',
+    justifySelf: 'flex-start',
+    gap: '0.25rem',
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontWeight: 500,
+    color: tokens['--destructive'],
+    textDecorationLine: { default: null, [HOVER]: { ':hover': 'underline' } },
+  },
+  statusOutput: {
+    display: 'block',
+    textWrap: 'pretty',
+    fontSize: '0.75rem',
+    lineHeight: 1.375,
+  },
+})
 
 interface CaptureQuickActionsProps {
   readonly summary: CaptureSummary | null
@@ -87,28 +270,28 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
   const recent = (summary?.recent ?? []).slice(0, RECENT_LIMIT)
 
   return (
-    <div className="grid gap-2 border-t border-border px-3.5 py-4">
+    <div {...stylex.props(styles.root)}>
       <button
         type="button"
         data-slot="button"
-        className="flex min-h-10 items-center justify-between rounded-[var(--xmd-radius-3)] text-xs font-medium text-foreground/80 outline-none transition-colors hover:text-foreground active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50"
+        {...stylex.props(styles.disclosureButton)}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
         Recent
-        <span aria-hidden="true" className="relative inline-grid size-3 place-items-center">
+        <span aria-hidden="true" {...stylex.props(styles.chevronWrap)}>
           <span
-            className={cn(
-              'col-start-1 row-start-1 transition-[opacity,transform] duration-[180ms] ease-[var(--xmd-ease)]',
-              open ? 'scale-100 opacity-100' : 'scale-90 opacity-0',
+            {...stylex.props(
+              styles.chevronGlyph,
+              open ? styles.chevronVisible : styles.chevronHidden,
             )}
           >
             ⌃
           </span>
           <span
-            className={cn(
-              'col-start-1 row-start-1 transition-[opacity,transform] duration-[180ms] ease-[var(--xmd-ease)]',
-              open ? 'scale-90 opacity-0' : 'scale-100 opacity-100',
+            {...stylex.props(
+              styles.chevronGlyph,
+              open ? styles.chevronHidden : styles.chevronVisible,
             )}
           >
             ⌄
@@ -117,59 +300,56 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
       </button>
 
       {open && (
-        <div className="animate-in fade-in slide-in-from-top-1 grid gap-2.5 duration-[220ms] ease-[var(--xmd-ease)]">
+        <div {...stylex.props(styles.panel)}>
           {recent.length > 0 ? (
-            <ol className="grid gap-2" aria-label="Recently captured conversations">
+            <ol {...stylex.props(styles.gridGap2)} aria-label="Recently captured conversations">
               {recent.map((c) => (
-                <li key={c.conversationId} className="grid gap-0.5 text-xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate">
-                      <span className="font-medium">@{c.rootHandle}</span>
-                      <span className="font-mono tabular-nums text-muted-foreground">
+                <li key={c.conversationId} {...stylex.props(styles.recentRow)}>
+                  <div {...stylex.props(styles.rowTop)}>
+                    <span {...stylex.props(styles.truncate)}>
+                      <span {...stylex.props(styles.fontMedium)}>@{c.rootHandle}</span>
+                      <span {...stylex.props(styles.meta)}>
                         {' '}
                         · {plural(c.count, 'tweet')} · {fmtDay(c.lastAt)}
                       </span>
                     </span>
-                    <span className="flex shrink-0 items-center gap-1.5">
+                    <span {...stylex.props(styles.actionsWrap)}>
                       <button
                         type="button"
                         data-slot="button"
                         aria-label={`Export conversation by @${c.rootHandle} as JSON`}
-                        className={cn('text-primary hover:underline', LINK_SLOP)}
+                        {...stylex.props(styles.textPrimaryUnderline, styles.linkSlop)}
                         onClick={() => void exportConversation('tree', c.conversationId)}
                       >
                         JSON
                       </button>
-                      <span aria-hidden="true" className="text-muted-foreground">
+                      <span aria-hidden="true" {...stylex.props(styles.mutedForeground)}>
                         ·
                       </span>
                       <button
                         type="button"
                         data-slot="button"
                         aria-label={`Export conversation by @${c.rootHandle} as Markdown`}
-                        className={cn('text-primary hover:underline', LINK_SLOP)}
+                        {...stylex.props(styles.textPrimaryUnderline, styles.linkSlop)}
                         onClick={() => void exportConversation('markdown', c.conversationId)}
                       >
                         Markdown
                       </button>
                     </span>
                   </div>
-                  <span className="truncate text-muted-foreground">{c.rootText}</span>
+                  <span {...stylex.props(styles.truncateMuted)}>{c.rootText}</span>
                 </li>
               ))}
             </ol>
           ) : (
-            <p className="text-xs text-muted-foreground">Nothing captured yet.</p>
+            <p {...stylex.props(styles.emptyText)}>Nothing captured yet.</p>
           )}
 
-          <div className="grid gap-2">
+          <div {...stylex.props(styles.gridGap2)}>
             <button
               type="button"
               data-slot="button"
-              className={cn(
-                'justify-self-start text-xs font-medium text-primary hover:underline',
-                LINK_SLOP,
-              )}
+              {...stylex.props(styles.exportAllText, styles.linkSlop)}
               onClick={() => void exportAll()}
             >
               Export all · JSONL
@@ -185,13 +365,10 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
                 <button
                   type="button"
                   data-slot="button"
-                  className={cn(
-                    'flex items-center justify-self-start gap-1 text-xs font-medium text-destructive hover:underline',
-                    LINK_SLOP,
-                  )}
+                  {...stylex.props(styles.eraseText, styles.linkSlop)}
                   onClick={arm}
                 >
-                  <EraserIcon className="size-3.5" />
+                  <EraserIcon sx={iconSize.s35} />
                   Erase archive…
                 </button>
               )}
@@ -203,7 +380,7 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
       <output
         aria-live="polite"
         aria-atomic="true"
-        className="block text-pretty text-xs leading-snug text-muted-foreground"
+        {...stylex.props(styles.statusOutput, styles.mutedForeground)}
       >
         {statusMsg}
       </output>

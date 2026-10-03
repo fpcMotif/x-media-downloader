@@ -93,7 +93,7 @@ async function captureCheckpoints(mode: 'baseline' | 'candidate'): Promise<void>
         new Promise(resolve => {
           const start = Date.now();
           const check = () => {
-            const loading = document.querySelector('.xmd-boot-fallback') || document.querySelector('.xmd-popup--loading');
+            const loading = document.querySelector('.xmd-boot-fallback') || document.querySelector('[data-xmd-popup="loading"]');
             if (!loading || Date.now() - start > 3000) {
               setTimeout(resolve, 300);
             } else {

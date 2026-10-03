@@ -12,6 +12,8 @@ describe('PROVIDERS registry', () => {
     expect(p.fields.clientId).toBe('gdriveClientId')
     expect(p.fields.accessToken).toBe('gdriveAccessToken')
     expect(p.fields.folderId).toBe('gdriveFolderId')
+    expect(p.fields.clientSecret).toBe('gdriveClientSecret')
+    expect(p.fields.uploadEnabled).toBe('gdriveUploadEnabled')
   })
 
   it('describes Dropbox as a record with no folderId field', () => {
@@ -22,6 +24,10 @@ describe('PROVIDERS registry', () => {
     expect(p.hostPatterns).toEqual([...DROPBOX_HOST_PATTERNS])
     expect(p.fields.clientId).toBe('dropboxClientId')
     expect(p.fields.folderId).toBeUndefined()
+    // Absent = a true public client. Dropbox honours PKCE, so no secret is ever
+    // read, stored, or posted for it.
+    expect(p.fields.clientSecret).toBeUndefined()
+    expect(p.fields.uploadEnabled).toBe('dropboxUploadEnabled')
   })
 })
 

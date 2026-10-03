@@ -28,9 +28,14 @@ A dedicated module tree `src/core/cloud/` (kept out of the shipped `src/core/syn
   - large/unknown-size media is streamed in fixed chunks read from the body reader — **never holding the whole file in SW memory**. This sidesteps the same 512 MB wall on the client that killed the server-side design.
 - This path is **independent of the download strategy** (direct / aria2 / Fetched) and of the broken offscreen save (the Fetched strategy's offscreen `chrome.downloads` bug, memory `pr9-fetched-offscreen-rework`). Cloud upload never touches the offscreen document.
 
-### 2. Trigger — at queue time, in parallel with the local download
+### 2. Trigger — at queue time; the local download is optional
 
-When a download is enqueued (`handleDownload`) and cloud upload is enabled + at least one provider is connected, one **UploadJob per (media item × connected provider)** is appended to a durable local ledger and a drain is kicked. Upload runs in parallel with the local download (both fetch twimg independently); a dead URL simply fails the job (→ `skipped`/`failed`) without affecting the local download. (Sharing the Fetched-strategy bytes to avoid the double fetch is a future optimization.)
+**Amended 2026-09-19 — cloud-only save + per-provider pause (issue #95).** Upload still enqueues at grab time: when cloud upload is enabled and at least one provider is both connected **and upload-enabled** (per-provider pause), one **UploadJob per (media item × connected-and-enabled provider)** is appended to a durable local ledger and a drain is kicked. But upload no longer requires a parallel local save — the `saveToDisk` setting decides whether the Download Strategy (Direct / Fetched / aria2) runs at all:
+
+- `saveToDisk: true` (default): unchanged. The strategy writes the file and upload (if enabled) runs in parallel; both fetch twimg independently, and a dead URL simply fails the job (→ `skipped`/`failed`) without affecting the local download.
+- `saveToDisk: false` (Cloud-only): the strategy is not called; upload is the only byte path. Sidecar `.json` planning and Clear-on-complete are skipped (no Settle can run without a Download Handle), while admission, filename planning, and the grab-time `queued` history record still run. Download History terminals then follow the enabled providers' UploadJob verdicts for that media item (all enabled jobs succeeded → completed; all dead/skipped → failed).
+
+(Sharing the Fetched-strategy bytes to avoid the double fetch is a future optimization.)
 
 ### 3. Control plane — local ledger (source of truth) + best-effort Convex mirror
 
@@ -39,7 +44,8 @@ When a download is enqueued (`handleDownload`) and cloud upload is enabled + at 
 
 ### 4. OAuth — PKCE via `chrome.identity.launchWebAuthFlow`, run in the background SW
 
-- `launchWebAuthFlow` (not `getAuthToken`: that is Google-only, profile-bound, no app-managed refresh token) with **PKCE** (`S256`) — no client secret can live in an extension bundle.
+- `launchWebAuthFlow` (not `getAuthToken`: that is Google-only, profile-bound, no app-managed refresh token) with **PKCE** (`S256`).
+- **Amended 2026-09-12 — Google requires a client secret anyway.** PKCE was meant to remove it, and Dropbox honours that. Google's *Web application* client type does not: its token endpoint answers `400 client_secret is missing` on both the code exchange and every refresh, even with a valid `code_verifier`. Its *Chrome Extension* client type drops the secret but only serves `getAuthToken` — no refresh token, Chrome-only — so it cannot back this design. The secret is therefore a per-provider **optional** input (`ProviderFields.clientSecret`, set for gdrive alone) stored in settings beside the tokens, on the `aria2Secret`/`convexSyncSecret` posture, and sent only when non-empty. Dropbox's request body is unchanged and carries no `client_secret` param. **Before a public Web Store release**, move the Google token exchange behind the user's own Convex deployment (ADR-0009) so the bundle ships no secret.
 - Redirect URI = `chrome.identity.getRedirectURL()` → `https://<extension-id>.chromiumapp.org/`, surfaced read-only in the popup so the user registers it in the provider console.
 - **Permission grant happens in the popup** (user gesture preserved), the **OAuth flow runs in the background SW** (survives the popup closing on focus loss). Tokens are written by the background — the single settings writer (ADR-0005).
 - Access tokens are refreshed proactively (within 60 s of expiry, or on a 401) using the stored refresh token (`access_type=offline` + `prompt=consent` for Google; `token_access_type=offline` for Dropbox).
@@ -59,6 +65,6 @@ When a download is enqueued (`handleDownload`) and cloud upload is enabled + at 
 - **Privacy posture strengthens.** Bytes never transit Convex or any server of ours; they go provider-native to the user's own account. The "Local-only / never bytes through Convex" claim holds.
 - **Video works.** Streaming bounds SW memory regardless of file size.
 - **Opt-in & honest.** Master toggle + per-provider connect; disconnect clears tokens. "Saved to cloud" reflects a real provider response, not a fire-and-forget guess.
-- **Double fetch.** Until bytes are shared from the Fetched strategy, cloud upload re-fetches twimg in parallel with the local download (2× bandwidth per media).
+- **Double fetch.** Until bytes are shared from the Fetched strategy, cloud upload re-fetches twimg in parallel with the local download (2× bandwidth per media). Cloud-only pays it once — upload is the only fetch.
 - **Release gating, not code.** Full-Drive scope (verification/CASA) and Dropbox's 50-user cap block a *public* release, not personal use. Both are single-constant / console changes.
 - **Token at-rest.** Refresh tokens live in `storage.local`. Acceptable per the established secret convention; a follow-up could move them to a sealed store.

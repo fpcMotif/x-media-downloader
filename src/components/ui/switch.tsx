@@ -5,31 +5,134 @@
 
 import * as React from 'react'
 import { Switch as SwitchPrimitive } from '@base-ui/react/switch'
+import * as stylex from '@stylexjs/stylex'
+import type { StyleXStyles } from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 
-import { cn } from '@/lib/utils'
+const DARK = '@media (prefers-color-scheme: dark)'
 
 // Base UI drives switch state through bare `data-checked` / `data-unchecked`
 // attributes (on both Root and Thumb) rather than Radix's `data-[state=…]`.
+// The old `peer`/`group/switch` classes only existed so Tailwind could reach
+// across to the Thumb (`group-data-[size=…]/switch:…`); here the Thumb reads
+// `size` from the same closure instead, so those markers are dropped.
+const styles = stylex.create({
+  root: {
+    position: 'relative',
+    display: 'inline-flex',
+    flexShrink: 0,
+    alignItems: 'center',
+    borderRadius: '3.40282e38px',
+    borderStyle: 'solid',
+    borderWidth: '1px',
+    borderColor: {
+      default: 'transparent',
+      ':focus-visible': tokens['--ring'],
+      '[aria-invalid="true"]': tokens['--destructive'],
+      [DARK]: {
+        default: null,
+        '[aria-invalid="true"]': 'color-mix(in oklab, var(--destructive) 50%, transparent)',
+      },
+    },
+    // data-slot="switch" override (spec §3): the unlayered app.css rule beats
+    // every `transition-colors`/`duration-*` utility on this element.
+    transitionProperty:
+      'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    outlineStyle: 'none',
+    '::after': {
+      content: '""',
+      position: 'absolute',
+      insetInline: '-0.75rem',
+      insetBlock: '-0.75rem',
+    },
+    boxShadow: {
+      default: null,
+      ':focus-visible':
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+      '[aria-invalid="true"]':
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
+      [DARK]: {
+        default: null,
+        '[aria-invalid="true"]':
+          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
+      },
+    },
+    backgroundColor: {
+      default: null,
+      '[data-checked]': tokens['--primary'],
+      '[data-unchecked]': tokens['--input'],
+      [DARK]: {
+        default: null,
+        '[data-unchecked]': 'color-mix(in oklab, var(--input) 80%, transparent)',
+      },
+    },
+    cursor: { default: null, '[data-disabled]': 'not-allowed' },
+    opacity: { default: null, '[data-disabled]': 0.5 },
+  },
+  rootSizeDefault: {
+    height: '18.4px',
+    width: '32px',
+  },
+  rootSizeSm: {
+    height: '14px',
+    width: '24px',
+  },
+  thumb: {
+    pointerEvents: 'none',
+    display: 'block',
+    borderRadius: '3.40282e38px',
+    backgroundColor: {
+      default: tokens['--background'],
+      [DARK]: {
+        default: null,
+        '[data-checked]': tokens['--primary-foreground'],
+        '[data-unchecked]': tokens['--foreground'],
+      },
+    },
+    boxShadow: '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 0px currentcolor, 0 0 #0000',
+    // data-slot="switch-thumb" override (spec §3), same as the root.
+    transitionProperty: 'transform, translate, scale, rotate',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    translate: {
+      default: null,
+      '[data-checked]': 'calc(100% - 2px) 0',
+      '[data-unchecked]': '0 0',
+    },
+  },
+  thumbSizeDefault: {
+    width: '1rem',
+    height: '1rem',
+  },
+  thumbSizeSm: {
+    width: '0.75rem',
+    height: '0.75rem',
+  },
+})
+
 function Switch({
-  className,
+  sx,
   size = 'default',
   ...props
-}: React.ComponentProps<typeof SwitchPrimitive.Root> & {
+}: Omit<React.ComponentProps<typeof SwitchPrimitive.Root>, 'className'> & {
   size?: 'sm' | 'default'
+  sx?: StyleXStyles | ReadonlyArray<StyleXStyles | false | null | undefined>
 }) {
   return (
     <SwitchPrimitive.Root
       data-slot="switch"
       data-size={size}
-      className={cn(
-        'peer group/switch relative inline-flex shrink-0 items-center rounded-full border border-transparent transition-colors outline-none after:absolute after:-inset-x-3 after:-inset-y-3 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-[size=default]:h-[18.4px] data-[size=default]:w-[32px] data-[size=sm]:h-[14px] data-[size=sm]:w-[24px] dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 data-checked:bg-primary data-unchecked:bg-input dark:data-unchecked:bg-input/80 data-disabled:cursor-not-allowed data-disabled:opacity-50',
-        className,
-      )}
+      {...stylex.props(styles.root, size === 'sm' ? styles.rootSizeSm : styles.rootSizeDefault, sx)}
       {...props}
     >
       <SwitchPrimitive.Thumb
         data-slot="switch-thumb"
-        className="pointer-events-none block rounded-full bg-background ring-0 transition-transform group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3 group-data-[size=default]/switch:data-checked:translate-x-[calc(100%-2px)] group-data-[size=sm]/switch:data-checked:translate-x-[calc(100%-2px)] dark:data-checked:bg-primary-foreground group-data-[size=default]/switch:data-unchecked:translate-x-0 group-data-[size=sm]/switch:data-unchecked:translate-x-0 dark:data-unchecked:bg-foreground"
+        {...stylex.props(
+          styles.thumb,
+          size === 'sm' ? styles.thumbSizeSm : styles.thumbSizeDefault,
+        )}
       />
     </SwitchPrimitive.Root>
   )

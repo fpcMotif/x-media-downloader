@@ -41,6 +41,15 @@ describe('planClearSeed — skip reasons', () => {
     expect(verdict).toEqual({ decision: 'skip', reason: 'aria2' })
   })
 
+  it('Cloud-only skips because Settle cannot run without a disk Download Handle', () => {
+    const verdict = planClearSeed({
+      requests: [req('m0')],
+      mediaById: mediaById(photo('m0', '100')),
+      settings: { ...CLEAR_ON, saveToDisk: false },
+    })
+    expect(verdict).toEqual({ decision: 'skip', reason: 'cloud-only' })
+  })
+
   it('clear-off skips when "Clear after download" is off', () => {
     const verdict = planClearSeed({
       requests: [req('m0')],

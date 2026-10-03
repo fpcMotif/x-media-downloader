@@ -97,11 +97,12 @@ describe('cluster status lines auto-clear after 6s unless persistent (spec §2.6
 
 describe('zone hairlines never stack (spec §2.9 adjacent-zone fix)', () => {
   it('ContextStrip supplies its separator as a shadow, not a border-b', () => {
-    const headerIdx = popupSource.indexOf('function ContextStrip')
-    const nextFnIdx = popupSource.indexOf('function FirstRunStrip')
-    const header = popupSource.slice(headerIdx, nextFnIdx)
-    expect(header).toContain('shadow-[0_1px_0_0_var(--border)]')
-    expect(header).not.toContain('border-b')
+    const styleIdx = popupSource.indexOf('contextStrip: {')
+    const nextStyleIdx = popupSource.indexOf('contextDot: {')
+    const contextStripStyle = popupSource.slice(styleIdx, nextStyleIdx)
+    expect(contextStripStyle).toContain('boxShadow')
+    expect(contextStripStyle).toContain('0 1px 0 0 var(--border)')
+    expect(contextStripStyle).not.toContain('borderBottom')
   })
 
   it("FirstRunStrip drops border-b, deferring to the next zone's border-t", () => {
@@ -113,8 +114,13 @@ describe('zone hairlines never stack (spec §2.9 adjacent-zone fix)', () => {
 })
 
 describe('unsupported-context headline balances instead of prettifying (spec §2.3)', () => {
-  it('uses text-balance on the single-line headline', () => {
-    expect(popupSource).toContain('<p className="text-balance text-[13px] font-medium">')
+  it('uses text-balance (textWrap: balance) on the single-line headline', () => {
+    const styleIdx = popupSource.indexOf('unsupportedHeadline: {')
+    const styleEndIdx = popupSource.indexOf('}', styleIdx)
+    const headlineStyle = popupSource.slice(styleIdx, styleEndIdx)
+    expect(headlineStyle).toContain("textWrap: 'balance'")
+    expect(headlineStyle).toContain("fontSize: '13px'")
+    expect(headlineStyle).toContain('fontWeight: 500')
   })
 })
 

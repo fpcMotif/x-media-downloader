@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'preact/hooks'
 import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 import type { MediaType, Settings } from '@/packages/schema'
 import { aria2OriginPattern } from '@/packages/download/aria2'
 import { DOWNLOAD_MODES } from '@/packages/download/strategy'
 import { freshRecord, type BudgetRecord } from '@/packages/download/daily-budget'
-import { dedupeToggleDelta } from '@/packages/settings/coupling'
+import {
+  dedupeToggleDelta,
+  hasLiveCloudDestination,
+  saveToDiskToggleDelta,
+} from '@/packages/settings/coupling'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import {
   Select,
@@ -20,7 +26,77 @@ import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { PanelHeader, Section, type PanelProps } from '../ui'
-import { EraserIcon } from '@/components/icons'
+import { EraserIcon, iconSize } from '@/components/icons'
+
+const styles = stylex.create({
+  // SelectTrigger 'w-44 min-h-10' — width replaces the base w-fit, minHeight
+  // adds to the size's own height.
+  selectTriggerWide: { width: '11rem', minHeight: '2.5rem' },
+  // FieldDescription 'font-mono text-xs' — a later text-size utility also
+  // strips the base's leading-normal (tailwind-merge's font-size ↔ leading
+  // conflict), so the line-height is text-xs's own.
+  descMonoXs: {
+    fontFamily: tokens['--font-mono'],
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+  },
+  // FieldDescription 'font-mono tabular-nums' (no text-xs) — additive onto
+  // the base text-sm/leading-normal.
+  descMonoNums: { fontFamily: tokens['--font-mono'], fontVariantNumeric: 'tabular-nums' },
+  // Input 'w-20 text-center font-mono tabular-nums' — width replaces the
+  // base w-full.
+  inputMono5: {
+    width: '5rem',
+    textAlign: 'center',
+    fontFamily: tokens['--font-mono'],
+    fontVariantNumeric: 'tabular-nums',
+  },
+  // Input 'w-24 text-center font-mono tabular-nums'.
+  inputMono6: {
+    width: '6rem',
+    textAlign: 'center',
+    fontFamily: tokens['--font-mono'],
+    fontVariantNumeric: 'tabular-nums',
+  },
+  // ToggleGroup 'w-full rounded-[var(--xmd-radius-3)]' — width replaces the
+  // base w-fit, borderRadius replaces the base rounded-lg.
+  toggleGroupWide: { width: '100%', borderRadius: tokens['--xmd-radius-3'] },
+  // ToggleGroupItem 'h-10 flex-1' — height replaces the Toggle size's own
+  // height; text-sm (font-size/line-height) is untouched.
+  toggleGroupItemFull: { height: '2.5rem', flex: 1 },
+  // aria2 sub-group div: 'grid gap-0 divide-y divide-border border-l
+  // border-border pl-4 *:py-3 first:*:pt-0'. divide-y/divide-border and
+  // *:py-3 are structural parent->child rules (src/app.css §6) driven by
+  // data-xmd-divide/data-xmd-rows instead.
+  // dropped: first:*:pt-0 — this div is never itself a :first-child (the
+  // ToggleGroup, and often the mode hint <p>, always render before it inside
+  // the Section), so the `first:` variant never matched at this call site.
+  aria2Group: {
+    display: 'grid',
+    gap: 0,
+    borderLeftStyle: 'solid',
+    borderLeftWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingLeft: '1rem',
+  },
+  // Shared 'min-h-10' override used by both options action Buttons below.
+  minH10: { minHeight: '2.5rem' },
+  selfStart: { alignSelf: 'flex-start' },
+  // 'text-sm font-medium text-success' p.
+  successText: {
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    fontWeight: 500,
+    color: tokens['--success'],
+  },
+  // 'text-sm text-pretty text-muted-foreground' hint p.
+  hintText: {
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    textWrap: 'pretty',
+    color: tokens['--muted-foreground'],
+  },
+})
 
 // Moved intact from filters.tsx (the "Daily budget" section reads/resets this
 // same `local:` storage item — nothing about its shape changes here).
@@ -122,7 +198,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 void update({ quickGrabModifier: value as Settings['quickGrabModifier'] })
               }
             >
-              <SelectTrigger id="quickGrabModifier" className="w-44 min-h-10">
+              <SelectTrigger id="quickGrabModifier" sx={styles.selectTriggerWide}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper">
@@ -208,7 +284,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
               void update({ filenameTemplate: (e.target as HTMLInputElement).value })
             }
           />
-          <FieldDescription className="font-mono text-xs">
+          <FieldDescription sx={styles.descMonoXs}>
             {'{platform} {handle} {tweetId} {index} {ext} {type} {date}'}
           </FieldDescription>
         </Field>
@@ -241,7 +317,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             type="number"
             min={1}
             max={10}
-            className="w-20 text-center font-mono tabular-nums"
+            sx={styles.inputMono5}
             value={settings.downloadConcurrency}
             onChange={(e: Event) =>
               void update({
@@ -256,11 +332,32 @@ export function SavingPanel({ settings, update }: PanelProps) {
         title="Download mode"
         description="Direct is the safest default — Chrome saves the file directly."
       >
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="saveToDisk">Save to this computer</FieldLabel>
+            <FieldDescription>
+              Off sends new grabs only to your enabled cloud destinations — the Download mode below
+              then never writes a file
+            </FieldDescription>
+          </FieldContent>
+          {/* The off position needs a live Cloud destination (issue #95); turning
+              it back on is always allowed. The delta + the settings-service
+              backstop refuse an illegal off even if this gate is bypassed. */}
+          <Switch
+            id="saveToDisk"
+            checked={settings.saveToDisk}
+            disabled={settings.saveToDisk && !hasLiveCloudDestination(settings)}
+            onCheckedChange={(checked: boolean) =>
+              void update(saveToDiskToggleDelta(checked, settings))
+            }
+          />
+        </Field>
+
         <ToggleGroup
           type="single"
           variant="outline"
           spacing={0}
-          className="w-full rounded-[var(--xmd-radius-3)]"
+          sx={styles.toggleGroupWide}
           style={{ '--radius': 'var(--xmd-radius-3)' }}
           aria-label="Download mode"
           value={settings.downloadStrategy}
@@ -269,17 +366,19 @@ export function SavingPanel({ settings, update }: PanelProps) {
           }}
         >
           {DOWNLOAD_MODES.map((option) => (
-            <ToggleGroupItem key={option.value} value={option.value} className="h-10 flex-1">
+            <ToggleGroupItem
+              key={option.value}
+              value={option.value}
+              sx={styles.toggleGroupItemFull}
+            >
               {option.label}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
-        {activeMode && (
-          <p className="text-sm text-pretty text-muted-foreground">{activeMode.hint}</p>
-        )}
+        {activeMode && <p {...stylex.props(styles.hintText)}>{activeMode.hint}</p>}
 
         {settings.downloadStrategy === 'aria2' && (
-          <div className="grid gap-0 divide-y divide-border border-l border-border pl-4 *:py-3 first:*:pt-0">
+          <div {...stylex.props(styles.aria2Group)} data-xmd-divide="" data-xmd-rows="3">
             <Field orientation="horizontal">
               <FieldLabel htmlFor="aria2Split">aria2 split</FieldLabel>
               <Input
@@ -287,7 +386,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 type="number"
                 min={1}
                 max={16}
-                className="w-20 text-center font-mono tabular-nums"
+                sx={styles.inputMono5}
                 value={settings.aria2Split}
                 onChange={(e: Event) =>
                   void update({ aria2Split: Number((e.target as HTMLInputElement).value) || 1 })
@@ -327,12 +426,12 @@ export function SavingPanel({ settings, update }: PanelProps) {
               />
             </Field>
             {aria2Granted === false && (
-              <Button type="button" className="min-h-10" onClick={() => void requestAria2Access()}>
+              <Button type="button" sx={styles.minH10} onClick={() => void requestAria2Access()}>
                 Grant localhost access
               </Button>
             )}
             {aria2Granted === true && (
-              <p className="text-sm font-medium text-success">localhost access granted</p>
+              <p {...stylex.props(styles.successText)}>localhost access granted</p>
             )}
           </div>
         )}
@@ -386,7 +485,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             id="minWidth"
             type="number"
             min={0}
-            className="w-24 text-center font-mono tabular-nums"
+            sx={styles.inputMono6}
             value={settings.minWidth}
             onChange={(e: Event) =>
               void update({ minWidth: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -403,7 +502,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             id="minHeight"
             type="number"
             min={0}
-            className="w-24 text-center font-mono tabular-nums"
+            sx={styles.inputMono6}
             value={settings.minHeight}
             onChange={(e: Event) =>
               void update({ minHeight: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -420,7 +519,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             id="maxFileSizeMB"
             type="number"
             min={0}
-            className="w-24 text-center font-mono tabular-nums"
+            sx={styles.inputMono6}
             value={settings.maxFileSizeMB}
             onChange={(e: Event) =>
               void update({ maxFileSizeMB: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -442,7 +541,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             id="dailyMaxMB"
             type="number"
             min={0}
-            className="w-24 text-center font-mono tabular-nums"
+            sx={styles.inputMono6}
             value={settings.dailyMaxMB}
             onChange={(e: Event) =>
               void update({ dailyMaxMB: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -459,7 +558,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             id="dailyMaxCount"
             type="number"
             min={0}
-            className="w-24 text-center font-mono tabular-nums"
+            sx={styles.inputMono6}
             value={settings.dailyMaxCount}
             onChange={(e: Event) =>
               void update({ dailyMaxCount: clampNonNegative((e.target as HTMLInputElement).value) })
@@ -470,7 +569,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel>Used today</FieldLabel>
-            <FieldDescription className="font-mono tabular-nums">
+            <FieldDescription sx={styles.descMonoNums}>
               {usedMB} MB · {usage?.count ?? 0} files
             </FieldDescription>
           </FieldContent>
@@ -478,10 +577,10 @@ export function SavingPanel({ settings, update }: PanelProps) {
             type="button"
             variant="outline"
             size="sm"
-            className="min-h-10 self-start"
+            sx={[styles.minH10, styles.selfStart]}
             onClick={() => void resetToday()}
           >
-            <EraserIcon className="size-3.5" />
+            <EraserIcon sx={iconSize.s35} />
             Reset today
           </Button>
         </Field>

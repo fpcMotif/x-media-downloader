@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
 import type * as captures from "../captures.js";
 import type * as sync from "../sync.js";
 import type * as uploads from "../uploads.js";
@@ -19,6 +20,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
   captures: typeof captures;
   sync: typeof sync;
   uploads: typeof uploads;

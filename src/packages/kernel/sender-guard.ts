@@ -12,9 +12,10 @@ import { originsForAllAdapters } from '@/core/adapters/registry'
  * injected into x.com / twitter.com, confined to {@link CONTENT_SCRIPT_TAGS}.
  *
  * Two trust tiers, validated against the real `sendMessage` call sites:
- *  - Internal UI (popup / options): our extension id, no `tab` — may send anything.
+ *  - Internal UI (popup / options): our extension id on an extension-scheme
+ *    origin — may send anything.
  *  - Content script (overlay on x.com / twitter.com / instagram / threads): our
- *    extension id, has a `tab`, on an allowed origin — may send only
+ *    extension id, has a `tab`, on an allowed web origin — may send only
  *    {@link CONTENT_SCRIPT_TAGS}.
  * Everything else — a foreign extension id, a content script on another origin,
  * or a privileged (UI-only) tag arriving from a content script — is rejected.
@@ -74,9 +75,29 @@ function originOf(sender: MessageSenderLike): string | null {
   }
 }
 
-/** A content script carries a `tab`; internal UI (popup/options) does not. */
+/** Something hosted in a browser tab — a content script OR an extension page
+ *  opened in a tab. Not a trust signal on its own; see {@link isExtensionPage}. */
 function isContentScript(sender: MessageSenderLike): boolean {
   return sender.tab !== undefined && sender.tab !== null
+}
+
+/** Our own extension pages carry an extension-scheme origin the browser sets;
+ *  a web page cannot forge one, and no page here is web-accessible, so no web
+ *  origin can host an extension-origin frame. Matched on the RAW `origin`/`url`
+ *  string, never on `URL.origin`: `chrome-extension:` is not a special scheme,
+ *  so a spec-conformant `URL.origin` is the string `"null"` for it. */
+const EXTENSION_SCHEME = /^(?:chrome|moz)-extension:\/\//
+
+/**
+ * An extension page of ours (popup, options, offscreen). The options page is
+ * declared `open_in_tab`, so Chrome sets `sender.tab` on everything it sends —
+ * the SAME shape a content script has. The origin scheme, not the tab, is what
+ * separates internal UI from page script: keying off `tab` alone blocked every
+ * options-page message (Cloud connect, sync test, clear history) at the guard,
+ * and the caller only ever saw an unanswered reply.
+ */
+function isExtensionPage(sender: MessageSenderLike): boolean {
+  return EXTENSION_SCHEME.test(sender.origin ?? '') || EXTENSION_SCHEME.test(sender.url ?? '')
 }
 
 /**
@@ -90,7 +111,8 @@ export function isMessageAllowed(
   ownId: string,
 ): boolean {
   if (sender === undefined || sender.id !== ownId) return false // not our extension
-  if (!isContentScript(sender)) return true // internal UI may send any tag
+  if (isExtensionPage(sender)) return true // popup / options — options lives in a tab
+  if (!isContentScript(sender)) return true // an extension context with no url (SW, popup)
   const origin = originOf(sender)
   if (origin === null || !ALLOWED_CONTENT_SCRIPT_ORIGINS.has(origin)) return false
   return CONTENT_SCRIPT_TAGS.has(tag) // content scripts: only their own tags

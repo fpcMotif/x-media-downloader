@@ -1,0 +1,165 @@
+{
+  "$comment": "Scenarios for scripts/parity.ts (see ~/.claude/skills/tailwind-to-stylex). Extension mode: paths resolve inside the unpacked extension; `tabContext` is the URL the popup believes is the active tab.",
+  "viewport": { "width": 1200, "height": 900 },
+  "settledSelectors": [".xmd-boot-fallback", ".xmd-popup--loading", "[data-xmd-popup=\"loading\"]"],
+  "stateTargets": "button, a[href], input, [role=\"switch\"], [role=\"option\"], [data-slot=\"select-trigger\"], [data-slot=\"toggle-group-item\"], [data-slot=\"badge\"]",
+  "ignoreAttributes": ["data-xmd-popup", "data-xmd-divide", "data-xmd-rows"],
+  "scenarios": [
+    {
+      "name": "popup_none",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "about:blank"
+    },
+    {
+      "name": "popup_x_home",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "https://x.com/home"
+    },
+    {
+      "name": "popup_x_home_release_open",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "https://x.com/home",
+      "steps": ["await __parity.click('button', 'Release')"]
+    },
+    {
+      "name": "popup_x_home_release_armed",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "https://x.com/home",
+      "steps": [
+        "await __parity.click('button', 'Release')",
+        "await __parity.click('button', 'Release this page')",
+        "await __parity.sleep(500)",
+        "__parity.freezeClock()",
+        "__parity.blur()"
+      ]
+    },
+    {
+      "name": "popup_x_list",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "https://x.com/i/bookmarks"
+    },
+    {
+      "name": "popup_x_list_typed_word",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "https://x.com/i/bookmarks",
+      "steps": [
+        "await __parity.click('button', 'Release the whole list')",
+        "await __parity.sleep(500)",
+        "await __parity.type('input', 'rel')",
+        "__parity.freezeClock()",
+        "__parity.blur()"
+      ]
+    },
+    {
+      "name": "popup_x_list_precommit_armed",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "https://x.com/i/bookmarks",
+      "steps": [
+        "await __parity.toggle('clearOnSave')",
+        "await __parity.sleep(400)",
+        "__parity.freezeClock()",
+        "__parity.blur()"
+      ]
+    },
+    {
+      "name": "popup_instagram",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "https://www.instagram.com/"
+    },
+    {
+      "name": "popup_x_mode_aria2",
+      "path": "popup.html",
+      "viewport": { "width": 380, "height": 600 },
+      "tabContext": "https://x.com/home",
+      "steps": [
+        "await __parity.click('button[aria-label=\"Download mode: aria2\"]')",
+        "await __parity.sleep(300)"
+      ]
+    },
+    { "name": "options_saving", "path": "options.html#saving", "tabContext": "about:blank" },
+    {
+      "name": "options_saving_select_open",
+      "path": "options.html#saving",
+      "tabContext": "about:blank",
+      "steps": [
+        "await __parity.click('[data-slot=\"select-trigger\"]')",
+        "await __parity.sleep(500)"
+      ]
+    },
+    {
+      "name": "options_saving_aria2",
+      "path": "options.html#saving",
+      "tabContext": "about:blank",
+      "steps": ["await __parity.click('button', 'aria2')", "await __parity.sleep(400)"]
+    },
+    { "name": "options_release", "path": "options.html#release", "tabContext": "about:blank" },
+    {
+      "name": "options_release_armed",
+      "path": "options.html#release",
+      "tabContext": "about:blank",
+      "steps": [
+        "await __parity.toggle('clearOnSave')",
+        "await __parity.sleep(400)",
+        "__parity.freezeClock()",
+        "__parity.blur()"
+      ]
+    },
+    {
+      "name": "options_release_on",
+      "path": "options.html#release",
+      "tabContext": "about:blank",
+      "steps": [
+        "await __parity.toggle('clearOnSave')",
+        "await __parity.sleep(600)",
+        "await __parity.click('button', 'Turn it on')",
+        "await __parity.sleep(400)"
+      ]
+    },
+    { "name": "options_capture", "path": "options.html#capture", "tabContext": "about:blank" },
+    { "name": "options_sync", "path": "options.html#sync", "tabContext": "about:blank" },
+    {
+      "name": "options_sync_enabled",
+      "path": "options.html#sync",
+      "tabContext": "about:blank",
+      "steps": [
+        "await __parity.toggle('cloudSyncEnabled')",
+        "await __parity.toggle('cloudUploadEnabled')",
+        "await __parity.sleep(500)"
+      ]
+    },
+    { "name": "options_archive", "path": "options.html#archive", "tabContext": "about:blank" },
+    {
+      "name": "options_archive_erase_armed",
+      "path": "options.html#archive",
+      "tabContext": "about:blank",
+      "steps": [
+        "await __parity.click('button', 'Erase archive')",
+        "await __parity.sleep(500)",
+        "__parity.freezeClock()",
+        "__parity.blur()"
+      ]
+    },
+    { "name": "options_history", "path": "options.html#history", "tabContext": "about:blank" },
+    { "name": "options_about", "path": "options.html#about", "tabContext": "about:blank" },
+    {
+      "name": "options_saving_narrow",
+      "path": "options.html#saving",
+      "viewport": { "width": 560, "height": 900 },
+      "tabContext": "about:blank"
+    },
+    {
+      "name": "options_release_narrow",
+      "path": "options.html#release",
+      "viewport": { "width": 560, "height": 900 },
+      "tabContext": "about:blank"
+    }
+  ]
+}

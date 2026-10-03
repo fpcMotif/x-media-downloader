@@ -4,30 +4,88 @@
 'use client'
 
 import * as React from 'react'
-import { type VariantProps } from 'class-variance-authority'
+import * as stylex from '@stylexjs/stylex'
+import type { StyleXStyles } from '@stylexjs/stylex'
 import { ToggleGroup as ToggleGroupPrimitive } from '@base-ui/react/toggle-group'
 import { Toggle as TogglePrimitive } from '@base-ui/react/toggle'
+import { tokens } from '@/theme/tokens.stylex'
+import { toggleStyles } from '@/components/ui/toggle'
 
-import { cn } from '@/lib/utils'
-import { toggleVariants } from '@/components/ui/toggle'
+type ToggleVariant = 'default' | 'outline'
+type ToggleSize = 'default' | 'sm' | 'lg'
 
-const ToggleGroupContext = React.createContext<
-  VariantProps<typeof toggleVariants> & {
-    spacing?: number
-    orientation?: 'horizontal' | 'vertical'
-  }
->({
+const ToggleGroupContext = React.createContext<{
+  variant?: ToggleVariant
+  size?: ToggleSize
+  spacing?: number
+  orientation?: 'horizontal' | 'vertical'
+}>({
   size: 'default',
   variant: 'default',
   spacing: 2,
   orientation: 'horizontal',
 })
 
+const groupStyles = stylex.create({
+  root: {
+    display: 'flex',
+    width: 'fit-content',
+    flexDirection: { default: 'row', '[data-vertical]': 'column' },
+    alignItems: { default: 'center', '[data-vertical]': 'stretch' },
+    gap: 'calc(0.25rem * var(--gap))',
+    borderRadius: {
+      default: tokens['--radius'],
+      '[data-size="sm"]': 'min(var(--radius-md), 10px)',
+    },
+  },
+})
+
+// The group-data-[spacing=0]/toggle-group:*, group-data-horizontal/*, and
+// group-data-vertical/* rules relied on a `.group/toggle-group` ancestor class
+// that no longer exists once Tailwind utilities are gone (spec §5) — resolved
+// here from ToggleGroupContext instead of a CSS ancestor selector.
+const itemStyles = stylex.create({
+  base: {
+    flexShrink: 0,
+    zIndex: { default: null, ':focus': 10, ':focus-visible': 10 },
+  },
+  zeroSpacing: {
+    flexShrink: null,
+    flex: 1,
+    paddingInline: '0.5rem',
+    paddingRight: { default: null, ':has([data-icon="inline-end"])': '0.375rem' },
+    paddingLeft: { default: null, ':has([data-icon="inline-start"])': '0.375rem' },
+  },
+  // `rounded-none` plus the first/last corner restores. Each corner is ONE
+  // property object (default 0 + its pseudo-class), because a later
+  // `{ default: null, ':first-child': … }` would replace an earlier plain `0`
+  // for the same property wholesale — StyleX merges per property, not per key.
+  zeroSpacingCornersHorizontal: {
+    borderTopLeftRadius: { default: 0, ':first-child': tokens['--radius'] },
+    borderBottomLeftRadius: { default: 0, ':first-child': tokens['--radius'] },
+    borderTopRightRadius: { default: 0, ':last-child': tokens['--radius'] },
+    borderBottomRightRadius: { default: 0, ':last-child': tokens['--radius'] },
+  },
+  zeroSpacingCornersVertical: {
+    borderTopLeftRadius: { default: 0, ':first-child': tokens['--radius'] },
+    borderTopRightRadius: { default: 0, ':first-child': tokens['--radius'] },
+    borderBottomLeftRadius: { default: 0, ':last-child': tokens['--radius'] },
+    borderBottomRightRadius: { default: 0, ':last-child': tokens['--radius'] },
+  },
+  zeroSpacingOutlineHorizontal: {
+    borderLeftStyle: 'solid',
+    borderLeftWidth: { default: 0, ':first-child': '1px' },
+  },
+  zeroSpacingOutlineVertical: {
+    borderTopStyle: 'solid',
+    borderTopWidth: { default: 0, ':first-child': '1px' },
+  },
+})
+
 // Base UI's ToggleGroup is always array-valued (`multiple` picks 1-vs-many),
 // whereas the call sites use Radix's `type="single"` with a scalar value. This
 // wrapper bridges the two: scalar <-> single-element array on the way in/out.
 function ToggleGroup({
-  className,
   variant,
   size,
   spacing = 2,
@@ -37,13 +95,16 @@ function ToggleGroup({
   defaultValue,
   onValueChange,
   children,
+  sx,
   ...props
-}: React.ComponentProps<typeof ToggleGroupPrimitive> &
-  VariantProps<typeof toggleVariants> & {
-    spacing?: number
-    orientation?: 'horizontal' | 'vertical'
-    type?: 'single' | 'multiple'
-  }) {
+}: React.ComponentProps<typeof ToggleGroupPrimitive> & {
+  variant?: ToggleVariant
+  size?: ToggleSize
+  spacing?: number
+  orientation?: 'horizontal' | 'vertical'
+  type?: 'single' | 'multiple'
+  sx?: StyleXStyles | ReadonlyArray<StyleXStyles | false | null | undefined>
+}) {
   const multiple = type === 'multiple'
   const toArray = (v: unknown) => (v == null ? undefined : Array.isArray(v) ? v : [v])
   const handleValueChange = (groupValue: string[]) => {
@@ -51,6 +112,8 @@ function ToggleGroup({
     if (multiple) onValueChange(groupValue)
     else onValueChange(groupValue[0] ?? '')
   }
+
+  const { className, style: sxStyle } = stylex.props(groupStyles.root, sx)
 
   return (
     <ToggleGroupPrimitive
@@ -65,11 +128,8 @@ function ToggleGroup({
       value={toArray(value)}
       defaultValue={toArray(defaultValue)}
       onValueChange={handleValueChange}
-      style={{ '--gap': spacing } as React.CSSProperties}
-      className={cn(
-        'group/toggle-group flex w-fit flex-row items-center gap-[--spacing(var(--gap))] rounded-lg data-[size=sm]:rounded-[min(var(--radius-md),10px)] data-vertical:flex-col data-vertical:items-stretch',
-        className,
-      )}
+      className={className}
+      style={{ '--gap': spacing, ...sxStyle } as React.CSSProperties}
       {...props}
     >
       <ToggleGroupContext.Provider value={{ variant, size, spacing, orientation }}>
@@ -80,27 +140,47 @@ function ToggleGroup({
 }
 
 function ToggleGroupItem({
-  className,
   children,
   variant = 'default',
   size = 'default',
+  sx,
   ...props
-}: React.ComponentProps<typeof TogglePrimitive> & VariantProps<typeof toggleVariants>) {
+}: React.ComponentProps<typeof TogglePrimitive> & {
+  variant?: ToggleVariant
+  size?: ToggleSize
+  sx?: StyleXStyles | ReadonlyArray<StyleXStyles | false | null | undefined>
+}) {
   const context = React.useContext(ToggleGroupContext)
+  const resolvedVariant = context.variant || variant
+  const resolvedSize = context.size || size
+  const spacingZero = context.spacing === 0
+  const vertical = context.orientation === 'vertical'
+  const isOutline = resolvedVariant === 'outline'
 
   return (
     <TogglePrimitive
       data-slot="toggle-group-item"
-      data-variant={context.variant || variant}
-      data-size={context.size || size}
+      data-variant={resolvedVariant}
+      data-size={resolvedSize}
       data-spacing={context.spacing}
-      className={cn(
-        'shrink-0 group-data-[spacing=0]/toggle-group:flex-1 group-data-[spacing=0]/toggle-group:rounded-none group-data-[spacing=0]/toggle-group:px-2 focus:z-10 focus-visible:z-10 group-data-[spacing=0]/toggle-group:has-data-[icon=inline-end]:pr-1.5 group-data-[spacing=0]/toggle-group:has-data-[icon=inline-start]:pl-1.5 group-data-horizontal/toggle-group:data-[spacing=0]:first:rounded-l-lg group-data-vertical/toggle-group:data-[spacing=0]:first:rounded-t-lg group-data-horizontal/toggle-group:data-[spacing=0]:last:rounded-r-lg group-data-vertical/toggle-group:data-[spacing=0]:last:rounded-b-lg group-data-horizontal/toggle-group:data-[spacing=0]:data-[variant=outline]:border-l-0 group-data-vertical/toggle-group:data-[spacing=0]:data-[variant=outline]:border-t-0 group-data-horizontal/toggle-group:data-[spacing=0]:data-[variant=outline]:first:border-l group-data-vertical/toggle-group:data-[spacing=0]:data-[variant=outline]:first:border-t',
-        toggleVariants({
-          variant: context.variant || variant,
-          size: context.size || size,
-        }),
-        className,
+      {...stylex.props(
+        itemStyles.base,
+        toggleStyles.base.root,
+        toggleStyles.variant[resolvedVariant],
+        toggleStyles.size[resolvedSize],
+        toggleStyles.svgHost,
+        toggleStyles.svgMarkerBySize[resolvedSize],
+        spacingZero && itemStyles.zeroSpacing,
+        spacingZero &&
+          (vertical
+            ? itemStyles.zeroSpacingCornersVertical
+            : itemStyles.zeroSpacingCornersHorizontal),
+        spacingZero &&
+          isOutline &&
+          (vertical
+            ? itemStyles.zeroSpacingOutlineVertical
+            : itemStyles.zeroSpacingOutlineHorizontal),
+        sx,
       )}
       {...props}
     >

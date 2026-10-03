@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { Option } from 'effect'
-import { cn } from '@/lib/utils'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 import { convexOriginPattern } from '@/packages/sync/convex'
 import type { SyncStatus } from '@/packages/sync/status'
 import { FETCHED_HOST_PATTERNS } from '@/packages/download/fetched-strategy'
@@ -12,6 +13,63 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, Section, type PanelProps } from '../ui'
+
+const styles = stylex.create({
+  // Shared 'min-h-10' override used by every options action Button below.
+  minH10: { minHeight: '2.5rem' },
+  selfStart: { alignSelf: 'flex-start' },
+  // 'flex flex-wrap items-center gap-2' button rows.
+  flexWrapRow: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem' },
+  // Base of every status <p>: 'text-sm leading-snug text-pretty' — leading-snug
+  // (1.375) always wins over text-sm's own line-height. Combine with one of
+  // the color-* variants below (later argument wins per property).
+  statusText: { fontSize: '0.875rem', lineHeight: '1.375', textWrap: 'pretty' },
+  colorSuccess: { color: tokens['--success'] },
+  colorDestructive: { color: tokens['--destructive'] },
+  colorMuted: { color: tokens['--muted-foreground'] },
+  // 'text-[13px] font-medium text-success' span — text-[13px] sets fontSize
+  // only, line-height stays inherited.
+  grantedText: { fontSize: '13px', fontWeight: 500, color: tokens['--success'] },
+  descPretty: { textWrap: 'pretty' },
+  // CloudProviderRow root: 'grid gap-3 border-l border-border pl-4' (no
+  // divide-y/rows here, unlike the aria2 sub-group in saving.tsx).
+  providerRoot: {
+    display: 'grid',
+    gap: '0.75rem',
+    borderLeftStyle: 'solid',
+    borderLeftWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingLeft: '1rem',
+  },
+  // 'flex items-center justify-between gap-2' — shared by the provider header
+  // row and the cloud-status row.
+  headerRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.5rem',
+  },
+  // 'text-sm font-semibold' provider label.
+  providerLabel: {
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    fontWeight: 600,
+  },
+  // 'shrink-0 text-[13px]' connection-state span; combine with a color-*.
+  shrinkText13: { flexShrink: 0, fontSize: '13px' },
+  // "Where do I get this?" anchor: 'rounded-sm outline-none
+  // focus-visible:ring-3 focus-visible:ring-ring/50' (underline/hover come
+  // from app.css's FieldDescription > a rule, untouched).
+  anchorLink: {
+    borderRadius: 'calc(var(--radius) - 4px)',
+    outlineStyle: 'none',
+    boxShadow: {
+      default: null,
+      ':focus-visible':
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+    },
+  },
+})
 
 const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
@@ -88,7 +146,11 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 
   // Grant the provider API + twimg source origins from THIS click (user gesture),
   // then run the PKCE flow in the background SW (it survives this tab losing focus).
-  const connectProvider = async (provider: CloudProviderId, clientId: string): Promise<void> => {
+  const connectProvider = async (
+    provider: CloudProviderId,
+    clientId: string,
+    clientSecret: string,
+  ): Promise<void> => {
     setConnecting(provider)
     setConnectMsg('')
     try {
@@ -101,7 +163,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         return
       }
       const res = (await browser.runtime
-        .sendMessage({ _tag: 'CloudConnectRequest', provider, clientId })
+        .sendMessage({ _tag: 'CloudConnectRequest', provider, clientId, clientSecret })
         .catch(() => null)) as { ok?: boolean; detail?: string } | null
       await reload()
       setConnectMsg(res?.detail ?? 'The extension background did not respond.')
@@ -179,12 +241,12 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
                 }
               />
             </Field>
-            <div className="flex flex-wrap items-center gap-2">
+            <div {...stylex.props(styles.flexWrapRow)}>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="min-h-10"
+                sx={styles.minH10}
                 disabled={
                   testingSync || settings.convexUrl === '' || settings.convexSyncSecret === ''
                 }
@@ -197,21 +259,21 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
                   type="button"
                   variant="secondary"
                   size="sm"
-                  className="min-h-10"
+                  sx={styles.minH10}
                   onClick={() => void requestConvexAccess()}
                 >
                   Grant access
                 </Button>
               )}
               {convexGranted === true && (
-                <span className="text-[13px] font-medium text-success">access granted</span>
+                <span {...stylex.props(styles.grantedText)}>access granted</span>
               )}
             </div>
             {syncStatus && (
               <p
-                className={cn(
-                  'text-sm leading-snug text-pretty',
-                  syncStatus.ok ? 'text-success' : 'text-destructive',
+                {...stylex.props(
+                  styles.statusText,
+                  syncStatus.ok ? styles.colorSuccess : styles.colorDestructive,
                 )}
               >
                 {syncStatus.detail}
@@ -239,26 +301,37 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 
         {settings.cloudUploadEnabled && (
           <>
-            <FieldDescription className="text-pretty">
-              Uploads run automatically as you download — there's no separate step. Use “Back up
-              past downloads” to sync media you saved earlier.
+            <FieldDescription sx={styles.descPretty}>
+              Uploads run automatically as you download and follow each provider's Upload switch —
+              there's no separate step. Use “Back up past downloads” to sync media you saved
+              earlier.
             </FieldDescription>
             <CloudProviderRow
               provider="gdrive"
               clientId={settings.gdriveClientId}
+              clientSecret={settings.gdriveClientSecret}
               connected={settings.gdriveRefreshToken !== ''}
               account={settings.gdriveAccount}
               connecting={connecting === 'gdrive'}
-              onConnect={(clientId) => void connectProvider('gdrive', clientId)}
+              uploadEnabled={settings.gdriveUploadEnabled}
+              onUploadToggle={(checked: boolean) => void update({ gdriveUploadEnabled: checked })}
+              onConnect={(clientId, clientSecret) =>
+                void connectProvider('gdrive', clientId, clientSecret)
+              }
               onDisconnect={() => void disconnectProvider('gdrive')}
             />
             <CloudProviderRow
               provider="dropbox"
               clientId={settings.dropboxClientId}
+              clientSecret=""
               connected={settings.dropboxRefreshToken !== ''}
               account={settings.dropboxAccount}
               connecting={connecting === 'dropbox'}
-              onConnect={(clientId) => void connectProvider('dropbox', clientId)}
+              uploadEnabled={settings.dropboxUploadEnabled}
+              onUploadToggle={(checked: boolean) => void update({ dropboxUploadEnabled: checked })}
+              onConnect={(clientId, clientSecret) =>
+                void connectProvider('dropbox', clientId, clientSecret)
+              }
               onDisconnect={() => void disconnectProvider('dropbox')}
             />
             {(settings.gdriveRefreshToken !== '' || settings.dropboxRefreshToken !== '') && (
@@ -266,21 +339,21 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
                 type="button"
                 variant="outline"
                 size="sm"
-                className="min-h-10 self-start"
+                sx={[styles.minH10, styles.selfStart]}
                 onClick={() => void backfillUploads()}
               >
                 Back up past downloads
               </Button>
             )}
             {connectMsg && (
-              <p className="text-sm leading-snug text-pretty text-muted-foreground">{connectMsg}</p>
+              <p {...stylex.props(styles.statusText, styles.colorMuted)}>{connectMsg}</p>
             )}
             {cloudStatus && (
-              <div className="flex items-center justify-between gap-2">
+              <div {...stylex.props(styles.headerRow)}>
                 <p
-                  className={cn(
-                    'text-sm leading-snug text-pretty',
-                    cloudStatus.lastError ? 'text-destructive' : 'text-muted-foreground',
+                  {...stylex.props(
+                    styles.statusText,
+                    cloudStatus.lastError ? styles.colorDestructive : styles.colorMuted,
                   )}
                 >
                   {cloudStatus.lastError ?? describeUploadSummary(cloudStatus.summary)}
@@ -290,7 +363,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="min-h-10"
+                    sx={styles.minH10}
                     onClick={() => void retryUploads()}
                   >
                     Retry failed
@@ -308,22 +381,32 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 function CloudProviderRow({
   provider,
   clientId,
+  clientSecret,
   connected,
   account,
   connecting,
+  uploadEnabled,
+  onUploadToggle,
   onConnect,
   onDisconnect,
 }: {
   provider: CloudProviderId
   clientId: string
+  clientSecret: string
   connected: boolean
   account: string
   connecting: boolean
-  onConnect: (clientId: string) => void
+  uploadEnabled: boolean
+  onUploadToggle: (checked: boolean) => void
+  onConnect: (clientId: string, clientSecret: string) => void
   onDisconnect: () => void
 }) {
   const label = PROVIDERS[provider].label
   const idLabel = provider === 'gdrive' ? 'OAuth client ID' : 'App key'
+  // A provider whose record declares a `clientSecret` field is NOT a public
+  // client — Google's Web application client rejects a secret-free PKCE exchange.
+  // The field's absence (Dropbox) is what hides this input.
+  const needsSecret = PROVIDERS[provider].fields.clientSecret !== undefined
   // Client id lives in local draft state and rides with Connect — the panel never
   // writes it to the settings blob (single-writer, ADR-0005). Seed from the
   // persisted value and resync when it changes (e.g. after a successful connect).
@@ -331,16 +414,20 @@ function CloudProviderRow({
   useEffect(() => {
     setDraft(clientId)
   }, [clientId])
+  const [secretDraft, setSecretDraft] = useState(clientSecret)
+  useEffect(() => {
+    setSecretDraft(clientSecret)
+  }, [clientSecret])
   return (
-    <div className="grid gap-3 border-l border-border pl-4">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-semibold">{label}</span>
+    <div {...stylex.props(styles.providerRoot)}>
+      <div {...stylex.props(styles.headerRow)}>
+        <span {...stylex.props(styles.providerLabel)}>{label}</span>
         {connected ? (
-          <span className="shrink-0 text-[13px] text-success">
+          <span {...stylex.props(styles.shrinkText13, styles.colorSuccess)}>
             {account !== '' ? account : 'connected'}
           </span>
         ) : (
-          <span className="shrink-0 text-[13px] text-muted-foreground">Not connected</span>
+          <span {...stylex.props(styles.shrinkText13, styles.colorMuted)}>Not connected</span>
         )}
       </div>
       <Field>
@@ -360,20 +447,36 @@ function CloudProviderRow({
             }
             target="_blank"
             rel="noreferrer"
-            className="rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            {...stylex.props(styles.anchorLink)}
           >
             Where do I get this? →
           </a>
         </FieldDescription>
       </Field>
-      <div className="flex flex-wrap items-center gap-2">
+      {needsSecret && (
+        <Field>
+          <FieldLabel htmlFor={`${provider}ClientSecret`}>Client secret</FieldLabel>
+          <Input
+            id={`${provider}ClientSecret`}
+            type="password"
+            placeholder="GOCSPX-…"
+            value={secretDraft}
+            onChange={(e: Event) => setSecretDraft((e.target as HTMLInputElement).value)}
+          />
+          <FieldDescription>
+            Google issues this beside the client ID. It rejects the connection without it, even
+            though PKCE is used. It never leaves this browser.
+          </FieldDescription>
+        </Field>
+      )}
+      <div {...stylex.props(styles.flexWrapRow)}>
         <Button
           type="button"
           variant={connected ? 'outline' : 'default'}
           size="sm"
-          className="min-h-10"
+          sx={styles.minH10}
           disabled={connecting || draft === ''}
-          onClick={() => onConnect(draft)}
+          onClick={() => onConnect(draft, secretDraft)}
         >
           {connecting ? 'Connecting…' : connected ? 'Reconnect' : 'Connect'}
         </Button>
@@ -382,13 +485,30 @@ function CloudProviderRow({
             type="button"
             variant="outline"
             size="sm"
-            className="min-h-10"
+            sx={styles.minH10}
             onClick={onDisconnect}
           >
             Disconnect
           </Button>
         )}
       </div>
+      {/* Pause is NOT disconnect (issue #95): tokens and the account label
+          stay, queued/in-flight jobs keep draining, only new uploads stop.
+          Pausing the last live destination while Cloud-only is on forces
+          Save to this computer back on (settings-service backstop). */}
+      <Field orientation="horizontal">
+        <FieldContent>
+          <FieldLabel htmlFor={`${provider}UploadEnabled`}>Upload</FieldLabel>
+          <FieldDescription>
+            Paused keeps {label} connected but stops new uploads — queued ones keep finishing
+          </FieldDescription>
+        </FieldContent>
+        <Switch
+          id={`${provider}UploadEnabled`}
+          checked={uploadEnabled}
+          onCheckedChange={onUploadToggle}
+        />
+      </Field>
     </div>
   )
 }

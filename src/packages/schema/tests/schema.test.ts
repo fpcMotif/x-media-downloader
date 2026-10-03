@@ -103,6 +103,13 @@ describe('Settings schema', () => {
     expect(s.downloadHistoryEnabled).toBe(false)
   })
 
+  it('defaults save-to-disk on and per-provider upload on when the keys are absent', () => {
+    const s = Schema.decodeUnknownSync(Settings)({})
+    expect(s.saveToDisk).toBe(true)
+    expect(s.gdriveUploadEnabled).toBe(true)
+    expect(s.dropboxUploadEnabled).toBe(true)
+  })
+
   it('defaults showSavedStatus on when the key is absent', () => {
     const s = Schema.decodeUnknownSync(Settings)({})
     expect(s.showSavedStatus).toBe(true)

@@ -6,8 +6,9 @@ import type { OAuthConfig, OAuthTokens } from './types'
  * OAuth 2.0 Authorization Code + PKCE for a Chrome MV3 extension.
  * Pure helpers (verifier/challenge/auth-URL/redirect-parse) are I/O-free and
  * unit-tested; `exchangeCode`/`refreshAccessToken` take an injected `fetch`
- * (the aria2/convex port convention) so they test without the network. No
- * client secret anywhere — PKCE replaces it; an extension bundle can't keep one.
+ * (the aria2/convex port convention) so they test without the network. PKCE
+ * replaces the client secret wherever the provider honours the spec — Dropbox
+ * does. Google does NOT: see {@link withClientSecret}.
  *
  * @see ADR-0013
  */
@@ -168,23 +169,46 @@ const postToken = (
     return json
   })
 
-/** Exchange an authorization code for tokens (PKCE: code_verifier, no secret). */
+/**
+ * Adds `client_secret` only when the provider supplies one. Google's "Web
+ * application" client stays a CONFIDENTIAL client even under PKCE: its token
+ * endpoint answers `client_secret is missing` without it, so a secret-free PKCE
+ * exchange cannot work there, whatever the spec says. Dropbox honours PKCE and
+ * never sees this param — an empty secret is dropped, not sent blank.
+ */
+const withClientSecret = (
+  body: Record<string, string>,
+  clientSecret: string | undefined,
+): Record<string, string> =>
+  clientSecret === undefined || clientSecret === ''
+    ? body
+    : { ...body, client_secret: clientSecret }
+
+/** Exchange an authorization code for tokens (PKCE: code_verifier + optional secret). */
 export function exchangeCode(input: {
   readonly cfg: OAuthConfig
   readonly clientId: string
+  /** Google only — see {@link withClientSecret}. Omitted for a PKCE-honouring provider. */
+  readonly clientSecret?: string
   readonly code: string
   readonly codeVerifier: string
   readonly redirectUri: string
   readonly now: number
 }): Effect.Effect<OAuthTokens, OAuthError, FetchService> {
   return Effect.gen(function* () {
-    const json = yield* postToken(input.cfg, {
-      client_id: input.clientId,
-      code: input.code,
-      code_verifier: input.codeVerifier,
-      grant_type: 'authorization_code',
-      redirect_uri: input.redirectUri,
-    })
+    const json = yield* postToken(
+      input.cfg,
+      withClientSecret(
+        {
+          client_id: input.clientId,
+          code: input.code,
+          code_verifier: input.codeVerifier,
+          grant_type: 'authorization_code',
+          redirect_uri: input.redirectUri,
+        },
+        input.clientSecret,
+      ),
+    )
     const accessToken = yield* requireAccessToken(json, 'token response')
     if (json.refresh_token === undefined || json.refresh_token === '')
       // Without a refresh token the connection dies in ~1 hour; treat as a setup
@@ -207,6 +231,9 @@ export function exchangeCode(input: {
 export function refreshAccessToken(input: {
   readonly cfg: OAuthConfig
   readonly clientId: string
+  /** Google only — see {@link withClientSecret}. A refresh needs it exactly as the
+   *  first exchange does, so every connection would die at the first expiry without it. */
+  readonly clientSecret?: string
   readonly refreshToken: string
   readonly now: number
 }): Effect.Effect<
@@ -215,11 +242,17 @@ export function refreshAccessToken(input: {
   FetchService
 > {
   return Effect.gen(function* () {
-    const json = yield* postToken(input.cfg, {
-      client_id: input.clientId,
-      refresh_token: input.refreshToken,
-      grant_type: 'refresh_token',
-    })
+    const json = yield* postToken(
+      input.cfg,
+      withClientSecret(
+        {
+          client_id: input.clientId,
+          refresh_token: input.refreshToken,
+          grant_type: 'refresh_token',
+        },
+        input.clientSecret,
+      ),
+    )
     const accessToken = yield* requireAccessToken(json, 'refresh response')
     return { accessToken, expiresAt: input.now + (json.expires_in ?? 3600) * 1000 }
   })

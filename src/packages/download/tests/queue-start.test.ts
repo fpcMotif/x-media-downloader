@@ -47,12 +47,32 @@ describe('decideQueueStart', () => {
       { kind: 'queued', item, filename: 'm1.jpg', at: 1_000 },
     ])
     expect(effects.uploadItems).toEqual([{ item, filename: 'm1.jpg' }])
+    expect(effects.diskRequests).toEqual(requests)
     expect(effects.clearSeed).toMatchObject({
       decision: 'seed',
       origin: 'hook',
       originTabId: 9,
     })
     expect(effects.persistSnapshot).toBe(true)
+  })
+
+  it('Cloud-only skips disk requests, keeps upload items, and skips Clear', () => {
+    const effects = decideQueueStart({
+      metrics: null,
+      requests,
+      mediaById: new Map([[item.id, item]]),
+      settings: { ...settings, saveToDisk: false },
+      startedAt: 1_000,
+    })
+
+    expect(effects.diskRequests).toEqual([])
+    // Metrics tracks disk transfers — Cloud-only never enters it, so no ghost actives.
+    expect(effects.metrics.total).toBe(0)
+    expect(effects.uploadItems).toEqual([{ item, filename: 'm1.jpg' }])
+    expect(effects.clearSeed).toEqual({ decision: 'skip', reason: 'cloud-only' })
+    expect(effects.historyActions).toEqual([
+      { kind: 'queued', item, filename: 'm1.jpg', at: 1_000 },
+    ])
   })
 
   it('extends active Metrics without resetting correlation', () => {

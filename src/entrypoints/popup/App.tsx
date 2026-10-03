@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 import { getSettings, setSettings } from '@/packages/settings'
 import { DOWNLOAD_MODES } from '@/packages/download/strategy'
 import { CLEAR_AFTER_DOWNLOAD } from '@/packages/clear/copy'
@@ -7,12 +9,11 @@ import type { PlatformAdapter } from '@/core/adapters/types'
 import type { MembershipScope } from '@/packages/clear/clearer'
 import { formatReleaseSummaryLine } from '@/packages/clear/correlate'
 import type { MetricsSnapshot, Settings } from '@/packages/schema'
-import { cn } from '@/lib/utils'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { LayersIcon, CheckIcon } from '@/components/icons'
+import { LayersIcon, CheckIcon, iconSize } from '@/components/icons'
 import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
 import { plural } from '@/components/capture-copy'
 import { ConfirmStrip } from '@/components/confirm-strip'
@@ -89,11 +90,535 @@ const clearScopeSummary = (settings: Settings): string => {
   return active.length > 0 ? active.join(' · ') : 'No scopes selected'
 }
 
+// ── StyleX ──
+//
+// Shared literals: the vendored [data-slot='button'] override (app.css, pre-
+// migration) beat every utility's own transition-duration/timing-function, so
+// every raw `data-slot="button"` element below hardcodes 0.16s + the ease
+// curve instead of its own `transition-colors` default (150ms/cubic-bezier).
+// `--xmd-ease` lives in theme/tokens.css (not tokens.stylex.ts), so it's
+// written as the literal custom-property reference throughout, matching the
+// ground-truth CSS's `ease-[var(--xmd-ease)]` utility.
+const HOVER = '@media (hover: hover)'
+const XMD_EASE = 'var(--xmd-ease)'
+const BUTTON_TRANSITION_DURATION = '0.16s'
+const TRANSITION_COLORS =
+  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to'
+const RING_FOCUS_VISIBLE =
+  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+const DESTRUCTIVE_HOVER_BG = 'color-mix(in oklab, var(--destructive) 10%, transparent)'
+
+// `animate-in fade-in slide-in-from-top-1` — shared by FirstRunStrip,
+// MonitorZone, ReleaseSummaryZone, and the expanded release panel (spec §3).
+const enterFadeSlideTop1 = stylex.keyframes({
+  '0%': {
+    opacity: 0,
+    transform: 'translate3d(0, calc(1 * 0.25rem * -1), 0) scale3d(1, 1, 1) rotate(0)',
+    filter: 'blur(0)',
+  },
+})
+
+const styles = stylex.create({
+  // ── Popup shell (spec §7 — moved out of app.css) ──
+  popup: {
+    boxSizing: 'border-box',
+    width: '380px',
+    maxWidth: '100%',
+    minHeight: '360px',
+    maxHeight: '600px',
+    overflowY: 'auto',
+    backgroundColor: tokens['--xmd-bg'],
+    color: tokens['--xmd-ink'],
+    font: "13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  },
+  loading: {
+    minHeight: '360px',
+    display: 'grid',
+    placeItems: 'center',
+    color: tokens['--xmd-muted'],
+  },
+
+  // ── Zone 1 — Context strip ──
+  contextStrip: {
+    position: 'sticky',
+    top: 0,
+    zIndex: 10,
+    display: 'flex',
+    height: '2.25rem',
+    flexShrink: 0,
+    alignItems: 'center',
+    gap: '0.375rem',
+    backgroundColor: tokens['--background'],
+    paddingInline: '0.875rem',
+    fontSize: '0.75rem',
+    lineHeight: 1.375,
+    color: tokens['--muted-foreground'],
+    boxShadow: '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 #0000, 0 1px 0 0 var(--border)',
+  },
+  contextDot: {
+    width: '0.375rem',
+    height: '0.375rem',
+    flexShrink: 0,
+    borderRadius: '3.40282e38px',
+  },
+  contextDotOn: { backgroundColor: tokens['--success'] },
+  contextDotOff: {
+    backgroundColor: 'color-mix(in oklab, var(--muted-foreground) 40%, transparent)',
+  },
+  contextLabel: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+
+  // ── Zone 1b — First-run teaching strip ──
+  firstRunStrip: {
+    display: 'flex',
+    minHeight: '2.75rem',
+    alignItems: 'center',
+    gap: '0.75rem',
+    backgroundColor: 'color-mix(in oklab, var(--muted) 30%, transparent)',
+    paddingInline: '0.875rem',
+    paddingBlock: '0.5rem',
+    animationName: enterFadeSlideTop1,
+    animationDuration: '0.22s',
+    animationTimingFunction: XMD_EASE,
+    // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
+    // (with the default `transition-property: all`), so theme/colour changes
+    // on these zones ease over 220ms too.
+    transitionDuration: '0.22s',
+    transitionTimingFunction: XMD_EASE,
+    animationDelay: '0s',
+    animationIterationCount: 1,
+    animationDirection: 'normal',
+    animationFillMode: 'none',
+  },
+  firstRunBodyText: {
+    flex: 1,
+    textWrap: 'pretty',
+    fontSize: '0.75rem',
+    lineHeight: 1.375,
+    color: tokens['--muted-foreground'],
+  },
+  dismissButton: {
+    display: 'flex',
+    width: '2.5rem',
+    height: '2.5rem',
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: tokens['--xmd-radius-3'],
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    color: tokens['--muted-foreground'],
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: BUTTON_TRANSITION_DURATION,
+    backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
+    scale: { default: null, ':active': 0.97 },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+  },
+
+  // ── Zone 2 — Monitor ──
+  monitorSection: {
+    display: 'grid',
+    gap: '0.5rem',
+    borderTopStyle: 'solid',
+    borderTopWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingInline: '0.875rem',
+    paddingBlock: '1rem',
+    animationName: enterFadeSlideTop1,
+    animationDuration: '0.22s',
+    animationTimingFunction: XMD_EASE,
+    // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
+    // (with the default `transition-property: all`), so theme/colour changes
+    // on these zones ease over 220ms too.
+    transitionDuration: '0.22s',
+    transitionTimingFunction: XMD_EASE,
+    animationDelay: '0s',
+    animationIterationCount: 1,
+    animationDirection: 'normal',
+    animationFillMode: 'none',
+  },
+  monitorHeaderRow: {
+    display: 'flex',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: '0.75rem',
+  },
+  monitorCountGroup: { display: 'flex', alignItems: 'baseline', gap: '0.375rem' },
+  monitorCount: {
+    fontFamily: tokens['--font-mono'],
+    fontSize: '1.5rem',
+    lineHeight: 1,
+    fontWeight: 600,
+    fontVariantNumeric: 'tabular-nums',
+  },
+  monitorSavedLabel: {
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    color: tokens['--muted-foreground'],
+  },
+  monitorRightGroup: { display: 'flex', alignItems: 'center', gap: '0.5rem' },
+  resetButton: {
+    display: 'flex',
+    minHeight: '2.5rem',
+    alignItems: 'center',
+    borderRadius: tokens['--xmd-radius-3'],
+    paddingInline: '0.5rem',
+    marginBlock: '-0.75rem',
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontWeight: 500,
+    color: { default: tokens['--muted-foreground'], [HOVER]: { ':hover': tokens['--foreground'] } },
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: BUTTON_TRANSITION_DURATION,
+    scale: { default: null, ':active': 0.97 },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    pointerEvents: { default: null, ':disabled': 'none' },
+    opacity: { default: null, ':disabled': 0.5 },
+  },
+  monitorPercent: {
+    fontFamily: tokens['--font-mono'],
+    fontSize: '1rem',
+    lineHeight: 1,
+    fontWeight: 600,
+    fontVariantNumeric: 'tabular-nums',
+    color: tokens['--primary'],
+  },
+  monitorProgress: { height: '3px' },
+  monitorMetaLine: {
+    fontFamily: tokens['--font-mono'],
+    fontSize: '0.75rem',
+    lineHeight: 1.375,
+    fontVariantNumeric: 'tabular-nums',
+    color: tokens['--muted-foreground'],
+  },
+
+  // ── Release diagnostics summary ──
+  releaseSummarySection: {
+    borderTopStyle: 'solid',
+    borderTopWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingInline: '0.875rem',
+    paddingBlock: '0.625rem',
+    animationName: enterFadeSlideTop1,
+    animationDuration: '0.22s',
+    animationTimingFunction: XMD_EASE,
+    // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
+    // (with the default `transition-property: all`), so theme/colour changes
+    // on these zones ease over 220ms too.
+    transitionDuration: '0.22s',
+    transitionTimingFunction: XMD_EASE,
+    animationDelay: '0s',
+    animationIterationCount: 1,
+    animationDirection: 'normal',
+    animationFillMode: 'none',
+  },
+  releaseSummaryLine: {
+    fontFamily: tokens['--font-mono'],
+    fontSize: '0.75rem',
+    lineHeight: 1.375,
+    fontVariantNumeric: 'tabular-nums',
+  },
+  releaseSummaryLineMismatch: { color: tokens['--destructive'] },
+  releaseSummaryLineNormal: { color: tokens['--muted-foreground'] },
+
+  // ── Zone 3 — Stage ──
+  // `grid gap-2 border-t border-border px-3.5 py-4` — identical string shared
+  // by StageZone's x/x-list branch and ReleaseCluster's own section.
+  borderedSectionGap2: {
+    display: 'grid',
+    gap: '0.5rem',
+    borderTopStyle: 'solid',
+    borderTopWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingInline: '0.875rem',
+    paddingBlock: '1rem',
+  },
+  primaryCta: {
+    height: '2.75rem',
+    width: '100%',
+    borderRadius: tokens['--xmd-radius-2'],
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    fontWeight: 600,
+    color: tokens['--primary-foreground'],
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: BUTTON_TRANSITION_DURATION,
+    backgroundColor: {
+      default: tokens['--primary'],
+      [HOVER]: { ':hover': 'color-mix(in oklab, var(--primary) 90%, transparent)' },
+    },
+    scale: { default: null, ':active': 0.97 },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    pointerEvents: { default: null, ':disabled': 'none' },
+    opacity: { default: null, ':disabled': 0.5 },
+  },
+  sweepButton: {
+    display: 'flex',
+    height: '2.5rem',
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '0.375rem',
+    borderRadius: tokens['--xmd-radius-3'],
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontWeight: 500,
+    color: 'color-mix(in oklab, var(--foreground) 80%, transparent)',
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: BUTTON_TRANSITION_DURATION,
+    backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
+    scale: { default: null, ':active': 0.97 },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    pointerEvents: { default: null, ':disabled': 'none' },
+    opacity: { default: null, ':disabled': 0.5 },
+  },
+  willClearLine: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.375rem',
+    fontSize: '11px',
+    color: tokens['--muted-foreground'],
+  },
+  willClearDot: {
+    width: '0.375rem',
+    height: '0.375rem',
+    flexShrink: 0,
+    borderRadius: '3.40282e38px',
+    backgroundColor: tokens['--destructive'],
+  },
+  aria2CaveatText: { textWrap: 'pretty', fontSize: '11px', color: tokens['--muted-foreground'] },
+  // `block text-pretty text-xs leading-snug text-muted-foreground` — identical
+  // string shared by the download-status and release-status `<output>`s.
+  statusOutput: {
+    display: 'block',
+    textWrap: 'pretty',
+    fontSize: '0.75rem',
+    lineHeight: 1.375,
+    color: tokens['--muted-foreground'],
+  },
+
+  stageSectionMeta: {
+    display: 'grid',
+    gap: '0.375rem',
+    borderTopStyle: 'solid',
+    borderTopWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingInline: '0.875rem',
+    paddingBlock: '1rem',
+  },
+  metaHintText: { textWrap: 'pretty', fontSize: '13px' },
+
+  stageSectionUnsupported: {
+    display: 'grid',
+    gap: '0.75rem',
+    borderTopStyle: 'solid',
+    borderTopWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingInline: '0.875rem',
+    paddingBlock: '1rem',
+  },
+  unsupportedHeadline: { textWrap: 'balance', fontSize: '13px', fontWeight: 500 },
+  routesGrid: { display: 'grid' },
+  routeButton: {
+    display: 'flex',
+    minHeight: '2.5rem',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: tokens['--xmd-radius-3'],
+    paddingInline: '0.25rem',
+    fontSize: '13px',
+    fontWeight: 500,
+    color: 'color-mix(in oklab, var(--foreground) 80%, transparent)',
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: BUTTON_TRANSITION_DURATION,
+    backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
+    scale: { default: null, ':active': 0.97 },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+  },
+
+  // ── Zone 4 — Release cluster ──
+  releaseTriggerButton: {
+    display: 'flex',
+    minHeight: '2.5rem',
+    alignItems: 'center',
+    borderRadius: tokens['--xmd-radius-3'],
+    paddingInline: '0.25rem',
+    fontSize: '13px',
+    fontWeight: 500,
+    color: tokens['--destructive'],
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: BUTTON_TRANSITION_DURATION,
+    backgroundColor: { default: null, [HOVER]: { ':hover': DESTRUCTIVE_HOVER_BG } },
+    scale: { default: null, ':active': 0.97 },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    pointerEvents: { default: null, ':disabled': 'none' },
+    opacity: { default: null, ':disabled': 0.5 },
+  },
+  // `text-[11px] font-semibold tracking-wide text-muted-foreground` — identical
+  // string shared by ReleaseCluster's own label and PreferencesZone's "Mode".
+  sectionLabel: {
+    fontSize: '11px',
+    fontWeight: 600,
+    letterSpacing: '0.025em',
+    color: tokens['--muted-foreground'],
+  },
+  confirmGroupGrid: { display: 'grid', gap: '0.25rem' },
+  releaseExpandButton: {
+    display: 'flex',
+    minHeight: '2.5rem',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: tokens['--xmd-radius-3'],
+    paddingInline: '0.25rem',
+    fontSize: '13px',
+    fontWeight: 500,
+    color: tokens['--destructive'],
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: BUTTON_TRANSITION_DURATION,
+    backgroundColor: { default: null, [HOVER]: { ':hover': DESTRUCTIVE_HOVER_BG } },
+    scale: { default: null, ':active': 0.97 },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+  },
+  chevronIconWrap: {
+    position: 'relative',
+    display: 'inline-grid',
+    width: '0.75rem',
+    height: '0.75rem',
+    placeItems: 'center',
+  },
+  // No `data-slot="button"` on these spans — they keep their own
+  // transition-[opacity,transform] duration-[180ms] timing, not the button override.
+  chevronLayer: {
+    gridColumnStart: 1,
+    gridRowStart: 1,
+    transitionProperty: 'opacity, transform',
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: '0.18s',
+  },
+  chevronVisible: { scale: '100% 100%', opacity: 1 },
+  chevronHidden: { scale: '90% 90%', opacity: 0 },
+  releaseExpandedPanel: {
+    animationName: enterFadeSlideTop1,
+    animationDuration: '0.22s',
+    animationTimingFunction: XMD_EASE,
+    // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
+    // (with the default `transition-property: all`), so theme/colour changes
+    // on these zones ease over 220ms too.
+    transitionDuration: '0.22s',
+    transitionTimingFunction: XMD_EASE,
+    animationDelay: '0s',
+    animationIterationCount: 1,
+    animationDirection: 'normal',
+    animationFillMode: 'none',
+  },
+
+  // ── Zone 5 — Preferences ──
+  preferencesSection: {
+    display: 'grid',
+    gap: '1rem',
+    borderTopStyle: 'solid',
+    borderTopWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingInline: '0.875rem',
+    paddingBlock: '1rem',
+  },
+  modeGroup: { display: 'grid', gap: '0.375rem' },
+  toggleGroupSx: { width: '100%', borderRadius: tokens['--xmd-radius-3'] },
+  toggleGroupItemSx: { height: '2.5rem', flex: 1, fontSize: '13px', lineHeight: null },
+  metaContextNote: { fontSize: '0.75rem', lineHeight: 1.375, color: tokens['--muted-foreground'] },
+  fieldDescMono: { fontFamily: tokens['--font-mono'] },
+  fieldDescFlex: { display: 'flex', alignItems: 'center', gap: '0.375rem' },
+  monoTabularNums: { fontFamily: tokens['--font-mono'], fontVariantNumeric: 'tabular-nums' },
+
+  // Inline `LINK_SLOP` text-links (footer Settings, Edit ›, Archive ›) — the
+  // shared hit-slop/ring/press treatment, composed with each call site's own
+  // color/weight/font additions.
+  linkSlop: {
+    position: 'relative',
+    borderRadius: 'calc(var(--radius) - 4px)',
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionTimingFunction: XMD_EASE,
+    transitionDuration: BUTTON_TRANSITION_DURATION,
+    '::after': {
+      content: '""',
+      position: 'absolute',
+      insetInline: '-0.25rem',
+      insetBlock: '-0.75rem',
+    },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    scale: { default: null, ':active': 0.97 },
+  },
+  linkText: {
+    color: tokens['--primary'],
+    textDecorationLine: { default: null, [HOVER]: { ':hover': 'underline' } },
+  },
+  linkFontSans: { fontFamily: tokens['--font-sans'] },
+  linkFontSemibold: { fontWeight: 600 },
+
+  // ── Zone 7 — Footer ──
+  footerBar: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.5rem',
+    borderTopStyle: 'solid',
+    borderTopWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingInline: '0.875rem',
+    paddingBlock: '0.75rem',
+    fontSize: '0.75rem',
+    lineHeight: 1.375,
+    color: tokens['--muted-foreground'],
+  },
+
+  // ── "Saved" toast ──
+  // No `data-slot="button"` here either — the toast keeps its own
+  // transition-[opacity,transform] timing, not the button override.
+  toastOutput: {
+    pointerEvents: 'none',
+    position: 'fixed',
+    right: '0.75rem',
+    bottom: '0.75rem',
+    transitionProperty: 'opacity, transform',
+    transitionTimingFunction: XMD_EASE,
+  },
+  toastSaved: { translate: '0 0', opacity: 1, transitionDuration: '0.2s' },
+  toastNotSaved: { translate: '0 0.25rem', opacity: 0, transitionDuration: '0.15s' },
+  savedBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.375rem',
+    borderRadius: tokens['--xmd-radius-3'],
+    borderStyle: 'solid',
+    borderWidth: '1px',
+    borderColor: tokens['--border'],
+    backgroundColor: tokens['--background'],
+    paddingInline: '0.625rem',
+    paddingBlock: '0.25rem',
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontWeight: 500,
+    color: tokens['--success'],
+  },
+})
+
 // Invisible hit-slop for compact text-links (footer Settings, Edit ›,
 // Archive ›) — matches the Switch idiom's after:-inset-y-3 (spec §2.8): 18px
-// text + 24px slop ≈ 42px effective target.
-const LINK_SLOP =
-  'relative rounded-sm outline-none transition-colors after:absolute after:-inset-x-1 after:-inset-y-3 focus-visible:ring-3 focus-visible:ring-ring/50 active:scale-[0.97]'
+// text + 24px slop ≈ 42px effective target. (StyleX: `styles.linkSlop` + `styles.linkText`.)
 
 /** A page action that messages the active tab's content script and turns the
  *  reply into a status line. Owns its own busy state and the query-tab → send
@@ -148,14 +673,14 @@ const openReleaseSettings = (): void => openOptionsSection('release')
 
 function ContextStrip({ ctx, scope }: { ctx: TabContext; scope: MembershipScope | undefined }) {
   return (
-    <header className="sticky top-0 z-10 flex h-9 shrink-0 items-center gap-1.5 bg-background px-3.5 text-xs leading-snug text-muted-foreground shadow-[0_1px_0_0_var(--border)]">
+    <header {...stylex.props(styles.contextStrip)}>
       <span
-        className={cn(
-          'size-1.5 shrink-0 rounded-full',
-          ctx !== 'none' ? 'bg-success' : 'bg-muted-foreground/40',
+        {...stylex.props(
+          styles.contextDot,
+          ctx !== 'none' ? styles.contextDotOn : styles.contextDotOff,
         )}
       />
-      <span className="truncate">{contextLabel(ctx, scope)}</span>
+      <span {...stylex.props(styles.contextLabel)}>{contextLabel(ctx, scope)}</span>
     </header>
   )
 }
@@ -164,15 +689,13 @@ function ContextStrip({ ctx, scope }: { ctx: TabContext; scope: MembershipScope 
 
 function FirstRunStrip({ mod, onDismiss }: { mod: string; onDismiss: () => void }) {
   return (
-    <div className="animate-in fade-in slide-in-from-top-1 flex min-h-11 items-center gap-3 bg-muted/30 px-3.5 py-2 duration-[220ms] ease-[var(--xmd-ease)]">
-      <p className="flex-1 text-pretty text-xs leading-snug text-muted-foreground">
-        {firstRunBody(mod)}
-      </p>
+    <div {...stylex.props(styles.firstRunStrip)}>
+      <p {...stylex.props(styles.firstRunBodyText)}>{firstRunBody(mod)}</p>
       <button
         type="button"
         data-slot="button"
         aria-label="Dismiss tip"
-        className="flex size-10 shrink-0 items-center justify-center rounded-[var(--xmd-radius-3)] text-sm text-muted-foreground outline-none transition-colors hover:bg-muted active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50"
+        {...stylex.props(styles.dismissButton)}
         onClick={onDismiss}
       >
         ×
@@ -200,39 +723,30 @@ function MonitorZone({ metrics, onReset }: { metrics: MetricsSnapshot; onReset: 
     .join(' · ')
 
   return (
-    <section
-      aria-label="Download monitor"
-      className="animate-in fade-in slide-in-from-top-1 grid gap-2 border-t border-border px-3.5 py-4 duration-[220ms] ease-[var(--xmd-ease)]"
-    >
-      <div className="flex items-end justify-between gap-3">
-        <div className="flex items-baseline gap-1.5">
-          <span className="font-mono text-2xl leading-none font-semibold tabular-nums">
+    <section aria-label="Download monitor" {...stylex.props(styles.monitorSection)}>
+      <div {...stylex.props(styles.monitorHeaderRow)}>
+        <div {...stylex.props(styles.monitorCountGroup)}>
+          <span {...stylex.props(styles.monitorCount)}>
             {done}/{metrics.total}
           </span>
-          <span className="text-xs text-muted-foreground">saved</span>
+          <span {...stylex.props(styles.monitorSavedLabel)}>saved</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div {...stylex.props(styles.monitorRightGroup)}>
           <button
             type="button"
             data-slot="button"
-            className="flex min-h-10 items-center rounded-[var(--xmd-radius-3)] px-2 -my-3 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+            {...stylex.props(styles.resetButton)}
             disabled={!canReset}
             title={!canReset ? 'Downloads still active' : undefined}
             onClick={onReset}
           >
             {!canReset ? 'Active' : 'Reset'}
           </button>
-          <span className="font-mono text-base leading-none font-semibold tabular-nums text-primary">
-            {pct}%
-          </span>
+          <span {...stylex.props(styles.monitorPercent)}>{pct}%</span>
         </div>
       </div>
-      <Progress value={pct} aria-label="Download progress" className="h-[3px]" />
-      {metaLine !== '' && (
-        <p className="font-mono text-xs leading-snug tabular-nums text-muted-foreground">
-          {metaLine}
-        </p>
-      )}
+      <Progress value={pct} aria-label="Download progress" sx={styles.monitorProgress} />
+      {metaLine !== '' && <p {...stylex.props(styles.monitorMetaLine)}>{metaLine}</p>}
     </section>
   )
 }
@@ -255,12 +769,12 @@ function ReleaseSummaryZone({
   return (
     <section
       aria-label="Release diagnostics summary"
-      className="animate-in fade-in slide-in-from-top-1 border-t border-border px-3.5 py-2.5 duration-[220ms] ease-[var(--xmd-ease)]"
+      {...stylex.props(styles.releaseSummarySection)}
     >
       <p
-        className={cn(
-          'font-mono text-xs leading-snug tabular-nums',
-          hasMismatch ? 'text-destructive' : 'text-muted-foreground',
+        {...stylex.props(
+          styles.releaseSummaryLine,
+          hasMismatch ? styles.releaseSummaryLineMismatch : styles.releaseSummaryLineNormal,
         )}
       >
         {formatReleaseSummaryLine(summary)}
@@ -299,11 +813,11 @@ function StageZone({
 }) {
   if (ctx === 'x' || ctx === 'x-list') {
     return (
-      <section aria-label="Stage" className="grid gap-2 border-t border-border px-3.5 py-4">
+      <section aria-label="Stage" {...stylex.props(styles.borderedSectionGap2)}>
         <button
           type="button"
           data-slot="button"
-          className="h-11 w-full rounded-[var(--xmd-radius-2)] bg-primary text-sm font-semibold text-primary-foreground outline-none transition-colors hover:bg-primary/90 active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+          {...stylex.props(styles.primaryCta)}
           disabled={!onXTab || drainBusy}
           onClick={onDrain}
         >
@@ -317,29 +831,23 @@ function StageZone({
         <button
           type="button"
           data-slot="button"
-          className="flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--xmd-radius-3)] text-xs font-medium text-foreground/80 outline-none transition-colors hover:bg-muted active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+          {...stylex.props(styles.sweepButton)}
           disabled={!onXTab || sweepBusy}
           onClick={onSweep}
         >
-          <LayersIcon className="size-3.5" />
+          <LayersIcon sx={iconSize.s35} />
           {sweepBusy ? 'Sweeping…' : 'One by one'}
         </button>
 
         {willClear && (
-          <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
+          <p {...stylex.props(styles.willClearLine)}>
+            <span {...stylex.props(styles.willClearDot)} />
             Release after download is on
           </p>
         )}
-        {aria2Caveat && (
-          <p className="text-pretty text-[11px] text-muted-foreground">{ARIA2_CAVEAT}</p>
-        )}
+        {aria2Caveat && <p {...stylex.props(styles.aria2CaveatText)}>{ARIA2_CAVEAT}</p>}
 
-        <output
-          aria-live="polite"
-          aria-atomic="true"
-          className="block text-pretty text-xs leading-snug text-muted-foreground"
-        >
+        <output aria-live="polite" aria-atomic="true" {...stylex.props(styles.statusOutput)}>
           {downloadMsg}
         </output>
       </section>
@@ -348,25 +856,25 @@ function StageZone({
 
   if (ctx === 'instagram' || ctx === 'threads') {
     return (
-      <section aria-label="Stage" className="grid gap-1.5 border-t border-border px-3.5 py-4">
-        <p className="text-pretty text-[13px]">{hoverGrabLine(mod)}</p>
-        <p className="text-pretty text-[13px]">{wholePostLine(mod, mod2)}</p>
+      <section aria-label="Stage" {...stylex.props(styles.stageSectionMeta)}>
+        <p {...stylex.props(styles.metaHintText)}>{hoverGrabLine(mod)}</p>
+        <p {...stylex.props(styles.metaHintText)}>{wholePostLine(mod, mod2)}</p>
       </section>
     )
   }
 
   return (
-    <section aria-label="Stage" className="grid gap-3 border-t border-border px-3.5 py-4">
-      <p className="text-balance text-[13px] font-medium">
+    <section aria-label="Stage" {...stylex.props(styles.stageSectionUnsupported)}>
+      <p {...stylex.props(styles.unsupportedHeadline)}>
         Open X, Instagram, or Threads to use this extension.
       </p>
-      <div className="grid">
+      <div {...stylex.props(styles.routesGrid)}>
         {ROUTES.map((r) => (
           <button
             key={r.url}
             type="button"
             data-slot="button"
-            className="flex min-h-10 items-center justify-between rounded-[var(--xmd-radius-3)] px-1 text-[13px] font-medium text-foreground/80 outline-none transition-colors hover:bg-muted active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50"
+            {...stylex.props(styles.routeButton)}
             onClick={() => void browser.tabs.create({ url: r.url })}
           >
             {r.label}
@@ -394,7 +902,7 @@ function ReleaseTrigger({
       type="button"
       data-slot="button"
       disabled={busy}
-      className="flex min-h-10 items-center rounded-[var(--xmd-radius-3)] px-1 text-[13px] font-medium text-destructive outline-none transition-colors hover:bg-destructive/10 active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+      {...stylex.props(styles.releaseTriggerButton)}
       onClick={onClick}
     >
       {label}
@@ -420,13 +928,11 @@ function ReleaseCluster({
   const [expanded, setExpanded] = useState(false)
 
   return (
-    <section aria-label="Release" className="grid gap-2 border-t border-border px-3.5 py-4">
-      <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
-        Release without downloading
-      </span>
+    <section aria-label="Release" {...stylex.props(styles.borderedSectionGap2)}>
+      <span {...stylex.props(styles.sectionLabel)}>Release without downloading</span>
 
       {onListPage ? (
-        <div className="grid gap-1">
+        <div {...stylex.props(styles.confirmGroupGrid)}>
           <ConfirmStrip
             sentence={releasePageConfirm}
             confirmLabel={RELEASE_PAGE_CONFIRM_LABEL}
@@ -454,28 +960,28 @@ function ReleaseCluster({
           </ConfirmStrip>
         </div>
       ) : (
-        <div className="grid gap-1">
+        <div {...stylex.props(styles.confirmGroupGrid)}>
           <button
             type="button"
             data-slot="button"
             aria-expanded={expanded}
-            className="flex min-h-10 items-center justify-between rounded-[var(--xmd-radius-3)] px-1 text-[13px] font-medium text-destructive outline-none transition-colors hover:bg-destructive/10 active:scale-[0.97] focus-visible:ring-3 focus-visible:ring-ring/50"
+            {...stylex.props(styles.releaseExpandButton)}
             onClick={() => setExpanded((v) => !v)}
           >
             Release
-            <span aria-hidden="true" className="relative inline-grid size-3 place-items-center">
+            <span aria-hidden="true" {...stylex.props(styles.chevronIconWrap)}>
               <span
-                className={cn(
-                  'col-start-1 row-start-1 transition-[opacity,transform] duration-[180ms] ease-[var(--xmd-ease)]',
-                  expanded ? 'scale-100 opacity-100' : 'scale-90 opacity-0',
+                {...stylex.props(
+                  styles.chevronLayer,
+                  expanded ? styles.chevronVisible : styles.chevronHidden,
                 )}
               >
                 ⌃
               </span>
               <span
-                className={cn(
-                  'col-start-1 row-start-1 transition-[opacity,transform] duration-[180ms] ease-[var(--xmd-ease)]',
-                  expanded ? 'scale-90 opacity-0' : 'scale-100 opacity-100',
+                {...stylex.props(
+                  styles.chevronLayer,
+                  expanded ? styles.chevronHidden : styles.chevronVisible,
                 )}
               >
                 ›
@@ -483,7 +989,7 @@ function ReleaseCluster({
             </span>
           </button>
           {expanded && (
-            <div className="animate-in fade-in slide-in-from-top-1 duration-[220ms] ease-[var(--xmd-ease)]">
+            <div {...stylex.props(styles.releaseExpandedPanel)}>
               <ConfirmStrip
                 sentence={releasePageConfirm}
                 confirmLabel={RELEASE_PAGE_CONFIRM_LABEL}
@@ -499,11 +1005,7 @@ function ReleaseCluster({
         </div>
       )}
 
-      <output
-        aria-live="polite"
-        aria-atomic="true"
-        className="block text-pretty text-xs leading-snug text-muted-foreground"
-      >
+      <output aria-live="polite" aria-atomic="true" {...stylex.props(styles.statusOutput)}>
         {releaseMsg}
       </output>
     </section>
@@ -527,14 +1029,14 @@ function PreferencesZone({
   const tweets = captureSummary?.tweets ?? 0
 
   return (
-    <section className="grid gap-4 border-t border-border px-3.5 py-4">
-      <div className="grid gap-1.5">
-        <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">Mode</span>
+    <section {...stylex.props(styles.preferencesSection)}>
+      <div {...stylex.props(styles.modeGroup)}>
+        <span {...stylex.props(styles.sectionLabel)}>Mode</span>
         <ToggleGroup
           type="single"
           variant="outline"
           spacing={0}
-          className="w-full rounded-[var(--xmd-radius-3)]"
+          sx={styles.toggleGroupSx}
           style={{ '--radius': 'var(--xmd-radius-3)' }}
           aria-label="Download mode"
           value={settings.downloadStrategy}
@@ -548,7 +1050,7 @@ function PreferencesZone({
               value={option.value}
               aria-label={`Download mode: ${option.label}`}
               title={option.hint}
-              className="h-10 flex-1 text-[13px]"
+              sx={styles.toggleGroupItemSx}
             >
               {option.label}
             </ToggleGroupItem>
@@ -557,9 +1059,7 @@ function PreferencesZone({
       </div>
 
       {isMetaContext ? (
-        <p className="text-xs leading-snug text-muted-foreground">
-          Release and Capture are X-only.
-        </p>
+        <p {...stylex.props(styles.metaContextNote)}>Release and Capture are X-only.</p>
       ) : (
         <>
           <ConfirmStrip
@@ -573,12 +1073,12 @@ function PreferencesZone({
                 <FieldContent>
                   <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
                   {settings.clearOnSave ? (
-                    <FieldDescription className="font-mono">
+                    <FieldDescription sx={styles.fieldDescMono}>
                       {clearScopeSummary(settings)} ·{' '}
                       <button
                         type="button"
                         data-slot="button"
-                        className={cn('font-sans text-primary hover:underline', LINK_SLOP)}
+                        {...stylex.props(styles.linkSlop, styles.linkText, styles.linkFontSans)}
                         onClick={openReleaseSettings}
                       >
                         Edit ›
@@ -604,16 +1104,16 @@ function PreferencesZone({
           <Field orientation="horizontal">
             <FieldContent>
               <FieldLabel htmlFor="captureEnabled">Capture tweets</FieldLabel>
-              <FieldDescription className="flex items-center gap-1.5">
+              <FieldDescription sx={styles.fieldDescFlex}>
                 {!settings.captureEnabled ? (
                   'Off — captures tweet text locally as you scroll.'
                 ) : tweets > 0 ? (
                   <>
-                    <span className="font-mono tabular-nums">{plural(tweets, 'tweet')}</span>
+                    <span {...stylex.props(styles.monoTabularNums)}>{plural(tweets, 'tweet')}</span>
                     <button
                       type="button"
                       data-slot="button"
-                      className={cn('text-primary hover:underline', LINK_SLOP)}
+                      {...stylex.props(styles.linkSlop, styles.linkText)}
                       onClick={openCaptureArchive}
                     >
                       Archive ›
@@ -647,7 +1147,7 @@ function Footer({
   onOpenOptions: () => void
 }) {
   return (
-    <footer className="flex items-center justify-between gap-2 border-t border-border px-3.5 py-3 text-xs leading-snug text-muted-foreground">
+    <footer {...stylex.props(styles.footerBar)}>
       <span>
         {cloudSyncEnabled ? 'Cloud sync on · metadata only' : 'No remote telemetry · local only'}
       </span>
@@ -655,7 +1155,7 @@ function Footer({
         type="button"
         data-slot="button"
         onClick={onOpenOptions}
-        className={cn('font-semibold text-primary hover:underline', LINK_SLOP)}
+        {...stylex.props(styles.linkSlop, styles.linkText, styles.linkFontSemibold)}
       >
         Settings
       </button>
@@ -846,7 +1346,11 @@ export function App() {
   }, [])
 
   if (!settings) {
-    return <div className="xmd-popup xmd-popup--loading">Loading...</div>
+    return (
+      <div {...stylex.props(styles.popup, styles.loading)} data-xmd-popup="loading">
+        Loading...
+      </div>
+    )
   }
 
   const onXTab = tabAdapter?.platform === 'x'
@@ -898,7 +1402,7 @@ export function App() {
   const mod2 = secondModifierLabel(settings.quickGrabModifier)
 
   return (
-    <div className="xmd-popup">
+    <div {...stylex.props(styles.popup)} data-xmd-popup="ready">
       <ContextStrip ctx={ctx} scope={scope} />
 
       {showFirstRun && <FirstRunStrip mod={mod} onDismiss={dismissFirstRun} />}
@@ -950,14 +1454,11 @@ export function App() {
       <output
         aria-live="polite"
         aria-atomic="true"
-        className={cn(
-          'pointer-events-none fixed right-3 bottom-3 transition-[opacity,transform] ease-[var(--xmd-ease)]',
-          saved ? 'translate-y-0 opacity-100 duration-200' : 'translate-y-1 opacity-0 duration-150',
-        )}
+        {...stylex.props(styles.toastOutput, saved ? styles.toastSaved : styles.toastNotSaved)}
       >
         {saved && (
-          <span className="flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border bg-background px-2.5 py-1 text-xs font-medium text-success">
-            <CheckIcon className="size-3" />
+          <span {...stylex.props(styles.savedBadge)}>
+            <CheckIcon sx={iconSize.s3} />
             Saved
           </span>
         )}

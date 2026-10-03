@@ -76,6 +76,32 @@ describe('SettingsService', () => {
     expect(s.autoNotInterestedOnSave).toBe(true)
   })
 
+  it('forces Save to this computer back on when a write removes the last cloud destination', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: {
+        cloudUploadEnabled: true,
+        saveToDisk: false,
+        gdriveClientId: 'gdrive-client',
+        gdriveRefreshToken: 'gdrive-refresh',
+      },
+    })
+    const s = await setSettings({ gdriveUploadEnabled: false })
+    expect(s.saveToDisk).toBe(true)
+  })
+
+  it('keeps Cloud-only when a write leaves a live destination', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: {
+        cloudUploadEnabled: true,
+        saveToDisk: false,
+        gdriveClientId: 'gdrive-client',
+        gdriveRefreshToken: 'gdrive-refresh',
+      },
+    })
+    const s = await setSettings({ downloadConcurrency: 7 })
+    expect(s.saveToDisk).toBe(false)
+  })
+
   it('getSettings promise wrapper reads through the live service', async () => {
     await setSettings({ filenameTemplate: '{handle}/{tweetId}.{ext}' })
     const s = await getSettings()

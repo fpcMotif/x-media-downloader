@@ -17,9 +17,3 @@ body,
 body {
   background: var(--xmd-bg);
 }
-
-/* R4: flat surface, no gradient wash — the settings page reads as a quiet
-   typographic document, not a glowing dashboard. */
-.xmd-options-root {
-  background: var(--xmd-bg);
-}

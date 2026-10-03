@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FieldDescription } from '@/components/ui/field'
 import { PanelHeader, Section } from '../ui'
-import { EraserIcon } from '@/components/icons'
+import { EraserIcon, iconSize } from '@/components/icons'
 import {
   fetchCaptureSummary,
   runCaptureExport,
@@ -25,11 +27,97 @@ const ARCHIVE_FETCH_LIMIT = 1000
 const PAGE_SIZE = 20
 const PAGE_STEP = 50
 
-// Shared focus-ring fragment for the raw text-link buttons on this surface
-// (JSON / Markdown / Export all / Erase archive) — audit finding 10: keep the
-// bare-link register, just make it focusable/visible. No `active:scale` here
-// (adjudicated: scaling plain underlined text on a full page reads as broken).
-const LINK_FOCUS = 'rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
+const HOVER = '@media (hover: hover)'
+
+const styles = stylex.create({
+  minH10: { minHeight: '2.5rem' },
+  selfStart: { alignSelf: 'flex-start' },
+  text13: { fontSize: '13px' },
+  searchRow: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.75rem' },
+  searchInput: { minWidth: '12rem', flex: 1 },
+  countLabel: {
+    flexShrink: 0,
+    fontFamily: tokens['--font-mono'],
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontVariantNumeric: 'tabular-nums',
+    color: tokens['--muted-foreground'],
+  },
+  list: { display: 'grid', gap: 0 },
+  row: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.75rem',
+    paddingBlock: '0.625rem',
+    paddingTop: { default: null, ':first-child': 0 },
+    paddingBottom: { default: null, ':last-child': 0 },
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+  },
+  infoCol: { display: 'grid', minWidth: 0, gap: '0.125rem' },
+  truncate: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  handle: { fontWeight: 500 },
+  metaInline: {
+    fontFamily: tokens['--font-mono'],
+    fontVariantNumeric: 'tabular-nums',
+    color: tokens['--muted-foreground'],
+  },
+  rootTextTruncate: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: tokens['--muted-foreground'],
+  },
+  actionsRow: {
+    display: 'flex',
+    flexShrink: 0,
+    alignItems: 'center',
+    gap: '0.375rem',
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+  },
+  // Shared focus-ring fragment for the raw text-link buttons on this surface
+  // (JSON / Markdown / Export all / Erase archive) — audit finding 10: keep the
+  // bare-link register, just make it focusable/visible. No `active:scale` here
+  // (adjudicated: scaling plain underlined text on a full page reads as broken).
+  // These raw buttons carry no `data-slot`, so unlike the vendored Button they
+  // get no transition declarations at all.
+  linkFocus: {
+    borderRadius: 'calc(var(--radius) - 4px)',
+    outlineStyle: 'none',
+    boxShadow: {
+      default: null,
+      ':focus-visible':
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+    },
+  },
+  linkPrimary: {
+    color: tokens['--primary'],
+    textDecorationLine: { default: null, [HOVER]: { ':hover': 'underline' } },
+  },
+  eraseLayout: { display: 'flex', alignItems: 'center', gap: '0.375rem' },
+  linkDestructive: {
+    color: tokens['--destructive'],
+    textDecorationLine: { default: null, [HOVER]: { ':hover': 'underline' } },
+  },
+  dotSeparator: { color: tokens['--muted-foreground'] },
+  textPretty: { textWrap: 'pretty' },
+  monoNums: { fontFamily: tokens['--font-mono'], fontVariantNumeric: 'tabular-nums' },
+  monoNumsPretty: {
+    fontFamily: tokens['--font-mono'],
+    fontVariantNumeric: 'tabular-nums',
+    textWrap: 'pretty',
+  },
+  exportRow: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '1rem' },
+  status: {
+    display: 'block',
+    textWrap: 'pretty',
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    color: tokens['--muted-foreground'],
+  },
+})
 
 // Takes no PanelProps — the archive is a pure data browser, not a setting; it
 // only talks to the extension worker for its own summary/export/erase messages.
@@ -97,14 +185,14 @@ export function ArchivePanel() {
             type="button"
             variant="ghost"
             size="sm"
-            className="min-h-10"
+            sx={styles.minH10}
             onClick={refreshSummary}
           >
             Refresh
           </Button>
         }
       >
-        <div className="flex flex-wrap items-center gap-3">
+        <div {...stylex.props(styles.searchRow)}>
           <Input
             type="search"
             aria-label="Search handles and text"
@@ -114,9 +202,9 @@ export function ArchivePanel() {
               setQuery((e.target as HTMLInputElement).value)
               setVisible(PAGE_SIZE)
             }}
-            className="min-w-[12rem] flex-1"
+            sx={styles.searchInput}
           />
-          <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+          <span {...stylex.props(styles.countLabel)}>
             {plural(summary?.tweets ?? 0, 'tweet')} · {plural(conversations, 'conversation')}
           </span>
         </div>
@@ -124,38 +212,35 @@ export function ArchivePanel() {
         {summary === null ? (
           <FieldDescription>Loading…</FieldDescription>
         ) : shown.length > 0 ? (
-          <ol className="grid gap-0 divide-y divide-border" aria-label="Captured conversations">
+          <ol {...stylex.props(styles.list)} data-xmd-divide="" aria-label="Captured conversations">
             {shown.map((c) => (
-              <li
-                key={c.conversationId}
-                className="flex items-center justify-between gap-3 py-2.5 text-sm first:pt-0 last:pb-0"
-              >
-                <div className="grid min-w-0 gap-0.5">
-                  <span className="truncate">
-                    <span className="font-medium">@{c.rootHandle}</span>
-                    <span className="font-mono tabular-nums text-muted-foreground">
+              <li key={c.conversationId} {...stylex.props(styles.row)}>
+                <div {...stylex.props(styles.infoCol)}>
+                  <span {...stylex.props(styles.truncate)}>
+                    <span {...stylex.props(styles.handle)}>@{c.rootHandle}</span>
+                    <span {...stylex.props(styles.metaInline)}>
                       {' '}
                       · {plural(c.count, 'tweet')} · {fmtDay(c.lastAt)}
                     </span>
                   </span>
-                  <span className="truncate text-muted-foreground">{c.rootText}</span>
+                  <span {...stylex.props(styles.rootTextTruncate)}>{c.rootText}</span>
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5 text-xs">
+                <div {...stylex.props(styles.actionsRow)}>
                   <button
                     type="button"
                     aria-label={`Export conversation by @${c.rootHandle} as JSON`}
-                    className={`text-primary hover:underline ${LINK_FOCUS}`}
+                    {...stylex.props(styles.linkFocus, styles.linkPrimary)}
                     onClick={() => void doExport('tree', c.conversationId)}
                   >
                     JSON
                   </button>
-                  <span aria-hidden="true" className="text-muted-foreground">
+                  <span aria-hidden="true" {...stylex.props(styles.dotSeparator)}>
                     ·
                   </span>
                   <button
                     type="button"
                     aria-label={`Export conversation by @${c.rootHandle} as Markdown`}
-                    className={`text-primary hover:underline ${LINK_FOCUS}`}
+                    {...stylex.props(styles.linkFocus, styles.linkPrimary)}
                     onClick={() => void doExport('markdown', c.conversationId)}
                   >
                     Markdown
@@ -165,11 +250,11 @@ export function ArchivePanel() {
             ))}
           </ol>
         ) : loaded.length > 0 ? (
-          <FieldDescription className="text-pretty">
+          <FieldDescription sx={styles.textPretty}>
             No conversations match “{query.trim()}”.
           </FieldDescription>
         ) : (
-          <FieldDescription className="text-pretty">
+          <FieldDescription sx={styles.textPretty}>
             Nothing captured yet. Turn on Capture tweets and browse X.
           </FieldDescription>
         )}
@@ -179,25 +264,25 @@ export function ArchivePanel() {
             type="button"
             variant="outline"
             size="sm"
-            className="min-h-10 self-start"
+            sx={[styles.minH10, styles.selfStart]}
             onClick={() => setVisible((v) => v + PAGE_STEP)}
           >
-            Show <span className="font-mono tabular-nums">{Math.min(PAGE_STEP, remaining)}</span>{' '}
+            Show <span {...stylex.props(styles.monoNums)}>{Math.min(PAGE_STEP, remaining)}</span>{' '}
             more
-            <span className="font-mono tabular-nums">({remaining} remaining)</span>
+            <span {...stylex.props(styles.monoNums)}>({remaining} remaining)</span>
           </Button>
         )}
         {conversations > loaded.length && (
-          <FieldDescription className="font-mono tabular-nums text-pretty">
+          <FieldDescription sx={styles.monoNumsPretty}>
             Showing the newest {loaded.length} of {conversations} conversations — Export all (JSONL)
             includes everything.
           </FieldDescription>
         )}
 
-        <div className="flex flex-wrap items-center gap-4">
+        <div {...stylex.props(styles.exportRow)}>
           <button
             type="button"
-            className={`self-start text-[13px] text-primary hover:underline ${LINK_FOCUS}`}
+            {...stylex.props(styles.linkFocus, styles.linkPrimary, styles.selfStart, styles.text13)}
             onClick={() => void doExport('jsonl')}
           >
             Export all · JSONL
@@ -213,20 +298,21 @@ export function ArchivePanel() {
           {(arm) => (
             <button
               type="button"
-              className={`flex items-center gap-1.5 text-[13px] text-destructive hover:underline ${LINK_FOCUS}`}
+              {...stylex.props(
+                styles.linkFocus,
+                styles.eraseLayout,
+                styles.text13,
+                styles.linkDestructive,
+              )}
               onClick={arm}
             >
-              <EraserIcon className="size-3.5" />
+              <EraserIcon sx={iconSize.s35} />
               Erase archive…
             </button>
           )}
         </ConfirmStrip>
 
-        <output
-          aria-live="polite"
-          aria-atomic="true"
-          className="block text-pretty text-sm text-muted-foreground"
-        >
+        <output aria-live="polite" aria-atomic="true" {...stylex.props(styles.status)}>
           {statusMsg}
         </output>
       </Section>

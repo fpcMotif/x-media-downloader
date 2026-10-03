@@ -27,11 +27,18 @@ import {
  *  disconnect wipe (Dropbox must NOT clear a folder field it has no concept of). */
 export interface ProviderFields {
   readonly clientId: keyof Settings
+  /** gdrive-only, like `folderId`: Google's "Web application" client demands a
+   *  client secret at the token endpoint even under PKCE. Its ABSENCE is what
+   *  marks a provider as a true public client — Dropbox has no such field, so
+   *  no secret is ever read, stored, or sent for it. */
+  readonly clientSecret?: keyof Settings
   readonly accessToken: keyof Settings
   readonly refreshToken: keyof Settings
   readonly expiry: keyof Settings
   readonly account: keyof Settings
   readonly folderId?: keyof Settings
+  /** Per-provider pause (issue #95). Off keeps tokens; new UploadJobs stop. */
+  readonly uploadEnabled: keyof Settings
 }
 
 /** How a provider revokes its grant on disconnect, as data. Google
@@ -68,11 +75,13 @@ const GDRIVE_PROVIDER: CloudProvider = {
   hostPatterns: GDRIVE_HOST_PATTERNS,
   fields: {
     clientId: 'gdriveClientId',
+    clientSecret: 'gdriveClientSecret',
     accessToken: 'gdriveAccessToken',
     refreshToken: 'gdriveRefreshToken',
     expiry: 'gdriveTokenExpiry',
     account: 'gdriveAccount',
     folderId: 'gdriveFolderId',
+    uploadEnabled: 'gdriveUploadEnabled',
   },
   revoke: {
     endpoint: 'https://oauth2.googleapis.com/revoke',
@@ -92,6 +101,7 @@ const DROPBOX_PROVIDER: CloudProvider = {
     refreshToken: 'dropboxRefreshToken',
     expiry: 'dropboxTokenExpiry',
     account: 'dropboxAccount',
+    uploadEnabled: 'dropboxUploadEnabled',
   },
   revoke: {
     endpoint: 'https://api.dropboxapi.com/2/auth/token/revoke',

@@ -67,3 +67,21 @@ export function applyTransition(
   })
   return changed ? { records } : store
 }
+
+/** Allows failed cloud uploads to complete after retry; preserves completed records and ignores unknown requests. */
+export function applyCloudTransition(
+  store: DownloadStore,
+  requestId: string,
+  kind: 'completed' | 'failed',
+  at: number,
+): DownloadStore {
+  let changed = false
+  const records = store.records.map((record) => {
+    if (record.requestId !== requestId || record.status === 'completed' || record.status === kind) {
+      return record
+    }
+    changed = true
+    return applyOutcome(record, kind, at)
+  })
+  return changed ? { records } : store
+}

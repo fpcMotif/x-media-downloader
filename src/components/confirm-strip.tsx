@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import type { VNode } from 'preact'
-import { cn } from '@/lib/utils'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 import { Input } from '@/components/ui/input'
 import {
   disarmDeadline,
@@ -25,6 +26,143 @@ const prefersReducedMotion = (): boolean =>
   typeof window !== 'undefined' &&
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+const HOVER = '@media (hover: hover)'
+
+// `transition-colors` (Tailwind v4) — verbatim property list.
+const TRANSITION_COLORS =
+  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to'
+// `focus-visible:ring-3 focus-visible:ring-ring/50` — five box-shadow layers.
+const FOCUS_RING =
+  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+
+// `animate-in fade-in` (no slide/zoom modifier — translate/scale stay at rest).
+const fadeIn = stylex.keyframes({
+  '0%': {
+    opacity: 0,
+    transform: 'translate3d(0, 0, 0) scale3d(1, 1, 1) rotate(0)',
+    filter: 'blur(0)',
+  },
+})
+
+const styles = stylex.create({
+  srOnly: {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    padding: 0,
+    margin: '-1px',
+    overflow: 'hidden',
+    clipPath: 'inset(50%)',
+    whiteSpace: 'nowrap',
+    borderWidth: 0,
+  },
+  armed: {
+    display: 'grid',
+    gap: '0.5rem',
+    borderRadius: tokens['--xmd-radius-3'],
+    padding: '0.75rem',
+    animationName: fadeIn,
+    animationDuration: '0.18s',
+    animationTimingFunction: 'var(--xmd-ease)',
+    // `duration-[180ms] ease-[…]` also set transition-duration/-timing-function
+    // (default `transition-property: all`).
+    transitionDuration: '0.18s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    animationDelay: '0s',
+    animationIterationCount: 1,
+    animationDirection: 'normal',
+    animationFillMode: 'none',
+  },
+  armedMuted: {
+    backgroundColor: tokens['--muted'],
+  },
+  armedDestructiveBg: {
+    backgroundColor: 'color-mix(in oklab, var(--destructive) 8%, transparent)',
+  },
+  sentence: {
+    textWrap: 'pretty',
+    fontSize: '13px',
+  },
+  sentenceForeground: {
+    color: tokens['--foreground'],
+  },
+  sentenceDestructive: {
+    color: tokens['--destructive'],
+  },
+  typedLabel: {
+    display: 'grid',
+    minHeight: '2.5rem',
+    gap: '0.25rem',
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    color: tokens['--muted-foreground'],
+  },
+  actionsRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: '0.5rem',
+  },
+  // `data-slot="button"` override baked in: transitionDuration '0.16s',
+  // transitionTimingFunction 'var(--xmd-ease)' beat the element's own
+  // (nonexistent, here) duration-*/ease-* utilities (spec §3).
+  cancelButton: {
+    height: '2.5rem',
+    minWidth: '96px',
+    borderRadius: tokens['--xmd-radius-3'],
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontWeight: 500,
+    color: tokens['--foreground'],
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionDuration: '0.16s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
+    boxShadow: { default: null, ':focus-visible': FOCUS_RING },
+  },
+  confirmButton: {
+    height: '2.5rem',
+    minWidth: '96px',
+    borderRadius: tokens['--xmd-radius-3'],
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    fontWeight: 600,
+    outlineStyle: 'none',
+    transitionProperty: TRANSITION_COLORS,
+    transitionDuration: '0.16s',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    boxShadow: { default: null, ':focus-visible': FOCUS_RING },
+  },
+  confirmPrecommitted: {
+    backgroundColor: tokens['--primary'],
+    color: tokens['--primary-foreground'],
+  },
+  confirmDestructive: {
+    backgroundColor: {
+      default: 'color-mix(in oklab, var(--destructive) 10%, transparent)',
+      [HOVER]: { ':hover': 'color-mix(in oklab, var(--destructive) 20%, transparent)' },
+    },
+    color: tokens['--destructive'],
+  },
+  confirmInert: {
+    pointerEvents: 'none',
+  },
+  underlineTrack: {
+    position: 'relative',
+    height: '2px',
+    width: '100%',
+    overflow: 'hidden',
+    borderRadius: '3.40282e38px',
+  },
+  underlineFill: {
+    position: 'absolute',
+    insetBlock: 0,
+    left: 0,
+    backgroundColor: 'color-mix(in oklab, var(--destructive) 40%, transparent)',
+  },
+})
 
 export interface ConfirmStripProps {
   /** The consequence sentence shown once armed (13px, tier-colored). */
@@ -146,7 +284,12 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
 
   return (
     <>
-      <output key="confirm-strip-output" aria-live="polite" aria-atomic="true" className="sr-only">
+      <output
+        key="confirm-strip-output"
+        aria-live="polite"
+        aria-atomic="true"
+        {...stylex.props(styles.srOnly)}
+      >
         {announceText}
       </output>
 
@@ -155,21 +298,21 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
       ) : (
         <div
           ref={stripRef}
-          className={cn(
-            'animate-in fade-in grid gap-2 rounded-[var(--xmd-radius-3)] p-3 duration-[180ms] ease-[var(--xmd-ease)]',
-            preCommitted ? 'bg-muted' : 'bg-destructive/8',
+          {...stylex.props(
+            styles.armed,
+            preCommitted ? styles.armedMuted : styles.armedDestructiveBg,
           )}
         >
           <p
-            className={cn(
-              'text-pretty text-[13px]',
-              preCommitted ? 'text-foreground' : 'text-destructive',
+            {...stylex.props(
+              styles.sentence,
+              preCommitted ? styles.sentenceForeground : styles.sentenceDestructive,
             )}
           >
             {sentence}
           </p>
           {typedWord !== undefined && (
-            <label className="grid min-h-10 gap-1 text-xs text-muted-foreground">
+            <label {...stylex.props(styles.typedLabel)}>
               Type {typedWord.toUpperCase()} to continue
               <Input
                 value={typedValue}
@@ -186,12 +329,12 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
             </label>
           )}
 
-          <div className="flex items-center justify-end gap-2">
+          <div {...stylex.props(styles.actionsRow)}>
             <button
               type="button"
               ref={cancelRef}
               data-slot="button"
-              className="h-10 min-w-[96px] rounded-[var(--xmd-radius-3)] text-xs font-medium text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+              {...stylex.props(styles.cancelButton)}
               onClick={disarm}
             >
               Cancel
@@ -201,12 +344,10 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
               data-slot="button"
               aria-disabled={confirmInert}
               style={{ opacity: guardOpacity }}
-              className={cn(
-                'h-10 min-w-[96px] rounded-[var(--xmd-radius-3)] text-xs font-semibold outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50',
-                confirmInert && 'pointer-events-none',
-                preCommitted
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-destructive/10 text-destructive hover:bg-destructive/20',
+              {...stylex.props(
+                styles.confirmButton,
+                preCommitted ? styles.confirmPrecommitted : styles.confirmDestructive,
+                confirmInert && styles.confirmInert,
               )}
               onClick={() => {
                 if (confirmInert) return
@@ -219,12 +360,9 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
           </div>
 
           {showUnderline && (
-            <div
-              aria-hidden="true"
-              className="relative h-[2px] w-full overflow-hidden rounded-full"
-            >
+            <div aria-hidden="true" {...stylex.props(styles.underlineTrack)}>
               <div
-                className="absolute inset-y-0 left-0 bg-destructive/40"
+                {...stylex.props(styles.underlineFill)}
                 style={{ width: `${underlineRemaining * 100}%` }}
               />
             </div>
