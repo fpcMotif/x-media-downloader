@@ -31,8 +31,11 @@ const LinkSchema = Schema.Struct({
   domain: Schema.optional(Schema.String),
 })
 
-/** Media identity carried from the shared traversal's resolution (ADR-0016), with
- *  only the description fields — no download-lifecycle concerns. */
+/** Media identity carried from the shared traversal's resolution, with
+ *  only the description fields — no download-lifecycle concerns.
+ *
+ * @see ADR-0016
+ */
 export const MediaRef = Schema.Struct({
   id: Schema.String,
   type: Schema.Literals(['photo', 'video', 'gif']),
@@ -157,8 +160,10 @@ const mediaRefs = (
  * Normalize one visited tweet node into an immutable {@link TweetRecord}. The
  * `author` is resolved by the caller via {@link findAuthor} (the outer tweet's
  * author, never a quoted/retweeted tweet's), and media rides in pre-resolved as
- * `mediaRaw` (no re-walk, ADR-0016 identity preserved). Returns `null` when the
+ * `mediaRaw` (no re-walk identity preserved). Returns `null` when the
  * node carries no tweet `legacy`.
+ *
+ * @see ADR-0016
  */
 export function tweetRecordFromNode(args: {
   node: JsonObject

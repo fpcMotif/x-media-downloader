@@ -29,6 +29,7 @@ import {
   applyUploadOutcome,
   capLedger,
   claim,
+  cloudHistoryVerdict,
   decodeLedger,
   enqueue,
   isTerminal,
@@ -46,17 +47,10 @@ import { classifyUploadError, type CloudUploadStatus } from '@/packages/cloud/st
 import { makeSerialQueue, type SerialQueue } from '@/packages/kernel/serial-queue'
 import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-store'
 import { isSyncConfigured } from './sync-config'
+import { makeRemoteUpload, type RemoteUploadPort, type RelaySetup } from './remote-upload'
 
-/** A media item + its on-disk filename — the unit recordCloudUploads enqueues. */
-export interface UploadCandidate {
-  readonly item: {
-    readonly id: string
-    readonly url: string
-    readonly handle: string
-    readonly ext: string
-  }
-  readonly filename: string
-}
+import type { UploadCandidate, CloudHistoryNotice } from '@/packages/cloud/execution'
+export type { UploadCandidate, CloudHistoryNotice } from '@/packages/cloud/execution'
 
 /** A past download (from history) eligible for backfill. */
 export interface BackfillRecord {
@@ -70,11 +64,14 @@ export interface BackfillRecord {
  *  validates it on read), so this carries `unknown`. */
 export type LedgerStore = DurableStore
 
-/** Everything that executes on the ONE per-SW-life cloud runtime (ADR-0017): the
+/** Everything that executes on the ONE per-SW-life cloud runtime: the
  *  provider byte uploaders, Drive's root-folder resolve, the OAuth token grants, and
  *  the best-effort Convex mirror. Folding them behind one port keeps the single
  *  shared ManagedRuntime invariant (FetchService/SourceFetch/FolderCache) — and lets
- *  a test substitute a plain-async fake with no Effect/Layer ceremony. */
+ *  a test substitute a plain-async fake with no Effect/Layer ceremony.
+ *
+ * @see ADR-0017
+ */
 export interface CloudRuntimePort {
   uploadDrive(args: DriveArgs, input: UploadInput): Promise<UploadOutcome>
   uploadDropbox(accessToken: string, input: UploadInput): Promise<UploadOutcome>
@@ -82,6 +79,7 @@ export interface CloudRuntimePort {
   exchangeCode(input: {
     readonly cfg: OAuthConfig
     readonly clientId: string
+    readonly clientSecret?: string
     readonly code: string
     readonly codeVerifier: string
     readonly redirectUri: string
@@ -90,6 +88,7 @@ export interface CloudRuntimePort {
   refreshAccessToken(input: {
     readonly cfg: OAuthConfig
     readonly clientId: string
+    readonly clientSecret?: string
     readonly refreshToken: string
     readonly now: number
   }): Promise<{ readonly accessToken: string; readonly expiresAt: number }>
@@ -126,16 +125,29 @@ export interface AuthFlowPort {
 }
 
 export interface CloudUpload {
+  readonly remoteOwns: (mediaId: string) => Promise<boolean>
+  readonly relayBudget: (day: string) => Promise<{ bytes: number; count: number }>
+  readonly relayProbe: (url: string) => Promise<number | null>
+  readonly relaySetup: () => Promise<RelaySetup>
+  readonly setRelayControl: (
+    enabled: boolean,
+    accepting: boolean,
+    connected: boolean,
+  ) => Promise<void>
   /** The serialized upload chain — boot resume + alarm wake push onto it. */
   readonly uploadQueue: SerialQueue
   /** Drain ready upload jobs FIFO (claim → upload → record → mirror). */
   readonly drainUploadJobs: () => Promise<void>
-  /** Enqueue one UploadJob per (media item × connected provider) at queue time. */
-  readonly recordCloudUploads: (settings: Settings, items: ReadonlyArray<UploadCandidate>) => void
+  /** Persists eligible jobs and returns changed media IDs; rejects when persistence fails. */
+  readonly recordCloudUploads: (
+    settings: Settings,
+    items: ReadonlyArray<UploadCandidate>,
+  ) => Promise<ReadonlyArray<string>>
   /** PKCE OAuth connect in the SW; persists tokens. Popup-facing result. */
   readonly runOAuthConnect: (
     provider: CloudProviderId,
     clientIdArg: string,
+    clientSecretArg?: string,
   ) => Promise<{ ok: boolean; detail: string; account?: string }>
   /** Revoke at provider, then wipe local tokens (gdrive-only folderId clear). */
   readonly disconnectProvider: (provider: CloudProviderId) => Promise<{ ok: boolean }>
@@ -143,6 +155,9 @@ export interface CloudUpload {
   readonly cloudUploadStatus: () => Promise<CloudUploadStatus>
   /** Re-arm dead/failed jobs and drain. */
   readonly retryDeadUploads: () => Promise<{ ok: boolean }>
+  /** Resolve pending Cloud-only history verdicts (mixed results after a
+   *  provider pause) and fire their notices once per media. */
+  readonly reconcileCloudOnlyHistory: () => Promise<void>
   /** Enqueue cloud uploads for already-downloaded media from history. */
   readonly backfillCloudUploads: () => Promise<{ ok: boolean; queued: number; detail: string }>
   /** Compact a historically-grown ledger once and resume pending uploads on boot. */
@@ -154,6 +169,7 @@ export interface CloudUpload {
 }
 
 export interface CloudUploadDeps {
+  readonly remote?: RemoteUploadPort
   /** Build the queue's error observer (traces through the background's chain). */
   readonly queueError: (label: string) => (err: Error) => void
   /** Read the current settings blob. */
@@ -176,8 +192,14 @@ export interface CloudUploadDeps {
   /** The interactive OAuth flow (default: `browser.identity`). */
   readonly authFlow?: AuthFlowPort
   /** The settings writer (default: the core `setSettings`). Always re-serialized
-   *  through the SW-side settingsQueue inside, so ADR-0005 single-writer holds. */
+   *  through the SW-side settingsQueue inside, so single-writer serialization holds.
+   *
+   * @see ADR-0005
+   */
   readonly setSettings?: (patch: Partial<Settings>) => Promise<Settings>
+  /** Applies history, Saved, and sync effects before acknowledging a cloud verdict.
+   * Replayed after an interrupted acknowledgment; observers must be idempotent. */
+  readonly onHistoryNotice?: (notice: CloudHistoryNotice) => void | Promise<void>
   /** The clock (default: `Date.now`). Injected so backoff/expiry assertions are deterministic. */
   readonly now?: () => number
   /** Jobs drained per pass before yielding to a fresh serialized task (default
@@ -202,6 +224,8 @@ const ALL_PROVIDERS: ReadonlyArray<CloudProviderId> = CLOUD_PROVIDERS
 
 interface ProviderTokens {
   readonly clientId: string
+  /** '' for a provider whose record declares no `clientSecret` field (Dropbox). */
+  readonly clientSecret: string
   readonly accessToken: string
   readonly refreshToken: string
   readonly expiry: number
@@ -214,10 +238,13 @@ const defaultLedgerStore = (): LedgerStore => {
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
-/** The live cloud runtime (ADR-0017): one ManagedRuntime per SW life wiring FetchService
+/** The live cloud runtime: one ManagedRuntime per SW life wiring FetchService
  *  (binds fetch once), SourceFetch (the SSRF-guarded twimg fetch), and a Ref FolderCache
  *  (handle → subfolder id) that persists across uploads. `provideMerge` keeps FetchService
- *  in the runtime's context so the Convex/OAuth ports (which read FetchService) run on it. */
+ *  in the runtime's context so the Convex/OAuth ports (which read FetchService) run on it.
+ *
+ * @see ADR-0017
+ */
 const defaultRuntimePort = (fetchImpl: typeof fetch): CloudRuntimePort => {
   const runtime = ManagedRuntime.make(
     Layer.mergeAll(DriveUploaderLive, DropboxUploaderLive).pipe(
@@ -319,6 +346,7 @@ const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
   const f = PROVIDERS[p].fields
   return {
     clientId: settingsField(s, f.clientId, 'string'),
+    clientSecret: f.clientSecret === undefined ? '' : settingsField(s, f.clientSecret, 'string'),
     accessToken: settingsField(s, f.accessToken, 'string'),
     refreshToken: settingsField(s, f.refreshToken, 'string'),
     expiry: settingsField(s, f.expiry, 'number'),
@@ -357,8 +385,43 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     const t = providerTokens(s, p)
     return t.clientId !== '' && t.refreshToken !== ''
   }
-  const connectedProviders = (s: Settings): CloudProviderId[] =>
-    ALL_PROVIDERS.filter((p) => isProviderConnected(s, p))
+  const isProviderUploadEnabled = (s: Settings, p: CloudProviderId): boolean =>
+    s[PROVIDERS[p].fields.uploadEnabled] as boolean
+  const connectedUploadEnabledProviders = (s: Settings): CloudProviderId[] =>
+    ALL_PROVIDERS.filter((p) => isProviderConnected(s, p) && isProviderUploadEnabled(s, p))
+
+  const notifyCloudHistory = deps.onHistoryNotice ?? (() => {})
+  const remote =
+    deps.remote ??
+    makeRemoteUpload({
+      getSettings,
+      fetchImpl,
+      onHistoryNotice: notifyCloudHistory,
+    })
+
+  // Acknowledgments survive worker restarts; failed verdicts can recover on retry.
+  const notifyCloudHistoryOnce = async (
+    settings: Settings,
+    ledger: JobLedger,
+    mediaId: string,
+  ): Promise<void> => {
+    const jobs = ledger.filter((job) => job.mediaId === mediaId)
+    if (!jobs.some((job) => job.cloudOnly)) return
+    const providers = connectedUploadEnabledProviders(settings).filter((provider) =>
+      jobs.some((job) => job.provider === provider),
+    )
+    const verdict = cloudHistoryVerdict(ledger, mediaId, providers)
+    if (verdict === null) return
+    if (
+      jobs.some((job) => job.historyOutcome === 'completed') ||
+      jobs.every((job) => job.historyOutcome === verdict)
+    )
+      return
+    await notifyCloudHistory({ mediaId, kind: verdict, at: nowFn() })
+    await updateLedger((current) =>
+      current.map((job) => (job.mediaId === mediaId ? { ...job, historyOutcome: verdict } : job)),
+    )
+  }
 
   // Serialize ALL SW-side cloud settings writes (token refresh / connect /
   // disconnect / folder-id) on one chain so they can't lost-update each other's
@@ -388,6 +451,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     const refreshed = await rt.refreshAccessToken({
       cfg: PROVIDERS[p].oauth,
       clientId: t.clientId,
+      clientSecret: t.clientSecret,
       refreshToken: t.refreshToken,
       now: nowMs,
     })
@@ -395,26 +459,49 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     return refreshed.accessToken
   }
 
-  /** Enqueue one UploadJob per (media item × connected provider) at queue time, in
-   *  parallel with the local download. Gated, idempotent, fire-and-forget. */
-  const recordCloudUploads = (settings: Settings, items: ReadonlyArray<UploadCandidate>): void => {
-    if (!settings.cloudUploadEnabled || items.length === 0) return
-    const providers = connectedProviders(settings)
-    if (providers.length === 0) return
+  /** Persists eligible jobs and returns media IDs whose ledger entries changed before starting uploads. */
+  const recordCloudUploads = async (
+    settings: Settings,
+    items: ReadonlyArray<UploadCandidate>,
+  ): Promise<ReadonlyArray<string>> => {
+    if (items.length === 0) return []
+    if (settings.convexDriveEnabled && !settings.saveToDisk) {
+      const existing = await readLedger()
+      if (items.some(({ item }) => existing.some((job) => job.mediaId === item.id)))
+        throw new Error('This media already belongs to the browser upload queue')
+      return await remote.record(settings, items)
+    }
+    if (!settings.cloudUploadEnabled) return []
+    const owned = await Promise.all(items.map(({ item }) => remote.owns(item.id)))
+    const browserItems = items.filter((_, index) => !owned[index])
+    const providers = connectedUploadEnabledProviders(settings)
+    if (providers.length === 0) return []
     const now = nowFn()
-    uploadQueue.push(async () => {
-      await updateLedger((current) => {
-        let next = current
-        for (const { item, filename } of items) {
-          const target = cloudTargetFor(item, filename)
-          for (const p of providers) {
-            next = enqueue(next, { mediaId: item.id, provider: p, url: item.url, target }, now)
-          }
+    const accepted = new Set<string>()
+    await updateLedger((current) => {
+      let next = current
+      for (const { item, filename } of browserItems) {
+        const target = cloudTargetFor(item, filename)
+        for (const p of providers) {
+          const updated = enqueue(
+            next,
+            {
+              mediaId: item.id,
+              provider: p,
+              url: item.url,
+              target,
+              cloudOnly: !settings.saveToDisk,
+            },
+            now,
+          )
+          if (updated !== next) accepted.add(item.id)
+          next = updated
         }
-        return next
-      })
-      await drainUploadJobs()
+      }
+      return next
     })
+    uploadQueue.push(() => drainUploadJobs())
+    return [...accepted]
   }
 
   /** Dispatch one job to its provider uploader on the cloud runtime. Drive resolves
@@ -436,8 +523,11 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     return rt.uploadDropbox(accessToken, input)
   }
 
-  /** Best-effort mirror of a job's state to the Convex control plane (ADR-0013).
-   *  Gated on Cloud Sync config; the local ledger remains authoritative. */
+  /** Best-effort mirror of a job's state to the Convex control plane.
+   *  Gated on Cloud Sync config; the local ledger remains authoritative.
+   *
+   * @see ADR-0013
+   */
   const mirrorUploadJob = async (settings: Settings, job: UploadJob): Promise<void> => {
     if (!isSyncConfigured(settings) || settings.cloudDeviceId === '') return
     try {
@@ -518,15 +608,20 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
       const tnow = nowFn()
       let settled: UploadJob | undefined
+      let settledLedger: JobLedger = []
       await updateLedger((current) => {
         const applied = applyUploadOutcome(current, job.jobId, token!, tnow, outcome)
         settled = applied.settled
-        return capLedger(applied.ledger)
+        settledLedger = capLedger(applied.ledger)
+        return settledLedger
       })
       if (outcome.kind === 'failure') {
         lastUploadError = classifyUploadError(outcome.reason, outcome.status)
       }
       if (settled !== undefined) await mirrorUploadJob(settings, settled)
+      // Cloud-only: a terminal settle is a Download History terminal.
+      if (settled !== undefined && isTerminal(settled))
+        await notifyCloudHistoryOnce(await getSettings(), settledLedger, settled.mediaId)
     }
     // oxlint-enable no-await-in-loop
 
@@ -546,11 +641,19 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const runOAuthConnect = async (
     provider: CloudProviderId,
     clientIdArg: string,
+    clientSecretArg?: string,
   ): Promise<{ ok: boolean; detail: string; account?: string }> => {
     const settings = await getSettings()
-    // The popup sends the typed client ID with the request (it never writes the
-    // settings blob itself — single-writer, ADR-0005); fall back to a stored one.
-    const clientId = clientIdArg !== '' ? clientIdArg : providerTokens(settings, provider).clientId
+    // The panel sends the typed credentials with the request (it never writes the
+    // settings blob itself — single-writer, ADR-0005); fall back to stored ones.
+    const stored = providerTokens(settings, provider)
+    const clientId = clientIdArg !== '' ? clientIdArg : stored.clientId
+    // Empty for Dropbox: its record declares no `clientSecret` field, so `stored`
+    // reads '' and `withClientSecret` drops the param entirely.
+    const clientSecret =
+      clientSecretArg !== undefined && clientSecretArg !== ''
+        ? clientSecretArg
+        : stored.clientSecret
     if (clientId === '')
       return { ok: false, detail: `Enter the ${PROVIDERS[provider].label} client ID first.` }
     try {
@@ -567,6 +670,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       const tokens = await rt.exchangeCode({
         cfg,
         clientId,
+        clientSecret,
         code,
         codeVerifier: verifier,
         redirectUri,
@@ -575,6 +679,9 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       const f = PROVIDERS[provider].fields
       await writeCloudSettings({
         [f.clientId]: clientId,
+        // Persisted so the token REFRESH an hour later still has it — Google
+        // demands the secret on every grant, not only the first.
+        ...(f.clientSecret !== undefined ? { [f.clientSecret]: clientSecret } : {}),
         [f.accessToken]: tokens.accessToken,
         [f.refreshToken]: tokens.refreshToken,
         [f.expiry]: tokens.expiresAt,
@@ -594,6 +701,10 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   }
 
   const disconnectProvider = async (provider: CloudProviderId): Promise<{ ok: boolean }> => {
+    if (provider === 'gdrive' && (await getSettings()).convexDriveConnected) {
+      await remote.disconnect()
+      await writeCloudSettings({ convexDriveConnected: false })
+    }
     // Best-effort revoke the grant at the provider BEFORE clearing local tokens, so
     // disconnect actually withdraws access (not just a local wipe). Never blocks.
     const t = providerTokens(await getSettings(), provider)
@@ -617,11 +728,31 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   }
 
   const cloudUploadStatus = async (): Promise<CloudUploadStatus> => {
+    let relayError: string | null = null
+    try {
+      await remote.reconcile()
+    } catch {
+      relayError =
+        'Accepted server status is unavailable. Check the original deployment, permission, and shared secret.'
+    }
     const ledger = await readLedger()
-    return { summary: summarize(ledger), lastError: lastUploadError }
+    const local = summarize(ledger)
+    const server = await remote.summary()
+    return {
+      summary: {
+        pending: local.pending + server.pending,
+        uploading: local.uploading + server.uploading,
+        succeeded: local.succeeded + server.succeeded,
+        failed: local.failed + server.failed,
+        dead: local.dead + server.dead,
+        skipped: local.skipped + server.skipped,
+      },
+      lastError: relayError ?? lastUploadError,
+    }
   }
 
   const retryDeadUploads = async (): Promise<{ ok: boolean }> => {
+    await remote.retry()
     uploadQueue.push(async () => {
       const now = nowFn()
       await updateLedger((current) => {
@@ -636,6 +767,21 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     })
     return { ok: true }
   }
+
+  const reconcileCloudOnlyHistory = (): Promise<void> =>
+    uploadQueue.run(async () => {
+      await remote.reconcile()
+      const settings = await getSettings()
+      const ledger = await readLedger()
+      const mediaIds = [
+        ...new Set(
+          ledger.filter((job) => job.cloudOnly && isTerminal(job)).map((job) => job.mediaId),
+        ),
+      ]
+      await Promise.all(
+        mediaIds.map((mediaId) => notifyCloudHistoryOnce(settings, ledger, mediaId)),
+      )
+    })
 
   /** Reflect permanently-failed (dead) uploads on the toolbar badge so the user
    *  notices without opening the popup — restrained, no notifications permission. */
@@ -658,12 +804,16 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     detail: string
   }> => {
     const settings = await getSettings()
+    if (settings.convexDriveEnabled)
+      return { ok: false, queued: 0, detail: 'Backfill is unavailable in the Convex experiment.' }
     if (!settings.cloudUploadEnabled)
       return { ok: false, queued: 0, detail: 'Turn on Cloud upload first.' }
-    const providers = connectedProviders(settings)
+    const providers = connectedUploadEnabledProviders(settings)
     if (providers.length === 0)
       return { ok: false, queued: 0, detail: 'Connect Google Drive or Dropbox first.' }
-    const records = (await deps.getBackfillRecords()).filter((r) => r.media.url !== '')
+    const candidates = (await deps.getBackfillRecords()).filter((r) => r.media.url !== '')
+    const remoteOwned = await Promise.all(candidates.map((record) => remote.owns(record.requestId)))
+    const records = candidates.filter((_, index) => !remoteOwned[index])
     if (records.length === 0)
       return {
         ok: false,
@@ -720,6 +870,11 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   }
 
   return {
+    relayBudget: remote.budget,
+    remoteOwns: remote.owns,
+    relayProbe: remote.probe,
+    relaySetup: remote.setup,
+    setRelayControl: remote.control,
     uploadQueue,
     drainUploadJobs,
     recordCloudUploads,
@@ -727,6 +882,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     disconnectProvider,
     cloudUploadStatus,
     retryDeadUploads,
+    reconcileCloudOnlyHistory,
     backfillCloudUploads,
     resumeOnBoot,
     clearUploadBadge,

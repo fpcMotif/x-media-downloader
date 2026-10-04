@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from 'convex/server'
 import { v } from 'convex/values'
+import { relayFields } from './relayModel'
 
 // Mirror of `src/core/sync/events.ts` (SyncMediaMeta / SyncEvent). Metadata
 // only by construction — there are no fields for captures, headers, or bytes.
@@ -68,6 +69,25 @@ export const captureRow = v.object({
 })
 
 export default defineSchema({
+  relay_usage: defineTable({
+    deviceId: v.string(),
+    day: v.string(),
+    bytes: v.number(),
+    count: v.number(),
+  }).index('by_device_day', ['deviceId', 'day']),
+  relay_jobs: defineTable(relayFields)
+    .index('by_device_media', ['deviceId', 'mediaId'])
+    .index('by_status_next', ['status', 'nextAt']),
+  relay_control: defineTable({
+    key: v.literal('drive'),
+    enabled: v.boolean(),
+    accepting: v.boolean(),
+    connected: v.boolean(),
+    epoch: v.number(),
+    fence: v.number(),
+    leaseUntil: v.number(),
+    active: v.optional(v.id('relay_jobs')),
+  }).index('by_key', ['key']),
   // Append-only ledger of extension state transitions (ADR-0009). `eventId`
   // is the client's deterministic idempotency key: at-least-once delivery
   // from the extension outbox becomes exactly-once recording here.
@@ -104,8 +124,8 @@ export default defineSchema({
     .index('by_platform_post', ['platform', 'postId'])
     .index('by_at', ['at']),
 
-  // Cloud byte-upload ledger mirror (ADR-0013). Control plane ONLY — bytes never
-  // transit Convex; they go extension → provider (Drive/Dropbox) directly. This
+  // Browser byte-upload ledger mirror (ADR-0013). This table cannot authorize
+  // experimental server execution; browser bytes go directly to providers. This
   // mirrors the extension's durable local ledger so upload status is visible
   // cross-device. `jobId` (`${deviceId}/${requestId}/${provider}`) is the
   // idempotency key; last-write-wins by `at`.

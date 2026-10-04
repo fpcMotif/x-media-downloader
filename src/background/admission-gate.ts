@@ -31,10 +31,14 @@ export function makeAdmissionGate(deps: {
   savedMediaIndex: SavedIndex
   queryConvexMedia: QueryConvex
   sizeProbe: SizeProbePort
+  remoteSizeProbe?: SizeProbePort
+  remoteOwns?: (mediaId: string) => Promise<boolean>
   readTodayBudget: () => Promise<{ bytes: number; count: number }>
 }): AdmissionGate {
   const admit: AdmissionGate['admit'] = async (items) => {
     const settings = await deps.getSettings()
+    const ownership = await Promise.all(items.map((item) => deps.remoteOwns?.(item.id) ?? false))
+    const remoteOwned = new Set(items.filter((_, index) => ownership[index]).map((item) => item.id))
     const filter: FilterSettings = {
       preventDuplicateDownloads: settings.preventDuplicateDownloads,
       skipTypes: settings.skipTypes,
@@ -54,7 +58,8 @@ export function makeAdmissionGate(deps: {
         )
       : new Set<string>()
 
-    const probeActive = filter.maxFileSizeBytes > 0 || filter.dailyMaxBytes > 0
+    const remoteExecution = settings.convexDriveEnabled && !settings.saveToDisk
+    const probeActive = remoteExecution || filter.maxFileSizeBytes > 0 || filter.dailyMaxBytes > 0
     const running =
       filter.dailyMaxBytes > 0 || filter.dailyMaxCount > 0
         ? { ...(await deps.readTodayBudget()) }
@@ -67,7 +72,9 @@ export function makeAdmissionGate(deps: {
     // sequentially), so nothing about the verdicts changes; only the wall-clock does.
     const sizeById = new Map<string, number | null>()
     if (probeActive) {
-      const targets = items.filter((i) => freeReason(i, filter, savedMediaIds) === null)
+      const targets = items.filter(
+        (i) => !remoteOwned.has(i.id) && freeReason(i, filter, savedMediaIds) === null,
+      )
       let cursor = 0
       await Promise.all(
         Array.from({ length: Math.min(PROBE_CONCURRENCY, targets.length) }, async () => {
@@ -75,7 +82,12 @@ export function makeAdmissionGate(deps: {
           for (;;) {
             const target = targets[cursor++]
             if (target === undefined) return
-            sizeById.set(target.id, await deps.sizeProbe.probe(target.url))
+            const probe = remoteExecution ? deps.remoteSizeProbe : deps.sizeProbe
+            if (!probe) throw new Error('Remote size admission is unavailable')
+            const bytes = await probe.probe(target.url)
+            if (remoteExecution && (bytes === null || !Number.isSafeInteger(bytes) || bytes <= 0))
+              throw new Error('Remote source size is unavailable; no job was submitted')
+            sizeById.set(target.id, bytes)
           }
           // oxlint-enable no-await-in-loop
         }),
@@ -86,6 +98,10 @@ export function makeAdmissionGate(deps: {
     const skipped: { item: MediaItem; reason: SkipReason }[] = []
 
     for (const item of items) {
+      if (remoteOwned.has(item.id)) {
+        skipped.push({ item, reason: 'duplicate' })
+        continue
+      }
       // The admission verdict itself is the pure `evaluateAdmission`, which re-runs
       // `freeReason` (cheap, pure, idempotent), so the free → size → budget decision
       // lives in exactly one place; the probe result is read from the parallel phase.

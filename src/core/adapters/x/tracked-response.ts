@@ -1,6 +1,8 @@
 /**
  * Media-bearing X GraphQL operations the passive tee should capture. Scoped to
- * tweet/thread + the timelines that carry tweet media (ADR-0001).
+ * tweet/thread + the timelines that carry tweet media.
+ *
+ * @see ADR-0001
  */
 const MEDIA_OPS = [
   'TweetDetail',

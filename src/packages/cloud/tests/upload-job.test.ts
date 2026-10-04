@@ -5,6 +5,7 @@ import {
   backoffMs,
   capLedger,
   claim,
+  cloudHistoryVerdict,
   decodeLedger,
   enqueue,
   idempotencyKeyFor,
@@ -342,6 +343,46 @@ describe('ledger maintenance', () => {
     expect(capLedger(done, 50)).toBe(done)
   })
 
+  it('retains cloud outcomes until history completion is acknowledged', () => {
+    const pending = enqueue([], { ...spec('cloud'), cloudOnly: true }, 0)
+    const claimed = claim(pending, 'cloud:gdrive', 0)
+    const succeeded = recordSuccess(claimed.ledger, 'cloud:gdrive', claimed.token!, 1, {
+      bytes: 1,
+    }).ledger
+    const mixed = enqueue(succeeded, { ...spec('cloud', 'dropbox'), cloudOnly: true }, 0)
+    expect(capLedger(mixed, 0)).toEqual(mixed)
+    const second = claim(mixed, 'cloud:dropbox', 0)
+    const complete = recordSuccess(second.ledger, 'cloud:dropbox', second.token!, 1, {
+      bytes: 1,
+    }).ledger
+    expect(cloudHistoryVerdict(capLedger(complete, 0), 'cloud', ['gdrive', 'dropbox'])).toBe(
+      'completed',
+    )
+    const acknowledged = [
+      { ...complete[0]!, historyOutcome: 'completed' },
+      { ...complete[1]!, historyOutcome: 'completed' },
+    ] satisfies JobLedger
+    expect(capLedger(acknowledged, 0)).toEqual([])
+  })
+
+  it('retains mixed terminal outcomes and failed history for later retries', () => {
+    const jobs = enqueue(
+      enqueue([], { ...spec('cloud'), cloudOnly: true }, 0),
+      { ...spec('cloud', 'dropbox'), cloudOnly: true },
+      0,
+    )
+    const mixed = [
+      { ...jobs[0]!, status: 'succeeded' },
+      { ...jobs[1]!, status: 'dead' },
+    ] satisfies JobLedger
+    expect(capLedger(mixed, 0)).toEqual(mixed)
+    const failed = [
+      { ...jobs[0]!, status: 'dead', historyOutcome: 'failed' },
+      { ...jobs[1]!, status: 'dead', historyOutcome: 'failed' },
+    ] satisfies JobLedger
+    expect(capLedger(failed, 0)).toEqual(failed)
+  })
+
   it('summarize counts by status', () => {
     let l = enqueue([], spec('a'), 0)
     l = enqueue(l, spec('b'), 0)
@@ -491,5 +532,36 @@ describe('toWireUploadJob / WireUploadJob', () => {
     expect(wire.error).toBe('boom')
     expect('bytes' in wire).toBe(false)
     expect(decode(wire)).toEqual(wire)
+  })
+})
+
+describe('cloudHistoryVerdict', () => {
+  it('completes when every enabled provider succeeded', () => {
+    const drive = { ...enqueue([], spec('m1', 'gdrive'), 0)[0]!, status: 'succeeded' as const }
+    const dropbox = { ...enqueue([], spec('m1', 'dropbox'), 0)[0]!, status: 'succeeded' as const }
+    expect(cloudHistoryVerdict([drive, dropbox], 'm1', ['gdrive', 'dropbox'])).toBe('completed')
+  })
+
+  it('fails when every enabled provider is dead or skipped', () => {
+    const drive = { ...enqueue([], spec('m1', 'gdrive'), 0)[0]!, status: 'dead' as const }
+    const dropbox = { ...enqueue([], spec('m1', 'dropbox'), 0)[0]!, status: 'skipped' as const }
+    expect(cloudHistoryVerdict([drive, dropbox], 'm1', ['gdrive', 'dropbox'])).toBe('failed')
+  })
+
+  it('stays queued on a mixed Drive-succeeded Dropbox-dead result', () => {
+    const drive = { ...enqueue([], spec('m1', 'gdrive'), 0)[0]!, status: 'succeeded' as const }
+    const dropbox = { ...enqueue([], spec('m1', 'dropbox'), 0)[0]!, status: 'dead' as const }
+    expect(cloudHistoryVerdict([drive, dropbox], 'm1', ['gdrive', 'dropbox'])).toBeNull()
+  })
+
+  it('resolves a mixed result once the failing provider is paused', () => {
+    const drive = { ...enqueue([], spec('m1', 'gdrive'), 0)[0]!, status: 'succeeded' as const }
+    const dropbox = { ...enqueue([], spec('m1', 'dropbox'), 0)[0]!, status: 'dead' as const }
+    expect(cloudHistoryVerdict([drive, dropbox], 'm1', ['gdrive'])).toBe('completed')
+  })
+
+  it('stays queued while any enabled job is still live', () => {
+    const drive = { ...enqueue([], spec('m1', 'gdrive'), 0)[0]!, status: 'pending' as const }
+    expect(cloudHistoryVerdict([drive], 'm1', ['gdrive'])).toBeNull()
   })
 })

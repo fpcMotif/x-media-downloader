@@ -10,7 +10,7 @@ import {
 } from '@/packages/kernel/tee-limits'
 
 /**
- * MAIN-world passive tee (ADR-0001, grounding §c; widened to Instagram/Threads
+ * MAIN-world passive tee (grounding §c; widened to Instagram/Threads
  * by docs/superpowers/specs/2026-07-04-multi-platform-adapter-design.md).
  * Patches XHR + fetch to copy the current platform's own media-bearing network
  * responses to the ISOLATED content script via a document CustomEvent. Issues
@@ -27,6 +27,8 @@ import {
  * bearing 200 is exactly the H1 evidence this ticket exists to capture. It also
  * captures the REQUEST body (the tweet id lives there, not in the response) —
  * the one place this tee reads more than a response.
+ *
+ * @see ADR-0001
  */
 export default defineContentScript({
   matches: [...new Set(ALL_ADAPTERS.flatMap((a) => a.hostMatch))],

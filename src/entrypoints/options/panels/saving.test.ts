@@ -16,6 +16,7 @@ const SETTINGS_KEYS = [
   'dockGlassEnabled',
   'filenameTemplate',
   'sidecarMetadata',
+  'saveToDisk',
   'downloadConcurrency',
   'downloadStrategy',
   'aria2Split',
@@ -69,15 +70,15 @@ describe('Saving panel: nothing dropped from General + Downloads + Filters', () 
   })
 
   it('drops the dead per-item radius-4 class and overrides --radius on the Download mode wrapper (finding 6)', () => {
-    expect(source).not.toContain('rounded-[var(--xmd-radius-4)]')
+    expect(source).not.toContain('--xmd-radius-4')
     expect(source).toContain("'--radius': 'var(--xmd-radius-3)'")
   })
 
   it('reaches 40px on every options action Button via call-site min-h-10 (finding 17)', () => {
     expect(source).toContain('Grant localhost access')
     expect(source).toContain('Reset today')
-    // Both buttons carry the call-site class; button.tsx itself is untouched.
-    expect(source.match(/min-h-10/g)?.length).toBeGreaterThanOrEqual(2)
+    // Both buttons carry the shared StyleX minHeight override; button.tsx itself is untouched.
+    expect(source.match(/minHeight: '2\.5rem'/g)?.length).toBeGreaterThanOrEqual(2)
   })
 })
 

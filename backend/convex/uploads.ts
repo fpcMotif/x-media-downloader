@@ -57,8 +57,8 @@ const uploadJobDoc = v.object({
 /**
  * Best-effort mirror of the extension's local UploadJob ledger (ADR-0013).
  * Idempotent + last-write-wins by `at` on the `by_job` index: re-sent state is
- * harmless. Control plane only — NO bytes ever reach Convex; the byte path is
- * extension → provider. Fails closed on the shared secret, like recordEvents.
+ * harmless. These mirrored jobs execute in the browser, never on the server.
+ * Cannot authorize relay execution. Fails closed on the shared secret, like recordEvents.
  *
  * Same-batch duplicates of one `jobId` collapse in memory under the same
  * last-write-wins rule BEFORE any read, so each `jobId` touches the DB exactly

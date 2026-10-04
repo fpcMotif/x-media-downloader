@@ -18,19 +18,13 @@
  * pressable-container's CONTENTS to a different post between two DOM reads
  * without removing the node — a stale element reference or a previously-read
  * href risks silently mismatching to a different post's video.
- *
- * KNOWN v1 SCOPE LIMIT (untested against live markup, not silently assumed
- * away — see `post-anchor.test.ts`'s "returns the FIRST matching link"
- * case): `postCodeFromContainer` returns the first DOM-order matching link
- * inside the container, with no way to distinguish "the post's own
- * permalink" from a DIFFERENT post's permalink nested inside it (e.g. a
- * Threads quote/repost embedding another post's own link). If a container
- * ever holds more than one shortcode-shaped link and the outer post's own
- * link isn't first in DOM order, hover resolves to the wrong post. No live
- * Instagram/Threads markup has been observed where this happens, but it
- * hasn't been ruled out either — flagging here rather than pretending
- * single-link-per-container is guaranteed.
  */
+// KNOWN v1 SCOPE LIMIT: `postCodeFromContainer` returns the first DOM-order
+// matching link inside the container, with no way to distinguish "the post's
+// own permalink" from a different post's permalink nested inside it (e.g. a
+// Threads quote/repost embedding another post's own link). If a container ever
+// holds more than one shortcode-shaped link and the outer post's own link isn't
+// first in DOM order, hover resolves to the wrong post.
 
 /** Nearest ancestor-or-self of `el` matching `containerSelector` — thin
  *  `Element.closest` wrapper kept as its own function so each platform's

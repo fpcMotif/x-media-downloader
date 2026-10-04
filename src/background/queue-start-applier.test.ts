@@ -21,6 +21,33 @@ const item: MediaItem = {
 }
 
 describe('applyQueueStartEffects', () => {
+  it('propagates rejected upload acceptance before continuing queue start', async () => {
+    const effects = decideQueueStart({
+      metrics: null,
+      requests: [{ id: 'm1', url: item.url, filename: 'm1.jpg' }],
+      mediaById: new Map([[item.id, item]]),
+      settings: { ...settings, saveToDisk: false },
+      startedAt: 100,
+    })
+    const order: string[] = []
+    await expect(
+      applyQueueStartEffects(effects, 100, {
+        resetCorrelation: () => {},
+        setMetrics: () => {},
+        persistSnapshot: async () => {},
+        recordSync: () => {},
+        recordHistory: () => {},
+        recordUploads: async () => {
+          throw new Error('Ledger write failed')
+        },
+        seedClear: async () => {
+          order.push('clear')
+        },
+      }),
+    ).rejects.toThrow('Ledger write failed')
+    expect(order).toEqual([])
+  })
+
   it('applies queued records and Clear seed before save starts', async () => {
     const effects = decideQueueStart({
       metrics: null,

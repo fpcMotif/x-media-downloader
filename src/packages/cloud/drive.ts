@@ -8,7 +8,7 @@ import { parseSource } from './lib/source'
 import { type UploadInput, type UploadOutcome } from './types'
 
 /**
- * Google Drive v3 upload adapter (ADR-0013 §5, ADR-0017). Small media
+ * Google Drive v3 upload adapter. Small media
  * (≤ SIMPLE_MAX_BYTES) goes via one multipart request; larger/unknown-size media
  * streams through a resumable session in 256 KiB-multiple chunks — never buffering
  * a whole video. Files land in a single per-platform folder (e.g. `twitter`) at the
@@ -18,6 +18,9 @@ import { type UploadInput, type UploadOutcome } from './types'
  * `SourceFetch`, and `FolderCache`; per-upload `accessToken`/`rootFolderId` are
  * method args. The services are resolved once when the layer is built, so
  * `upload`/`ensureRoot` are `R = never` and run on the shared cloud runtime.
+ *
+ * @see ADR-0013
+ * @see ADR-0017
  */
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder'

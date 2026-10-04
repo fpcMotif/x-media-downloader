@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { defineConfig } from 'wxt'
-import preactPreset from '@preact/preset-vite'
-import tailwindcss from '@tailwindcss/vite'
+import preact from '@preact/preset-vite'
+import stylex from '@stylexjs/unplugin/vite'
+import browserslist from 'browserslist'
+import { browserslistToTargets } from 'lightningcss'
 import { allAdapterHostMatch, cdnMatchPatternsForAllAdapters } from './src/core/adapters/registry'
 
 // When a local `.env` pre-seeds Cloud Sync (WXT_CONVEX_URL), promote the Convex
@@ -35,6 +38,28 @@ const PLATFORM_HOST_PERMISSIONS = allAdapterHostMatch().map(
 // (unlike PLATFORM_HOST_PERMISSIONS above, which starts from match-pattern
 // syntax). Adding a platform's CDN to the registry needs no edit here.
 const CDN_HOST_PERMISSIONS = cdnMatchPatternsForAllAdapters()
+
+// The entrypoint group that renders HTML pages (popup, options, offscreen) —
+// the only build that carries StyleX-styled Preact views.
+const HTML_ENTRYPOINT_TYPES = new Set<string>(['popup', 'options', 'unlisted-page'])
+
+// StyleX compiles every `stylex.create` call ahead of time and appends the
+// collected rules to the popup/options CSS asset (`assets/app-*.css`, the one
+// both pages load). One fresh instance per Vite build (see `hooks` below).
+const stylexPlugin = () =>
+  stylex({
+    unstable_moduleResolution: { type: 'commonJS', rootDir: process.cwd() },
+    // The compiler resolves `*.stylex.ts` imports itself, so it needs WXT's
+    // `@/` → src alias spelled out.
+    aliases: { '@/*': [path.join(process.cwd(), 'src', '*')] },
+    cssInjectionTarget: (fileName: string) => /(^|\/)app-[^/]*\.css$/.test(fileName),
+    // lightningcss post-processes the collected CSS; pin its targets to the
+    // build target so it never lowers oklch()/color-mix() for older browsers.
+    lightningcssOptions: { targets: browserslistToTargets(browserslist('chrome >= 120')) },
+    // Dev server: the entrypoints import `virtual:stylex:css-only`, which links
+    // the live-collected stylesheet into the extension page.
+    devMode: 'css-only',
+  })
 
 // https://wxt.dev/api/config.html
 export default defineConfig({
@@ -98,7 +123,31 @@ export default defineConfig({
       ...(seedsConvex ? [] : [CONVEX_ORIGIN]),
     ],
   },
+  hooks: {
+    // StyleX only belongs to the HTML-page build (popup + options): the plugin
+    // keeps a process-wide rule store, and WXT runs one Vite build per
+    // entrypoint group in the same process, so attaching it globally would
+    // append the popup/options rules to the content-script stylesheet too.
+    'vite:build:extendConfig': (entrypoints, config) => {
+      if (entrypoints.some((entry) => HTML_ENTRYPOINT_TYPES.has(entry.type))) {
+        config.plugins ??= []
+        config.plugins.unshift(stylexPlugin())
+      }
+    },
+    'vite:devServer:extendConfig': (config) => {
+      config.plugins ??= []
+      config.plugins.unshift(stylexPlugin())
+    },
+  },
   vite: () => ({
-    plugins: [preactPreset(), tailwindcss()],
+    plugins: [preact()],
+    build: {
+      target: 'chrome120',
+      rollupOptions: {
+        treeshake: {
+          moduleSideEffects: false,
+        },
+      },
+    },
   }),
 })

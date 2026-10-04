@@ -20,17 +20,25 @@ const ruleBody = (selector: string): string => {
   return popupCss.slice(bodyStart + 1, bodyEnd)
 }
 
+// The popup shell moved out of app.css into a StyleX object in App.tsx (spec
+// §7) — `styles.popup` / `styles.loading` replace `.xmd-popup` / `.xmd-popup--loading`.
+const styleBlock = (key: string, nextKey: string): string => {
+  const start = popupSource.indexOf(`${key}: {`)
+  const end = popupSource.indexOf(`${nextKey}: {`, start)
+  return popupSource.slice(start, end)
+}
+
 describe('popup layout CSS — content-driven height and bubble-safe 320px reflow', () => {
   it('lets the popup render content height min 360 / max 600 and reflow down to 320px without root 100vw collapse', () => {
-    const popupRule = ruleBody('.xmd-popup')
+    const popupStyle = styleBlock('popup', 'loading')
 
-    expect(popupRule).toContain('width: 380px;')
-    expect(popupRule).toContain('max-width: 100%;')
-    expect(popupRule).toContain('box-sizing: border-box;')
-    expect(popupRule).toContain('min-height: 360px;')
-    expect(popupRule).toContain('max-height: 600px;')
-    expect(popupRule).toContain('overflow-y: auto;')
-    expect(popupRule).not.toMatch(/(?<!max-)(?<!min-)height: 600px;/u)
+    expect(popupStyle).toContain("width: '380px'")
+    expect(popupStyle).toContain("maxWidth: '100%'")
+    expect(popupStyle).toContain("boxSizing: 'border-box'")
+    expect(popupStyle).toContain("minHeight: '360px'")
+    expect(popupStyle).toContain("maxHeight: '600px'")
+    expect(popupStyle).toContain("overflowY: 'auto'")
+    expect(popupStyle).not.toContain("height: '600px'")
   })
 
   it('pins 380px min-width on document shell for Chrome action popup bubble safety', () => {
@@ -45,8 +53,8 @@ describe('popup layout CSS — content-driven height and bubble-safe 320px reflo
   })
 
   it('gives the loading frame the same 360px floor so hydrate never jumps', () => {
-    const loadingRule = ruleBody('.xmd-popup--loading')
-    expect(loadingRule).toContain('min-height: 360px;')
+    const loadingStyle = styleBlock('loading', 'contextStrip')
+    expect(loadingStyle).toContain("minHeight: '360px'")
   })
 
   it('renders a non-empty fallback before the popup app hydrates, matching the 360px floor', () => {
@@ -131,9 +139,11 @@ describe('no native confirm() and no accesskey anywhere in the popup (design con
 })
 
 describe('no transition-all anywhere in the popup (spec §2.7)', () => {
-  it('popup App.tsx and capture-quick-actions.tsx', () => {
+  it('popup App.tsx and capture-quick-actions.tsx never set transitionProperty to "all"', () => {
     expect(popupSource).not.toContain('transition-all')
+    expect(popupSource).not.toContain("transitionProperty: 'all'")
     expect(captureQuickActionsSource).not.toContain('transition-all')
+    expect(captureQuickActionsSource).not.toContain("transitionProperty: 'all'")
   })
 })
 

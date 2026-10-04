@@ -1,10 +1,11 @@
 import { Data } from 'effect'
 import { bindFetch } from '@/packages/kernel/fetch'
+import { fetchSource, SourceRedirectLimitError } from '@/packages/kernel/source-policy'
 import { cdnHostsForAllAdapters } from '@/core/adapters/registry'
 import type { MediaItem } from '@/packages/schema'
 
 /**
- * SSRF guard for the cloud-destinations byte path (ADR-0013 §5.3). The extension
+ * SSRF guard for the cloud-destinations byte path. The extension
  * (and any server-side fetcher) must dereference *only* a registered platform's
  * public media CDN and nothing else — never an internal address reached via a
  * crafted or redirected URL.
@@ -12,16 +13,22 @@ import type { MediaItem } from '@/packages/schema'
  * `assertAllowedMediaUrl` is a pure check (no I/O); `guardedFetch` is the single
  * egress wrapper that re-runs the check on every redirect hop. Validate both a
  * Media Item's `url` and its `previewUrl` (use `assertAllowedMediaUrls`).
+ *
+ * @see ADR-0013
  */
 export class UnsafeUrlError extends Data.TaggedError('UnsafeUrlError')<{
   readonly url: string
   readonly reason: string
 }> {}
 
-/** The adapter-registry-derived CDN allow-list (docs/adr/0019) — the single
- *  source of truth every registered platform's `cdnHosts` feeds into. Adding
- *  a platform, or a CDN host to an existing platform, widens this set purely
- *  by editing that adapter; nothing here needs to change. */
+/**
+ * The adapter-registry-derived CDN allow-list — the single source of truth
+ * every registered platform's `cdnHosts` feeds into. Adding a platform, or
+ * a CDN host to an existing platform, widens this set purely by editing
+ * that adapter; nothing here needs to change.
+ *
+ * @see ADR-0019
+ */
 const ALLOWED_CDN_HOSTS = cdnHostsForAllAdapters()
 
 /** `host` is on the allow-list iff it exactly matches an entry's `host`, or
@@ -169,16 +176,11 @@ export async function guardedFetch(
 ): Promise<Response> {
   // Detach the bare global fetch or the MV3 SW rejects it with "Illegal invocation" (see bindFetch).
   const doFetch = bindFetch(fetchImpl)
-  let current = assertAllowedMediaUrl(raw)
-  for (let hop = 0; hop <= maxHops; hop += 1) {
-    // redirects are inherently sequential — each hop depends on the previous Location
-    // oxlint-disable-next-line no-await-in-loop
-    const res = await doFetch(current.toString(), { ...init, redirect: 'manual' })
-    const redirected = res.status >= 300 && res.status < 400
-    if (!redirected) return res
-    const location = res.headers.get('location')
-    if (location === null || location === '') return res // redirect without a target — hand back as-is
-    current = assertAllowedMediaUrl(new URL(location, current).toString())
+  try {
+    return await fetchSource(raw, init, doFetch, assertAllowedMediaUrl, maxHops)
+  } catch (error) {
+    if (error instanceof SourceRedirectLimitError)
+      return reject(raw, `too many redirects (> ${maxHops})`)
+    throw error
   }
-  return reject(raw, `too many redirects (> ${maxHops})`)
 }

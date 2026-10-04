@@ -8,9 +8,11 @@
  * never seen, its hits are unioned into the Set, and a "not saved" answer is
  * cached as a timestamped miss so a cold timeline doesn't hammer the backend.
  * Offline degrades to the local subset and never throws (cloud sync is
- * fire-and-forget, ADR-0009: the badge must never block on the network).
+ * fire-and-forget: the badge must never block on the network).
  *
  * Pure and deterministic under an injected clock; no Effect, no direct I/O.
+ *
+ * @see ADR-0009
  */
 
 /** Returns the subset of `tweetIds` that the backend reports as already saved. */

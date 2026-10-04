@@ -13,7 +13,10 @@ const isJsonString = (value: JsonValue | undefined): value is string => typeof v
 const isJsonNumber = (value: JsonValue | undefined): value is number => typeof value === 'number'
 
 /** Minimal port over aria2's JSON-RPC `aria2.addUri`; resolves to the new gid.
- *  Reads the shared `FetchService` from `R` (ADR-0017) — no `fetchImpl` thread. */
+ *  Reads the shared `FetchService` from `R` — no `fetchImpl` thread.
+ *
+ * @see ADR-0017
+ */
 export interface Aria2RpcPort {
   readonly addUri: (
     urls: ReadonlyArray<string>,

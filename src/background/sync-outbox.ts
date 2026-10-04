@@ -17,11 +17,18 @@ import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-s
 import { isSyncConfigured } from './sync-config'
 import type { ConvexPort } from './convex-port'
 
-/** Durable outbox storage seam (`local:syncOutbox` by default, ADR-0005). */
+/**
+ * Durable outbox storage seam (`local:syncOutbox` by default).
+ *
+ * @see ADR-0005
+ */
 export type OutboxStorage = DurableStore
 
-/** Ephemeral sync-status storage seam (`session:syncStatus` by default, ADR-0005 —
- *  a diagnostic, not durable state, so it is kept separate from the outbox). */
+/** Ephemeral sync-status storage seam (`session:syncStatus` by default —
+ *  a diagnostic, not durable state, so it is kept separate from the outbox).
+ *
+ * @see ADR-0005
+ */
 export interface StatusStore {
   get(): Promise<SyncStatus | null>
   set(value: SyncStatus | null): Promise<void>
@@ -81,13 +88,21 @@ export interface SyncOutboxDeps {
 
 const SYNC_ALARM = 'sync-outbox-drain'
 
-/** The live durable outbox store: the `local:syncOutbox` key (ADR-0005). */
+/**
+ * The live durable outbox store: the `local:syncOutbox` key.
+ *
+ * @see ADR-0005
+ */
 const defaultOutboxStore = (): OutboxStorage => {
   const item = storage.defineItem<JsonValue>('local:syncOutbox', { fallback: null })
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
 }
 
-/** The live ephemeral status store: the `session:syncStatus` key (ADR-0005). */
+/**
+ * The live ephemeral status store: the `session:syncStatus` key.
+ *
+ * @see ADR-0005
+ */
 const defaultStatusStore = (): StatusStore => {
   const item = storage.defineItem<SyncStatus | null>('session:syncStatus', { fallback: null })
   return { get: () => item.getValue(), set: (value) => item.setValue(value) }
@@ -229,7 +244,10 @@ export const makeSyncOutbox = (deps: SyncOutboxDeps): SyncOutbox => {
   }
 
   /** Mirror state transitions when Cloud Sync is on. Fire-and-forget: downloads
-   *  never block on — or fail because of — the cloud (ADR-0009). */
+   *  never block on — or fail because of — the cloud.
+   *
+   * @see ADR-0009
+   */
   const recordSync = (settings: Settings, events: ReadonlyArray<SyncEvent>): void => {
     if (!isSyncConfigured(settings) || events.length === 0) return
     outboxQueue.push(async () => {

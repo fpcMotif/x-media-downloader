@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { MediaItem } from '@/packages/schema'
 import { recordFromMediaItem, applyOutcome } from '../record'
-import { emptyStore, decodeStore, upsert, applyTransition } from '../store'
+import { emptyStore, decodeStore, upsert, applyTransition, applyCloudTransition } from '../store'
 
 const mk = (id: string, author = 'alice'): MediaItem => ({
   id,
@@ -15,6 +15,16 @@ const mk = (id: string, author = 'alice'): MediaItem => ({
 })
 
 const rec = (id: string, at: number) => recordFromMediaItem(mk(id), `${id}.jpg`, at)
+
+it('repairs failed remote history through queued retry without regressing Saved completion', () => {
+  const failed = upsert(emptyStore, applyOutcome(rec('remote', 100), 'failed', 200))
+  const queued = applyCloudTransition(failed, 'remote', 'queued', 300)
+  expect(queued.records[0]?.status).toBe('queued')
+  expect(queued.records[0]?.finishedAt).toBeUndefined()
+  const completed = applyCloudTransition(queued, 'remote', 'completed', 400)
+  expect(completed.records[0]?.status).toBe('completed')
+  expect(applyCloudTransition(completed, 'remote', 'queued', 500)).toBe(completed)
+})
 
 describe('upsert', () => {
   it('prepends new records newest-first', () => {

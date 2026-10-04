@@ -17,6 +17,7 @@ coverage/
 .impeccable/
 /*.png
 droid-wiki/
+test-output/
 
 # Local git worktrees
 .worktrees/

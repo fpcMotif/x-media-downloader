@@ -5,7 +5,7 @@ import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
 
 /**
  * UploadJob ledger — the pure state machine for the client-side cloud byte path
- * (ADR-0013), adapted from the `feat/upload-job-ledger` reducer. One job per
+ *, adapted from the `feat/upload-job-ledger` reducer. One job per
  * (media item × connected provider):
  *
  *   pending ─claim→ uploading ─┬─ recordSuccess ──→ succeeded
@@ -19,6 +19,8 @@ import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
  * the metadata outbox (`src/core/sync/outbox.ts`): deterministic jobIds make the
  * at-least-once enqueue exactly-once. A lease is a fencing token (`leaseSeq`) so a
  * zombie run after a recycle can never corrupt the live claimant.
+ *
+ * @see ADR-0013
  */
 
 export const MAX_ATTEMPTS = 5
@@ -61,6 +63,8 @@ export const UploadJobSchema = Schema.Struct({
   idempotencyKey: Schema.String,
   /** The local download request id (= media item id). */
   mediaId: Schema.String,
+  cloudOnly: Schema.optional(Schema.Boolean),
+  historyOutcome: Schema.optional(Schema.Literals(['completed', 'failed'])),
   provider: CloudProvider,
   /** twimg source URL — fetched only via the SSRF guard at drain time. */
   url: Schema.String,
@@ -84,6 +88,7 @@ const LedgerSchema = Schema.Array(UploadJobSchema)
 export type JobLedger = ReadonlyArray<UploadJob>
 
 export interface UploadJobSpec {
+  readonly cloudOnly?: boolean
   readonly mediaId: string
   readonly provider: CloudProviderId
   readonly url: string
@@ -105,6 +110,26 @@ export interface TransitionResult {
 const TERMINAL: ReadonlySet<JobStatus> = new Set<JobStatus>(['succeeded', 'dead', 'skipped'])
 
 export const isTerminal = (job: UploadJob): boolean => TERMINAL.has(job.status)
+
+/** Cloud-only Download History terminal for one Media Item. `null` means stay
+ *  queued: a job is still live, or enabled destinations disagree (Drive
+ *  succeeded, Dropbox dead). Pause/disconnect drops a provider from
+ *  `enabledProviders`, so a mixed result can resolve later. */
+export function cloudHistoryVerdict(
+  ledger: JobLedger,
+  mediaId: string,
+  enabledProviders: ReadonlyArray<CloudProviderId>,
+): 'completed' | 'failed' | null {
+  if (enabledProviders.length === 0) return null
+  const jobs = enabledProviders
+    .map((provider) => ledger.find((job) => job.mediaId === mediaId && job.provider === provider))
+    .filter((job): job is UploadJob => job !== undefined)
+  if (jobs.length !== enabledProviders.length) return null
+  const statuses = jobs.map((job) => job.status)
+  if (statuses.every((status) => status === 'succeeded')) return 'completed'
+  if (statuses.every((status) => status === 'dead' || status === 'skipped')) return 'failed'
+  return null
+}
 
 export const idempotencyKeyFor = (mediaId: string, provider: CloudProviderId): string =>
   `${mediaId}:${provider}`
@@ -173,6 +198,7 @@ export function enqueue(ledger: JobLedger, spec: UploadJobSpec, now: number): Jo
     jobId: idempotencyKey,
     idempotencyKey,
     mediaId: spec.mediaId,
+    ...(spec.cloudOnly ? { cloudOnly: true } : {}),
     provider: spec.provider,
     url: spec.url,
     target: spec.target,
@@ -200,16 +226,21 @@ export const readyJobs = (ledger: JobLedger, now: number): JobLedger =>
 /** Drop terminal/succeeded jobs to keep the persisted ledger bounded. */
 export const pruneTerminal = (ledger: JobLedger): JobLedger => ledger.filter((j) => !isTerminal(j))
 
-/** Keep every live job + the most-recent `maxTerminal` terminal jobs, so the
- *  ledger stays bounded but the popup can still show a recent "N uploaded" count.
+/** Retains unresolved cloud-only media and live jobs, plus the most-recent `maxTerminal` other terminals.
  *  Returns the same reference when nothing is dropped (cheap no-op). */
 export function capLedger(ledger: JobLedger, maxTerminal = 50): JobLedger {
-  const terminalCount = ledger.reduce((n, j) => (isTerminal(j) ? n + 1 : n), 0)
+  const unresolved = new Set(
+    ledger
+      .filter((job) => job.cloudOnly && job.historyOutcome !== 'completed')
+      .map((job) => job.mediaId),
+  )
+  const removable = (job: UploadJob): boolean => isTerminal(job) && !unresolved.has(job.mediaId)
+  const terminalCount = ledger.reduce((n, j) => (removable(j) ? n + 1 : n), 0)
   if (terminalCount <= maxTerminal) return ledger
   let toDrop = terminalCount - maxTerminal
   // Drop oldest terminal jobs first (insertion order); keep all live jobs.
   return ledger.filter((j) => {
-    if (toDrop > 0 && isTerminal(j)) {
+    if (toDrop > 0 && removable(j)) {
       toDrop -= 1
       return false
     }
@@ -404,13 +435,15 @@ export function summarize(ledger: JobLedger): UploadSummary {
 }
 
 /**
- * The Convex control-plane mirror shape of an UploadJob (`uploads:recordUploadJobs`,
- * ADR-0013) — the single source for the outgoing wire payload, mirroring how
+ * The Convex control-plane mirror shape of an UploadJob (`uploads:recordUploadJobs`) —
+ * the single source for the outgoing wire payload, mirroring how
  * `events.ts` pairs `SyncEvent` with its constructors. The backend `upload_jobs`
  * validator (`backend/convex/schema.ts`) is the server half of this contract;
  * keeping the projection here (typed, not an inline literal) makes a client-side
  * drift a compile error instead of a silently-swallowed mirror reject. Metadata
  * only — bytes never transit Convex.
+ *
+ * @see ADR-0013
  */
 export const WireUploadJob = Schema.Struct({
   /** Wire idempotency key `${deviceId}/${mediaId}/${provider}` (distinct from the

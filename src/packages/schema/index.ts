@@ -137,15 +137,28 @@ export const Settings = Schema.Struct({
   releaseMutationDiagnosticsEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(false)),
   ),
-  // Cloud upload (ADR-0013): opt-in, CLIENT-SIDE OAuth — uploads the real media
-  // BYTES (not links) to your own Google Drive / Dropbox. Bytes go extension →
-  // provider directly; nothing transits Convex. Master gate, default off so the
-  // local-first posture holds until the user explicitly opts in + connects.
+  // Browser OAuth uploads remain the default. The separate Convex experiment
+  // applies only to explicitly selected Cloud-only Google Drive uploads.
   cloudUploadEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  convexDriveEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  convexDriveConnected: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  // Local save gate (issue #95). Default on: the Download Strategy still writes
+  // the file. Off is Cloud-only — bytes go only to enabled, connected Cloud
+  // Providers. Coupling refuses off unless Cloud upload has a live destination.
+  saveToDisk: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  // Per-provider upload pause (issue #95). Default on so a connected provider
+  // keeps receiving jobs. Off pauses new UploadJobs without revoking tokens.
+  gdriveUploadEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  dropboxUploadEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   // Google Drive (PKCE). clientId = OAuth client id; tokens are minted by
   // launchWebAuthFlow and stored here (same posture as aria2Secret/convexSyncSecret).
   // A non-empty refresh token = "connected"; folderId caches the app root folder.
   gdriveClientId: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
+  // Google ALONE needs a client secret. Its "Web application" client stays a
+  // confidential client even under PKCE — the token endpoint answers
+  // `client_secret is missing` without one. Empty for any provider that honours
+  // PKCE (Dropbox), and never sent when empty.
+  gdriveClientSecret: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   gdriveAccessToken: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   gdriveRefreshToken: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(''))),
   gdriveTokenExpiry: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
@@ -335,6 +348,8 @@ export type CloudProvider = typeof CloudProvider.Type
 export const CloudConnectRequest = Schema.TaggedStruct('CloudConnectRequest', {
   provider: CloudProvider,
   clientId: Schema.String,
+  /** Google only (see `gdriveClientSecret`); absent for a PKCE-honouring provider. */
+  clientSecret: Schema.optional(Schema.String),
 })
 export type CloudConnectRequest = typeof CloudConnectRequest.Type
 
@@ -344,7 +359,13 @@ export const CloudDisconnectRequest = Schema.TaggedStruct('CloudDisconnectReques
 })
 export type CloudDisconnectRequest = typeof CloudDisconnectRequest.Type
 
-// popup → background: read the upload-ledger summary + last error (no network).
+// popup → background: setup and control for experimental server execution.
+export const RelaySetupRequest = Schema.TaggedStruct('RelaySetupRequest', {})
+export const RelayControlRequest = Schema.TaggedStruct('RelayControlRequest', {
+  enabled: Schema.Boolean,
+  accepting: Schema.Boolean,
+  connected: Schema.Boolean,
+})
 export const CloudStatusRequest = Schema.TaggedStruct('CloudStatusRequest', {})
 export type CloudStatusRequest = typeof CloudStatusRequest.Type
 
@@ -649,6 +670,8 @@ export const Message = Schema.Union([
   CloudConnectRequest,
   CloudDisconnectRequest,
   CloudStatusRequest,
+  RelaySetupRequest,
+  RelayControlRequest,
   CloudRetryRequest,
   CloudBackfillRequest,
   SweepEnqueueRequest,

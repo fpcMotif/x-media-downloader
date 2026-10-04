@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lasso — Architecture Review · 2026-07-02</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "dark", themeVariables: { fontSize: "13px" } });
+</script>
+<style>
+  body { background:#0b0e14; color:#d6dae3; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .card { background:#11151f; border:1px solid #1e2432; border-radius:14px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre.code { background:#0d1117; border:1px solid #1e2432; border-radius:10px; padding:14px 16px; font-size:12.5px; line-height:1.55; overflow-x:auto; color:#c9d1d9; }
+  .filetag { background:#161c29; border:1px solid #232b3d; border-radius:6px; padding:1px 7px; font-size:11px; color:#8fa3c8; font-family:ui-monospace,Menlo,monospace; }
+  .sev-major { background:#3d1114; color:#ff8589; border:1px solid #6e2226; }
+  .sev-moderate { background:#3a2a0e; color:#ffc66b; border:1px solid #6b4d15; }
+  .sev-minor { background:#0f2a3a; color:#7cc7ff; border:1px solid #1c4a66; }
+  .badge { border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; letter-spacing:.02em; }
+  .rec-strong { background:#0e3320; color:#5ee39a; border:1px solid #1c5c3a; }
+  .rec-explore { background:#1c2a4a; color:#8fb3ff; border:1px solid #2c4479; }
+  .kind { color:#7d8aa5; font-size:11px; font-style:italic; }
+  .verified { color:#5ee39a; font-size:11px; font-weight:600; }
+  .lesson { border-left:3px solid #c9a24b; background:#171408; padding:10px 14px; border-radius:0 10px 10px 0; }
+  h2 { scroll-margin-top: 20px; }
+  .num { color:#5d6b85; font-weight:800; font-size:15px; min-width:2rem; }
+  .beforeafter { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .ba-pane { background:#0d1117; border:1px solid #1e2432; border-radius:10px; padding:12px; }
+  .ba-title { font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
+  .massbar { height:10px; border-radius:5px; }
+  @media (max-width: 900px){ .beforeafter { grid-template-columns:1fr; } }
+</style>
+</head>
+<body class="antialiased">
+<div class="mx-auto max-w-[1060px] px-6 py-10">
+
+  <!-- ======================= HEADER ======================= -->
+  <header class="mb-10">
+    <div class="flex items-center gap-3 mb-2">
+      <div class="h-9 w-9 rounded-xl bg-amber-500/15 border border-amber-500/30 grid place-items-center text-amber-400 font-black">L</div>
+      <div>
+        <h1 class="text-[26px] font-extrabold tracking-tight text-white">Lasso — Architecture Review</h1>
+        <p class="text-[13px] text-slate-400">xtimelinefilter · branch <code class="filetag">claude/convex-mirror</code> · 2026-07-02 · working tree reviewed as-is (~30 uncommitted in-flight files)</p>
+      </div>
+    </div>
+    <p class="text-[13.5px] text-slate-400 max-w-[860px] mt-3">
+      Method: six parallel survey agents (five subsystem reviewers + one facts cataloger) fanned out over
+      <span class="text-slate-200">content layer, x-client, core state, UI surfaces, and test architecture</span>;
+      every finding below was then <span class="text-emerald-400 font-semibold">verified against the code</span> — the load-bearing ones by direct
+      re-reads of the implicated files, the rest by targeted greps. Nothing here is a surveyor's unchecked claim.
+      Vocabulary is the deep-module set (depth, seam, adapter, locality, leverage, deletion test); domain terms are CONTEXT.md's.
+      Previously killed proposals (composition root, preset module, ensureOk never-guard, LabeledSwitch, show→showChips) were excluded by construction.
+    </p>
+  </header>
+
+  <!-- ======================= SCORECARD ======================= -->
+  <section class="card p-6 mb-10">
+    <h2 class="text-[18px] font-bold text-white mb-3">Verdict</h2>
+    <p class="text-[14px] text-slate-300 max-w-[860px]">
+      This codebase is in the <span class="text-emerald-400 font-semibold">top tier</span> of what the review vocabulary calls good architecture:
+      real deep modules (filter-applier, synced-store, caret-actions' <code>run()</code>), real two-adapter seams with contract tests that prove their own teeth,
+      one projection home per derived fact, and ADRs + a domain glossary that the code actually follows.
+      The 20 points below are dominated by <em>localized</em> frictions — but three are genuine behavioral defects
+      (a strict write that reads back as success after failing, a filter undo that visibly does nothing, and a test-double sprawl that taxes every new storage test).
+    </p>
+    <div class="flex flex-wrap gap-2 mt-4">
+      <span class="badge rec-strong">tsconfig: strictest tier</span>
+      <span class="badge rec-strong">100% coverage gate (src + convex)</span>
+      <span class="badge rec-strong">permissions: ["storage"] only</span>
+      <span class="badge rec-strong">10 ADRs + CONTEXT.md glossary</span>
+      <span class="badge rec-strong">contract tests over every multi-adapter seam</span>
+      <span class="badge sev-major">3 major</span>
+      <span class="badge sev-moderate">10 moderate</span>
+      <span class="badge sev-minor">7 minor</span>
+    </div>
+  </section>
+
+  <!-- ======================= 20 POINTS ======================= -->
+  <section class="mb-12">
+    <h2 class="text-[20px] font-bold text-white mb-1">The 20 improvement points</h2>
+    <p class="text-[13px] text-slate-400 mb-6">Every point: why it's not good, and the aspect to improve. All code-verified.</p>
+
+    <!-- MAJOR -->
+    <h3 class="text-[13px] font-bold uppercase tracking-widest text-red-400 mb-3">Major — behavioral defects &amp; compounding drag</h3>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">1</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1">
+          <span class="badge sev-major">major</span><span class="kind">leaky-seam</span><span class="verified">✓ verified by direct read</span>
+        </div>
+        <p class="font-semibold text-slate-100">A rejected strict write still reads back as success — <code>syncedStore.write()</code> poisons its cache before the storage write settles</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> <code>write()</code> sets <code>cache = next</code> and registers the echo <em>before</em> <code>await area.set()</code>, with no rollback on rejection. <code>settings.set()</code> is documented STRICT precisely so Options can surface a failed save — but the very next <code>settings.get()</code> returns the value storage never accepted, and the pending echo is never drained. The one shared mechanism both <code>settings</code> and <code>filter-store</code> stand on silently converts failure into apparent success for every reader in that context.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> mutate the cache only around a guarded rollback (see Card A for exact code) — fixed once, fixed for every synced-store consumer.</p>
+        <div class="mt-2"><span class="filetag">src/core/synced-store.ts:68-72</span> <span class="filetag">src/core/settings.ts</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">2</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1">
+          <span class="badge sev-major">major</span><span class="kind">leaky-seam</span><span class="verified">✓ verified by direct read</span>
+        </div>
+        <p class="font-semibold text-slate-100">Filter undo can visibly do nothing — <code>FilterStore.restore()</code> is the only selection mutator that skips <code>resumeFiltering()</code></p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> every setter (<code>setMode</code>, <code>setEnabled</code>, <code>applyPreset</code>…) ends a transient "show all" peek first — "adjusting the filter is the natural signal the user wants to see its effect." <code>restore()</code> — exactly what the conductor arms for the one-Z filter undo — just does <code>state.value = next; persist()</code>. Sequence: cycle a criterion (arms undo) → "show all" (transient, doesn't re-arm) → press <kbd>Z</kbd>: criteria revert, <code>revealed</code> stays true, timeline changes nothing, panel copy goes stale.</p>
+        <p class="text-[13px] text-slate-300 mt-1"><span class="text-slate-300">Improve:</span> one line — <code>restore()</code> calls <code>resumeFiltering()</code> first (Card B). Makes the interface comment ("replace the whole config in one shot") true for the <em>visible</em> contract.</p>
+        <div class="mt-2"><span class="filetag">src/core/filter-store.ts:191-194</span> <span class="filetag">src/content/controller.ts:357-372</span> <span class="filetag">src/content/filter-applier.ts</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-8 flex gap-4">
+      <div class="num">3</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1">
+          <span class="badge sev-major">major</span><span class="kind">duplication</span><span class="verified">✓ verified: 10 files by grep</span>
+        </div>
+        <p class="font-semibold text-slate-100">The chrome.storage fake is re-implemented in 10 test files — while a canonical one already lives in <code>tests/setup.ts</code></p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> ten hand-rolled <code>fakeStorage()</code>/<code>memoryArea()</code> closures implementing the same <code>StorageLike</code>, several with comments admitting the duplication, already drifting (some support <code>remove</code>, some don't). Every future storage-touching test re-derives the same 10 lines; every semantic change to the fake is a 10-file edit.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> one seedable <code>fakeStorage(seed?)</code> in <code>tests/support/storage.ts</code> (Card C) — covers the legitimate per-test seeding/inspection needs the global shim can't.</p>
+        <div class="mt-2"><span class="filetag">tests/setup.ts</span> <span class="filetag">+ 10 test files (settings, synced-store, coach, list-usage, controller, filter-presets, settings-surfaces, OptionsApp, surface-options, PopupApp)</span></div>
+      </div>
+    </div>
+
+    <!-- MODERATE -->
+    <h3 class="text-[13px] font-bold uppercase tracking-widest text-amber-400 mb-3">Moderate — structural friction that compounds</h3>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">4</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">no-locality</span><span class="verified">✓ verified by direct read</span></div>
+        <p class="font-semibold text-slate-100">main.tsx is documented as "pure wiring" but carries real branching logic — testable only through a 574-line, 28-mock boot harness</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> the select-mode click handler (5 guard branches: overlay pass-through, <code>#lasso-root</code> pass-through, <code>composedPath</code> fallback, article resolution, author-null) and the <code>visualHover</code>/<code>hoveredSticky</code> dual-tracking scheme live inline. The only tests that reach them mock ~28 collaborator modules — each new branch costs a whole-boot fixture. (The composition-root extraction stays killed; this is the narrower move.)</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> extract the click-delegation <em>predicate</em> as a pure function beside <code>outermost-tweet.ts</code> (Card E) — main.tsx keeps the listener, the decision gets real unit tests.</p>
+        <div class="mt-2"><span class="filetag">src/content/main.tsx:134-146, 221-237</span> <span class="filetag">tests/content/main.test.tsx</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">5</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">test-friction</span><span class="verified">✓ verified: no x-http.test.ts exists</span></div>
+        <p class="font-semibold text-slate-100">x-http.ts is a real 3-caller seam with genuine dual-profile logic — and the only x-client module with no direct test home</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> the new transport owns <code>ensureOk</code>, both <code>ErrorProfile</code> tables, and their <em>intentionally different rule order</em> (GraphQL checks rate-limited before protected; REST the reverse). Every sibling (<code>rest-api</code>, <code>graphql-api</code>, <code>dom-api</code>, <code>lists-provider</code>, <code>auth</code>, <code>factory</code>…) has its own <code>*.test.ts</code>; x-http's behavior is only pinned transitively through two other files' assertions.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> a direct <code>x-http.test.ts</code> naming the profile divergence as its own assertion (Card F). In-flight work — finish the landing.</p>
+        <div class="mt-2"><span class="filetag">src/core/x-client/x-http.ts (uncommitted)</span> <span class="filetag">tests/core/x-client/</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">6</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">duplication</span><span class="verified">✓ verified by direct read</span></div>
+        <p class="font-semibold text-slate-100">lists-provider.ts still hand-rolls the exact status ladder <code>ensureOk</code> was built to centralize</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> <code>fetchOwnedLists</code> imports <code>authHeaders</code> + <code>rateLimitResetOf</code> from x-http but then re-implements 429 → rate-limited, 401/403 → auth, !ok → unknown inline (lists-provider.ts:30-38) — a third near-copy of "turn a bad Response into an XApiError" surviving the very extraction meant to kill it.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> a minimal <code>ErrorProfile</code> (<code>rules: []</code>) and one <code>ensureOk(res, profile)</code> call (Card F). Toast/message strings pinned by tests will shift — update them deliberately.</p>
+        <div class="mt-2"><span class="filetag">src/core/x-client/lists-provider.ts:30-38</span> <span class="filetag">src/core/x-client/x-http.ts:76-84</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">7</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">dead-code / doc-drift</span><span class="verified">✓ verified: zero production callers</span></div>
+        <p class="font-semibold text-slate-100">CaretActions.mute / .block are production-dead — and the <em>live</em> mute/block path quietly lacks the verified-action guarantee</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> main.tsx wires <code>quick.mute/unmute/block</code> straight to REST v1.1 (<code>muteUser</code>/<code>blockUser</code>) unconditionally; only <code>notInterested</code> goes through the caret driver. So the tested act→acceptance-signal→retry machinery for mute/block is unreachable, ~150 lines of its tests exercise a dead path, CONTEXT.md still documents caret-actions as "mute/not-interested/block via the ... menu" — and the path users actually hit has no acceptance signal at all (the exact fire-and-forget class the pattern exists to kill).</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> decide explicitly (Card G): delete the dead caret verbs (deletion test: complexity concentrates in <code>run()</code> + <code>notInterested</code>) <em>or</em> route mute/block through caret when <code>backend === "dom"</code>. Update CONTEXT.md either way.</p>
+        <div class="mt-2"><span class="filetag">src/core/x-client/caret-actions.ts</span> <span class="filetag">src/content/main.tsx:174-177</span> <span class="filetag">docs/CONTEXT.md §module-map</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">8</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">dead-code</span><span class="verified">✓ verified: no callers in src/ (grep)</span></div>
+        <p class="font-semibold text-slate-100">The GraphQL sniffer is fully inert — <code>createGraphqlSniffer</code> / <code>wrapFetchWithSniffer</code> have no callers anywhere</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> CONTEXT.md sells GraphqlConfig as "seeded snapshot + optional runtime sniffer," but the GraphQL backend is constructed with the static seed only; the drift-defense module exists, is tested, and defends nothing. An unwired seam is worse than an absent one — it reads as protection that isn't there.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> wire it at GraphQL-backend construction, or delete it and record the decision (queryId drift is accepted risk for the opt-in backend) so the next reviewer doesn't re-flag it.</p>
+        <div class="mt-2"><span class="filetag">src/core/x-client/graphql-sniffer.ts</span> <span class="filetag">src/content/main.tsx:116-117</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">9</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">duplication</span><span class="verified">✓ verified by direct reads</span></div>
+        <p class="font-semibold text-slate-100">coach, list-usage, and list-cache each hand-roll the same read-blob / merge / write-back idiom on storage.local</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> three verbatim copies of <code>((await area.get(KEY))[KEY] as T | undefined) ?? fallback</code> + spread-merge + <code>area.set</code>. Not a syncedStore case (all three are pull-based, no cross-context push) — but corruption recovery or schema versioning would today be a three-file change.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> tiny <code>readBlob</code>/<code>patchBlob</code> helpers with three immediate adapters (Card D) — a seam born real, not hypothetical.</p>
+        <div class="mt-2"><span class="filetag">src/core/coach.ts:46-54</span> <span class="filetag">src/core/list-usage.ts:28-29</span> <span class="filetag">src/core/list-cache.ts:22-26</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">10</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">leaky-seam</span><span class="verified">✓ verified by direct read</span></div>
+        <p class="font-semibold text-slate-100"><code>syncedStore</code> accepts an injected <code>area</code> — but its listener hardcodes <code>watchStorageKey("sync", …)</code></p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> the constructor parameter says "any StorageLike"; line 75 says "sync only." Hand it a local-area adapter and writes go to one area while the external-change listener watches another — a silent, confusing failure. This is exactly the wart a second adapter (e.g. a future storage.local consumer) would trip over on day one.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> take <code>areaName: "sync" | "local" = "sync"</code> and pass it through (Card A includes it) — the parameter and the listener stop disagreeing.</p>
+        <div class="mt-2"><span class="filetag">src/core/synced-store.ts:75</span> <span class="filetag">src/core/storage-sync.ts:11-15</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">11</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">no-locality</span><span class="verified">✓ verified by direct read</span></div>
+        <p class="font-semibold text-slate-100">Options nav rail and rendered sections are two hand-maintained registries — and they've already drifted (Accessibility is unreachable)</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> <code>RAIL</code> lists 7 targets; the page renders 8 <code>&lt;Section&gt;</code>s. <code>id="access"</code> (the live highContrast setting) has no rail item — findable only by scroll. Two parallel structures with no drift guard means the 9th section repeats this.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> add the missing entry <em>and</em> a one-assertion drift guard: every rendered section id must appear in RAIL (exact test in Card H).</p>
+        <div class="mt-2"><span class="filetag">src/options/OptionsApp.tsx:69-77 vs :375</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">12</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">leaky-seam</span><span class="verified">✓ verified: 2 edges by grep</span></div>
+        <p class="font-semibold text-slate-100">ui → content backward imports: <code>ShortcutsSheet</code> and <code>ActionBar</code> reach into the content layer for types</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> <code>CommandId</code>/<code>KeyBinding</code> (from <code>content/keyboard</code>) and <code>RunningAssign</code> (from <code>content/app-state</code>) are domain vocabulary, not content-script mechanics. The ui layer importing upward inverts the layering the rest of the repo keeps (ui ← content ← core), and makes the keyboard module un-movable without touching ui.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> home those types in <code>core/</code> (e.g. <code>core/commands.ts</code>); content and ui both import downward.</p>
+        <div class="mt-2"><span class="filetag">src/ui/ShortcutsSheet.tsx:1</span> <span class="filetag">src/ui/ActionBar.tsx:3</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-8 flex gap-4">
+      <div class="num">13</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-moderate">moderate</span><span class="kind">no-locality</span><span class="verified">✓ verified: 7 literals in 7 files</span></div>
+        <p class="font-semibold text-slate-100">The floating-surface z-index stack is seven magic literals coordinated by prose comments across seven files</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> pill 2147483640 &lt; palette 2147483643 &lt; overlay tier 2147483646 (ActionBar, Toast, WelcomeCard, ShortcutsSheet, app.tsx picker) — the ordering exists only in comments that cite other files' raw numbers. Every new surface re-derives the whole ladder by reading prose; nothing fails if two tiers collide.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> one <code>src/ui/z-stack.ts</code> exporting the named ladder (Card H); surfaces import a name, never a number.</p>
+        <div class="mt-2"><span class="filetag">funnel-pill.tsx</span> <span class="filetag">filter-palette.tsx</span> <span class="filetag">ActionBar.tsx</span> <span class="filetag">Toast.tsx</span> <span class="filetag">WelcomeCard.tsx</span> <span class="filetag">ShortcutsSheet.tsx</span> <span class="filetag">content/app.tsx:139</span></div>
+      </div>
+    </div>
+
+    <!-- MINOR -->
+    <h3 class="text-[13px] font-bold uppercase tracking-widest text-sky-400 mb-3">Minor — polish with a real payoff</h3>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">14</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-minor">minor</span><span class="kind">leaky-seam</span><span class="verified">✓ verified: both sites by grep</span></div>
+        <p class="font-semibold text-slate-100">Traceless-collapse policy is split across layers by the magic string <code>"engagement:liked"</code></p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> filter-applier decides tracelessness by string-matching a criterion id defined independently in <code>core/filter-criteria.ts</code>. <code>CriterionId</code> is a bare <code>string</code> alias, so a rename breaks the behavior with zero compiler noise.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> minimum — one exported constant imported by both. Better — the core decision (<code>decide()</code>/verdict) carries <code>traceless</code>, so "which hides are traceless" has one home in core and the applier just reads it.</p>
+        <div class="mt-2"><span class="filetag">src/content/filter-applier.ts:100</span> <span class="filetag">src/core/filter-criteria.ts:67</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">15</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-minor">minor</span><span class="kind">no-locality</span><span class="verified">✓ verified by direct read</span></div>
+        <p class="font-semibold text-slate-100">list-cache treats a legitimately empty cache (<code>[]</code>) as "never cached"</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> <code>if (cached?.length) return cached;</code> — a user with zero Lists (the picker's own designed EMPTY state) refetches on every open; cache-first silently defeated for exactly that user. Reads as oversight, not decision.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> <code>if (cached !== undefined) return cached;</code> — or keep the refetch and say so in a comment. Either way, make it a decision.</p>
+        <div class="mt-2"><span class="filetag">src/core/list-cache.ts:22-23</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">16</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-minor">minor</span><span class="kind">duplication</span><span class="verified">✓ verified by direct read</span></div>
+        <p class="font-semibold text-slate-100">Four copy-pasted try / act / success-toast / catch / danger-toast-retry skeletons in the conductor</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> <code>muteAuthor</code>, <code>unmuteAuthor</code>, <code>blockAuthor</code>, <code>hideTweet</code> share one shape with easy-to-typo variations (only mute arms undo; only block/hide wire self-retry). A fifth quick action will be written by copy-paste and must remember every step.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> a light <code>runQuickAction({ act, success, failure, retry?, armUndo? })</code> config helper — stop short of over-parameterizing (the LabeledSwitch lesson stands).</p>
+        <div class="mt-2"><span class="filetag">src/content/controller.ts:273-336</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">17</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-minor">minor</span><span class="kind">leaky-seam</span><span class="verified">✓ verified by direct read</span></div>
+        <p class="font-semibold text-slate-100">coach.ts read-modify-write races: two concurrent writes lose one update</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> <code>write(patch)</code> = read, spread, set — two in-flight calls (e.g. <code>tryShowTip</code> resolving beside <code>recordAssign</code> after an assign run) each read the same base and the later <code>set</code> drops the earlier patch. Low stakes today (hint counters), but it's the idiom being copied (point 9).</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> serialize writes behind a small promise chain inside the shared <code>patchBlob</code> helper (Card D) — fixing the idiom fixes all three modules.</p>
+        <div class="mt-2"><span class="filetag">src/core/coach.ts:50-54</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">18</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-minor">minor</span><span class="kind">duplication / test-friction</span><span class="verified">✓ verified by grep</span></div>
+        <p class="font-semibold text-slate-100">Test-fixture sprawl beyond the storage fake: timeline-cell builders ×2 (already drifted), <code>article()</code> ×2 (byte-identical), <code>installOnChanged</code> ×3</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> <code>filter-applier.test.ts</code>'s rich <code>addCell(root, lang, {liked, video, repost…})</code> vs <code>filter-feature.test.ts</code>'s shrunken <code>addCell(lang)</code> means the umbrella integration test silently stops covering new Facets as the applier's options grow. The other two are pure copy-paste.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> colocated fixture modules (<code>tests/content/fixtures.ts</code>, <code>tests/core/tweet-read/fixtures.ts</code>, storage-sync helper) — one builder per DOM shape, options grow in one place.</p>
+        <div class="mt-2"><span class="filetag">tests/content/filter-applier.test.ts</span> <span class="filetag">tests/content/filter-feature.test.ts</span> <span class="filetag">tests/core/tweet-read/*</span> <span class="filetag">tests/core/{storage-sync,synced-store,settings}.test.ts</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">19</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-minor">minor</span><span class="kind">duplication</span><span class="verified">✓ verified by grep</span></div>
+        <p class="font-semibold text-slate-100">Preset-draft save logic duplicated verbatim between the in-page FilterPanel and Options' PresetManager</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> trim → guard empty → <code>savePreset</code> → clear draft, hand-copied twice. Real logic (not shared markup — the killed-abstraction precedent doesn't apply); name-dedup or length caps would have to land twice or drift.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> one tiny <code>usePresetDraft(store)</code> hook returning <code>{ draftName, setDraftName, save }</code>; each surface keeps its own JSX.</p>
+        <div class="mt-2"><span class="filetag">src/ui/filter-panel.tsx:34-42</span> <span class="filetag">src/options/SurfaceOptions.tsx:62-74</span></div>
+      </div>
+    </div>
+
+    <div class="card p-5 mb-3 flex gap-4">
+      <div class="num">20</div>
+      <div class="flex-1">
+        <div class="flex flex-wrap items-center gap-2 mb-1"><span class="badge sev-minor">minor</span><span class="kind">duplication</span><span class="verified">✓ verified: 3 sites, 2 techniques by grep</span></div>
+        <p class="font-semibold text-slate-100">Three inline downcasts, two different techniques, for one recurring problem: "<code>Document | Element</code> root → concrete node"</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Why not good:</span> filter-applier duck-types <code>"documentElement" in root</code> twice; tweet-scanner checks <code>nodeType === Node.DOCUMENT_NODE</code>. Same cross-cutting question, no canonical answer — the next content module invents a fourth variant.</p>
+        <p class="text-[13px] text-slate-400 mt-1"><span class="text-slate-300">Improve:</span> two named one-liners (<code>rootBody(root)</code>, <code>rootDocumentElement(root)</code>) shared by the content layer.</p>
+        <div class="mt-2"><span class="filetag">src/content/filter-applier.ts:125,151</span> <span class="filetag">src/content/tweet-scanner.ts:64</span></div>
+      </div>
+    </div>
+
+    <div class="card p-4 mt-4 text-[12.5px] text-slate-400">
+      <span class="font-semibold text-slate-300">Watch-list (not counted, not urgent):</span>
+      controller.ts closure-flag accretion (4 unrelated flags — group by flow if a 5th lands) ·
+      v1.1 base URL literal duplicated between rest-api.ts and lists-provider.ts ·
+      <code>tests/regression/</code> has no admission-criterion README yet ·
+      controller.test.ts's <code>harness()</code> bag is at 11 knobs (<code>withBlock</code>/<code>block</code> can collapse; <code>omitNow</code> smells) ·
+      <code>CriterionId = string</code> gives the compiler nothing to catch point 14 with.
+    </div>
+  </section>
+
+  <!-- ======================= DEEPENING CANDIDATE CARDS ======================= -->
+  <section class="mb-12">
+    <h2 class="text-[20px] font-bold text-white mb-1">Deepening candidates — exact fixes</h2>
+    <p class="text-[13px] text-slate-400 mb-6">The points above, folded into eight executable moves. Each card: before/after, exact code, recommendation strength.</p>
+
+    <!-- CARD A -->
+    <div class="card p-6 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-[16px] font-bold text-white">A · Honest synced write <span class="text-slate-500 font-normal">(points 1 + 10)</span></h3>
+        <span class="badge rec-strong">Strong</span>
+      </div>
+      <p class="text-[13px] text-slate-400 mb-4">The synced store is the settled deep module both <code>settings</code> and <code>filter-store</code> face onto — the highest-leverage fix in this report. Two defects, one file.</p>
+      <div class="beforeafter mb-4">
+        <div class="ba-pane">
+          <div class="ba-title text-red-400">Before — failure reads as success</div>
+          <pre class="mermaid">
+sequenceDiagram
+  participant O as Options page
+  participant S as syncedStore
+  participant C as chrome.storage
+  O->>S: write(next)
+  S->>S: cache = next · echo staged
+  S->>C: area.set(next)
+  C--xS: REJECTED
+  S--xO: throws (strict ✓)
+  O->>S: get()
+  S-->>O: next  ⚠ never persisted
+          </pre>
+        </div>
+        <div class="ba-pane">
+          <div class="ba-title text-emerald-400">After — cache rolls back, echo retired</div>
+          <pre class="mermaid">
+sequenceDiagram
+  participant O as Options page
+  participant S as syncedStore
+  participant C as chrome.storage
+  O->>S: write(next)
+  S->>C: area.set(next)
+  C--xS: REJECTED
+  S->>S: cache = prev · echo retired
+  S--xO: throws (strict ✓)
+  O->>S: get()
+  S-->>O: prev  ✓ truth
+          </pre>
+        </div>
+      </div>
+      <pre class="code">// src/core/synced-store.ts
+export function syncedStore&lt;T extends object&gt;(
+  key: string,
+  defaults: T,
+  area: StorageLike,
+  areaName: "sync" | "local" = "sync",   // ← the parameter and the listener stop disagreeing (pt 10)
+): SyncedStore&lt;T&gt; {
+  // …
+  async write(next: T) {
+    const prev = cache;
+    const echo = JSON.stringify(next);
+    cache = next;
+    pendingEchoes.add(echo);
+    try {
+      await area.set({ [key]: next });
+    } catch (err) {
+      // A rejected write must not read back as success: restore the cache
+      // (unless a newer write already superseded it) and retire the echo
+      // that will now never arrive.
+      if (cache === next) cache = prev;
+      pendingEchoes.delete(echo);
+      throw err;
+    }
+  },
+
+  onExternalChange(cb) {
+    watchStorageKey(areaName, key, (raw) =&gt; { /* unchanged */ });
+  },</pre>
+      <p class="text-[12.5px] text-slate-500 mt-3">Loop: (1) characterise at the interface — a test where <code>area.set</code> rejects asserts <code>current()</code> still returns the pre-write value and the echo set is empty (red on today's code) → (2) apply the fix → green → (3) existing echo/merge tests stay green untouched.</p>
+    </div>
+
+    <!-- CARD B -->
+    <div class="card p-6 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-[16px] font-bold text-white">B · Undo restores the <em>visible</em> contract <span class="text-slate-500 font-normal">(point 2)</span></h3>
+        <span class="badge rec-strong">Strong</span>
+      </div>
+      <div class="beforeafter mb-4">
+        <div class="ba-pane">
+          <div class="ba-title text-red-400">Before</div>
+          <pre class="mermaid">
+flowchart LR
+  A[cycle criterion] -->|arms undo| B[show all<br/>revealed = true]
+  B -->|press Z| C["restore(before)"]
+  C --> D[criteria reverted<br/>revealed STILL true]
+  D --> E[timeline unchanged<br/>Z looks dead]
+  style E fill:#3d1114,stroke:#6e2226,color:#ff8589
+          </pre>
+        </div>
+        <div class="ba-pane">
+          <div class="ba-title text-emerald-400">After</div>
+          <pre class="mermaid">
+flowchart LR
+  A[cycle criterion] -->|arms undo| B[show all<br/>revealed = true]
+  B -->|press Z| C["restore(before)<br/>resumeFiltering()"]
+  C --> D[criteria reverted<br/>revealed = false]
+  D --> E[timeline re-filters<br/>undo is visible]
+  style E fill:#0e3320,stroke:#1c5c3a,color:#5ee39a
+          </pre>
+        </div>
+      </div>
+      <pre class="code">// src/core/filter-store.ts
+restore(next) {
+  // Undo is a selection edit like any other: it must end a "show all" peek,
+  // or Z reverts the config while the timeline visibly changes nothing.
+  resumeFiltering();
+  state.value = next;
+  persist();
+},</pre>
+      <p class="text-[12.5px] text-slate-500 mt-3">One line plus a test: cycle → setRevealed(true) → restore(before) → expect <code>revealed.value === false</code>. Aligns <code>restore</code> with every sibling mutator; <code>setCompactHidden</code> keeps its documented exemption.</p>
+    </div>
+
+    <!-- CARD C -->
+    <div class="card p-6 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-[16px] font-bold text-white">C · One canonical storage fake <span class="text-slate-500 font-normal">(points 3 + 18)</span></h3>
+        <span class="badge rec-strong">Strong</span>
+      </div>
+      <div class="beforeafter mb-4">
+        <div class="ba-pane">
+          <div class="ba-title text-red-400">Before — 10 drifting copies</div>
+          <div class="flex flex-col gap-1.5 text-[11px] text-slate-500">
+            <div class="flex items-center gap-2"><div class="massbar bg-red-900/70 w-[92%]"></div></div>
+            <div>settings · synced-store · coach · list-usage · controller · filter-presets · settings-surfaces · OptionsApp · surface-options · PopupApp — each ~10-14 lines, some with <code>remove</code>, some without</div>
+          </div>
+        </div>
+        <div class="ba-pane">
+          <div class="ba-title text-emerald-400">After — one seedable module</div>
+          <div class="flex flex-col gap-1.5 text-[11px] text-slate-500">
+            <div class="flex items-center gap-2"><div class="massbar bg-emerald-800/80 w-[14%]"></div></div>
+            <div><code>tests/support/storage.ts</code> — 10 imports, one implementation; the global <code>tests/setup.ts</code> shim keeps serving the prop-less mounts</div>
+          </div>
+        </div>
+      </div>
+      <pre class="code">// tests/support/storage.ts
+import type { StorageLike } from "@/core/settings";
+
+/** Seedable in-memory StorageLike mirroring chrome.storage area semantics. */
+export function fakeStorage(
+  seed: Record&lt;string, unknown&gt; = {},
+): StorageLike &amp; { readonly data: Record&lt;string, unknown&gt; } {
+  let data: Record&lt;string, unknown&gt; = { ...seed };
+  return {
+    async get(keys) {
+      if (keys == null) return { ...data };
+      const list = typeof keys === "string" ? [keys] : keys;
+      return Object.fromEntries(list.filter((k) =&gt; k in data).map((k) =&gt; [k, data[k]]));
+    },
+    async set(items) {
+      data = { ...data, ...items };
+    },
+    async remove(keys) {
+      for (const k of typeof keys === "string" ? [keys] : keys) delete data[k];
+    },
+    get data() {
+      return data;
+    },
+  };
+}</pre>
+      <p class="text-[12.5px] text-slate-500 mt-3">Mechanical migration, one test file at a time; suite green after each. Same move, smaller: <code>tests/content/fixtures.ts</code> (rich <code>addCell</code>), <code>tests/core/tweet-read/fixtures.ts</code> (<code>article()</code>), one <code>installOnChanged</code> helper.</p>
+    </div>
+
+    <!-- CARD D -->
+    <div class="card p-6 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-[16px] font-bold text-white">D · The local-blob idiom gets one home <span class="text-slate-500 font-normal">(points 9 + 17)</span></h3>
+        <span class="badge rec-explore">Worth exploring</span>
+      </div>
+      <pre class="code">// src/core/storage-blob.ts — three adapters exist on day one (coach, list-usage, list-cache)
+import type { StorageLike } from "@/core/settings";
+
+/** Read one JSON blob stored under `key`; missing key yields `fallback`. */
+export async function readBlob&lt;T&gt;(area: StorageLike, key: string, fallback: T): Promise&lt;T&gt; {
+  return ((await area.get(key))[key] as T | undefined) ?? fallback;
+}
+
+/** Serialized read-merge-write: concurrent patches queue instead of losing updates. */
+export function blobWriter&lt;T extends object&gt;(area: StorageLike, key: string, fallback: T) {
+  let chain: Promise&lt;unknown&gt; = Promise.resolve();
+  return function patch(p: Partial&lt;T&gt;): Promise&lt;T&gt; {
+    const step = chain.then(async () =&gt; {
+      const next = { ...(await readBlob(area, key, fallback)), ...p };
+      await area.set({ [key]: next });
+      return next;
+    });
+    chain = step.catch(() =&gt; {}); // a failed patch never wedges the queue
+    return step;
+  };
+}</pre>
+      <p class="text-[12.5px] text-slate-500 mt-3">Kills the coach lost-update race (pt 17) as a side effect of deduplicating the idiom (pt 9) — the race fix lands where the logic is <em>called</em>, preserving locality. The deletion test passes: removing this module would scatter serialization back into three files.</p>
+    </div>
+
+    <!-- CARD E -->
+    <div class="card p-6 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-[16px] font-bold text-white">E · Select-click delegation as a pure decision <span class="text-slate-500 font-normal">(point 4)</span></h3>
+        <span class="badge rec-explore">Worth exploring</span>
+      </div>
+      <div class="beforeafter mb-4">
+        <div class="ba-pane">
+          <div class="ba-title text-red-400">Before</div>
+          <pre class="mermaid">
+flowchart TD
+  M["main.tsx (315 lines)<br/>wiring + 5-branch click logic<br/>+ hover dual-tracking"] --> T["main.test.tsx<br/>574 lines · 28 vi.mock()"]
+  style M fill:#3d1114,stroke:#6e2226,color:#ff8589
+          </pre>
+        </div>
+        <div class="ba-pane">
+          <div class="ba-title text-emerald-400">After</div>
+          <pre class="mermaid">
+flowchart TD
+  M2["main.tsx — wiring only"] --> P["select-click.ts<br/>pure decision"]
+  P --> U["select-click.test.ts<br/>plain DOM fixtures, no mocks"]
+  style P fill:#0e3320,stroke:#1c5c3a,color:#5ee39a
+          </pre>
+        </div>
+      </div>
+      <pre class="code">// src/content/select-click.ts — beside outermost-tweet.ts, the precedent extraction
+import { Selectors } from "@/content/selectors";
+import { OVERLAY_FLAG } from "@/content/…"; // wherever the flag constant lives today
+
+export type SelectClickDecision =
+  | { kind: "toggle"; article: Element }
+  | { kind: "pass" };   // Lasso UI / the check handles itself / not a tweet
+
+/** Decide what a select-mode click means. Pure: event in, decision out. */
+export function decideSelectClick(e: MouseEvent): SelectClickDecision {
+  const origin = (e.composedPath?.()[0] ?? e.target) as Element | null;
+  if (origin?.closest?.(`[${OVERLAY_FLAG}]`)) return { kind: "pass" };
+  if (origin?.closest?.("#lasso-root")) return { kind: "pass" };
+  const article = origin?.closest?.(Selectors.TWEET);
+  return article ? { kind: "toggle", article } : { kind: "pass" };
+}</pre>
+      <p class="text-[12.5px] text-slate-500 mt-3">main.tsx keeps the listener, <code>preventDefault</code>, and the author lookup — the <em>decision</em> gets direct tests with plain DOM fixtures. The 28-mock harness shrinks to wiring assertions only. This is not the killed composition root; it follows the <code>getFocusedTweet</code>/<code>outermostTweet</code> precedent.</p>
+    </div>
+
+    <!-- CARD F -->
+    <div class="card p-6 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-[16px] font-bold text-white">F · Finish landing the x-http transport <span class="text-slate-500 font-normal">(points 5 + 6)</span></h3>
+        <span class="badge rec-strong">Strong</span>
+      </div>
+      <div class="beforeafter mb-4">
+        <div class="ba-pane">
+          <div class="ba-title text-red-400">Before</div>
+          <pre class="mermaid">
+flowchart TD
+  R[rest-api] --> X["x-http · ensureOk"]
+  G[graphql-api] --> X
+  L[lists-provider] -. "authHeaders only,<br/>ladder re-rolled inline" .-> X
+  X -. no direct test .-> XT[" "]
+  style L fill:#3a2a0e,stroke:#6b4d15,color:#ffc66b
+  style XT fill:#3d1114,stroke:#6e2226
+          </pre>
+        </div>
+        <div class="ba-pane">
+          <div class="ba-title text-emerald-400">After</div>
+          <pre class="mermaid">
+flowchart TD
+  R[rest-api] --> X["x-http · ensureOk"]
+  G[graphql-api] --> X
+  L[lists-provider] --> X
+  XT["x-http.test.ts<br/>pins profile divergence"] --> X
+  style X fill:#0e3320,stroke:#1c5c3a,color:#5ee39a
+          </pre>
+        </div>
+      </div>
+      <pre class="code">// src/core/x-client/lists-provider.ts — the third caller joins the seam
+const OWNERSHIPS_PROFILE: ErrorProfile = {
+  joinSeparator: "; ",
+  rules: [],                                  // status pre-checks are all this endpoint needs
+  unknownFallback: "lists/ownerships error",
+};
+
+export async function fetchOwnedLists(deps: ListsProviderDeps): Promise&lt;XList[]&gt; {
+  const res = await deps.fetch(OWNERSHIPS_URL, {
+    method: "GET",
+    credentials: "include",
+    headers: authHeaders(deps.creds),
+  });
+  const json = (await ensureOk(res, OWNERSHIPS_PROFILE)) as { lists?: RawList[] };
+  // …mapping unchanged
+}</pre>
+      <p class="text-[12.5px] text-slate-500 mt-3">Plus <code>tests/core/x-client/x-http.test.ts</code>: one block per profile, and one named divergence test (payload carrying codes 88+104 classifies rate-limited under GRAPHQL_PROFILE, protected under REST_PROFILE) — the same pattern contract.test.ts already uses for backend divergence. Note: error <em>messages</em> change shape ("Rate limited (HTTP 429)" replaces "lists/ownerships rate limited") — tests pinning the old strings get updated deliberately, not incidentally.</p>
+    </div>
+
+    <!-- CARD G -->
+    <div class="card p-6 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-[16px] font-bold text-white">G · Unwired-seams sweep: caret mute/block + the inert sniffer <span class="text-slate-500 font-normal">(points 7 + 8)</span></h3>
+        <span class="badge rec-explore">Worth exploring</span>
+      </div>
+      <p class="text-[13px] text-slate-400 mb-3">Two decisions, not two refactors. Both are seams whose second half was never connected — protection that reads as present but isn't.</p>
+      <ul class="text-[13px] text-slate-400 list-disc pl-5 space-y-2">
+        <li><span class="text-slate-200">Caret mute/block:</span> either delete <code>CaretActions.mute/.block</code> (+ their ~150 test lines) so the surface matches what's driven — the deletion test passes, complexity concentrates in <code>run()</code> + <code>notInterested</code> — <em>or</em> route <code>quick.mute/block</code> through the caret driver when <code>backend === "dom"</code>, giving the DOM strategy its verified-action guarantee for mute/block too. Update CONTEXT.md's module-map line either way.</li>
+        <li><span class="text-slate-200">GraphQL sniffer:</span> wire <code>wrapFetchWithSniffer</code> into the GraphQL backend's construction (drift defense goes live), or delete the module and record the acceptance of queryId-drift risk for the opt-in backend — an ADR-worthy call either direction.</li>
+      </ul>
+    </div>
+
+    <!-- CARD H -->
+    <div class="card p-6 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-[16px] font-bold text-white">H · Registry singletons: nav rail + z-stack <span class="text-slate-500 font-normal">(points 11 + 13)</span></h3>
+        <span class="badge rec-strong">Strong (small)</span>
+      </div>
+      <pre class="code">// src/ui/z-stack.ts — the ladder IS the ordering; surfaces import a name, never a number
+/** Stacking order for every floating Lasso surface. Keep ascending. */
+export const Z = {
+  pill:    2_147_483_640,
+  palette: 2_147_483_643,
+  overlay: 2_147_483_646, // ActionBar · Toast · WelcomeCard · ShortcutsSheet · picker
+} as const;
+
+// src/options/OptionsApp.tsx — the missing rail entry
+const RAIL = [
+  // …
+  { label: "Sync", target: "sync" },
+  { label: "Accessibility", target: "access" },   // ← was unreachable
+  { label: "Privacy", target: "privacy" },
+] as const;
+
+// tests/options/OptionsApp.test.tsx — the drift guard that makes a 9th section safe
+it("every rendered section is reachable from the nav rail", async () =&gt; {
+  const { container } = render(&lt;OptionsApp settings={settings} coach={coach} /&gt;);
+  await waitFor(() =&gt; expect(container.querySelector("main")).toBeTruthy());
+  const sectionIds = [...container.querySelectorAll("main [id]")].map((el) =&gt; el.id);
+  const railTargets = RAIL.map((r) =&gt; r.target);
+  for (const id of sectionIds) expect(railTargets).toContain(id);
+});</pre>
+    </div>
+  </section>
+
+  <!-- ======================= 5 STRENGTHS ======================= -->
+  <section class="mb-12">
+    <h2 class="text-[20px] font-bold text-white mb-1">Five things done right — and the lesson each teaches</h2>
+    <p class="text-[13px] text-slate-400 mb-6">Selected from sixteen surveyed strengths for how transferable the lesson is.</p>
+
+    <div class="card p-6 mb-4">
+      <h3 class="text-[15px] font-bold text-emerald-300 mb-1">1 · The Hidden-cell lifecycle is a genuinely deep module — proven by the deletion test <em>in reverse</em></h3>
+      <p class="text-[13px] text-slate-400">filter-applier owns classify/collapse/restore/reapply/isStubbed end-to-end: no caller touches the FILTERED/STUB/TRACELESS attributes, and recycle-safety, fail-open guards, compact-mode CSS, and hydration re-classify all hide behind five call sites' worth of tiny surface. When traceless hiding was added, <code>main.tsx</code> needed only <code>isStubbed()</code> — nothing downstream changed.</p>
+      <div class="lesson mt-3 text-[13px] text-amber-100/90"><span class="font-bold text-amber-300">Lesson:</span> a module has earned "deep" when a new internal capability lands and <em>no caller has to learn anything</em>. Watch for that moment — it is the strongest available evidence the seam is drawn in the right place.</div>
+      <div class="mt-2"><span class="filetag">src/content/filter-applier.ts</span></div>
+    </div>
+
+    <div class="card p-6 mb-4">
+      <h3 class="text-[15px] font-bold text-emerald-300 mb-1">2 · Contract tests that prove their own teeth — and name their divergences</h3>
+      <p class="text-[13px] text-slate-400">The MembershipStore contract runs both adapters through one suite, then feeds itself deliberately broken implementations to prove it would fail on a regression. The XListApi contract splits universal behavior, HTTP-only parity, and one <em>named intentional divergence</em> (REST vs GraphQL rule order on a code-88+104 payload) into three blocks — so drift toward false symmetry fails as loudly as a contract break.</p>
+      <div class="lesson mt-3 text-[13px] text-amber-100/90"><span class="font-bold text-amber-300">Lesson:</span> a shared contract is only trustworthy if you've watched it fail; write the negative case beside it. And give deliberate asymmetries their own named test — assert the difference, don't bury it in one adapter's file.</div>
+      <div class="mt-2"><span class="filetag">tests/core/membership-store/contract.test.ts</span> <span class="filetag">tests/core/x-client/contract.test.ts</span></div>
+    </div>
+
+    <div class="card p-6 mb-4">
+      <h3 class="text-[15px] font-bold text-emerald-300 mb-1">3 · Derived facts have exactly one home — divergence became impossible, not just tested-against</h3>
+      <p class="text-[13px] text-slate-400"><code>filter-projection</code> is the only place any surface computes the active-criteria count or palette catalog (born from a real pill-vs-popup disagreement bug), and <code>CriteriaMatrix</code> is a true second-adapter extraction: three props, each independently load-bearing (<code>conduct</code> routes through the fail-open wall in-page; Options runs direct), replacing two divergent chip implementations.</p>
+      <div class="lesson mt-3 text-[13px] text-amber-100/90"><span class="font-bold text-amber-300">Lesson:</span> when two surfaces can independently derive the same fact, they eventually will — differently. The fix is not more per-surface tests; it is deleting the second derivation. Extraction is justified by the second <em>real</em> caller, not by imagined reuse.</div>
+      <div class="mt-2"><span class="filetag">src/core/filter-projection.ts</span> <span class="filetag">src/ui/criteria-matrix.tsx</span></div>
+    </div>
+
+    <div class="card p-6 mb-4">
+      <h3 class="text-[15px] font-bold text-emerald-300 mb-1">4 · The verified-action pattern is factored exactly once — and its tests only trust observable effects</h3>
+      <p class="text-[13px] text-slate-400">One <code>run()</code> driver (open menu → wait for row → activate with re-find retry → wait for menu close → confirm) parameterized by only a row predicate and a confirm mode. Its test fixture makes the fake menu <em>actually vanish</em> on click — testing "X accepted the action," not "a click was dispatched." The hydration observer's comment cites the live-verified X quirk it exists for, with the doc that proves it.</p>
+      <div class="lesson mt-3 text-[13px] text-amber-100/90"><span class="font-bold text-amber-300">Lesson:</span> for automation against a platform you don't control, define success as an observable effect and make fixtures reproduce that effect. Parameterize shared act→verify→retry machinery by what actually varies (a predicate + an enum) — and write comments as citations of observed failure modes, not descriptions of code.</div>
+      <div class="mt-2"><span class="filetag">src/core/x-client/caret-actions.ts</span> <span class="filetag">tests/core/x-client/caret-actions.test.ts</span> <span class="filetag">src/content/filter-applier.ts</span></div>
+    </div>
+
+    <div class="card p-6 mb-4">
+      <h3 class="text-[15px] font-bold text-emerald-300 mb-1">5 · Regression tests pin invariants the test environment structurally cannot reproduce — and say so</h3>
+      <p class="text-[13px] text-slate-400"><code>store-stability.test.tsx</code> doesn't try to reproduce the infinite render loop happy-dom's scheduler dampens; it asserts the invariant whose violation causes it (<code>createSettings</code>/<code>createFilterStore</code> called exactly once per prop-less mount) and documents why a behavioral repro is impossible. The docstring names the live failure ("flips then reverts") and the environment gap.</p>
+      <div class="lesson mt-3 text-[13px] text-amber-100/90"><span class="font-bold text-amber-300">Lesson:</span> when the environment can't reproduce the symptom, don't fake it — assert the invariant and record <em>why</em> in the test itself. This is the template for every environment-fidelity gap (shadow-DOM retargeting is the next candidate).</div>
+      <div class="mt-2"><span class="filetag">tests/regression/store-stability.test.tsx</span></div>
+    </div>
+
+    <p class="text-[12.5px] text-slate-500">Honorable mentions: PageDriver is a real two-adapter seam (DomXListApi has zero DOM knowledge) · factory.ts's lazy backend construction makes 3 lines a real module · the echo-suppression <em>Set</em> deepened against an observed flicker bug · two independent shadow roots make "Filter is never load-bearing" mechanically true · the <code>Assignable&lt;A,B&gt;</code> compile-time guard re-checks a deliberately-uncoupled cast.</p>
+  </section>
+
+  <!-- ======================= TOP RECOMMENDATION ======================= -->
+  <section class="card p-6 mb-10 border-amber-500/30" style="border-color:#6b4d15;">
+    <h2 class="text-[18px] font-bold text-amber-300 mb-2">Top recommendation</h2>
+    <p class="text-[14px] text-slate-300 max-w-[880px]">
+      Take <span class="font-bold text-white">Card A (honest synced write)</span> first, with <span class="font-bold text-white">Card B</span> in the same sitting.
+      Both are verified behavioral defects, both are a handful of lines, and A sits in the single highest-leverage module in the codebase —
+      every settings and filter write in every context crosses it, so its correctness is multiplied by thirteen-plus importers.
+      Then <span class="font-bold text-white">Card F</span> to finish landing the in-flight x-http transport before the branch merges
+      (the seam is good; it's just missing its third caller and its own test home).
+      Card C is the best <em>independent</em> track — pure test-infrastructure, zero production risk, can run in parallel with anything.
+    </p>
+  </section>
+
+  <footer class="text-[12px] text-slate-600 pb-8">
+    Generated 2026-07-02 · six survey agents (sonnet ×5, haiku ×1) + fable curation and per-finding verification ·
+    respects killed proposals from reviews of 2026-06-21 · no ADR conflicts found (point 7 tightens ADR-0001's story rather than contradicting it).
+  </footer>
+</div>
+</body>
+</html>

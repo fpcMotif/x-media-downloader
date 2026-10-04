@@ -138,7 +138,9 @@ export interface PlatformAdapter {
    * it because X's native shortcuts are authoritative there. The pure machine
    * (`core/nav`) and the overlay controller never fork on platform — every
    * selector difference lives behind this descriptor, so a platform DOM
-   * change is fixed in exactly one place (the ADR-0019 registry pattern).
+   * change is fixed in exactly one place (the registry pattern).
+   *
+   * @see ADR-0019
    */
   readonly nav?: AdapterNav
 }

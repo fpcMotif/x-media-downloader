@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
+import { makeRemoteUpload } from './remote-upload'
 import { Schema } from 'effect'
 import {
   makeCloudUpload,
   type AlarmPort,
   type AuthFlowPort,
   type BadgePort,
+  type CloudHistoryNotice,
   type CloudRuntimePort,
   type CloudUploadDeps,
 } from './cloud-upload'
@@ -152,6 +154,51 @@ const makeCU = (over: Partial<CloudUploadDeps> = {}) =>
     setSettings: async () => connected(),
     ...over,
   })
+
+it('routes experimental Cloud-only acceptance exclusively to Convex, including after settings change', async () => {
+  const settings = connected({
+    saveToDisk: false,
+    convexDriveEnabled: true,
+    convexDriveConnected: true,
+    convexUrl: 'https://test.convex.cloud',
+    convexSyncSecret: 'test-secret',
+    cloudDeviceId: 'device',
+  })
+  const runtime = fakeRuntime()
+  const ledger = fakeLedger()
+  const requests: string[] = []
+  const remote = makeRemoteUpload({
+    getSettings: async () => settings,
+    store: fakeLedger(),
+    onHistoryNotice: () => {},
+    fetchImpl: async (url) => {
+      requests.push(String(url))
+      return Response.json({ status: 'success', value: { id: 'server-id', created: true } })
+    },
+  })
+  const cu = makeCU({ remote, runtime, ledger })
+  const candidates = [
+    {
+      item: {
+        id: 'remote-item',
+        url: 'https://pbs.twimg.com/media/test.jpg',
+        handle: 'alice',
+        ext: 'jpg',
+      },
+      filename: 'twitter/test.jpg',
+      estimatedBytes: 4,
+    },
+  ]
+  expect(await cu.recordCloudUploads(settings, candidates)).toEqual(['remote-item'])
+  expect(
+    await cu.recordCloudUploads({ ...settings, convexDriveEnabled: false }, candidates),
+  ).toEqual([])
+  await cu.drainUploadJobs()
+  expect(decodeLedger(ledger.value)).toEqual([])
+  expect(runtime.uploadDrive).not.toHaveBeenCalled()
+  expect(runtime.uploadDropbox).not.toHaveBeenCalled()
+  expect(requests.every((url) => url.startsWith(settings.convexUrl))).toBe(true)
+})
 
 describe('cloudUploadStatus', () => {
   it('reports the ledger summary read through the store seam', async () => {
@@ -325,6 +372,138 @@ describe('drainUploadJobs — token refresh on expiry', () => {
     expect(refreshAccessToken).not.toHaveBeenCalled()
     expect(uploadDrive).toHaveBeenCalledTimes(1)
   })
+})
+
+describe('Cloud-only history verdicts (issue #95)', () => {
+  /** Drive + Dropbox both connected, so the enabled set follows the switches. */
+  const bothConnected = (over: Partial<Settings> = {}): Settings => ({
+    ...connected(),
+    [dx.clientId]: 'dropbox-client',
+    [dx.accessToken]: 'dropbox-access',
+    [dx.refreshToken]: 'dropbox-refresh',
+    [dx.expiry]: NOW + 3_600_000,
+    ...over,
+  })
+
+  const deadDropboxForM0 = {
+    ...enqueue(
+      [],
+      { mediaId: 'm0', provider: 'dropbox', url: 'https://video.twimg.com/m0.mp4', target },
+      NOW,
+    )[0]!,
+    status: 'dead' as const,
+    cloudOnly: true,
+  }
+
+  it('notifies completed when the sole enabled job succeeds with saveToDisk off', async () => {
+    const ledger = fakeLedger([{ ...seedJobs(1)[0]!, cloudOnly: true }])
+    const notices: CloudHistoryNotice[] = []
+    const cu = makeCU({
+      ledger,
+      getSettings: async () => connected({ saveToDisk: false }),
+      onHistoryNotice: (n) => void notices.push(n),
+    })
+    await cu.drainUploadJobs()
+    expect(notices).toEqual([{ mediaId: 'm0', kind: 'completed', at: NOW }])
+  })
+
+  it('stays silent while saveToDisk is on — history follows disk Settle', async () => {
+    const ledger = fakeLedger(seedJobs(1))
+    const notices: CloudHistoryNotice[] = []
+    const cu = makeCU({ ledger, onHistoryNotice: (n) => void notices.push(n) })
+    await cu.drainUploadJobs()
+    expect(decodeLedger(ledger.value)[0]?.status).toBe('succeeded')
+    expect(notices).toEqual([])
+  })
+
+  it('notifies a media once — later reconciles stay quiet', async () => {
+    const ledger = fakeLedger([{ ...seedJobs(1)[0]!, cloudOnly: true }])
+    const notices: CloudHistoryNotice[] = []
+    const cu = makeCU({
+      ledger,
+      getSettings: async () => connected({ saveToDisk: false }),
+      onHistoryNotice: (n) => void notices.push(n),
+    })
+    await cu.drainUploadJobs()
+    await cu.reconcileCloudOnlyHistory()
+    expect(notices).toHaveLength(1)
+  })
+
+  it('reconcile resolves a mixed result once the dead provider is paused', async () => {
+    const drive = { ...seedJobs(1)[0]!, status: 'succeeded' as const, cloudOnly: true }
+    const ledger = fakeLedger([drive, deadDropboxForM0])
+    const notices: CloudHistoryNotice[] = []
+    const cu = makeCU({
+      ledger,
+      getSettings: async () => bothConnected({ saveToDisk: false, dropboxUploadEnabled: false }),
+      onHistoryNotice: (n) => void notices.push(n),
+    })
+    await cu.reconcileCloudOnlyHistory()
+    expect(notices).toEqual([{ mediaId: 'm0', kind: 'completed', at: NOW }])
+  })
+
+  it('reconcile stays silent on a mixed result while both providers are enabled', async () => {
+    const drive = { ...seedJobs(1)[0]!, status: 'succeeded' as const, cloudOnly: true }
+    const ledger = fakeLedger([drive, deadDropboxForM0])
+    const notices: CloudHistoryNotice[] = []
+    const cu = makeCU({
+      ledger,
+      getSettings: async () => bothConnected({ saveToDisk: false }),
+      onHistoryNotice: (n) => void notices.push(n),
+    })
+    await cu.reconcileCloudOnlyHistory()
+    expect(notices).toEqual([])
+  })
+
+  it('uses persisted cloud ownership after disk saving is enabled and suppresses restart duplicates', async () => {
+    const ledger = fakeLedger([{ ...seedJobs(1)[0]!, cloudOnly: true }])
+    const notices: CloudHistoryNotice[] = []
+    const deps = {
+      ledger,
+      getSettings: async () => connected({ saveToDisk: true }),
+      onHistoryNotice: (notice: CloudHistoryNotice) => void notices.push(notice),
+    }
+    await makeCU(deps).drainUploadJobs()
+    expect(notices).toEqual([{ mediaId: 'm0', kind: 'completed', at: NOW }])
+    await makeCU(deps).reconcileCloudOnlyHistory()
+    expect(notices).toHaveLength(1)
+  })
+
+  it('keeps local history owned by disk after disk saving is disabled', async () => {
+    const notices: CloudHistoryNotice[] = []
+    const cu = makeCU({
+      ledger: fakeLedger(seedJobs(1)),
+      getSettings: async () => connected({ saveToDisk: false }),
+      onHistoryNotice: (notice) => void notices.push(notice),
+    })
+    await cu.drainUploadJobs()
+    await cu.reconcileCloudOnlyHistory()
+    expect(notices).toEqual([])
+  })
+
+  it.each([false, true])(
+    'reports successful retry after failure with worker restart=%s',
+    async (restart) => {
+      const ledger = fakeLedger([{ ...seedJobs(1)[0]!, cloudOnly: true, status: 'dead' }])
+      const notices: CloudHistoryNotice[] = []
+      const deps = {
+        ledger,
+        getSettings: async () => connected({ saveToDisk: false }),
+        onHistoryNotice: (notice: CloudHistoryNotice) => void notices.push(notice),
+      }
+      const first = makeCU(deps)
+      await first.reconcileCloudOnlyHistory()
+      expect(notices).toEqual([{ mediaId: 'm0', kind: 'failed', at: NOW }])
+      const retryWorker = restart ? makeCU(deps) : first
+      await retryWorker.reconcileCloudOnlyHistory()
+      expect(notices).toHaveLength(1)
+      await retryWorker.retryDeadUploads()
+      await vi.waitFor(() => expect(notices).toHaveLength(2))
+      expect(notices[1]).toEqual({ mediaId: 'm0', kind: 'completed', at: NOW })
+      await makeCU(deps).reconcileCloudOnlyHistory()
+      expect(notices).toHaveLength(2)
+    },
+  )
 })
 
 describe('runOAuthConnect — wiring (NOT the consent popup)', () => {
@@ -507,6 +686,36 @@ describe('backfillCloudUploads', () => {
     expect(res.ok).toBe(false)
     expect(res.queued).toBe(0)
   })
+
+  it('skips a paused provider when backfilling', async () => {
+    const ledger = fakeLedger(null)
+    const runtime = fakeRuntime()
+    const bothPausedDropbox: Settings = {
+      ...connected(),
+      [dx.clientId]: 'dropbox-client',
+      [dx.accessToken]: 'dropbox-access',
+      [dx.refreshToken]: 'dropbox-refresh',
+      [dx.expiry]: NOW + 3_600_000,
+      dropboxUploadEnabled: false,
+    }
+    const cu = makeCU({
+      ledger,
+      runtime,
+      getSettings: async () => bothPausedDropbox,
+      getBackfillRecords: async () => [
+        {
+          requestId: 'r1',
+          filename: 'alice/old.mp4',
+          media: { url: 'https://video.twimg.com/old.mp4', handle: 'alice', ext: 'mp4' },
+        },
+      ],
+    })
+    const res = await cu.backfillCloudUploads()
+    expect(res.ok).toBe(true)
+    expect(res.queued).toBe(1)
+    await vi.waitFor(() => expect(runtime.uploadDrive).toHaveBeenCalledTimes(1))
+    expect(runtime.uploadDropbox).not.toHaveBeenCalled()
+  })
 })
 
 describe('resumeOnBoot', () => {
@@ -614,6 +823,50 @@ describe('recordCloudUploads — gating (no side effects)', () => {
     filename: 'alice/a.mp4',
   }
 
+  it('returns unique media IDs only after their jobs are persisted', async () => {
+    const ledger = fakeLedger()
+    const cu = makeCU({ ledger })
+    const accepted = await cu.recordCloudUploads(connected({ saveToDisk: false }), [item, item])
+    expect(accepted).toEqual(['A'])
+    expect(decodeLedger(ledger.value)).toEqual([
+      expect.objectContaining({ mediaId: 'A', cloudOnly: true }),
+    ])
+  })
+
+  it.each(['succeeded', 'uploading'])(
+    'does not accept an existing %s job again',
+    async (status) => {
+      const initial = enqueue(
+        [],
+        {
+          mediaId: item.item.id,
+          provider: 'gdrive',
+          url: item.item.url,
+          target,
+        },
+        NOW,
+      )
+      const ledger = fakeLedger([{ ...initial[0]!, status, leaseUntil: NOW + 60_000 }])
+      const cu = makeCU({ ledger })
+      expect(await cu.recordCloudUploads(connected(), [item])).toEqual([])
+    },
+  )
+
+  it('rejects when ledger storage fails instead of accepting the media', async () => {
+    const ledger = fakeLedger()
+    const storageError = new Error('storage write failed')
+    const cu = makeCU({
+      ledger: {
+        get: ledger.get,
+        set: async () => {
+          throw storageError
+        },
+      },
+    })
+    await expect(cu.recordCloudUploads(connected(), [item])).rejects.toBe(storageError)
+    expect(decodeLedger(ledger.value)).toEqual([])
+  })
+
   it('does nothing when Cloud upload is disabled', async () => {
     const ledger = fakeLedger()
     const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
@@ -637,6 +890,30 @@ describe('recordCloudUploads — gating (no side effects)', () => {
     makeCU({ ledger }).recordCloudUploads(connected({ [gd.refreshToken]: '' }), [item])
     await tick()
     expect(ledger.sets).toBe(0)
+  })
+
+  it('does nothing when every connected provider is paused', async () => {
+    const ledger = fakeLedger()
+    makeCU({ ledger }).recordCloudUploads(connected({ gdriveUploadEnabled: false }), [item])
+    await tick()
+    expect(ledger.sets).toBe(0)
+  })
+
+  it('enqueues only the unpaused provider when both are connected', async () => {
+    const both: Settings = {
+      ...connected(),
+      [dx.clientId]: 'dropbox-client',
+      [dx.accessToken]: 'dropbox-access',
+      [dx.refreshToken]: 'dropbox-refresh',
+      [dx.expiry]: NOW + 3_600_000,
+      dropboxUploadEnabled: false,
+    }
+    const ledger = fakeLedger()
+    const runtime = fakeRuntime()
+    makeCU({ ledger, runtime }).recordCloudUploads(both, [item])
+    await vi.waitFor(() => expect(decodeLedger(ledger.value)).toHaveLength(1))
+    expect(decodeLedger(ledger.value)[0]?.provider).toBe('gdrive')
+    expect(runtime.uploadDropbox).not.toHaveBeenCalled()
   })
 })
 

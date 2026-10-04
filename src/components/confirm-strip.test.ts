@@ -32,7 +32,7 @@ describe('ConfirmStrip source', () => {
   })
 
   it('locks the confirm button out with pointer-events-none during the guard state', () => {
-    expect(source).toContain('pointer-events-none')
+    expect(source).toContain("pointerEvents: 'none'")
   })
 
   it('arms only one strip at a time via the module-level registry', () => {

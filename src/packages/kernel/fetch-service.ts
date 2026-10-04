@@ -17,12 +17,14 @@ export class FetchError extends Data.TaggedError('FetchError')<{
 }
 
 /**
- * The injected `fetch` capability (ADR-0017), shared by every port that talks
+ * The injected `fetch` capability, shared by every port that talks
  * HTTP from the service worker. Bound to `globalThis` ONCE at layer build (the
  * MV3 illegal-invocation rule, see `fetch.ts`) and exposed two ways:
  *  - `fetch`        — `Effect<Response, FetchError>`, used inside Effect;
  *  - `fetchPromise` — the same bound `Promise` fetch, for the streamed upload sink
  *                     (so `streamInChunks` is reused verbatim — no bridge).
+ *
+ * @see ADR-0017
  */
 export class FetchService extends Context.Service<
   FetchService,

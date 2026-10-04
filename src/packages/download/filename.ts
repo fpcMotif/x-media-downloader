@@ -35,7 +35,9 @@ export function platformFolder(platform: Platform): string {
  * Unknown tokens render empty.
  *
  * Output is always a RELATIVE path (no leading `/`, no `..`, never empty) —
- * `chrome.downloads.download` throws otherwise (ADR-0003, grounding §d).
+ * `chrome.downloads.download` throws otherwise (grounding §d).
+ *
+ * @see ADR-0003
  */
 export function renderFilename(template: string, item: MediaItem, date?: string): string {
   // A Map, not a plain object: the template's `{token}` keys are arbitrary

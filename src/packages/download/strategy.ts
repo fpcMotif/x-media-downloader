@@ -24,8 +24,10 @@ export const DOWNLOAD_MODES = [
 /**
  * One unit of work for a strategy: a URL to fetch + a relative filename to write.
  * Decoupled from `MediaItem` so non-media artifacts (e.g. sidecar metadata as a
- * `data:` URL) flow through the same seam (ADR-0003: a strategy is *how bytes
+ * `data:` URL) flow through the same seam (a strategy is *how bytes
  * reach disk*, independent of the media domain object).
+ *
+ * @see ADR-0003
  */
 export interface SaveRequest {
   readonly id: string
@@ -47,7 +49,11 @@ export interface DownloadsPort {
   }) => Promise<number>
 }
 
-/** How bytes reach disk (ADR-0003). Returns the started transfer's handle. */
+/**
+ * How bytes reach disk. Returns the started transfer's handle.
+ *
+ * @see ADR-0003
+ */
 export interface DownloadStrategy {
   readonly save: (req: SaveRequest) => Effect.Effect<DownloadHandle, DownloadError>
 }

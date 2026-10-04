@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 import { CLEAR_AFTER_DOWNLOAD } from '@/packages/clear/copy'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
@@ -9,6 +11,66 @@ import { TURN_ON_RELEASE_LABEL, turnOnReleaseConfirm } from '@/components/action
 import { runDiagnosticsExport } from '@/components/diagnostics-export'
 import { Section, type PanelProps } from '../ui'
 
+const styles = stylex.create({
+  header: { display: 'grid', gap: '0.375rem', paddingBottom: '0.25rem' },
+  h1: {
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: '1.25rem',
+    lineHeight: tokens['--text-xl--line-height'],
+    fontWeight: 600,
+    letterSpacing: '-0.025em',
+    textWrap: 'balance',
+  },
+  badgeMargin: { marginLeft: '0.375rem' },
+  lede: {
+    fontSize: '13px',
+    lineHeight: 1.625,
+    color: tokens['--muted-foreground'],
+    textWrap: 'pretty',
+  },
+  // 'flex items-center gap-1.5 text-[11px]' — the text-size utility strips the
+  // base's leading-normal (tailwind-merge's font-size ↔ leading conflict), so
+  // the line-height is inherited.
+  subToggleDesc: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.375rem',
+    fontSize: '11px',
+    lineHeight: null,
+  },
+  dot: {
+    width: '0.375rem',
+    height: '0.375rem',
+    flexShrink: 0,
+    borderRadius: '3.40282e38px',
+    backgroundColor: tokens['--destructive'],
+  },
+  subGroup: {
+    display: 'grid',
+    gap: 0,
+    borderLeftStyle: 'solid',
+    borderLeftWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingLeft: '1rem',
+  },
+  releaseFromLabel: {
+    fontSize: '11px',
+    fontWeight: 600,
+    letterSpacing: '0.025em',
+    color: tokens['--muted-foreground'],
+  },
+  textPretty: { textWrap: 'pretty' },
+  minH10SelfStart: { minHeight: '2.5rem', alignSelf: 'flex-start' },
+  status: {
+    display: 'block',
+    textWrap: 'pretty',
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    color: tokens['--muted-foreground'],
+  },
+})
+
 // Renders its own header (rather than the shared `PanelHeader`) only so the
 // red "Account" tier tag can sit inline after the <h1> — `PanelHeader`'s
 // `title` prop is typed `string`, and ui.tsx is untouched by this redesign
@@ -16,14 +78,14 @@ import { Section, type PanelProps } from '../ui'
 // exactly so the two headers are visually identical apart from the badge.
 function ReleaseHeader() {
   return (
-    <header className="grid gap-1.5 pb-1">
-      <h1 className="flex items-center text-xl font-semibold tracking-tight text-balance">
+    <header {...stylex.props(styles.header)}>
+      <h1 {...stylex.props(styles.h1)}>
         Release
-        <Badge variant="destructive" className="ml-1.5">
+        <Badge variant="destructive" sx={styles.badgeMargin}>
           Account
         </Badge>
       </h1>
-      <p className="text-[13px] leading-relaxed text-muted-foreground text-pretty">
+      <p {...stylex.props(styles.lede)}>
         Treat Bookmarks, Likes, and For You as a worklist that empties itself as media is saved.
         Releasing changes your X account and can't be undone by this extension — off by default.
       </p>
@@ -69,11 +131,8 @@ export function ReleasePanel({ settings, update }: PanelProps) {
               <FieldContent>
                 <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
                 {settings.clearOnSave ? (
-                  <FieldDescription className="flex items-center gap-1.5 text-[11px]">
-                    <span
-                      aria-hidden="true"
-                      className="size-1.5 shrink-0 rounded-full bg-destructive"
-                    />
+                  <FieldDescription sx={styles.subToggleDesc}>
+                    <span aria-hidden="true" {...stylex.props(styles.dot)} />
                     On — every page action also releases.
                   </FieldDescription>
                 ) : (
@@ -95,10 +154,9 @@ export function ReleasePanel({ settings, update }: PanelProps) {
         </ConfirmStrip>
 
         {settings.clearOnSave && (
-          <div className="grid gap-0 divide-y divide-border border-l border-border pl-4 *:py-3 first:*:pt-0">
-            <span className="text-[11px] font-semibold tracking-wide text-muted-foreground">
-              Release from
-            </span>
+          // dropped: first:*:pt-0 — this div is never a first child at any call site
+          <div {...stylex.props(styles.subGroup)} data-xmd-divide="" data-xmd-rows="3">
+            <span {...stylex.props(styles.releaseFromLabel)}>Release from</span>
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="autoUnbookmarkOnSave">Un-bookmark</FieldLabel>
@@ -159,7 +217,7 @@ export function ReleasePanel({ settings, update }: PanelProps) {
           </div>
         )}
 
-        <FieldDescription className="text-pretty">
+        <FieldDescription sx={styles.textPretty}>
           Run the worklist from the toolbar popup on an X Likes or Bookmarks tab — “Download this
           page” or “One by one”. This setting only decides whether those actions also release.
         </FieldDescription>
@@ -169,11 +227,11 @@ export function ReleasePanel({ settings, update }: PanelProps) {
         title="Release from the popup"
         description="Two rows in the toolbar popup release immediately, without downloading anything first. They appear only on X tabs."
       >
-        <p className="text-[13px] leading-relaxed text-muted-foreground text-pretty">
+        <p {...stylex.props(styles.lede)}>
           Release this page… — releases every post currently rendered on the page. Asks you to
           confirm.
         </p>
-        <p className="text-[13px] leading-relaxed text-muted-foreground text-pretty">
+        <p {...stylex.props(styles.lede)}>
           Release the whole list… — scrolls the entire Likes or Bookmarks list and releases
           everything in it. The single most destructive control in the extension; asks you to type
           RELEASE first.
@@ -208,17 +266,13 @@ export function ReleasePanel({ settings, update }: PanelProps) {
           type="button"
           variant="outline"
           size="sm"
-          className="min-h-10 self-start"
+          sx={styles.minH10SelfStart}
           onClick={() => void runDiagnosticsExport().then((o) => flashDiagStatus(o.detail))}
         >
           Export diagnostics
         </Button>
 
-        <output
-          aria-live="polite"
-          aria-atomic="true"
-          className="block text-pretty text-sm text-muted-foreground"
-        >
+        <output aria-live="polite" aria-atomic="true" {...stylex.props(styles.status)}>
           {diagStatus}
         </output>
       </Section>

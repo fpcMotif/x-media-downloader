@@ -3,7 +3,7 @@
  * `Download Handle` (a `chrome.downloads` id) to a terminal outcome.
  *
  * The background SW correlates a browser `downloadId` back to its request id with
- * an in-memory map, but that map dies with the worker (ADR-0002: MV3 recycles the
+ * an in-memory map, but that map dies with the worker (MV3 recycles the
  * SW after ~30s idle). A download that COMPLETES or FAILS while the worker is dead
  * is then lost — no metric, no history, no badge correction. This module persists
  * the in-flight set so it survives the recycle, and reconciles it against
@@ -11,8 +11,11 @@
  *
  * Pure (no `chrome.*`, no timers, injected clock) — the background entrypoint owns
  * the I/O (search, storage, messaging) and feeds rows in. aria2 hand-offs are
- * terminal at enqueue (ADR-0006) and never enter this ledger; only browser
+ * terminal at enqueue and never enter this ledger; only browser
  * transfers, which surface terminal state via `downloads.onChanged`/`search`, do.
+ *
+ * @see ADR-0002
+ * @see ADR-0006
  */
 
 /** One browser transfer tracked from start to terminal outcome. */
@@ -81,9 +84,11 @@ export interface ReconcileResult {
 
 /**
  * Reconcile the persisted ledger against the current `downloads.search` rows
- * (keyed by `downloadId`) on worker restart (ADR-0002). Terminal transfers are
+ * (keyed by `downloadId`) on worker restart. Terminal transfers are
  * partitioned so the caller can surface the outcomes that landed while the SW was
  * dead and re-seed the ones still in progress.
+ *
+ * @see ADR-0002
  */
 export function reconcile(
   state: TrackerState,
@@ -120,13 +125,15 @@ export interface OwnershipPartition {
 }
 
 /**
- * The dual-ledger tie-break, made explicit (ADR-0014). A crash can leave a request
+ * The dual-ledger tie-break, made explicit. A crash can leave a request
  * id in BOTH the persisted transfer ledger AND the interrupt-retry queue. The retry
  * queue is authoritative for the ids it owns, so reconcile defers those — driving an
  * id to a terminal here while the retry path also re-fires it would double-record the
  * outcome. The boot entrypoint must populate `retryOwnedIds` (rehydrate the retry
  * queue) BEFORE calling this; passing the set as a required argument encodes that
  * ordering in the type instead of leaving it to a comment.
+ *
+ * @see ADR-0014
  */
 export function partitionOwnership(
   transfers: ReadonlyArray<TrackedTransfer>,
@@ -158,12 +165,14 @@ export interface BootReconcilePlan {
 }
 
 /**
- * Plan the boot reconciliation in one pure step (ADR-0002/0014). Given the persisted
+ * Plan the boot reconciliation in one pure step. Given the persisted
  * ledger, the retry-queue ownership set (the tie-break), the search rows, the
  * downloadIds whose search THREW (transient — retained, not purged), and the LIVE
  * ledger snapshot taken after the search (to merge transfers a concurrent
  * `handleDownload` started during the await), produce the terminals to surface, the
  * next ledger state, the survivors to re-seed, and the purges to trace.
+ *
+ * @see ADR-0002
  */
 export function planBootReconcile(input: {
   readonly persisted: TrackerState

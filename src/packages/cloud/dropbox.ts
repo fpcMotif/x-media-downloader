@@ -8,11 +8,14 @@ import { type UploadInput, type UploadOutcome } from './types'
 import type { JsonValue } from '@/packages/schema'
 
 /**
- * Dropbox v2 upload adapter (ADR-0013 §5, ADR-0017). Small media
+ * Dropbox v2 upload adapter. Small media
  * (≤ SIMPLE_MAX_BYTES) goes via `/2/files/upload`; larger/unknown-size media
  * streams through an upload session (`start` → `append_v2` → `finish`) in 4 MiB-
  * multiple chunks — never buffering a whole video. A `DropboxUploader` service
  * whose layer depends on `FetchService` + `SourceFetch` (no folder cache).
+ *
+ * @see ADR-0013
+ * @see ADR-0017
  */
 
 const CONTENT = 'https://content.dropboxapi.com/2'

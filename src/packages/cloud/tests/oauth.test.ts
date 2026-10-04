@@ -199,6 +199,52 @@ describe('exchangeCode', () => {
     expect(params.has('client_secret')).toBe(false)
   })
 
+  // Google's "Web application" client stays a CONFIDENTIAL client under PKCE: its
+  // token endpoint answers 400 `client_secret is missing` without this param, so
+  // the connect died right after a successful consent. Dropbox honours PKCE and
+  // must keep seeing a secret-free body — hence "send it only when supplied".
+  it('sends client_secret when the provider supplies one (Google)', async () => {
+    let body = ''
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      body = String(init?.body)
+      return jsonResponse({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 })
+    }) as unknown as typeof fetch
+
+    await runExchange(fetchImpl, {
+      cfg: GDRIVE_OAUTH,
+      clientId: 'cid',
+      clientSecret: 'GOCSPX-secret',
+      code: 'CODE',
+      codeVerifier: 'VER',
+      redirectUri: REDIRECT,
+      now: 0,
+    })
+
+    const params = new URLSearchParams(body)
+    expect(params.get('client_secret')).toBe('GOCSPX-secret')
+    expect(params.get('code_verifier')).toBe('VER') // PKCE stays on, secret or not
+  })
+
+  it('omits client_secret when the supplied one is empty (never sends it blank)', async () => {
+    let body = ''
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      body = String(init?.body)
+      return jsonResponse({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 })
+    }) as unknown as typeof fetch
+
+    await runExchange(fetchImpl, {
+      cfg: DROPBOX_OAUTH,
+      clientId: 'cid',
+      clientSecret: '',
+      code: 'CODE',
+      codeVerifier: 'VER',
+      redirectUri: REDIRECT,
+      now: 0,
+    })
+
+    expect(new URLSearchParams(body).has('client_secret')).toBe(false)
+  })
+
   it('derives the account email from a Google id_token', async () => {
     const payload = btoa(JSON.stringify({ email: 'me@example.com' }))
       .replace(/\+/g, '-')
@@ -430,6 +476,25 @@ describe('refreshAccessToken', () => {
     expect(params.get('grant_type')).toBe('refresh_token')
     expect(params.get('refresh_token')).toBe('RT')
     expect(params.has('client_secret')).toBe(false)
+  })
+
+  // Google demands the secret on EVERY grant, not only the first. Without it here
+  // a Drive connection would authorize cleanly and then die at the first expiry,
+  // about an hour later — the worst shape of this bug to diagnose.
+  it('sends client_secret on the refresh grant too', async () => {
+    let body = ''
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      body = String(init?.body)
+      return jsonResponse({ access_token: 'AT2', expires_in: 3600 })
+    }) as unknown as typeof fetch
+    await runRefresh(fetchImpl, {
+      cfg: GDRIVE_OAUTH,
+      clientId: 'cid',
+      clientSecret: 'GOCSPX-secret',
+      refreshToken: 'RT',
+      now: 0,
+    })
+    expect(new URLSearchParams(body).get('client_secret')).toBe('GOCSPX-secret')
   })
 
   it('defaults expiry to 1h when expires_in is omitted', async () => {

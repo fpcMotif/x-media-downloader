@@ -12,10 +12,13 @@ import {
 
 /**
  * The **Cloud Provider** record (CONTEXT.md): one cloud byte-upload destination
- * (ADR-0013). The single place provider identity is encoded — every dispatch site
+ *. The single place provider identity is encoded — every dispatch site
  * reads a record from {@link PROVIDERS} instead of forking on `'gdrive' vs
  * 'dropbox'`. The byte adapters themselves are the `DriveUploader`/`DropboxUploader`
- * services (ADR-0017); the orchestrator runs them on the shared cloud runtime.
+ * services; the orchestrator runs them on the shared cloud runtime.
+ *
+ * @see ADR-0013
+ * @see ADR-0017
  */
 
 /** The per-provider flat-`Settings` field layout — every token read/write,
@@ -24,16 +27,26 @@ import {
  *  disconnect wipe (Dropbox must NOT clear a folder field it has no concept of). */
 export interface ProviderFields {
   readonly clientId: keyof Settings
+  /** gdrive-only, like `folderId`: Google's "Web application" client demands a
+   *  client secret at the token endpoint even under PKCE. Its ABSENCE is what
+   *  marks a provider as a true public client — Dropbox has no such field, so
+   *  no secret is ever read, stored, or sent for it. */
+  readonly clientSecret?: keyof Settings
   readonly accessToken: keyof Settings
   readonly refreshToken: keyof Settings
   readonly expiry: keyof Settings
   readonly account: keyof Settings
   readonly folderId?: keyof Settings
+  /** Per-provider pause (issue #95). Off keeps tokens; new UploadJobs stop. */
+  readonly uploadEnabled: keyof Settings
 }
 
-/** How a provider revokes its grant on disconnect, as data (ADR-0013 §4). Google
+/** How a provider revokes its grant on disconnect, as data. Google
  *  revokes the refresh token via a form `token=` body; Dropbox revokes via the
- *  access token in an `Authorization` header. */
+ *  access token in an `Authorization` header.
+ *
+ * @see ADR-0013
+ */
 export interface RevokeRecipe {
   readonly endpoint: string
   readonly credential: 'refreshToken' | 'accessToken'
@@ -42,7 +55,10 @@ export interface RevokeRecipe {
 
 /** One cloud byte-upload destination — its identity only. The byte sink is the
  *  provider's uploader service (`DriveUploader`/`DropboxUploader`), dispatched by
- *  the orchestrator on the shared cloud runtime (ADR-0017). */
+ *  the orchestrator on the shared cloud runtime.
+ *
+ * @see ADR-0017
+ */
 export interface CloudProvider {
   readonly id: CloudProviderId
   readonly label: string
@@ -59,11 +75,13 @@ const GDRIVE_PROVIDER: CloudProvider = {
   hostPatterns: GDRIVE_HOST_PATTERNS,
   fields: {
     clientId: 'gdriveClientId',
+    clientSecret: 'gdriveClientSecret',
     accessToken: 'gdriveAccessToken',
     refreshToken: 'gdriveRefreshToken',
     expiry: 'gdriveTokenExpiry',
     account: 'gdriveAccount',
     folderId: 'gdriveFolderId',
+    uploadEnabled: 'gdriveUploadEnabled',
   },
   revoke: {
     endpoint: 'https://oauth2.googleapis.com/revoke',
@@ -83,6 +101,7 @@ const DROPBOX_PROVIDER: CloudProvider = {
     refreshToken: 'dropboxRefreshToken',
     expiry: 'dropboxTokenExpiry',
     account: 'dropboxAccount',
+    uploadEnabled: 'dropboxUploadEnabled',
   },
   revoke: {
     endpoint: 'https://api.dropboxapi.com/2/auth/token/revoke',

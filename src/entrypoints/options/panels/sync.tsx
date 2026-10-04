@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
-import { Option } from 'effect'
-import { cn } from '@/lib/utils'
+import { Option, Schema } from 'effect'
+import * as stylex from '@stylexjs/stylex'
+import { tokens } from '@/theme/tokens.stylex'
 import { convexOriginPattern } from '@/packages/sync/convex'
 import type { SyncStatus } from '@/packages/sync/status'
 import { FETCHED_HOST_PATTERNS } from '@/packages/download/fetched-strategy'
@@ -13,179 +14,70 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, Section, type PanelProps } from '../ui'
 
+const styles = stylex.create({
+  // Shared 'min-h-10' override used by every options action Button below.
+  minH10: { minHeight: '2.5rem' },
+  selfStart: { alignSelf: 'flex-start' },
+  // 'flex flex-wrap items-center gap-2' button rows.
+  flexWrapRow: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem' },
+  // Base of every status <p>: 'text-sm leading-snug text-pretty' — leading-snug
+  // (1.375) always wins over text-sm's own line-height. Combine with one of
+  // the color-* variants below (later argument wins per property).
+  statusText: { fontSize: '0.875rem', lineHeight: '1.375', textWrap: 'pretty' },
+  colorSuccess: { color: tokens['--success'] },
+  colorDestructive: { color: tokens['--destructive'] },
+  colorMuted: { color: tokens['--muted-foreground'] },
+  // 'text-[13px] font-medium text-success' span — text-[13px] sets fontSize
+  // only, line-height stays inherited.
+  grantedText: { fontSize: '13px', fontWeight: 500, color: tokens['--success'] },
+  descPretty: { textWrap: 'pretty' },
+  // CloudProviderRow root: 'grid gap-3 border-l border-border pl-4' (no
+  // divide-y/rows here, unlike the aria2 sub-group in saving.tsx).
+  providerRoot: {
+    display: 'grid',
+    gap: '0.75rem',
+    borderLeftStyle: 'solid',
+    borderLeftWidth: '1px',
+    borderColor: tokens['--border'],
+    paddingLeft: '1rem',
+  },
+  // 'flex items-center justify-between gap-2' — shared by the provider header
+  // row and the cloud-status row.
+  headerRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.5rem',
+  },
+  // 'text-sm font-semibold' provider label.
+  providerLabel: {
+    fontSize: '0.875rem',
+    lineHeight: tokens['--text-sm--line-height'],
+    fontWeight: 600,
+  },
+  // 'shrink-0 text-[13px]' connection-state span; combine with a color-*.
+  shrinkText13: { flexShrink: 0, fontSize: '13px' },
+  // "Where do I get this?" anchor: 'rounded-sm outline-none
+  // focus-visible:ring-3 focus-visible:ring-ring/50' (underline/hover come
+  // from app.css's FieldDescription > a rule, untouched).
+  anchorLink: {
+    borderRadius: 'calc(var(--radius) - 4px)',
+    outlineStyle: 'none',
+    boxShadow: {
+      default: null,
+      ':focus-visible':
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+    },
+  },
+})
+
+const RelaySetup = Schema.Struct({
+  available: Schema.Boolean,
+  reason: Schema.NullOr(Schema.String),
+})
+
 const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
-}
-
-/** The live value of the `<input>` that fired `e` — narrows `EventTarget | null`
- *  instead of asserting it, since every caller below binds this to a real
- *  `HTMLInputElement`'s `onChange`. */
-const inputValue = (e: Event): string =>
-  e.target instanceof HTMLInputElement ? e.target.value : ''
-
-function SyncDetailsSection({
-  settings,
-  update,
-  convexGranted,
-  syncStatus,
-  testingSync,
-  onTestConnection,
-  onRequestAccess,
-}: {
-  settings: PanelProps['settings']
-  update: PanelProps['update']
-  convexGranted: boolean | null
-  syncStatus: SyncStatus | null
-  testingSync: boolean
-  onTestConnection: () => Promise<void>
-  onRequestAccess: () => Promise<void>
-}) {
-  return (
-    <>
-      <Field>
-        <FieldLabel htmlFor="convexUrl">Convex deployment URL</FieldLabel>
-        <Input
-          id="convexUrl"
-          placeholder="https://<deployment>.convex.cloud"
-          value={settings.convexUrl}
-          onChange={(e: Event) => void update({ convexUrl: inputValue(e) })}
-        />
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="convexSyncSecret">Sync secret (required)</FieldLabel>
-        <Input
-          id="convexSyncSecret"
-          type="password"
-          placeholder="must match the deployment's SYNC_SHARED_SECRET"
-          value={settings.convexSyncSecret}
-          onChange={(e: Event) => void update({ convexSyncSecret: inputValue(e) })}
-        />
-      </Field>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="min-h-10"
-          disabled={testingSync || settings.convexUrl === '' || settings.convexSyncSecret === ''}
-          onClick={() => void onTestConnection()}
-        >
-          {testingSync ? 'Testing…' : 'Test connection'}
-        </Button>
-        {convexGranted === false && (
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="min-h-10"
-            onClick={() => void onRequestAccess()}
-          >
-            Grant access
-          </Button>
-        )}
-        {convexGranted === true && (
-          <span className="text-[13px] font-medium text-success">access granted</span>
-        )}
-      </div>
-      {syncStatus && (
-        <p
-          className={cn(
-            'text-sm leading-snug text-pretty',
-            syncStatus.ok ? 'text-success' : 'text-destructive',
-          )}
-        >
-          {syncStatus.detail}
-        </p>
-      )}
-    </>
-  )
-}
-
-function UploadDetailsSection({
-  settings,
-  connecting,
-  connectMsg,
-  cloudStatus,
-  onConnect,
-  onDisconnect,
-  onBackfill,
-  onRetry,
-}: {
-  settings: PanelProps['settings']
-  connecting: CloudProviderId | null
-  connectMsg: string
-  cloudStatus: CloudUploadStatus | null
-  onConnect: (provider: CloudProviderId, clientId: string) => Promise<void>
-  onDisconnect: (provider: CloudProviderId) => Promise<void>
-  onBackfill: () => Promise<void>
-  onRetry: () => Promise<void>
-}) {
-  const hasConnectedProviders =
-    settings.gdriveRefreshToken !== '' || settings.dropboxRefreshToken !== ''
-
-  return (
-    <>
-      <FieldDescription className="text-pretty">
-        Uploads run automatically as you download — there's no separate step. Use “Back up past
-        downloads” to sync media you saved earlier.
-      </FieldDescription>
-      <CloudProviderRow
-        provider="gdrive"
-        clientId={settings.gdriveClientId}
-        connected={settings.gdriveRefreshToken !== ''}
-        account={settings.gdriveAccount}
-        connecting={connecting === 'gdrive'}
-        onConnect={(clientId) => void onConnect('gdrive', clientId)}
-        onDisconnect={() => void onDisconnect('gdrive')}
-      />
-      <CloudProviderRow
-        provider="dropbox"
-        clientId={settings.dropboxClientId}
-        connected={settings.dropboxRefreshToken !== ''}
-        account={settings.dropboxAccount}
-        connecting={connecting === 'dropbox'}
-        onConnect={(clientId) => void onConnect('dropbox', clientId)}
-        onDisconnect={() => void onDisconnect('dropbox')}
-      />
-      {hasConnectedProviders && (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="min-h-10 self-start"
-          onClick={() => void onBackfill()}
-        >
-          Back up past downloads
-        </Button>
-      )}
-      {connectMsg && (
-        <p className="text-sm leading-snug text-pretty text-muted-foreground">{connectMsg}</p>
-      )}
-      {cloudStatus && (
-        <div className="flex items-center justify-between gap-2">
-          <p
-            className={cn(
-              'text-sm leading-snug text-pretty',
-              cloudStatus.lastError ? 'text-destructive' : 'text-muted-foreground',
-            )}
-          >
-            {cloudStatus.lastError ?? describeUploadSummary(cloudStatus.summary)}
-          </p>
-          {(cloudStatus.summary.dead > 0 || cloudStatus.summary.failed > 0) && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="min-h-10"
-              onClick={() => void onRetry()}
-            >
-              Retry failed
-            </Button>
-          )}
-        </div>
-      )}
-    </>
-  )
 }
 
 export function SyncPanel({ settings, update, reload }: PanelProps) {
@@ -195,6 +87,46 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   const [cloudStatus, setCloudStatus] = useState<CloudUploadStatus | null>(null)
   const [connecting, setConnecting] = useState<CloudProviderId | null>(null)
   const [connectMsg, setConnectMsg] = useState('')
+  const [relaySetup, setRelaySetup] = useState<typeof RelaySetup.Type | null>(null)
+  const [checkingRelay, setCheckingRelay] = useState(false)
+  const [relayMessage, setRelayMessage] = useState(
+    'Check your deployment before enabling this experiment.',
+  )
+  const checkRelay = async (): Promise<void> => {
+    setCheckingRelay(true)
+    try {
+      const result = Schema.decodeUnknownSync(RelaySetup)(
+        await browser.runtime.sendMessage({ _tag: 'RelaySetupRequest' }),
+      )
+      setRelaySetup(result)
+      setRelayMessage(result.reason ?? 'Deployment ready. Credentials stay on your deployment.')
+    } catch {
+      setRelaySetup(null)
+      setRelayMessage(
+        'Setup check failed. Verify the deployment, host permission, and sync secret.',
+      )
+    } finally {
+      setCheckingRelay(false)
+    }
+  }
+  const toggleRelay = async (enabled: boolean): Promise<void> => {
+    try {
+      await update({
+        convexDriveEnabled: enabled,
+        convexDriveConnected: enabled || settings.convexDriveConnected,
+        ...(enabled ? { saveToDisk: false, downloadHistoryEnabled: true } : {}),
+      })
+      setRelayMessage(
+        enabled
+          ? 'New grabs submit metadata only. Download History stays queued until Drive confirms completion.'
+          : 'New grabs use your ordinary destinations. Accepted server jobs keep their original ownership and status.',
+      )
+    } catch {
+      setRelayMessage(
+        'The backend did not acknowledge this change. Your settings remain unchanged.',
+      )
+    }
+  }
 
   const cloudOn = settings.cloudSyncEnabled
   const convexUrl = settings.convexUrl
@@ -215,7 +147,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
     }
     void browser.runtime
       .sendMessage({ _tag: 'SyncStatusRequest' })
-      .then((s: SyncStatus | null) => setSyncStatus(s ?? null))
+      .then((s) => setSyncStatus((s as SyncStatus | null) ?? null))
       .catch(() => {})
   }, [cloudOn])
   useEffect(() => {
@@ -226,12 +158,12 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   useEffect(() => {
     if (!uploadOn) {
       setCloudStatus(null)
-      return undefined
+      return
     }
     const poll = (): void => {
       void browser.runtime
         .sendMessage({ _tag: 'CloudStatusRequest' })
-        .then((s: CloudUploadStatus | null) => setCloudStatus(s ?? null))
+        .then((s) => setCloudStatus((s as CloudUploadStatus | null) ?? null))
         .catch(() => {})
     }
     poll()
@@ -248,8 +180,8 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   const testConvexConnection = async (): Promise<void> => {
     setTestingSync(true)
     try {
-      const res: SyncStatus | null = await browser.runtime.sendMessage({ _tag: 'SyncTestRequest' })
-      setSyncStatus(res ?? null)
+      const res = await browser.runtime.sendMessage({ _tag: 'SyncTestRequest' })
+      setSyncStatus((res as SyncStatus | null) ?? null)
     } catch {
       setSyncStatus({ ok: false, detail: 'The extension background did not respond.', pending: 0 })
     } finally {
@@ -259,7 +191,11 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 
   // Grant the provider API + twimg source origins from THIS click (user gesture),
   // then run the PKCE flow in the background SW (it survives this tab losing focus).
-  const connectProvider = async (provider: CloudProviderId, clientId: string): Promise<void> => {
+  const connectProvider = async (
+    provider: CloudProviderId,
+    clientId: string,
+    clientSecret: string,
+  ): Promise<void> => {
     setConnecting(provider)
     setConnectMsg('')
     try {
@@ -271,9 +207,9 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         )
         return
       }
-      const res: { ok?: boolean; detail?: string } | null = await browser.runtime
-        .sendMessage({ _tag: 'CloudConnectRequest', provider, clientId })
-        .catch(() => null)
+      const res = (await browser.runtime
+        .sendMessage({ _tag: 'CloudConnectRequest', provider, clientId, clientSecret })
+        .catch(() => null)) as { ok?: boolean; detail?: string } | null
       await reload()
       setConnectMsg(res?.detail ?? 'The extension background did not respond.')
     } finally {
@@ -282,16 +218,29 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   }
 
   const disconnectProvider = async (provider: CloudProviderId): Promise<void> => {
-    await browser.runtime.sendMessage({ _tag: 'CloudDisconnectRequest', provider }).catch(() => {})
+    const result = await browser.runtime
+      .sendMessage({ _tag: 'CloudDisconnectRequest', provider })
+      .catch(() => null)
     await reload()
+    if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true) {
+      const message =
+        'Disconnect was not acknowledged. Backend authorization may still be active; retry before closing the browser.'
+      setConnectMsg(message)
+      setRelayMessage(message)
+      return
+    }
     setConnectMsg(`Disconnected ${PROVIDERS[provider].label}.`)
+    if (provider === 'gdrive')
+      setRelayMessage(
+        'Backend Drive authorization was disconnected. Accepted job status remains available.',
+      )
   }
 
   const backfillUploads = async (): Promise<void> => {
     setConnectMsg('Queuing past downloads…')
-    const res: { detail?: string } | null = await browser.runtime
+    const res = (await browser.runtime
       .sendMessage({ _tag: 'CloudBackfillRequest' })
-      .catch(() => null)
+      .catch(() => null)) as { detail?: string } | null
     setConnectMsg(res?.detail ?? 'The extension background did not respond.')
   }
 
@@ -326,21 +275,126 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         </Field>
 
         {settings.cloudSyncEnabled && (
-          <SyncDetailsSection
-            settings={settings}
-            update={update}
-            convexGranted={convexGranted}
-            syncStatus={syncStatus}
-            testingSync={testingSync}
-            onTestConnection={testConvexConnection}
-            onRequestAccess={requestConvexAccess}
-          />
+          <>
+            <Field>
+              <FieldLabel htmlFor="convexUrl">Convex deployment URL</FieldLabel>
+              <Input
+                id="convexUrl"
+                placeholder="https://<deployment>.convex.cloud"
+                value={settings.convexUrl}
+                onChange={(e: Event) =>
+                  void update({ convexUrl: (e.target as HTMLInputElement).value })
+                }
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="convexSyncSecret">Sync secret (required)</FieldLabel>
+              <Input
+                id="convexSyncSecret"
+                type="password"
+                placeholder="must match the deployment's SYNC_SHARED_SECRET"
+                value={settings.convexSyncSecret}
+                onChange={(e: Event) =>
+                  void update({ convexSyncSecret: (e.target as HTMLInputElement).value })
+                }
+              />
+            </Field>
+            <div {...stylex.props(styles.flexWrapRow)}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                sx={styles.minH10}
+                disabled={
+                  testingSync || settings.convexUrl === '' || settings.convexSyncSecret === ''
+                }
+                onClick={() => void testConvexConnection()}
+              >
+                {testingSync ? 'Testing…' : 'Test connection'}
+              </Button>
+              {convexGranted === false && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  sx={styles.minH10}
+                  onClick={() => void requestConvexAccess()}
+                >
+                  Grant access
+                </Button>
+              )}
+              {convexGranted === true && (
+                <span {...stylex.props(styles.grantedText)}>access granted</span>
+              )}
+            </div>
+            {syncStatus && (
+              <p
+                {...stylex.props(
+                  styles.statusText,
+                  syncStatus.ok ? styles.colorSuccess : styles.colorDestructive,
+                )}
+              >
+                {syncStatus.detail}
+              </p>
+            )}
+          </>
         )}
       </Section>
 
       <Section
+        title="Experimental Convex uploads"
+        description="Cloud-only Google Drive uploads through your own deployment. Default off; no browser relay or local file."
+      >
+        <Button
+          type="button"
+          variant="outline"
+          disabled={checkingRelay}
+          onClick={() => void checkRelay()}
+        >
+          {checkingRelay ? 'Checking deployment…' : 'Check deployment setup'}
+        </Button>
+        <output {...stylex.props(styles.statusText, styles.colorMuted)}>{relayMessage}</output>
+        <div {...stylex.props(styles.headerRow)}>
+          <div>
+            <label htmlFor="convexDriveEnabled" {...stylex.props(styles.providerLabel)}>
+              Use Convex for Cloud-only Drive uploads
+            </label>
+            <p id="convexDriveDescription" {...stylex.props(styles.statusText, styles.colorMuted)}>
+              Requires Cloud upload and Drive Upload on, with Dropbox uploads off. Enabling also
+              turns on Download History. Accepted jobs continue after browser closure. No
+              credentials are copied from this extension.
+            </p>
+          </div>
+          <Switch
+            id="convexDriveEnabled"
+            aria-describedby="convexDriveDescription"
+            checked={settings.convexDriveEnabled}
+            disabled={
+              !settings.convexDriveEnabled &&
+              (!relaySetup?.available ||
+                !settings.cloudUploadEnabled ||
+                !settings.gdriveUploadEnabled ||
+                (settings.dropboxUploadEnabled && settings.dropboxRefreshToken !== ''))
+            }
+            onCheckedChange={(checked: boolean) => void toggleRelay(checked)}
+          />
+        </div>
+        {settings.convexDriveConnected && (
+          <Button type="button" variant="outline" onClick={() => void disconnectProvider('gdrive')}>
+            Disconnect backend Drive
+          </Button>
+        )}
+        <FieldDescription>
+          Drive Upload pauses new jobs; accepted jobs drain. The master switch stops requests at the
+          next boundary. Disconnect revokes backend authorization. Turning off this experiment
+          retains accepted job status. See docs/cloud-upload-setup.md for deployment credentials,
+          limits, and unverified live results.
+        </FieldDescription>
+      </Section>
+
+      <Section
         title="Cloud upload — Drive & Dropbox"
-        description="Uploads the real media bytes to your own cloud. Bytes go provider-direct, never through our servers (ADR-0013)."
+        description="Browser uploads are the default. The separate Convex experiment uses your own deployment."
       >
         <Field orientation="horizontal">
           <FieldContent>
@@ -355,16 +409,78 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         </Field>
 
         {settings.cloudUploadEnabled && (
-          <UploadDetailsSection
-            settings={settings}
-            connecting={connecting}
-            connectMsg={connectMsg}
-            cloudStatus={cloudStatus}
-            onConnect={connectProvider}
-            onDisconnect={disconnectProvider}
-            onBackfill={backfillUploads}
-            onRetry={retryUploads}
-          />
+          <>
+            <FieldDescription sx={styles.descPretty}>
+              Uploads run automatically as you download and follow each provider's Upload switch —
+              there's no separate step. Use “Back up past downloads” to sync media you saved
+              earlier.
+            </FieldDescription>
+            <CloudProviderRow
+              provider="gdrive"
+              clientId={settings.gdriveClientId}
+              clientSecret={settings.gdriveClientSecret}
+              connected={settings.gdriveRefreshToken !== ''}
+              account={settings.gdriveAccount}
+              connecting={connecting === 'gdrive'}
+              uploadEnabled={settings.gdriveUploadEnabled}
+              onUploadToggle={(checked: boolean) => void update({ gdriveUploadEnabled: checked })}
+              onConnect={(clientId, clientSecret) =>
+                void connectProvider('gdrive', clientId, clientSecret)
+              }
+              onDisconnect={() => void disconnectProvider('gdrive')}
+            />
+            <CloudProviderRow
+              provider="dropbox"
+              clientId={settings.dropboxClientId}
+              clientSecret=""
+              connected={settings.dropboxRefreshToken !== ''}
+              account={settings.dropboxAccount}
+              connecting={connecting === 'dropbox'}
+              uploadEnabled={settings.dropboxUploadEnabled}
+              onUploadToggle={(checked: boolean) => void update({ dropboxUploadEnabled: checked })}
+              onConnect={(clientId, clientSecret) =>
+                void connectProvider('dropbox', clientId, clientSecret)
+              }
+              onDisconnect={() => void disconnectProvider('dropbox')}
+            />
+            {(settings.gdriveRefreshToken !== '' || settings.dropboxRefreshToken !== '') && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                sx={[styles.minH10, styles.selfStart]}
+                onClick={() => void backfillUploads()}
+              >
+                Back up past downloads
+              </Button>
+            )}
+            {connectMsg && (
+              <p {...stylex.props(styles.statusText, styles.colorMuted)}>{connectMsg}</p>
+            )}
+            {cloudStatus && (
+              <div {...stylex.props(styles.headerRow)}>
+                <p
+                  {...stylex.props(
+                    styles.statusText,
+                    cloudStatus.lastError ? styles.colorDestructive : styles.colorMuted,
+                  )}
+                >
+                  {cloudStatus.lastError ?? describeUploadSummary(cloudStatus.summary)}
+                </p>
+                {(cloudStatus.summary.dead > 0 || cloudStatus.summary.failed > 0) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    sx={styles.minH10}
+                    onClick={() => void retryUploads()}
+                  >
+                    Retry failed
+                  </Button>
+                )}
+              </div>
+            )}
+          </>
         )}
       </Section>
     </>
@@ -374,22 +490,32 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 function CloudProviderRow({
   provider,
   clientId,
+  clientSecret,
   connected,
   account,
   connecting,
+  uploadEnabled,
+  onUploadToggle,
   onConnect,
   onDisconnect,
 }: {
   provider: CloudProviderId
   clientId: string
+  clientSecret: string
   connected: boolean
   account: string
   connecting: boolean
-  onConnect: (clientId: string) => void
+  uploadEnabled: boolean
+  onUploadToggle: (checked: boolean) => void
+  onConnect: (clientId: string, clientSecret: string) => void
   onDisconnect: () => void
 }) {
   const label = PROVIDERS[provider].label
   const idLabel = provider === 'gdrive' ? 'OAuth client ID' : 'App key'
+  // A provider whose record declares a `clientSecret` field is NOT a public
+  // client — Google's Web application client rejects a secret-free PKCE exchange.
+  // The field's absence (Dropbox) is what hides this input.
+  const needsSecret = PROVIDERS[provider].fields.clientSecret !== undefined
   // Client id lives in local draft state and rides with Connect — the panel never
   // writes it to the settings blob (single-writer, ADR-0005). Seed from the
   // persisted value and resync when it changes (e.g. after a successful connect).
@@ -397,16 +523,20 @@ function CloudProviderRow({
   useEffect(() => {
     setDraft(clientId)
   }, [clientId])
+  const [secretDraft, setSecretDraft] = useState(clientSecret)
+  useEffect(() => {
+    setSecretDraft(clientSecret)
+  }, [clientSecret])
   return (
-    <div className="grid gap-3 border-l border-border pl-4">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-semibold">{label}</span>
+    <div {...stylex.props(styles.providerRoot)}>
+      <div {...stylex.props(styles.headerRow)}>
+        <span {...stylex.props(styles.providerLabel)}>{label}</span>
         {connected ? (
-          <span className="shrink-0 text-[13px] text-success">
+          <span {...stylex.props(styles.shrinkText13, styles.colorSuccess)}>
             {account !== '' ? account : 'connected'}
           </span>
         ) : (
-          <span className="shrink-0 text-[13px] text-muted-foreground">Not connected</span>
+          <span {...stylex.props(styles.shrinkText13, styles.colorMuted)}>Not connected</span>
         )}
       </div>
       <Field>
@@ -415,7 +545,7 @@ function CloudProviderRow({
           id={`${provider}ClientId`}
           placeholder={provider === 'gdrive' ? 'xxxx.apps.googleusercontent.com' : 'your app key'}
           value={draft}
-          onChange={(e: Event) => setDraft(inputValue(e))}
+          onChange={(e: Event) => setDraft((e.target as HTMLInputElement).value)}
         />
         <FieldDescription>
           <a
@@ -426,20 +556,36 @@ function CloudProviderRow({
             }
             target="_blank"
             rel="noreferrer"
-            className="rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            {...stylex.props(styles.anchorLink)}
           >
             Where do I get this? →
           </a>
         </FieldDescription>
       </Field>
-      <div className="flex flex-wrap items-center gap-2">
+      {needsSecret && (
+        <Field>
+          <FieldLabel htmlFor={`${provider}ClientSecret`}>Client secret</FieldLabel>
+          <Input
+            id={`${provider}ClientSecret`}
+            type="password"
+            placeholder="GOCSPX-…"
+            value={secretDraft}
+            onChange={(e: Event) => setSecretDraft((e.target as HTMLInputElement).value)}
+          />
+          <FieldDescription>
+            Google issues this beside the client ID. It rejects the connection without it, even
+            though PKCE is used. It never leaves this browser.
+          </FieldDescription>
+        </Field>
+      )}
+      <div {...stylex.props(styles.flexWrapRow)}>
         <Button
           type="button"
           variant={connected ? 'outline' : 'default'}
           size="sm"
-          className="min-h-10"
+          sx={styles.minH10}
           disabled={connecting || draft === ''}
-          onClick={() => onConnect(draft)}
+          onClick={() => onConnect(draft, secretDraft)}
         >
           {connecting ? 'Connecting…' : connected ? 'Reconnect' : 'Connect'}
         </Button>
@@ -448,13 +594,30 @@ function CloudProviderRow({
             type="button"
             variant="outline"
             size="sm"
-            className="min-h-10"
+            sx={styles.minH10}
             onClick={onDisconnect}
           >
             Disconnect
           </Button>
         )}
       </div>
+      {/* Pause is NOT disconnect (issue #95): tokens and the account label
+          stay, queued/in-flight jobs keep draining, only new uploads stop.
+          Pausing the last live destination while Cloud-only is on forces
+          Save to this computer back on (settings-service backstop). */}
+      <Field orientation="horizontal">
+        <FieldContent>
+          <FieldLabel htmlFor={`${provider}UploadEnabled`}>Upload</FieldLabel>
+          <FieldDescription>
+            Paused keeps {label} connected but stops new uploads — queued ones keep finishing
+          </FieldDescription>
+        </FieldContent>
+        <Switch
+          id={`${provider}UploadEnabled`}
+          checked={uploadEnabled}
+          onCheckedChange={onUploadToggle}
+        />
+      </Field>
     </div>
   )
 }

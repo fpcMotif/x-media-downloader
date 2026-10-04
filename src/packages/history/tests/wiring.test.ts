@@ -91,6 +91,45 @@ describe('planHistory', () => {
       planHistory(emptyStore, cloudOnly, { kind: 'queued', item, filename: 'f.jpg', at: 1 }),
     ).toBe(emptyStore)
   })
+
+  it('repairs failed cloud history after retry without allowing a later failure to regress success', () => {
+    const on = mkSettings({ downloadHistoryEnabled: true })
+    const queued = planHistory(emptyStore, on, {
+      kind: 'queued',
+      item,
+      filename: 'f.jpg',
+      at: 1000,
+    })
+    const failed = planHistory(queued, on, {
+      kind: 'cloud-failed',
+      requestId: item.id,
+      at: 2000,
+    })
+    expect(failed.records[0]?.status).toBe('failed')
+    const recovered = planHistory(failed, on, {
+      kind: 'cloud-completed',
+      requestId: item.id,
+      at: 3000,
+    })
+    expect(recovered.records[0]).toMatchObject({ status: 'completed', finishedAt: 3000 })
+    expect(planHistory(recovered, on, { kind: 'cloud-failed', requestId: item.id, at: 4000 })).toBe(
+      recovered,
+    )
+  })
+
+  it('preserves failed disk history when a later disk completion arrives', () => {
+    const on = mkSettings({ downloadHistoryEnabled: true })
+    const queued = planHistory(emptyStore, on, {
+      kind: 'queued',
+      item,
+      filename: 'f.jpg',
+      at: 1000,
+    })
+    const failed = planHistory(queued, on, { kind: 'failed', requestId: item.id, at: 2000 })
+    expect(planHistory(failed, on, { kind: 'completed', requestId: item.id, at: 3000 })).toBe(
+      failed,
+    )
+  })
 })
 
 describe('isMirrorableRequest', () => {

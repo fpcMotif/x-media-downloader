@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Architecture review — nix-config</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+</script>
+<style>
+  .seam { stroke-dasharray: 4 4; }
+  .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+  .blob { border: 1px solid #fca5a5; background: #fef2f2; }
+</style>
+</head>
+<body class="bg-stone-50 text-slate-900 font-sans">
+<main class="max-w-5xl mx-auto px-6 py-12 space-y-14">
+
+<!-- ============ HEADER ============ -->
+<header class="space-y-3">
+  <h1 class="font-serif text-3xl font-bold">Architecture review — <span class="text-indigo-700">nix-config</span></h1>
+  <p class="text-sm text-slate-500">2026-07-02 · target <code class="font-mono">darwinConfigurations.f</code> · explored by haiku/sonnet sweeps, verified by fable</p>
+  <div class="flex gap-4 text-xs text-slate-600 pt-1">
+    <span class="inline-flex items-center gap-1"><span class="inline-block w-4 h-3 border border-slate-400 bg-white"></span> module</span>
+    <span class="inline-flex items-center gap-1"><svg width="20" height="6"><line x1="0" y1="3" x2="20" y2="3" stroke="#64748b" stroke-width="2" class="seam"/></svg> seam</span>
+    <span class="inline-flex items-center gap-1"><svg width="20" height="6"><line x1="0" y1="3" x2="20" y2="3" stroke="#dc2626" stroke-width="2"/></svg> leakage</span>
+    <span class="inline-flex items-center gap-1"><span class="inline-block w-4 h-3 deep rounded-sm"></span> deep module</span>
+  </div>
+  <div class="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm">
+    <strong>Verdict:</strong> this config follows best practice unusually well — thin flake, one deep constructor, real eval-time tests, ADR discipline.
+    The weaknesses are concentrated: discipline drift inside <code class="font-mono">modules/home/claude.nix</code>, knowledge duplicated at the CI seam, and one IFD that leaks build-time work into every eval.
+  </div>
+</header>
+
+<!-- ============ STRENGTHS ============ -->
+<section id="strengths" class="space-y-4">
+  <h2 class="font-serif text-2xl font-semibold">What is genuinely good — 5 aspects, each with a lesson</h2>
+
+  <article class="rounded-lg border border-slate-200 bg-white p-5 space-y-2">
+    <h3 class="font-semibold">1 · Documentation as a maintained contract</h3>
+    <p class="text-sm"><code class="font-mono text-xs">ARCHITECTURE.md</code> (556 lines) carries a "Last reviewed" date, update-in-same-PR rules, a layer table with one writer per concern, and states <em>positions</em> even when the answer is "none today" (secrets row). <code class="font-mono text-xs">PANIC.md</code> is a real rollback runbook.</p>
+    <p class="text-sm rounded bg-indigo-50 border border-indigo-200 px-3 py-2"><strong>Lesson:</strong> a doc that states positions ("secrets: none, revisit before X") is testable by reading; a doc that describes files is stale on arrival.</p>
+  </article>
+
+  <article class="rounded-lg border border-slate-200 bg-white p-5 space-y-2">
+    <h3 class="font-semibold">2 · ADRs that record <em>negative</em> decisions, plus a pinned vocabulary</h3>
+    <p class="text-sm">9 ADRs, several of the form "re-adding X is a regression, not a gap" (gemini removal, Dropbox exception). <code class="font-mono text-xs">CONTEXT.md</code> defines terms, flags its own ambiguities, and includes example dialogues; <code class="font-mono text-xs">docs/agents/</code> wires agents to read them first.</p>
+    <p class="text-sm rounded bg-indigo-50 border border-indigo-200 px-3 py-2"><strong>Lesson:</strong> write down what you decided <em>not</em> to do — those are exactly the changes agents and future-you keep re-proposing.</p>
+  </article>
+
+  <article class="rounded-lg border border-slate-200 bg-white p-5 space-y-2">
+    <h3 class="font-semibold">3 · Thin flake, one deep constructor, single-writer facts</h3>
+    <p class="text-sm"><code class="font-mono text-xs">flake.nix</code> is a host table + output wiring. <code class="font-mono text-xs">lib/mkSystem.nix</code> computes <code class="font-mono text-xs">currentSystemUser</code>/<code class="font-mono text-xs">currentSystemUserHome</code> once and threads them via <code class="font-mono text-xs">specialArgs</code> — zero <code class="font-mono text-xs">/Users/martinfan</code> literals anywhere in <code class="font-mono text-xs">modules/</code>. The one invariant Nix can't enforce (flake attr ≡ hostname) is pinned by an eval test instead of a comment (<code class="font-mono text-xs">mksystem-test.nix</code>).</p>
+    <p class="text-sm rounded bg-indigo-50 border border-indigo-200 px-3 py-2"><strong>Lesson:</strong> compute a fact once and thread it; when the language can't enforce an invariant, pin it with a cheap eval assertion.</p>
+  </article>
+
+  <article class="rounded-lg border border-slate-200 bg-white p-5 space-y-2">
+    <h3 class="font-semibold">4 · The update stack is a textbook deep module</h3>
+    <p class="text-sm"><code class="font-mono text-xs">scripts/lib/auto-update.sh</code> (262 lines) hides version polling, SRI prefetching, safe in-place edits, and the <code class="font-mono text-xs">assert-clean</code> guard behind a dozen <code class="font-mono text-xs">au_*</code> functions; 17 updaters are thin adapters (14–73 lines). Past incidents are encoded as library rules: never <code class="font-mono text-xs">sed -i</code>, never commit FAKE hashes, every updater idempotent. Even the cron cadence change documents its economics in the workflow comment.</p>
+    <p class="text-sm rounded bg-indigo-50 border border-indigo-200 px-3 py-2"><strong>Lesson:</strong> turn postmortems into library invariants, not memory — the fix lives where the next caller can't avoid it. Leverage: one implementation, 17 call sites.</p>
+  </article>
+
+  <article class="rounded-lg border border-slate-200 bg-white p-5 space-y-2">
+    <h3 class="font-semibold">5 · Evaluation as a free test harness</h3>
+    <p class="text-sm">Unit checks (mksystem, overlay, format, skill-router) + integration checks (572-line configurations-eval, darwin-settings, linux-purity) run through <code class="font-mono text-xs">nix flake check</code> on both CI arches. Inactive hosts (wsl, x230, vm) stay in the eval matrix so they can't bit-rot silently. The expensive tier (macOS activation VM) is consciously designed-and-deferred in ADR-0004 + a design doc.</p>
+    <p class="text-sm rounded bg-indigo-50 border border-indigo-200 px-3 py-2"><strong>Lesson:</strong> in Nix, assert on the <em>evaluated config</em>, not the live system — and write down the test tiers you're deliberately not building, with why.</p>
+  </article>
+</section>
+
+<!-- ============ WEAKNESSES ============ -->
+<section id="weaknesses" class="space-y-4">
+  <h2 class="font-serif text-2xl font-semibold">20 points that fall short — why, and the aspect to improve</h2>
+  <p class="text-sm text-slate-500">Ordered roughly by severity. Chips name the aspect needing improvement.</p>
+
+  <ol class="space-y-3 text-sm">
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">1 · <code class="font-mono text-xs">modules/home/claude.nix</code> is a 568-line shallow-interfaced monster.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">modularity</span><br/>It mixes ≥6 concerns (dotfile installs, debug hooks, skill curation policy, session-file surgery, plugin surgery, settings seed, skills DSL) and is the sole consumer of 5 of 11 flake inputs. A maintainer's interface — everything they must know to touch it safely — spans chezmoi templating, jq, the plugin-cache layout, and the agent-skills DSL. Two ~50-line markdown footers are inlined as Nix strings (content-as-code; they belong in sibling <code class="font-mono text-xs">.md</code> files). Deletion test: deleting it scatters, not removes, complexity — but so does keeping it whole. → Candidate A.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">2 · Five activation blocks violate the repo's own DRY_RUN guardrail.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">correctness</span><br/>ARCHITECTURE.md's guardrails require activation blocks to "respect DRY_RUN without mutating the filesystem". <code class="font-mono text-xs">claudeStopHookDebug:368</code>, <code class="font-mono text-xs">surgeAgentSkillSymlinks:412</code>, <code class="font-mono text-xs">claudeDisableGrillSkills:430</code>, <code class="font-mono text-xs">claudeDisableRefactorPluginCodeSimplifier:460</code>, <code class="font-mono text-xs">claudeDisableGlobalMcpPlugins:508</code> all mutate unconditionally; only <code class="font-mono text-xs">claudePruneRemovedSkills:401</code> complies. A dry activation actually rewrites <code class="font-mono text-xs">~/.claude</code> and plugin caches.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">3 · The agent-skills IFD leaks build-time work into every eval.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">purity / CI</span><br/><code class="font-mono text-xs">tests/default.nix:49-51</code> and <code class="font-mono text-xs">auto-update.yml:82-84</code> both document the fallout: <code class="font-mono text-xs">nix flake check --no-build</code> is impossible, the nightly guard hand-picks two check attrs, darwin can't eval the Linux hosts, and the linux-purity check must skip on darwin. Two prior fixes failed. The jj skill already ships the alternative adapter — a plain path symlink (<code class="font-mono text-xs">claude.nix:336-342</code>). → Candidate C.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">4 · "Which checks does CI run?" is answered in three places.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">locality</span><br/><code class="font-mono text-xs">tests/default.nix</code> defines them; <code class="font-mono text-xs">build.yml</code> hardcodes 10 attr names twice (Linux + darwin jobs); <code class="font-mono text-xs">justfile check</code> runs a 3-attr subset. Adding a test means three edits or silent divergence — no leverage. → Candidate B.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">5 · Version-pinned paths into a mutable plugin cache.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">fragility</span><br/><code class="font-mono text-xs">claude.nix:393-394</code> targets <code class="font-mono text-xs">ralph-loop/1.0.0</code> and <code class="font-mono text-xs">codex/1.0.4</code> literally; a plugin update silently no-ops the debug wrapping. The sibling block at <code class="font-mono text-xs">:461</code> already shows the right shape — glob the version directory.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">6 · Temporary diagnostics live in the permanent baseline.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">lifecycle</span><br/><code class="font-mono text-xs">stopHookDebug</code> (43-line script + activation block) says "restore … when diagnosis is done and this block is removed" — but nothing expires it. Debug instrumentation without an off-switch becomes baseline. Gate it behind an enable option or delete it.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">7 · 19 of 23 home modules have no enable seam.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">options discipline</span><br/><code class="font-mono text-xs">claude.nix</code>, <code class="font-mono text-xs">zsh.nix</code>, <code class="font-mono text-xs">lsp.nix</code> are unconditional fragments — a host can't opt out without editing the module. The staged Omakub/Linux profile will want most-but-not-all of the set. Contrast: 10/18 darwin modules and ghostty/prompt do this right. → Candidate D (scoped, not blanket).</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">8 · No checks run on aarch64-linux at all.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">coverage</span><br/><code class="font-mono text-xs">checkSystems</code> (<code class="font-mono text-xs">flake.nix:70-73</code>) excludes it, so the vm-aarch64-utm host gets a toplevel build but zero unit/integration checks — even though CI already has a native ARM runner sitting there.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">9 · Substituter asymmetry between workflows.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">CI cost</span><br/><code class="font-mono text-xs">auto-update.yml:45-49</code> configures <code class="font-mono text-xs">claude-code.cachix.org</code>; <code class="font-mono text-xs">build.yml</code>'s four jobs configure no substituter — PR CI rebuilds what the nightly gets from cache. Share one Nix-install step.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">10 · Six inputs track moving branches.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">supply chain</span><br/><code class="font-mono text-xs">mattpocock-skills</code>, <code class="font-mono text-xs">effect-ts-skills</code>, <code class="font-mono text-xs">superpowers</code>, <code class="font-mono text-xs">agent-skills</code>, <code class="font-mono text-xs">nixos-wsl</code> pin <code class="font-mono text-xs">main</code>/<code class="font-mono text-xs">master</code>. The skill sources are also a prompt surface for every agent session — a branch push upstream lands in your context on the next flake update. Pin tags/revs where upstream has them; the nightly bump can still roll them deliberately.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">11 · Two ADRs share number 0008.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">process</span><br/><code class="font-mono text-xs">0008-code-dev-first-skill-catalog.md</code> and <code class="font-mono text-xs">0008-reproducible-dev-envs…md</code>. "See ADR-0008" is now ambiguous — the whole point of numbering. Renumber the newer one to 0009.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">12 · A stale plan doc describes work that already shipped.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">docs drift</span><br/><code class="font-mono text-xs">docs/karpathy-observable-signals-plan.md</code> proposes "Observable signals" footers "blocked on merge conflict" — but the footers are live in <code class="font-mono text-xs">claude.nix:68-74, 94-99</code>. Delete or archive it.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">13 · The repo root reads like a scratch desk.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">hygiene</span><br/><code class="font-mono text-xs">result-1</code> (stale test-build symlink), <code class="font-mono text-xs">autoresearch.jsonl</code> + <code class="font-mono text-xs">autoresearch.config.json</code> + <code class="font-mono text-xs">progress.md</code> (external-harness telemetry), untracked <code class="font-mono text-xs">droid-wiki/</code>, one-off <code class="font-mono text-xs">AGENT_SKILLS_NIX_REPORT.md</code>. Gitignore <code class="font-mono text-xs">result*</code>, move telemetry out, park reports under <code class="font-mono text-xs">docs/reports/</code>.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">14 · <code class="font-mono text-xs">codex</code> sits outside the <code class="font-mono text-xs">martin.*</code> namespace.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">policy drift</span><br/><code class="font-mono text-xs">pkgs/default.nix:8</code> exposes a vendored derivation at overlay top level, contradicting ARCHITECTURE.md's "pkgs.martin.* is the canonical place". Move it under <code class="font-mono text-xs">martin</code> (keep a top-level alias during migration if modules reference <code class="font-mono text-xs">pkgs.codex</code>).</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">15 · An unexplained global override.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">undocumented exception</span><br/><code class="font-mono text-xs">pkgs/default.nix:4-6</code> disables direnv's test suite for every consumer with no comment. Every deliberate exception in this repo carries a rationale (ADR-0005, google-drive's URL note) — this one doesn't. Add the why, or drop it if upstream fixed.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">16 · The filename glob forces no-op adapters.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">convention smell</span><br/><code class="font-mono text-xs">update-claude-code.sh</code>/<code class="font-mono text-xs">update-crush.sh</code> are 14-line stubs, and <code class="font-mono text-xs">update-flake-inputs.sh</code> exists (its own header says so) only because the sweep is <code class="font-mono text-xs">for s in scripts/update-*.sh</code>. The convention is the interface, and it's forcing empty implementations. A manifest of real updaters would drop the stubs.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">17 · The update sweep has two writers.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">duplication</span><br/><code class="font-mono text-xs">auto-update.yml:57-68</code> and <code class="font-mono text-xs">justfile bump-and-switch</code> implement the same loop independently. Let CI call <code class="font-mono text-xs">just bump</code> so the sweep has one implementation, two callers — leverage instead of copy.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">18 · <code class="font-mono text-xs">legacyPackages</code> is an ad-hoc export surface.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">interface consistency</span><br/>It exposes exactly <code class="font-mono text-xs">{ crush, martin }</code> — a NUR passthrough sitting beside the owned namespace, and no darwin <code class="font-mono text-xs">packages</code> output at all. Decide the export policy once: what does <code class="font-mono text-xs">nix build ~/nix-config#…</code> promise?</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">19 · <code class="font-mono text-xs">zsh.nix</code>: 548 unsegmented, optionless lines.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">navigability</span><br/>Second-largest module, no internal section markers, no options. It will be the first module the Linux profile needs to partially reuse. Segment it (env / aliases / integrations / wrappers), and give the darwin-only wrappers an explicit sub-seam.</li>
+
+    <li class="rounded-lg border border-slate-200 bg-white p-4"><span class="font-semibold">20 · Some tests pin implementation strings, not interfaces.</span> <span class="ml-1 text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">test brittleness</span><br/><code class="font-mono text-xs">darwin-settings-test.nix:249-269</code> locks exact skhd keybind strings; <code class="font-mono text-xs">mksystem-test.nix</code> hardcodes <code class="font-mono text-xs">"martinfan"</code>/<code class="font-mono text-xs">"f"</code>. Drift-lock tests are legitimate — but where module and test can read one shared constant, derive both so a deliberate tweak is a one-place edit, and the test still catches accidents.</li>
+  </ol>
+</section>
+
+<!-- ============ CANDIDATES ============ -->
+<section id="candidates" class="space-y-10">
+  <h2 class="font-serif text-2xl font-semibold">Deepening candidates</h2>
+
+  <!-- Candidate A -->
+  <article class="rounded-xl border border-slate-300 bg-white p-6 space-y-4" id="cand-a">
+    <div class="flex items-center gap-2 flex-wrap">
+      <h3 class="font-serif text-xl font-semibold">A · Deepen "managed app-state surgery" into one home-side module</h3>
+      <span class="text-xs font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">Strong</span>
+      <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">in-process</span>
+    </div>
+    <p class="font-mono text-sm text-slate-600">modules/home/claude.nix · cursor.nix · lsp.nix · opencode.nix — exemplar: modules/darwin/baseline-activation.nix</p>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div class="rounded-lg border border-slate-200 p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before — the same bash blob, 12+ times</p>
+        <div class="space-y-2">
+          <div class="border border-slate-300 rounded p-2">
+            <p class="text-xs uppercase tracking-wider">claude.nix</p>
+            <div class="flex flex-wrap gap-1 mt-1">
+              <span class="blob text-[10px] px-1.5 py-0.5 rounded">jq + .orig</span><span class="blob text-[10px] px-1.5 py-0.5 rounded">jq + .orig</span><span class="blob text-[10px] px-1.5 py-0.5 rounded">seed-once</span><span class="blob text-[10px] px-1.5 py-0.5 rounded">sweep</span><span class="blob text-[10px] px-1.5 py-0.5 rounded">sweep</span><span class="blob text-[10px] px-1.5 py-0.5 rounded">park+strip</span><span class="blob text-[10px] px-1.5 py-0.5 rounded">symlink</span>
+            </div>
+          </div>
+          <div class="border border-slate-300 rounded p-2"><p class="text-xs uppercase tracking-wider">cursor.nix</p><div class="flex gap-1 mt-1"><span class="blob text-[10px] px-1.5 py-0.5 rounded">settings copy</span><span class="blob text-[10px] px-1.5 py-0.5 rounded">extensions</span></div></div>
+          <div class="border border-slate-300 rounded p-2"><p class="text-xs uppercase tracking-wider">lsp.nix</p><div class="flex gap-1 mt-1"><span class="blob text-[10px] px-1.5 py-0.5 rounded">json-merge</span><span class="blob text-[10px] px-1.5 py-0.5 rounded">json-merge</span></div></div>
+          <div class="border border-slate-300 rounded p-2"><p class="text-xs uppercase tracking-wider">opencode.nix</p><div class="flex gap-1 mt-1"><span class="blob text-[10px] px-1.5 py-0.5 rounded">seed-once</span></div></div>
+        </div>
+        <p class="text-[11px] text-rose-600 mt-2">each blob re-decides: backup? idempotence? DRY_RUN? — 5 of 7 in claude.nix get DRY_RUN wrong</p>
+      </div>
+      <div class="rounded-lg border border-slate-200 p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">After — one deep module, thin callers</p>
+        <div class="deep rounded-lg p-3 text-white">
+          <p class="text-xs uppercase tracking-wider text-slate-300">martin.home.appState</p>
+          <p class="font-mono text-[11px] mt-1 text-emerald-300">declare { file; action = seed | jq-edit | sweep | park; backup; }</p>
+          <p class="text-[11px] text-slate-400 mt-2">implementation owns: .orig ledger · mktemp/mv · idempotence check · DRY_RUN contract · logging</p>
+        </div>
+        <div class="flex gap-2 mt-3">
+          <span class="border border-slate-300 rounded px-2 py-1 text-[11px]">claude.nix<br/><span class="text-slate-400">declares 7</span></span>
+          <span class="border border-slate-300 rounded px-2 py-1 text-[11px]">cursor.nix<br/><span class="text-slate-400">declares 2</span></span>
+          <span class="border border-slate-300 rounded px-2 py-1 text-[11px]">lsp.nix<br/><span class="text-slate-400">declares 2</span></span>
+          <span class="border border-slate-300 rounded px-2 py-1 text-[11px]">opencode.nix<br/><span class="text-slate-400">declares 1</span></span>
+        </div>
+        <p class="text-[11px] text-emerald-700 mt-2">the design already exists in-repo: baseline-activation.nix did exactly this for launchd state</p>
+      </div>
+    </div>
+
+    <p class="text-sm"><strong>Problem:</strong> the "reversible surgery on mutable app state" pattern is re-implemented ad hoc ≥12 times; correctness rules (DRY_RUN, backups, idempotence) are re-decided per blob and drift.</p>
+    <p class="text-sm"><strong>Solution:</strong> lift <code class="font-mono text-xs">baseline-activation.nix</code>'s typed-declaration design to the home layer; callers declare state edits, the implementation owns the contract.</p>
+    <ul class="text-sm list-disc pl-5 space-y-0.5">
+      <li>locality: DRY_RUN fixed once, fixed everywhere</li>
+      <li>leverage: one implementation, 12+ declarations</li>
+      <li>claude.nix shrinks ~160 lines</li>
+      <li>eval tests can assert the contract per declaration</li>
+    </ul>
+  </article>
+
+  <!-- Candidate B -->
+  <article class="rounded-xl border border-slate-300 bg-white p-6 space-y-4" id="cand-b">
+    <div class="flex items-center gap-2 flex-wrap">
+      <h3 class="font-serif text-xl font-semibold">B · One interface for "what CI runs"</h3>
+      <span class="text-xs font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">Strong</span>
+      <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">local-substitutable</span>
+    </div>
+    <p class="font-mono text-sm text-slate-600">tests/default.nix · .github/workflows/build.yml · justfile</p>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div class="rounded-lg border border-slate-200 bg-white p-3">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-1">Before — three writers</p>
+        <pre class="mermaid">
+flowchart TB
+  T["tests/default.nix<br/>defines 10 checks"]
+  W["build.yml<br/>hardcodes 10 names ×2 jobs"]
+  J["justfile check<br/>hardcodes 3 names"]
+  T -.drift.-> W
+  T -.drift.-> J
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class W,J leak
+        </pre>
+      </div>
+      <div class="rounded-lg border border-slate-200 bg-white p-3">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-1">After — one source, two adapters</p>
+        <pre class="mermaid">
+flowchart TB
+  T["tests/default.nix<br/>groups: ci-gate · smoke"]
+  E["nix eval .#checks --apply attrNames"]
+  W[build.yml]
+  J[justfile]
+  T --> E --> W
+  E --> J
+  classDef deep fill:#0f172a,color:#fff;
+  class T deep
+        </pre>
+      </div>
+    </div>
+
+    <p class="text-sm"><strong>Problem:</strong> the check inventory has no locality — adding a test needs three edits, and the justfile subset already diverged from CI.</p>
+    <p class="text-sm"><strong>Solution:</strong> the checks attrset becomes the interface; workflows and justfile enumerate it via <code class="font-mono text-xs">nix eval … --apply builtins.attrNames</code> (enumeration is pure — the IFD only bites on <em>build</em>, which each consumer already does per-attr).</p>
+    <ul class="text-sm list-disc pl-5 space-y-0.5">
+      <li>leverage: add a check once, both consumers pick it up</li>
+      <li>two real adapters (CI + justfile) justify the seam today</li>
+      <li>kills the silent justfile/CI divergence</li>
+    </ul>
+  </article>
+
+  <!-- Candidate C -->
+  <article class="rounded-xl border border-slate-300 bg-white p-6 space-y-4" id="cand-c">
+    <div class="flex items-center gap-2 flex-wrap">
+      <h3 class="font-serif text-xl font-semibold">C · Quarantine the agent-skills IFD behind a pure-eval seam</h3>
+      <span class="text-xs font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">Strong</span>
+      <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">ports &amp; adapters</span>
+    </div>
+    <p class="font-mono text-sm text-slate-600">modules/home/claude.nix (agent-skills wiring) · tests/default.nix · auto-update.yml</p>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div class="rounded-lg border border-slate-200 p-4 space-y-1">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before — build inside eval</p>
+        <div class="h-10 border-l-4 border-slate-400 bg-slate-100 flex items-center px-3 text-xs uppercase tracking-wider">eval any host config</div>
+        <div class="h-10 border-l-4 border-rose-500 bg-rose-50 flex items-center px-3 text-xs uppercase tracking-wider text-rose-700">IFD: build skills bundle mid-eval</div>
+        <div class="h-10 border-l-4 border-slate-400 bg-slate-100 flex items-center px-3 text-xs uppercase tracking-wider">checks / --no-build / cross-arch eval</div>
+        <p class="text-[11px] text-rose-600">every consumer of eval inherits a build dependency — guard hand-picks attrs, darwin can't eval Linux hosts</p>
+      </div>
+      <div class="rounded-lg border border-slate-200 p-4 space-y-1">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">After — bundle is an ordinary derivation</p>
+        <div class="h-10 border-l-4 border-slate-400 bg-slate-100 flex items-center px-3 text-xs uppercase tracking-wider">eval any host config — pure</div>
+        <div class="h-10 deep rounded flex items-center px-3 text-xs uppercase tracking-wider text-white">skills bundle: plain path composition / build-time only</div>
+        <div class="h-10 border-l-4 border-slate-400 bg-slate-100 flex items-center px-3 text-xs uppercase tracking-wider">--no-build works · full flake check returns</div>
+        <p class="text-[11px] text-emerald-700">the jj skill (claude.nix:336-342) already proves the second adapter: plain path symlinks, platform-agnostic</p>
+      </div>
+    </div>
+
+    <p class="text-sm"><strong>Problem:</strong> the upstream DSL's bundle resolution reads a built derivation during eval; that single leak is behind the May CI wedge, the crippled nightly guard, and the darwin↔linux eval wall.</p>
+    <p class="text-sm"><strong>Solution:</strong> compose the bundle from plain paths (the jj-skill adapter, generalized), or pre-render it as a normal build-time derivation the module consumes without reading back at eval.</p>
+    <ul class="text-sm list-disc pl-5 space-y-0.5">
+      <li>full <code class="font-mono text-xs">nix flake check</code> becomes the nightly guard again</li>
+      <li>locality: cross-arch pain stops leaking into every workflow</li>
+      <li>two adapters exist today: IFD path-source vs plain path</li>
+    </ul>
+    <div class="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm">⚠ Two prior fixes failed (quarantine PR #75; upstream 6c72d2c) — grill the design before building. Complements ADR-0008 (reproducible dev envs); no ADR conflict.</div>
+  </article>
+
+  <!-- Candidate D -->
+  <article class="rounded-xl border border-slate-300 bg-white p-6 space-y-4" id="cand-d">
+    <div class="flex items-center gap-2 flex-wrap">
+      <h3 class="font-serif text-xl font-semibold">D · An enable seam for the AI-tool cluster</h3>
+      <span class="text-xs font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">Worth exploring</span>
+      <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">in-process</span>
+    </div>
+    <p class="font-mono text-sm text-slate-600">modules/home/default.nix · claude.nix · ai-cli.nix · lsp.nix · zed.nix · cursor.nix · droid.nix · amp.nix …</p>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div class="rounded-lg border border-slate-200 p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before</p>
+        <div class="border border-slate-300 rounded p-2 text-[11px]">modules/home/default.nix<br/><span class="text-slate-400">imports 23 modules, all unconditional</span></div>
+        <p class="text-[11px] text-rose-600 mt-2">a Linux/Omakub host takes everything or edits module bodies</p>
+      </div>
+      <div class="rounded-lg border border-slate-200 p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">After</p>
+        <div class="deep rounded p-2 text-[11px] text-white">martin.ai.enable <span class="text-slate-400">(default true)</span><br/><span class="text-slate-400">gates the AI-tool cluster as one unit</span></div>
+        <p class="text-[11px] text-emerald-700 mt-2">terminal/shell/git modules stay unconditional — they're wanted everywhere</p>
+      </div>
+    </div>
+
+    <p class="text-sm"><strong>Problem:</strong> the profile has no partial-composition seam, and the staged Linux target is exactly the second adapter that will need one.</p>
+    <p class="text-sm"><strong>Solution:</strong> one cluster-level <code class="font-mono text-xs">mkEnableOption</code> for the AI toolchain — not blanket per-module options (Simplicity First: no seam until the second adapter earns it; the Linux host is staged, not live, hence amber).</p>
+    <ul class="text-sm list-disc pl-5 space-y-0.5">
+      <li>interface stays small: one toggle, not 19</li>
+      <li>unblocks the Omakub profile without module edits</li>
+    </ul>
+  </article>
+
+  <!-- Candidate E -->
+  <article class="rounded-xl border border-slate-300 bg-white p-6 space-y-4" id="cand-e">
+    <div class="flex items-center gap-2 flex-wrap">
+      <h3 class="font-serif text-xl font-semibold">E · Skill curation policy as one table, not four lists</h3>
+      <span class="text-xs font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">Worth exploring</span>
+      <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">in-process</span>
+    </div>
+    <p class="font-mono text-sm text-slate-600">modules/home/claude.nix:172-241</p>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div class="rounded-lg border border-slate-200 p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before — interface ≈ implementation (shallow)</p>
+        <div class="flex items-end gap-3">
+          <div class="flex-1"><div class="bg-rose-200 border border-rose-400 rounded-t h-28 flex items-center justify-center text-[10px] text-center px-1">interface:<br/>4 lists + interaction rules<br/>(duplicate-id throws)</div><div class="bg-slate-200 border border-slate-400 rounded-b h-32 flex items-center justify-center text-[10px]">implementation</div></div>
+        </div>
+      </div>
+      <div class="rounded-lg border border-slate-200 p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">After — deep</p>
+        <div class="flex items-end gap-3">
+          <div class="flex-1"><div class="bg-emerald-200 border border-emerald-400 rounded-t h-10 flex items-center justify-center text-[10px] text-center px-1">interface: skill → status</div><div class="deep rounded-b h-48 flex items-center justify-center text-[10px] text-slate-300 text-center px-1">compile to enable-lists,<br/>sweeps, transforms;<br/>owns collision rules</div></div>
+        </div>
+      </div>
+    </div>
+
+    <p class="text-sm"><strong>Problem:</strong> to curate one skill you must know which of four lists to touch (<code class="font-mono text-xs">disabled</code> / <code class="font-mono text-xs">leanExcluded</code> / <code class="font-mono text-xs">removed</code> / <code class="font-mono text-xs">transformed</code>) and their non-obvious interactions — the interface is as wide as the implementation.</p>
+    <p class="text-sm"><strong>Solution:</strong> one attrset <code class="font-mono text-xs">skillPolicy = { grill-me = "disabled"; caveman = "lean"; git-workflow = "removed"; … }</code>; a compile function derives the lists and sweep scripts.</p>
+    <ul class="text-sm list-disc pl-5 space-y-0.5">
+      <li>interface shrinks; implementation absorbs the rules</li>
+      <li>the per-skill rationale comments survive as values</li>
+    </ul>
+  </article>
+</section>
+
+<!-- ============ TOP RECOMMENDATION ============ -->
+<section id="top-recommendation">
+  <div class="rounded-xl border-2 border-indigo-400 bg-indigo-50 p-6 space-y-2">
+    <h2 class="font-serif text-2xl font-semibold">Top recommendation: <a href="#cand-a" class="text-indigo-700 underline">Candidate A</a></h2>
+    <p class="text-sm">It passes the deletion test hardest (deleting the pattern re-scatters ~160 lines of drifting bash), it fixes real correctness bugs — the five DRY_RUN violations — as a side effect of deepening rather than as 5 patches, and the design is already proven in-repo by <code class="font-mono text-xs">baseline-activation.nix</code>, so the interface question is "port a known-good shape to the home layer", not "invent one". Candidate C is higher stakes but has two failed attempts behind it — grill it before touching it.</p>
+  </div>
+</section>
+
+<footer class="text-xs text-slate-400 pt-4 border-t border-slate-200">
+  Vocabulary: /codebase-design (module · interface · depth · seam · adapter · leverage · locality) · Domain terms: CONTEXT.md · ADRs respected: 0001–0008×2
+</footer>
+</main>
+</body>
+</html>

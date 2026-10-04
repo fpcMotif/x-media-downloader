@@ -7,7 +7,9 @@ import { type Source, type TweetRecord, tweetRecordFromNode } from './record'
  * for every tweet node the §7 breadth rule keeps: a tweet with media, every tweet
  * in an opened thread (`source === 'tweetDetail'`), or all scrolled tweets when the
  * `includeTextOnly` breadth flag is set. Media identity rides in from the walk's
- * resolution (ADR-0016) — no second walk, no re-resolved media.
+ * resolution — no second walk, no re-resolved media.
+ *
+ * @see ADR-0016
  */
 export function harvestTweets(
   json: JsonValue,

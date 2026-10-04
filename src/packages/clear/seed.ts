@@ -33,7 +33,10 @@ export type ReleaseScopePin =
   | { readonly source: 'none' }
 
 export type ClearSeedVerdict =
-  | { readonly decision: 'skip'; readonly reason: 'aria2' | 'clear-off' | 'no-scopes' }
+  | {
+      readonly decision: 'skip'
+      readonly reason: 'aria2' | 'clear-off' | 'no-scopes' | 'cloud-only'
+    }
   | {
       readonly decision: 'seed'
       readonly byTweet: Map<string, string[]>
@@ -72,6 +75,7 @@ export function planClearSeed(input: {
   const consentedScope = resolveConsentedScope(sweep)
 
   if (settings.downloadStrategy === 'aria2') return { decision: 'skip', reason: 'aria2' }
+  if (!settings.saveToDisk) return { decision: 'skip', reason: 'cloud-only' }
   if (!settings.clearOnSave) return { decision: 'skip', reason: 'clear-off' }
   if (scopes.length === 0) return { decision: 'skip', reason: 'no-scopes' }
 

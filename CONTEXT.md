@@ -138,6 +138,12 @@ use these words, they mean exactly this.
   and never forks on the provider. The registry is keyed by provider id; two
   providers exist today. The remote-path sibling of the **Download Strategy**
   seam (Direct / Fetched / aria2).
+- **Cloud-only** — saving to a cloud destination without creating a local file.
+  Cloud completion is not disk Settle and cannot authorize Clear.
+- **Server UploadJob** — an accepted cloud transfer owned by the user's deployment, independent of browser availability.
+  It is distinct from a mirrored browser UploadJob.
+- **Execution ownership** — the executor assigned when a job is accepted.
+  Changing current settings does not transfer an existing job to another executor.
 - **Cloud Sync** — opt-in (default **off**) mirroring of download-state
   *metadata* into a user-supplied Convex deployment. Never carries media
   bytes, Captures, or credentials.

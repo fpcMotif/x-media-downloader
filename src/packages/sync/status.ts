@@ -2,10 +2,12 @@ import { ConvexFunctionError, ConvexHttpError, ConvexMalformedError } from './co
 
 /**
  * Make Cloud Sync failures legible. The outbox drains fire-and-forget
- * (ADR-0009) and the background swallows every error so downloads never block
+ * and the background swallows every error so downloads never block
  * on the cloud — but that left the user with a silent black box when sync was
  * misconfigured. These helpers turn a thrown drain/test error into one
  * actionable line, and shape the status the popup polls.
+ *
+ * @see ADR-0009
  */
 
 /** Result of a connection test or the latest drain attempt, as the popup sees it.
@@ -23,17 +25,16 @@ export type SyncStatus = {
 }
 
 /**
- * Map an error thrown by `makeConvexHttpPort` (or a raw `fetch` rejection) to a
- * message that names the likely cause and the fix. The port throws tagged error
- * classes (`ConvexHttpError` with the edge `status`, `ConvexFunctionError` with
- * the server `errorMessage`, `ConvexMalformedError`), so HTTP cases switch on
- * `instanceof` and the status code rather than re-parsing strings — no
- * regex-order dependence. A server function error still carries free-form text
- * (the function never got pushed → "Could not find public function…", the
- * fail-closed secret check → "unauthorized…"), so those stay content-matched. A
- * raw `fetch` rejection (missing host permission, unparseable host) is an
- * untagged `Error`, and a caller may also hand in a bare thrown string — both
- * land in the reachability fallback.
+ * Maps an error thrown by `makeConvexHttpPort` (or a raw `fetch` rejection) to a
+ * message that names the likely cause and the fix. The port throws tagged errors
+ * (`ConvexHttpError` with the edge `status`, `ConvexFunctionError` with the
+ * server `errorMessage`, `ConvexMalformedError`), so HTTP cases switch on the
+ * status code rather than re-parsing strings — no regex-order dependence. A
+ * server function error still carries free-form text (the function never got
+ * pushed → "Could not find public function…", the fail-closed secret check →
+ * "unauthorized…"), so those stay content-matched. A raw `fetch` rejection
+ * (missing host permission, unparseable host) is untagged and lands in the
+ * reachability fallback.
  */
 export function classifySyncError(err: Error | string): string {
   if (err instanceof ConvexHttpError) return classifyHttpStatus(err.status)
@@ -78,7 +79,7 @@ function unreachableHint(msg: string): string {
   return `Could not reach the deployment — check the URL and that access is granted (${msg}).`
 }
 
-/** Phrase a successful drain/test for the popup. */
+/** Formats a successful drain or connection test message for the popup. */
 export function describeSyncOk(pending: number): string {
   return pending > 0
     ? `Connected ✓ — ${pending} event${pending === 1 ? '' : 's'} still queued.`

@@ -1,9 +1,11 @@
 /**
- * Shared contract for the client-side cloud byte path (ADR-0013). Bytes go
+ * Shared contract for the client-side cloud byte path. Bytes go
  * extension → provider directly; nothing here touches Convex or buffers a whole
  * video. Provider adapters (`drive.ts`, `dropbox.ts`) implement `upload`; the
  * background SW orchestrates token refresh, SSRF-guarded source fetch, and the
  * UploadJob ledger (`upload-job.ts`).
+ *
+ * @see ADR-0013
  */
 
 import { CLOUD_PROVIDERS } from '@/packages/schema'
@@ -101,7 +103,11 @@ export const DROPBOX_OAUTH: OAuthConfig = {
   extraAuthParams: { token_access_type: 'offline' },
 }
 
-/** Optional host permissions requested at connect time (ADR-0013 §6). */
+/**
+ * Optional host permissions requested at connect time.
+ *
+ * @see ADR-0013
+ */
 export const GDRIVE_HOST_PATTERNS = [
   'https://www.googleapis.com/*',
   'https://oauth2.googleapis.com/*',
@@ -113,8 +119,6 @@ export const DROPBOX_HOST_PATTERNS = [
   'https://www.dropbox.com/*',
 ] as const
 
-/** Best-effort MIME from a file extension — a hint only; the source response's
- *  content-type takes precedence in the adapters. */
 export function guessMime(ext: string): string {
   const e = ext.toLowerCase().replace(/^\./, '')
   if (e === 'jpg' || e === 'jpeg') return 'image/jpeg'

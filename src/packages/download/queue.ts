@@ -24,10 +24,12 @@ export interface DownloadQueueCore {
 
 /**
  * Concurrency-bounded fire of `strategy.save` per request, each retried with a
- * bounded schedule. The browser (or aria2) owns the actual transfer (ADR-0002);
+ * bounded schedule. The browser (or aria2) owns the actual transfer;
  * the background entrypoint drives progress/persistence via `downloads.onChanged`.
  * Returns a per-request outcome (with the started handle) so callers can map a
  * `downloadId` back to its request for monitoring.
+ *
+ * @see ADR-0002
  */
 export function makeDownloadQueueCore(opts: {
   readonly strategy: DownloadStrategy
