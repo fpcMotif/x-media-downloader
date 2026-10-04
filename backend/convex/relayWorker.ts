@@ -46,6 +46,8 @@ const UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files'
 const RANGE = /^bytes (\d+)-(\d+)\/(\d+)$/
 const CONFIRMED = /^bytes=0-(\d+)$/
 const STRONG_ETAG = /^"[^"\r\n]*"$/
+const HTTP_DATE = /^[A-Za-z]{3},\s\d{2}\s[A-Za-z]{3}\s\d{4}\s\d{2}:\d{2}:\d{2}\sGMT$/
+const isValidValidator = (val: string): boolean => STRONG_ETAG.test(val) || HTTP_DATE.test(val)
 
 class RelayStopped extends Error {}
 
@@ -211,22 +213,14 @@ export const run = internalAction({
         headers.set('Authorization', `Bearer ${token}`)
         return await request(url, { ...init, headers })
       }
-      const parts = job.path.split('/')
-      const filename = parts.pop()!
+      const filename = job.path.split('/').pop()!
       if (!progress.fileId) {
-        const response = await drive(
-          `${DRIVE}/generateIds?count=${parts.length + 1}&space=drive&type=files`,
-        )
+        const response = await drive(`${DRIVE}/generateIds?count=1&space=drive&type=files`)
         if (!response.ok) throw new RelayFailure('Drive identity allocation failed')
         const ids = (await jsonObject(response)).ids
-        if (
-          !Array.isArray(ids) ||
-          ids.length !== parts.length + 1 ||
-          !ids.every((value) => typeof value === 'string')
-        )
+        if (!Array.isArray(ids) || ids.length < 1 || typeof ids[0] !== 'string')
           throw new RelayFailure('Invalid Drive identities')
         progress.fileId = ids[0]!
-        progress.folderIds = ids.slice(1)
         await persist()
       }
       const inspect = async () => {
@@ -293,7 +287,7 @@ export const run = internalAction({
       const total = range
         ? Number(range[3])
         : Number(response.headers.get('content-length')) || undefined
-      const etag = response.headers.get('etag')
+      const etag = response.headers.get('etag') ?? response.headers.get('last-modified')
       const resolvedUrl = response.url || job.sourceUrl
       const ranged = response.status === 206
       if (
@@ -308,7 +302,7 @@ export const run = internalAction({
         (progress.etag && etag !== progress.etag) ||
         (progress.resolvedUrl && resolvedUrl !== progress.resolvedUrl) ||
         (start > 0 && (!progress.etag || !progress.resolvedUrl)) ||
-        ((start > 0 || (total ?? 0) > CHUNK_BYTES) && (!etag || !STRONG_ETAG.test(etag)))
+        ((start > 0 || (total ?? 0) > CHUNK_BYTES) && (!etag || !isValidValidator(etag)))
       ) {
         await response.body?.cancel()
         throw new RelayFailure('Source size, identity, or Range validation failed', true)
@@ -325,36 +319,6 @@ export const run = internalAction({
       if (etag) progress.etag = etag
       await persist()
       if (!progress.session) {
-        let parent = job.folderId
-        for (const [index, name] of parts.entries()) {
-          const escaped = name.replaceAll('\\', '\\\\').replaceAll("'", "\\'")
-          const q = encodeURIComponent(
-            `'${parent}' in parents and name = '${escaped}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-          )
-          const list = await drive(`${DRIVE}?q=${q}&fields=files(id)&pageSize=1`)
-          if (!list.ok) throw new RelayFailure('Drive folder lookup failed')
-          const files = (await jsonObject(list)).files
-          const found = Array.isArray(files) ? files[0] : undefined
-          if (found && typeof found === 'object' && 'id' in found && typeof found.id === 'string') {
-            parent = found.id
-          } else {
-            const folderId = progress.folderIds?.[index]
-            if (!folderId) throw new RelayFailure('Missing durable folder identity', true)
-            const created = await drive(DRIVE, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                id: folderId,
-                name,
-                mimeType: 'application/vnd.google-apps.folder',
-                parents: [parent],
-              }),
-            })
-            if (!created.ok && created.status !== 409)
-              throw new RelayFailure('Drive folder creation failed')
-            parent = folderId
-          }
-        }
         const response = await drive(`${UPLOAD}?uploadType=resumable&fields=id,size`, {
           method: 'POST',
           headers: {
@@ -365,7 +329,7 @@ export const run = internalAction({
           body: JSON.stringify({
             id: progress.fileId,
             name: filename,
-            parents: [parent],
+            parents: [job.folderId],
             mimeType: job.contentType,
           }),
         })
