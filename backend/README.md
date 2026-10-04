@@ -1,50 +1,49 @@
-# x-media-downloader backend — Convex control plane
+# X Media Downloader backend
 
-The opt-in Cloud Sync target for the extension (ADR-0009). It stores
-**metadata only**: append-only `sync_events` plus the materialized
-`media_state` cache. Media bytes never transit this deployment.
+## At a glance
 
-## Deploy
+The extension's optional Convex backend stores metadata and durable upload state.
+A separately authorized, default-off experiment can stream Cloud-only Google Drive uploads through a Node action.
+Ordinary browser uploads, Dropbox, and metadata mirroring remain unchanged.
+
+## Deployment
+
+The backend is a separate Bun package:
 
 ```sh
 cd backend
-bun install
-bunx convex dev        # first run: creates/links a deployment, pushes schema
-# or, for production:
-bunx convex deploy
+bun install --frozen-lockfile
+bun run typecheck
+bun run test
 ```
 
-The deployment URL (`https://<name>.convex.cloud`) goes into the extension
-popup under **Cloud sync to Convex → Convex deployment URL**. The popup's
-"Grant access" button then requests the runtime host permission.
+Identify and approve the deployment before running `bunx convex dev --once` or `bunx convex deploy`.
+Those commands mutate a deployment; local tests do not authorize a production rollout.
 
-## Required shared secret
+Public functions fail closed without `SYNC_SHARED_SECRET` and a matching request secret.
+A discoverable deployment URL is not an authorization capability.
+No private environment values belong in logs, artifacts, or committed files.
 
-Writes fail closed: a `*.convex.cloud` URL is discoverable and is **not** a
-write capability, so `recordEvents` rejects every insert unless the deployment
-has a secret configured **and** the caller presents a matching one. Set it on
-the deployment:
+## Metadata services
 
-```sh
-bunx convex env set SYNC_SHARED_SECRET <value>
-```
+- `sync:recordEvents` accepts idempotent state events.
+- `sync:recentEvents` exposes an authenticated, paginated ledger.
+- `uploads:recordUploadJobs` mirrors browser upload state; it cannot authorize server execution.
+- Capture functions maintain the separately enabled text capture mirror.
 
-and paste the same value into the popup's **Sync secret** field. Until both
-sides are set, the extension records nothing (the outbox stays empty rather
-than filling with undeliverable events).
+## Experimental server uploads
 
-## Shape
+`relay:submit` atomically persists a metadata-only Server UploadJob and schedules internal execution.
+`relay:status` exposes authenticated status without Drive sessions or credentials.
+`relay:budget` exposes the daily usage tally committed atomically with new acceptance.
+`relay:control` applies admission, master-switch, and disconnect state.
+`relay:retry` respects the persisted lifetime and failure limits.
+`relayWorker:probe` performs authenticated source-size admission without browser source requests.
+Internal claims, checkpoints, authorization checks, and scheduled actions are not public upload APIs.
 
-- `sync:recordEvents` — idempotent batch ingest (skips already-seen
-  `eventId`s), called by the extension outbox via `POST /api/mutation`.
-- `sync:recentEvents` — newest-first cursor-paginated ledger for future
-  dashboard/popup views (`POST /api/query`).
+Drive OAuth credentials are provisioned explicitly in deployment environment variables.
+They are never copied from extension settings.
+Media bytes travel through bounded Node streams, not Convex documents, storage, arguments, or results.
 
-Both reads and writes **fail closed** on the shared `secret` (ADR-0009
-hardening): the `recentEvents` / `recentUploadJobs` queries require it too, so a
-discoverable `*.convex.cloud` URL never exposes the ledger to an unauthenticated
-caller.
-
-Phase 2 (durable export jobs via Workflow/Workpool) and Phase 3 (provider
-byte layer) build on these tables — see
-`docs/plans/2026-06-11-convex-control-plane-plan/handoff-phase-2-3.md`.
+See [setup](../docs/cloud-upload-setup.md), [ADR-0013](../docs/adr/0013-client-side-cloud-byte-upload.md), and [experiment evidence](../docs/experiments/convex-drive-relay.md).
+Live provider verification is incomplete until credentials and an approved test folder are available.

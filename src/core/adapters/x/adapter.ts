@@ -1,4 +1,5 @@
 import type { PlatformAdapter } from '../types'
+import { X_MEDIA_HOSTS } from '../../../packages/kernel/source-policy'
 import {
   X_HOST_MATCH,
   isXUrl,
@@ -14,10 +15,7 @@ import { mediaKeyFromUrl, isGrabbableMediaPreviewUrl } from './dom'
 /** X's Original-quality media CDN hosts — the SSRF allow-list / Fetched-
  *  permission source of truth (docs/adr/0019). Both exact-only: X has never
  *  been observed serving media off a subdomain of either. */
-export const X_CDN_HOSTS = [
-  { host: 'pbs.twimg.com', includeSubdomains: false },
-  { host: 'video.twimg.com', includeSubdomains: false },
-] as const
+export const X_CDN_HOSTS = X_MEDIA_HOSTS
 
 /**
  * X's `PlatformAdapter` — a thin composition over the existing, unchanged

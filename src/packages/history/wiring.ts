@@ -7,6 +7,7 @@ export type HistoryAction =
   | { kind: 'queued'; item: MediaItem; filename: string; at: number }
   | { kind: 'cloud-completed'; requestId: string; at: number }
   | { kind: 'cloud-failed'; requestId: string; at: number }
+  | { kind: 'cloud-queued'; requestId: string; at: number }
   | {
       kind: 'completed' | 'failed'
       requestId: string
@@ -35,6 +36,8 @@ export function planHistory(
     if (!isMirrorableRequest(action.item.id, true)) return store
     return upsert(store, recordFromMediaItem(action.item, action.filename, action.at))
   }
+  if (action.kind === 'cloud-queued')
+    return applyCloudTransition(store, action.requestId, 'queued', action.at)
   if (action.kind === 'cloud-completed' || action.kind === 'cloud-failed') {
     return applyCloudTransition(
       store,

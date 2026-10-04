@@ -1,70 +1,95 @@
-# ADR-0013 — Client-side OAuth byte upload to Google Drive & Dropbox
+# ADR-0013 — Browser cloud uploads by default; opt-in Convex Drive execution
 
-- **Status:** Accepted (2026-06-19)
-- **Supersedes (amends):** the *server-side* byte-path direction sketched on branch `feat/convex-cloud-destinations` (its ADR-0013). That branch's ADR-0011–0014 share numbers with main's bookmarks ADRs (0011/0012) and durable-history work — a known collision (see handoff 2026-06-19). **This file is main's authoritative ADR-0013** and the live decision for the shipped byte path.
-- **Builds on:** [ADR-0009](0009-convex-cloud-control-plane.md) (Convex control plane), [ADR-0003](0003-dual-download-strategy.md) (Fetched strategy / offscreen), [ADR-0006](0006-aria2-download-backend.md) (fetch-injected RPC ports).
+Browser uploads remain the default for Google Drive and Dropbox.
+Cloud-only users may explicitly select an experimental Google Drive relay through their own Convex deployment.
+The relay is implemented, but real provider transfers and resource costs remain unverified.
 
-## Context
+## Browser execution
 
-Today the extension mirrors only **metadata** (CDN URLs + provenance) to Convex (ADR-0009 Phase 1). Phase 3 — long deferred — is the **byte-transfer layer**: upload the real photo/MP4 bytes of downloaded media to the user's own **Google Drive** and **Dropbox**.
+Cloud upload is default-off and independent of Direct, Fetched, and aria2 disk strategies.
+With `saveToDisk: true`, browser cloud uploads run alongside the local save.
+With `saveToDisk: false`, there is no disk Save Request, sidecar, or Clear-on-complete.
+Admission and filename planning still apply.
 
-Two hard constraints decide the architecture:
+The durable browser UploadJob ledger owns retries and outcomes for browser-executed jobs.
+Its optional Convex mirror is best-effort metadata only.
+Pausing a provider prevents new jobs; accepted jobs remain owned by their original executor.
+Cloud-only Download History remains queued until provider completion, and a successful retry can repair failed history.
 
-1. **Video memory wall.** X video is 20–512 MB. Convex actions cannot buffer that (V8 64 MiB / Node 512 MiB). A server-side relay (Convex fetches twimg → pushes to provider) **cannot serve video** without a separate worker, and even then bytes would transit our infrastructure — against ADR-0009's "never bytes through Convex" posture.
-2. **Drive + Dropbox both have clean client-side OAuth.** The extension already runs a service-worker `fetch` against twimg (the Fetched strategy, ADR-0003). It can fetch the bytes and upload them to the provider directly, with no server in the byte path.
+Browser OAuth uses PKCE through `chrome.identity.launchWebAuthFlow` in the background worker.
+Google's Web application client also requires a client secret for exchange and refresh.
+That user-supplied secret resides in extension storage and is sent to Google's token endpoint.
+Dropbox does not require a client secret for this flow.
+The extension bundle contains no provisioned private credentials.
 
-The byte source is also already understood: `makeFetchPort` (`src/core/download/fetched-strategy.ts`) and the SSRF guard `guardedFetch` (`src/core/sync/url-guard.ts`, landed on main, commit 3548bda) fetch twimg media from the SW with an exact-host allow-list and per-hop redirect revalidation. `guardedFetch` returns a `Response` whose `body` is a `ReadableStream` — so bytes can be **streamed**, never fully buffered.
+Google Drive currently uses the full Drive scope; Dropbox uses app-folder access.
+Files follow the planned filename's directory structure, not an inferred author folder.
+Public distribution still requires evaluating provider verification and token-storage risks.
+The experimental relay is not a public multi-user OAuth service.
 
-## Decision
+## Experimental server execution
 
-**Client-side OAuth (PKCE) byte upload. Bytes go extension → provider directly; Convex stays a control-plane job ledger only.**
+`convexDriveEnabled` defaults to false.
+The extension requires Cloud-only saving, deployment setup, backend authorization, Drive Upload enabled, and no active Dropbox destination.
+An unavailable experimental path fails visibly; it never silently falls back to browser upload or disk saving.
+Local+cloud and ordinary Dropbox behavior remain unchanged.
 
-### 1. Byte path — stream, never buffer
+The browser submits only Media Item identity, source URL, planned path, content type, and originating device.
+Size admission uses an authenticated backend HEAD probe rather than a browser source request.
+The server accepts jobs idempotently by device and Media Item, rejecting conflicting source or target metadata.
+Remote daily usage is charged atomically with new durable acceptance, keyed by originating device and local calendar day.
+Remote admission combines that server tally with ordinary local usage, even after a lost acceptance response.
+Ordinary downloads use retained local receipt accounting instead of querying Convex.
+Every remote candidate requires a positive backend HEAD size, even when the user disables size filters.
+Unknown sizes fail before submission; accepted byte charges also cap the job's maximum source size.
+Changed or underestimated sources cannot upload beyond that reservation.
+Retries and duplicate acceptance do not increment the tally; transfer telemetry separately records observed bytes.
 
-A dedicated module tree `src/core/cloud/` (kept out of the shipped `src/core/sync/` per the cloud-destinations reconciliation):
+Server UploadJobs live separately from the browser mirror.
+Only authenticated submission authorizes execution; mirror updates cannot do so.
+An extension receipt preserves execution ownership and the original deployment across settings changes and restarts.
+It retains the original shared sync secret in local extension storage, never provider OAuth credentials.
+Status and remote budget queries use each receipt's deployment and authentication, not the currently selected deployment.
+Confirmed submission rejection releases the receipt; ambiguous acceptance remains fenced until retry or status confirms server ownership.
+This conservative reservation prevents a lost acceptance response from creating a second browser transfer.
+Accepted server jobs never enter the browser uploader or disk queue.
+Download History reconciles queued, failed, retry, and completed states, including completion while the browser was closed.
+Saved requires confirmed Drive completion, not durable queue acceptance.
 
-- The SW fetches twimg bytes via `guardedFetch` (SSRF allow-list + redirect revalidation) and **streams** the `Response.body` to the provider:
-  - small media (Content-Length ≤ `SIMPLE_MAX` = 8 MiB) is buffered once and sent in a single request;
-  - large/unknown-size media is streamed in fixed chunks read from the body reader — **never holding the whole file in SW memory**. This sidesteps the same 512 MB wall on the client that killed the server-side design.
-- This path is **independent of the download strategy** (direct / aria2 / Fetched) and of the broken offscreen save (the Fetched strategy's offscreen `chrome.downloads` bug, memory `pr9-fetched-offscreen-rework`). Cloud upload never touches the offscreen document.
+Deployment-only OAuth credentials and the destination root are provisioned explicitly.
+The worker never receives browser cookies or copies extension OAuth secrets.
+Its source hosts and redirect policy are shared with the extension's public-media policy.
+Private Drive session URLs, source validators, offsets, and leases stay in internal server state.
+Authenticated public status excludes sessions and credentials.
 
-### 2. Trigger — at queue time; the local download is optional
+## Transfer constraints
 
-**Amended 2026-09-19 — cloud-only save + per-provider pause (issue #95).** Upload still enqueues at grab time: when cloud upload is enabled and at least one provider is both connected **and upload-enabled** (per-provider pause), one **UploadJob per (media item × connected-and-enabled provider)** is appended to a durable local ledger and a drain is kicked. But upload no longer requires a parallel local save — the `saveToDisk` setting decides whether the Download Strategy (Direct / Fetched / aria2) runs at all:
+One global fenced lease permits one transfer worker at a time.
+Each Node action processes at most one 8 MiB chunk with a 120-second local deadline.
+The eleven-minute lease exceeds Convex's documented ten-minute action deadline.
+A scheduled watchdog recovers an abandoned lease; every checkpoint checks the fencing token.
 
-- `saveToDisk: true` (default): unchanged. The strategy writes the file and upload (if enabled) runs in parallel; both fetch twimg independently, and a dead URL simply fails the job (→ `skipped`/`failed`) without affecting the local download.
-- `saveToDisk: false` (Cloud-only): the strategy is not called; upload is the only byte path. Sidecar `.json` planning and Clear-on-complete are skipped (no Settle can run without a Download Handle), while admission, filename planning, and the grab-time `queued` history record still run. Download History terminals then follow the enabled providers' UploadJob verdicts for that media item (all enabled jobs succeeded → completed; all dead/skipped → failed).
+Drive file and folder identities are allocated and persisted before creation.
+The worker reconciles the stable file identity before retrying ambiguous creation or completion.
+It probes the private resumable session before continuation and trusts only Drive-confirmed offsets.
+Large sources require valid HTTP Range responses, a consistent total, and a matching strong ETag.
+Every partial continuation also verifies the original resolved URL and strong validator, including small sources.
+Small non-ranged sources can finish within one chunk; unsafe larger continuations fail explicitly.
+Streaming reads enforce byte limits even without a trustworthy Content-Length.
 
-(Sharing the Fetched-strategy bytes to avoid the double fetch is a future optimization.)
+Default limits are 512 MiB per source, one hour of total job lifetime, and three failures.
+Job lifetime is not an action timeout.
+Provider pause closes admission but drains accepted jobs.
+Master disable suspends requests at a safe boundary; disconnect invalidates accepted authorization permanently.
+Turning off the experiment alone retains accepted status and does not change job ownership.
 
-### 3. Control plane — local ledger (source of truth) + best-effort Convex mirror
+## Trade-offs and evidence
 
-- **Local:** a pure reducer `src/core/cloud/upload-job.ts` (lifted from `feat/upload-job-ledger`): `pending → uploading → succeeded | failed → dead | skipped`, fencing-token leases, bounded retry with exponential backoff. Persisted to `local:cloudUploadJobs`, drained FIFO through a serialized chain — **mirroring the metadata outbox** (`src/core/sync/outbox.ts`) so the same idempotency + backoff invariants hold.
-- **Convex (optional, gated on existing Cloud Sync config):** an `upload_jobs` table + `recordUploadJobs` mutation **mirroring `recordEvents`** (idempotent by `jobId`, same fail-closed `SYNC_SHARED_SECRET`). Best-effort, fire-and-forget; the local ledger is authoritative. Gives cross-device upload visibility without putting bytes anywhere near Convex.
+Full buffering would exceed memory for some videos, but bounded streaming does not require full buffering.
+Memory limits alone therefore do not establish whether Convex can relay a particular video.
+Per-chunk actions and checkpoints add invocation and database costs, which require actual usage measurements.
+No arbitrary file-size, duration, source-access, or cost guarantee is made.
 
-### 4. OAuth — PKCE via `chrome.identity.launchWebAuthFlow`, run in the background SW
-
-- `launchWebAuthFlow` (not `getAuthToken`: that is Google-only, profile-bound, no app-managed refresh token) with **PKCE** (`S256`).
-- **Amended 2026-09-12 — Google requires a client secret anyway.** PKCE was meant to remove it, and Dropbox honours that. Google's *Web application* client type does not: its token endpoint answers `400 client_secret is missing` on both the code exchange and every refresh, even with a valid `code_verifier`. Its *Chrome Extension* client type drops the secret but only serves `getAuthToken` — no refresh token, Chrome-only — so it cannot back this design. The secret is therefore a per-provider **optional** input (`ProviderFields.clientSecret`, set for gdrive alone) stored in settings beside the tokens, on the `aria2Secret`/`convexSyncSecret` posture, and sent only when non-empty. Dropbox's request body is unchanged and carries no `client_secret` param. **Before a public Web Store release**, move the Google token exchange behind the user's own Convex deployment (ADR-0009) so the bundle ships no secret.
-- Redirect URI = `chrome.identity.getRedirectURL()` → `https://<extension-id>.chromiumapp.org/`, surfaced read-only in the popup so the user registers it in the provider console.
-- **Permission grant happens in the popup** (user gesture preserved), the **OAuth flow runs in the background SW** (survives the popup closing on focus loss). Tokens are written by the background — the single settings writer (ADR-0005).
-- Access tokens are refreshed proactively (within 60 s of expiry, or on a 401) using the stored refresh token (`access_type=offline` + `prompt=consent` for Google; `token_access_type=offline` for Dropbox).
-
-### 5. Providers
-
-- **Google Drive** — scope **`https://www.googleapis.com/auth/drive`** (full Drive, per the product decision 2026-06-19). *Sensitive scope: a public Chrome Web Store release needs Google OAuth verification + likely a CASA assessment; fine for personal/dev use. The scope is a single constant — downgrading to the non-sensitive `drive.file` later is a one-line change.* Files land in a per-handle subfolder under an app root folder ("X Media Downloader"); folders are lookup-or-created (cached in memory). Resumable upload (`uploadType=resumable`, 256 KiB-multiple chunks) for large media; multipart (`uploadType=multipart`, sets name+parents) for small.
-- **Dropbox** — scope **`files.content.write`**, **App-folder** access type (least privilege; paths relative to `Apps/<App>/`). `POST /2/files/upload` for ≤ 150 MB; `upload_session/{start,append_v2,finish}` (4 MiB-multiple chunks) for larger. *50-user Development cap until Production approval — irrelevant for personal use, a gate for public release.*
-
-### 6. Settings & manifest
-
-- New `Settings` keys (Effect Schema, `local:settings` blob, same as `aria2Secret`/`convexSyncSecret`): `cloudUploadEnabled` (master gate + disclosure) and per-provider client id + access/refresh token + expiry (+ Drive folder id, account label). Tokens stored plaintext in `storage.local` — same posture as the existing secrets; the profile's OS account is the trust boundary. (Encrypting at rest inside the same extension is obfuscation, not security; noted, not done.)
-- Manifest: add `"identity"` to required `permissions` (`launchWebAuthFlow` needs it; not reliably grantable as optional). Provider API origins (`googleapis.com`, `oauth2.googleapis.com`, `*.dropboxapi.com`, `www.dropbox.com`) are **optional_host_permissions**, requested at connect time — consistent with the twimg / convex.cloud opt-in pattern.
-
-## Consequences
-
-- **Privacy posture strengthens.** Bytes never transit Convex or any server of ours; they go provider-native to the user's own account. The "Local-only / never bytes through Convex" claim holds.
-- **Video works.** Streaming bounds SW memory regardless of file size.
-- **Opt-in & honest.** Master toggle + per-provider connect; disconnect clears tokens. "Saved to cloud" reflects a real provider response, not a fire-and-forget guess.
-- **Double fetch.** Until bytes are shared from the Fetched strategy, cloud upload re-fetches twimg in parallel with the local download (2× bandwidth per media). Cloud-only pays it once — upload is the only fetch.
-- **Release gating, not code.** Full-Drive scope (verification/CASA) and Dropbox's 50-user cap block a *public* release, not personal use. Both are single-constant / console changes.
-- **Token at-rest.** Refresh tokens live in `storage.local`. Acceptable per the established secret convention; a follow-up could move them to a sealed store.
+Convex tests substitute HTTP responses at the external boundary and verify persisted outcomes and Drive identity reconciliation.
+They do not replace the required small-image, increasing-video, integrity, browser-closed, and reopen experiments.
+See [cloud setup](../cloud-upload-setup.md) and [measured experiment status](../experiments/convex-drive-relay.md).

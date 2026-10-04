@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { makeRemoteUpload } from './remote-upload'
 import { Schema } from 'effect'
 import {
   makeCloudUpload,
@@ -150,6 +151,51 @@ const makeCU = (over: Partial<CloudUploadDeps> = {}) =>
     setSettings: async () => connected(),
     ...over,
   })
+
+it('routes experimental Cloud-only acceptance exclusively to Convex, including after settings change', async () => {
+  const settings = connected({
+    saveToDisk: false,
+    convexDriveEnabled: true,
+    convexDriveConnected: true,
+    convexUrl: 'https://test.convex.cloud',
+    convexSyncSecret: 'test-secret',
+    cloudDeviceId: 'device',
+  })
+  const runtime = fakeRuntime()
+  const ledger = fakeLedger()
+  const requests: string[] = []
+  const remote = makeRemoteUpload({
+    getSettings: async () => settings,
+    store: fakeLedger(),
+    onHistoryNotice: () => {},
+    fetchImpl: async (url) => {
+      requests.push(String(url))
+      return Response.json({ status: 'success', value: { id: 'server-id', created: true } })
+    },
+  })
+  const cu = makeCU({ remote, runtime, ledger })
+  const candidates = [
+    {
+      item: {
+        id: 'remote-item',
+        url: 'https://pbs.twimg.com/media/test.jpg',
+        handle: 'alice',
+        ext: 'jpg',
+      },
+      filename: 'twitter/test.jpg',
+      estimatedBytes: 4,
+    },
+  ]
+  expect(await cu.recordCloudUploads(settings, candidates)).toEqual(['remote-item'])
+  expect(
+    await cu.recordCloudUploads({ ...settings, convexDriveEnabled: false }, candidates),
+  ).toEqual([])
+  await cu.drainUploadJobs()
+  expect(decodeLedger(ledger.value)).toEqual([])
+  expect(runtime.uploadDrive).not.toHaveBeenCalled()
+  expect(runtime.uploadDropbox).not.toHaveBeenCalled()
+  expect(requests.every((url) => url.startsWith(settings.convexUrl))).toBe(true)
+})
 
 describe('cloudUploadStatus', () => {
   it('reports the ledger summary read through the store seam', async () => {

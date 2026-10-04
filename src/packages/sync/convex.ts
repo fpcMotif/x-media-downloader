@@ -1,5 +1,5 @@
 /**
- * Minimal port over Convex's public HTTP API: `POST {deployment}/api/{mutation|query}`
+ * Minimal port over Convex's public HTTP API: `POST {deployment}/api/{mutation|query|action}`
  * with `{path, args, format: 'json'}` → `{status: 'success'|'error', …}`. Reads
  * the shared `FetchService` from `R` — no `fetchImpl` thread, no
  * convex SDK and no WebSocket client inside the MV3 service worker.
@@ -9,6 +9,8 @@
  */
 import { Data, Effect, Option } from 'effect'
 import { FetchService, FetchError, makeFetchServiceLive } from '@/packages/kernel/fetch-service'
+
+const FUNCTION_FAILED_STATUS = 560
 
 /**
  * A non-2xx answer from the deployment edge. `status` is the HTTP code so the
@@ -25,7 +27,7 @@ export class ConvexHttpError extends Data.TaggedError('ConvexHttpError')<{
 }
 
 /**
- * A `200 {status:'error'}` Convex function error — the server's own
+ * A `{status:'error'}` Convex function error (HTTP 200 or 560) — the server's own
  * `errorMessage` (e.g. "Could not find public function…", "unauthorized…").
  */
 export class ConvexFunctionError extends Data.TaggedError('ConvexFunctionError')<{
@@ -88,12 +90,18 @@ export function convexOriginPattern(deploymentUrl: string): Option.Option<string
 }
 
 /** Build a ConvexPort backed by HTTP against a Convex deployment. */
-export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): ConvexPort {
+export function makeConvexHttpPort(cfg: {
+  readonly deploymentUrl: string
+}): ConvexPort & { readonly action: ConvexPort['query'] } {
   const base = cfg.deploymentUrl.replace(/\/+$/, '')
   // Shared request+parse for both endpoints so `mutation` and `query` can never
   // drift in how they POST the envelope or classify a failure. `endpoint` is the
   // path after `/api` (`mutation` vs `query`).
-  const call = (endpoint: 'mutation' | 'query', path: string, args: Record<string, unknown>) =>
+  const call = (
+    endpoint: 'mutation' | 'query' | 'action',
+    path: string,
+    args: Record<string, unknown>,
+  ) =>
     Effect.gen(function* () {
       const http = yield* FetchService
       const res = yield* http.fetch(`${base}/api/${endpoint}`, {
@@ -101,7 +109,8 @@ export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): Con
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(buildFunctionCall(path, args)),
       })
-      if (!res.ok) return yield* new ConvexHttpError({ status: res.status })
+      if (!res.ok && res.status !== FUNCTION_FAILED_STATUS)
+        return yield* new ConvexHttpError({ status: res.status })
       // A 200 from a non-Convex host (parked domain, corp proxy, SPA index.html)
       // serves HTML, so `res.json()` throws. Wrap it into the same vocabulary as
       // the other failures so the drain loop classifies it as a sync error instead
@@ -121,6 +130,7 @@ export function makeConvexHttpPort(cfg: { readonly deploymentUrl: string }): Con
       return body.value
     })
   return {
+    action: (path, args) => call('action', path, args),
     mutation: (path, args) => call('mutation', path, args),
     query: (path, args) => call('query', path, args),
   }

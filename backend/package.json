@@ -1,6 +1,6 @@
 {
   "name": "x-media-downloader-backend",
-  "description": "Convex control plane for X Media Downloader Cloud Sync (ADR-0009). Metadata only — media bytes never transit this deployment.",
+  "description": "Convex metadata control plane and default-off personal Drive relay experiment for X Media Downloader.",
   "private": true,
   "version": "0.1.0",
   "type": "module",

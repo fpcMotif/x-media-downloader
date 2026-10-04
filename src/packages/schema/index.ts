@@ -136,11 +136,11 @@ export const Settings = Schema.Struct({
   releaseMutationDiagnosticsEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(false)),
   ),
-  // Cloud upload (ADR-0013): opt-in, CLIENT-SIDE OAuth — uploads the real media
-  // BYTES (not links) to your own Google Drive / Dropbox. Bytes go extension →
-  // provider directly; nothing transits Convex. Master gate, default off so the
-  // local-first posture holds until the user explicitly opts in + connects.
+  // Browser OAuth uploads remain the default. The separate Convex experiment
+  // applies only to explicitly selected Cloud-only Google Drive uploads.
   cloudUploadEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  convexDriveEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  convexDriveConnected: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   // Local save gate (issue #95). Default on: the Download Strategy still writes
   // the file. Off is Cloud-only — bytes go only to enabled, connected Cloud
   // Providers. Coupling refuses off unless Cloud upload has a live destination.
@@ -358,7 +358,13 @@ export const CloudDisconnectRequest = Schema.TaggedStruct('CloudDisconnectReques
 })
 export type CloudDisconnectRequest = typeof CloudDisconnectRequest.Type
 
-// popup → background: read the upload-ledger summary + last error (no network).
+// popup → background: setup and control for experimental server execution.
+export const RelaySetupRequest = Schema.TaggedStruct('RelaySetupRequest', {})
+export const RelayControlRequest = Schema.TaggedStruct('RelayControlRequest', {
+  enabled: Schema.Boolean,
+  accepting: Schema.Boolean,
+  connected: Schema.Boolean,
+})
 export const CloudStatusRequest = Schema.TaggedStruct('CloudStatusRequest', {})
 export type CloudStatusRequest = typeof CloudStatusRequest.Type
 
@@ -663,6 +669,8 @@ export const Message = Schema.Union([
   CloudConnectRequest,
   CloudDisconnectRequest,
   CloudStatusRequest,
+  RelaySetupRequest,
+  RelayControlRequest,
   CloudRetryRequest,
   CloudBackfillRequest,
   SweepEnqueueRequest,

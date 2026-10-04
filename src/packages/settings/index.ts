@@ -44,6 +44,28 @@ export const SettingsServiceLive = Layer.succeed(SettingsService, {
       const current = decode(yield* Effect.promise(() => item.getValue()))
       const merged = { ...current, ...patch }
       const next = decode({ ...merged, ...destinationLostDelta(merged) })
+      if (current.convexDriveConnected && current.convexUrl !== next.convexUrl)
+        return yield* Effect.die(new Error('Disconnect backend Drive before changing deployments'))
+      const relayControlChanged =
+        (current.convexDriveConnected || next.convexDriveConnected) &&
+        (current.cloudUploadEnabled !== next.cloudUploadEnabled ||
+          current.convexDriveEnabled !== next.convexDriveEnabled ||
+          current.convexDriveConnected !== next.convexDriveConnected ||
+          current.gdriveUploadEnabled !== next.gdriveUploadEnabled)
+      if (relayControlChanged) {
+        const reply = yield* Effect.promise(() =>
+          browser.runtime.sendMessage({
+            _tag: 'RelayControlRequest',
+            enabled: next.cloudUploadEnabled,
+            accepting: next.convexDriveEnabled && next.gdriveUploadEnabled,
+            connected: next.convexDriveConnected,
+          }),
+        )
+        if (!reply || typeof reply !== 'object' || !('ok' in reply) || reply.ok !== true)
+          return yield* Effect.die(
+            new Error('Backend relay control was not acknowledged; settings unchanged'),
+          )
+      }
       yield* Effect.promise(() => item.setValue(next))
       return next
     }),

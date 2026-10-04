@@ -1,133 +1,51 @@
-# ADR-0009 — Convex as an opt-in cloud control plane (metadata only, never bytes)
+# ADR-0009 — Opt-in Convex control plane with a separate Drive relay experiment
 
-- **Status:** Accepted (2026-06-11)
-- **Extended by:** [ADR-0018](0018-capture-mirror-extends-convex-scope.md) — the
-  "metadata only — never bytes, captures, or auth" posture below scopes the **media**
-  mirror. The Tweet Harvest capture mirror extends the Convex scope to tweet **text**
-  (+ link metadata; still never media bytes/captures/auth), behind its own opt-in
-  `captureMirrorEnabled` (default OFF).
-
-## Context
-
-Users want durable, cross-session/cross-device visibility into what was grabbed
-(a URL/state cache, a job ledger that survives browser close) and, later, cloud
-export of selections to S3/Drive/Photos/Dropbox. Two constraints shape any
-remote backend here:
-
-- **Product promise:** v1 is local-only ("Local-only · no tracking", ADR-0005:
-  captures are sensitive and session-scoped; no persistent history). A remote
-  backend must be **opt-in** and must never receive captures, auth headers, or
-  media bytes.
-- **Convex platform facts** (verified against docs.convex.dev, 2026-06):
-  HTTP actions cap request/response at 20 MiB; actions are at-most-once and not
-  auto-retried; **scheduled mutations are exactly-once with automatic retries**;
-  a mutation may write ≤16 MiB / ≤16,000 docs and schedule ≤1,000 functions;
-  query/mutation user code is capped at 1 s. Convex is a strong reactive
-  metadata + durable scheduling platform and a poor 1k–10k-file byte pipe.
+Convex is an optional metadata control plane, not a dependency of ordinary browser downloads.
+An explicit, default-off experiment also permits Cloud-only Google Drive transfers through the user's deployment.
+The experiment is implemented but lacks live provider verification; production suitability is not established.
 
 ## Decision
 
-Convex becomes a **sidecar control plane**, three-layered:
+Default local downloads, browser cloud uploads, Dropbox, and metadata mirroring retain their existing execution paths.
+Cloud Sync mirrors deterministic, append-only Sync Events through a durable local Outbox.
+Its payload excludes media bytes, captures, cookies, and provider credentials.
+ADR-0018 separately authorizes the opt-in text capture mirror.
 
-1. **Local execution layer (unchanged):** browser/aria2 own all media bytes
-   (ADR-0002/0003/0006). Default behavior is byte-for-byte what it is today.
-2. **Metadata/orchestration layer (new, opt-in):** the background SW mirrors
-   append-only **Sync Events** (`queued` / `completed` / `failed`, metadata
-   only) into Convex through a local **Outbox**:
-   - Events carry a deterministic `eventId` (`device/request/kind`) so server
-     writes are **idempotent**; re-sending a batch is harmless.
-   - The Outbox persists to `storage.local`, drains FIFO in batches of ≤64 via
-     `POST {deployment}/api/mutation` (`sync:recordEvents`), and backs off
-     exponentially on failure. Downloads never block on, or fail because of,
-     the cloud.
-   - Transport is a minimal `fetch`-based port over Convex's public HTTP API
-     (the `makeAria2RpcPort` pattern) — **no convex npm dependency, no
-     WebSocket client** in the MV3 worker.
-3. **Byte-transfer layer (future, Phase 3):** provider-native resumable/
-   multipart uploads (S3, Drive, Photos, Dropbox). Bytes never transit Convex.
+Public metadata reads and writes require the configured `SYNC_SHARED_SECRET` and a matching caller secret.
+The deployment URL alone grants no access.
+The extension uses Convex's HTTP API rather than a persistent WebSocket client.
+Host access remains an optional browser permission.
 
-Privacy/permissions posture:
+The Drive relay is a distinct authorization boundary, described in [ADR-0013](0013-client-side-cloud-byte-upload.md).
+Authenticated submission atomically persists a Server UploadJob and schedules an internal Node action.
+Best-effort `upload_jobs` mirror writes cannot create, claim, or authorize Server UploadJobs.
+Provider credentials are provisioned separately on the deployment, never copied from extension settings.
+Media bytes stream between approved public sources and Drive, never through Convex documents or function arguments.
 
-- Default **off** (`cloudSyncEnabled: false`). The `https://*.convex.cloud/*`
-  origin is an **optional** host permission requested at runtime on enable
-  (aria2-localhost precedent). The popup footer says "Cloud sync on · metadata
-  only" while enabled — the "Local-only" claim is never shown untruthfully.
-- Mirrored data is CDN URLs + tweet/handle/type provenance only. Sidecar
-  `data:` URLs, captures, and auth material are structurally excluded by the
-  `SyncEvent` schema. Disabling sync clears the Outbox.
-- An optional shared secret (Convex env var `SYNC_SHARED_SECRET`) gates the
-  public mutation.
+Disabling the experiment stops new acceptance without removing accepted job status.
+The master upload switch stops further requests at the next chunk/request boundary.
+Disconnect invalidates backend authorization, including previously accepted jobs.
+Existing Cloud Sync remains metadata-only regardless of this separate experiment.
 
-## Data flow
+## Constraints and alternatives
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant CS as Content script
-  participant BG as Background SW
-  participant OB as Outbox (storage.local)
-  participant CX as Convex /api/mutation
-  participant DB as sync_events + media_state
-  participant PU as Popup
+HTTP action request/response limits do not establish limits on outbound streaming from Node actions.
+A full-buffer memory estimate therefore cannot prove that streaming video is impossible.
+The current Convex documentation specifies a ten-minute action timeout and 512 MB Node memory allowance.
+Actual transfer feasibility, memory overhead, source access, and costs require measurement.
 
-  CS->>BG: download event (queued / completed / failed)
-  Note over BG: gate — cloudSyncEnabled + URL + secret
-  BG->>OB: append SyncEvent (eventId = device/request/kind)
-  BG-)BG: drainOutbox (fire-and-forget; download never blocks)
-  loop FIFO, batch ≤64, until empty or first failure
-    BG->>CX: POST sync:recordEvents {events, secret}
-    Note over BG,CX: fetch bound to globalThis<br/>(else "Illegal invocation" in the SW)
-    CX->>CX: secret === SYNC_SHARED_SECRET (fail-closed)
-    CX->>DB: skip seen eventId, else insert + patch media_state
-    CX-->>BG: {received, inserted}
-    BG->>OB: markDrained
-    BG->>PU: status "Connected ✓"
-  end
-```
+The implementation uses one globally leased worker, bounded chunks, transactional checkpoints, and bounded retries.
+A lost action invocation recovers through a scheduled lease watchdog.
+The worker's deadline is shorter than the platform deadline; its lease outlasts that platform deadline.
+These choices prevent a replacement worker from overlapping a still-running predecessor.
 
-Outbox batch lifecycle:
+A mandatory cloud backend remains rejected because it would change the default privacy and availability contract.
+Temporary Convex file storage remains unnecessary; it would add storage and egress costs without proving streaming feasibility.
+The browser remains the default byte path until the experiment produces acceptable live evidence.
 
-```mermaid
-stateDiagram-v2
-  [*] --> Pending: event appended
-  Pending --> Draining: isReady (no active backoff)
-  Draining --> Drained: 200 success → markDrained
-  Draining --> Failed: throw → markFailed (exponential backoff)
-  Failed --> Pending: backoff elapsed → retry
-  Drained --> [*]
-```
+## Evidence
 
-> **Implementation note — service-worker `fetch` receiver.** The HTTP port must
-> call the injected `fetch` **detached from its config object**. `cfg.fetchImpl(...)`
-> invokes native `fetch` with `this === cfg`, which the MV3 service worker rejects
-> with `TypeError: Failed to execute 'fetch' on 'WorkerGlobalScope': Illegal
-> invocation` — the request never leaves the worker, so "Test connection" reports
-> "Could not reach the deployment" even though the backend is healthy. Bind at port
-> construction: `const doFetch = cfg.fetchImpl.bind(globalThis)`. Arrow-function test
-> mocks ignore `this` and miss this entirely; the regression guard is a non-arrow
-> brand-check stub (`convex.test.ts`, `aria2.test.ts`). Same fix applies to
-> `makeAria2RpcPort`.
-
-## Consequences
-
-- Local-only default mode is untouched; cloud mode gains a durable,
-  device-tagged ledger and URL/state cache that survives browser restarts.
-- Idempotent events + at-least-once draining give exact-once *effects* without
-  distributed transactions; append-only rows avoid Convex hot-document write
-  conflicts.
-- Prolonged offline beyond the Outbox cap (2,000 events) drops oldest metadata
-  — acceptable; bytes were already safe on disk.
-- The Convex backend lives in `backend/` as a separate package; the extension
-  bundle and root typecheck do not depend on it.
-
-## Alternatives considered
-
-- **Convex JS client (`ConvexClient`/`ConvexHttpClient`) in the SW** — adds a
-  dependency and (for the reactive client) a WebSocket whose lifetime fights SW
-  recycling; the raw HTTP API needs ~40 lines.
-- **Convex as the byte pipe** (HTTP actions / file storage relay) — 20 MiB
-  action cap, at-most-once actions, storage+egress billing; wrong primitive
-  for 1k–10k PNG/MP4 transfers.
-- **Mirroring whole queue/metrics blobs** — overwrites one hot document per
-  tick (write conflicts, no audit trail); append-only events chosen instead.
-- **Mandatory cloud backend** — breaks the product's local-only promise.
+Backend tests cover authenticated acceptance, duplicate submission, fencing, controls, bounded transfer, and ambiguous completion reconciliation.
+Extension tests cover metadata-only queue submission, exclusive ownership, and history recovery after reopening.
+Mocks establish those contracts, not provider feasibility.
+See [setup and experiment evidence](../cloud-upload-setup.md) for prerequisites and the incomplete live-verification boundary.

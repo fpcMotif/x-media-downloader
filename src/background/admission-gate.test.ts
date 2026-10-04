@@ -31,6 +31,68 @@ const savedIndexReturning = (subset: string[]): SavedIndex => ({
 const queryConvexMedia = async () => []
 
 describe('makeAdmissionGate', () => {
+  it('runs experimental size admission on the server and preserves the size rejection', async () => {
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 1) }
+    const remoteSizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 2 * 1024 * 1024) }
+    const gate = makeAdmissionGate({
+      getSettings: async () =>
+        baseSettings({ convexDriveEnabled: true, saveToDisk: false, maxFileSizeMB: 1 }),
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
+      sizeProbe,
+      remoteSizeProbe,
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+    const media = item({ id: 'remote', postId: 'post' })
+    expect((await gate.admit([media])).skipped).toEqual([{ item: media, reason: 'too-big' }])
+    expect(sizeProbe.probe).not.toHaveBeenCalled()
+    expect(remoteSizeProbe.probe).toHaveBeenCalledWith(media.url)
+  })
+
+  it('probes remote bytes with default size settings', async () => {
+    const remoteSizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 4) }
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 1) }
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ convexDriveEnabled: true, saveToDisk: false }),
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
+      sizeProbe,
+      remoteSizeProbe,
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+    const media = item({ id: 'remote', postId: 'post' })
+    expect((await gate.admit([media])).sizeById.get(media.id)).toBe(4)
+    expect(remoteSizeProbe.probe).toHaveBeenCalledWith(media.url)
+    expect(sizeProbe.probe).not.toHaveBeenCalled()
+  })
+
+  it('refuses an unknown remote size before submission', async () => {
+    const gate = makeAdmissionGate({
+      getSettings: async () => baseSettings({ convexDriveEnabled: true, saveToDisk: false }),
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
+      sizeProbe: { probe: async () => 1 },
+      remoteSizeProbe: { probe: async () => null },
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+    await expect(gate.admit([item({ id: 'remote', postId: 'post' })])).rejects.toThrow(/size/)
+  })
+
+  it('does not re-admit server-owned media into a local save after switching settings', async () => {
+    const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 1) }
+    const gate = makeAdmissionGate({
+      getSettings: async () =>
+        baseSettings({ convexDriveEnabled: false, saveToDisk: true, maxFileSizeMB: 1 }),
+      savedMediaIndex: savedIndexReturning([]),
+      queryConvexMedia,
+      sizeProbe,
+      remoteOwns: async () => true,
+      readTodayBudget: async () => ({ bytes: 0, count: 0 }),
+    })
+    const media = item({ id: 'remote', postId: 'post' })
+    expect((await gate.admit([media])).skipped).toEqual([{ item: media, reason: 'duplicate' }])
+    expect(sizeProbe.probe).not.toHaveBeenCalled()
+  })
   it('runs cheap filters before any probe — type-filtered item never reaches the probe', async () => {
     const sizeProbe = { probe: vi.fn<SizeProbePort['probe']>(async () => 10) }
     const gate = makeAdmissionGate({

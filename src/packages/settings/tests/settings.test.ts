@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Effect } from 'effect'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
 import {
@@ -18,10 +18,53 @@ const getViaService = Effect.gen(function* () {
 })
 
 beforeEach(() => {
+  vi.restoreAllMocks()
   fakeBrowser.reset()
 })
 
 describe('SettingsService', () => {
+  it('defaults server execution off', async () => {
+    const settings = await getSettings()
+    expect(settings.convexDriveEnabled).toBe(false)
+    expect(settings.convexDriveConnected).toBe(false)
+  })
+
+  it('requires backend acknowledgment before master disable and never falls back to disk', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: {
+        cloudUploadEnabled: true,
+        convexDriveEnabled: true,
+        convexDriveConnected: true,
+        saveToDisk: false,
+      },
+    })
+    let acknowledged = false
+    const send = vi
+      .spyOn(browser.runtime, 'sendMessage')
+      .mockImplementation(async () => ({ ok: acknowledged }))
+    await expect(setSettings({ cloudUploadEnabled: false })).rejects.toThrow(/not acknowledged/)
+    expect((await getSettings()).cloudUploadEnabled).toBe(true)
+    acknowledged = true
+    const next = await setSettings({ cloudUploadEnabled: false })
+    expect(next.cloudUploadEnabled).toBe(false)
+    expect(next.saveToDisk).toBe(false)
+    expect(send).toHaveBeenLastCalledWith({
+      _tag: 'RelayControlRequest',
+      enabled: false,
+      accepting: true,
+      connected: true,
+    })
+  })
+
+  it('does not move an authorized backend to a different deployment', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: { convexDriveConnected: true, convexUrl: 'https://original.convex.cloud' },
+    })
+    await expect(setSettings({ convexUrl: 'https://different.convex.cloud' })).rejects.toThrow(
+      /Disconnect/,
+    )
+    expect((await getSettings()).convexUrl).toBe('https://original.convex.cloud')
+  })
   it('returns defaults on first run', async () => {
     const s = await run(getViaService)
     expect(s.downloadConcurrency).toBe(5)

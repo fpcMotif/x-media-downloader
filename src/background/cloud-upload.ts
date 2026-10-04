@@ -47,17 +47,10 @@ import { classifyUploadError, type CloudUploadStatus } from '@/packages/cloud/st
 import { makeSerialQueue, type SerialQueue } from '@/packages/kernel/serial-queue'
 import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-store'
 import { isSyncConfigured } from './sync-config'
+import { makeRemoteUpload, type RemoteUploadPort, type RelaySetup } from './remote-upload'
 
-/** A media item + its on-disk filename — the unit recordCloudUploads enqueues. */
-export interface UploadCandidate {
-  readonly item: {
-    readonly id: string
-    readonly url: string
-    readonly handle: string
-    readonly ext: string
-  }
-  readonly filename: string
-}
+import type { UploadCandidate, CloudHistoryNotice } from '@/packages/cloud/execution'
+export type { UploadCandidate, CloudHistoryNotice } from '@/packages/cloud/execution'
 
 /** A past download (from history) eligible for backfill. */
 export interface BackfillRecord {
@@ -129,15 +122,16 @@ export interface AuthFlowPort {
   launchFlow(url: string): Promise<string | undefined>
 }
 
-/** Reports a terminal verdict for a grab persisted as cloud-only, including recovery after retry. */
-export interface CloudHistoryNotice {
-  readonly mediaId: string
-  readonly kind: 'completed' | 'failed'
-  /** Clock time the verdict was observed (drain or reconcile pass), ms epoch. */
-  readonly at: number
-}
-
 export interface CloudUpload {
+  readonly remoteOwns: (mediaId: string) => Promise<boolean>
+  readonly relayBudget: (day: string) => Promise<{ bytes: number; count: number }>
+  readonly relayProbe: (url: string) => Promise<number | null>
+  readonly relaySetup: () => Promise<RelaySetup>
+  readonly setRelayControl: (
+    enabled: boolean,
+    accepting: boolean,
+    connected: boolean,
+  ) => Promise<void>
   /** The serialized upload chain — boot resume + alarm wake push onto it. */
   readonly uploadQueue: SerialQueue
   /** Drain ready upload jobs FIFO (claim → upload → record → mirror). */
@@ -173,6 +167,7 @@ export interface CloudUpload {
 }
 
 export interface CloudUploadDeps {
+  readonly remote?: RemoteUploadPort
   /** Build the queue's error observer (traces through the background's chain). */
   readonly queueError: (label: string) => (err: unknown) => void
   /** Read the current settings blob. */
@@ -359,6 +354,13 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     ALL_PROVIDERS.filter((p) => isProviderConnected(s, p) && isProviderUploadEnabled(s, p))
 
   const notifyCloudHistory = deps.onHistoryNotice ?? (() => {})
+  const remote =
+    deps.remote ??
+    makeRemoteUpload({
+      getSettings,
+      fetchImpl,
+      onHistoryNotice: notifyCloudHistory,
+    })
 
   // Acknowledgments survive worker restarts; failed verdicts can recover on retry.
   const notifyCloudHistoryOnce = async (
@@ -425,14 +427,23 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     settings: Settings,
     items: ReadonlyArray<UploadCandidate>,
   ): Promise<ReadonlyArray<string>> => {
-    if (!settings.cloudUploadEnabled || items.length === 0) return []
+    if (items.length === 0) return []
+    if (settings.convexDriveEnabled && !settings.saveToDisk) {
+      const existing = await readLedger()
+      if (items.some(({ item }) => existing.some((job) => job.mediaId === item.id)))
+        throw new Error('This media already belongs to the browser upload queue')
+      return await remote.record(settings, items)
+    }
+    if (!settings.cloudUploadEnabled) return []
+    const owned = await Promise.all(items.map(({ item }) => remote.owns(item.id)))
+    const browserItems = items.filter((_, index) => !owned[index])
     const providers = connectedUploadEnabledProviders(settings)
     if (providers.length === 0) return []
     const now = nowFn()
     const accepted = new Set<string>()
     await updateLedger((current) => {
       let next = current
-      for (const { item, filename } of items) {
+      for (const { item, filename } of browserItems) {
         const target = cloudTargetFor(item, filename)
         for (const p of providers) {
           const updated = enqueue(
@@ -653,6 +664,10 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   }
 
   const disconnectProvider = async (provider: CloudProviderId): Promise<{ ok: boolean }> => {
+    if (provider === 'gdrive' && (await getSettings()).convexDriveConnected) {
+      await remote.disconnect()
+      await writeCloudSettings({ convexDriveConnected: false })
+    }
     // Best-effort revoke the grant at the provider BEFORE clearing local tokens, so
     // disconnect actually withdraws access (not just a local wipe). Never blocks.
     const t = providerTokens(await getSettings(), provider)
@@ -676,11 +691,31 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   }
 
   const cloudUploadStatus = async (): Promise<CloudUploadStatus> => {
+    let relayError: string | null = null
+    try {
+      await remote.reconcile()
+    } catch {
+      relayError =
+        'Accepted server status is unavailable. Check the original deployment, permission, and shared secret.'
+    }
     const ledger = await readLedger()
-    return { summary: summarize(ledger), lastError: lastUploadError }
+    const local = summarize(ledger)
+    const server = await remote.summary()
+    return {
+      summary: {
+        pending: local.pending + server.pending,
+        uploading: local.uploading + server.uploading,
+        succeeded: local.succeeded + server.succeeded,
+        failed: local.failed + server.failed,
+        dead: local.dead + server.dead,
+        skipped: local.skipped + server.skipped,
+      },
+      lastError: relayError ?? lastUploadError,
+    }
   }
 
   const retryDeadUploads = async (): Promise<{ ok: boolean }> => {
+    await remote.retry()
     uploadQueue.push(async () => {
       const now = nowFn()
       await updateLedger((current) => {
@@ -698,6 +733,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
   const reconcileCloudOnlyHistory = (): Promise<void> =>
     uploadQueue.run(async () => {
+      await remote.reconcile()
       const settings = await getSettings()
       const ledger = await readLedger()
       const mediaIds = [
@@ -731,12 +767,16 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     detail: string
   }> => {
     const settings = await getSettings()
+    if (settings.convexDriveEnabled)
+      return { ok: false, queued: 0, detail: 'Backfill is unavailable in the Convex experiment.' }
     if (!settings.cloudUploadEnabled)
       return { ok: false, queued: 0, detail: 'Turn on Cloud upload first.' }
     const providers = connectedUploadEnabledProviders(settings)
     if (providers.length === 0)
       return { ok: false, queued: 0, detail: 'Connect Google Drive or Dropbox first.' }
-    const records = (await deps.getBackfillRecords()).filter((r) => r.media.url !== '')
+    const candidates = (await deps.getBackfillRecords()).filter((r) => r.media.url !== '')
+    const remoteOwned = await Promise.all(candidates.map((record) => remote.owns(record.requestId)))
+    const records = candidates.filter((_, index) => !remoteOwned[index])
     if (records.length === 0)
       return {
         ok: false,
@@ -793,6 +833,11 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   }
 
   return {
+    relayBudget: remote.budget,
+    remoteOwns: remote.owns,
+    relayProbe: remote.probe,
+    relaySetup: remote.setup,
+    setRelayControl: remote.control,
     uploadQueue,
     drainUploadJobs,
     recordCloudUploads,

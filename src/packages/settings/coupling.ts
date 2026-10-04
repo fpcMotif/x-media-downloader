@@ -12,6 +12,13 @@ export function dedupeToggleDelta(enabled: boolean): Partial<Settings> {
  *  one Cloud Provider both connected (client id + refresh token) and not paused. */
 export function hasLiveCloudDestination(settings: Settings): boolean {
   if (!settings.cloudUploadEnabled) return false
+  if (settings.convexDriveEnabled)
+    return (
+      settings.convexDriveConnected &&
+      settings.gdriveUploadEnabled &&
+      settings.convexUrl !== '' &&
+      settings.convexSyncSecret !== ''
+    )
   const gdrive =
     settings.gdriveClientId !== '' &&
     settings.gdriveRefreshToken !== '' &&
@@ -34,6 +41,7 @@ export function saveToDiskToggleDelta(enabled: boolean, settings: Settings): Par
 /** Settings delta after Cloud upload, Connect, or a per-provider pause changes.
  *  Cloud-only without a live destination is forced back to local save. */
 export function destinationLostDelta(settings: Settings): Partial<Settings> {
-  if (settings.saveToDisk || hasLiveCloudDestination(settings)) return {}
+  if (settings.convexDriveEnabled || settings.saveToDisk || hasLiveCloudDestination(settings))
+    return {}
   return { saveToDisk: true }
 }

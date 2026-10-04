@@ -72,7 +72,7 @@ export function applyTransition(
 export function applyCloudTransition(
   store: DownloadStore,
   requestId: string,
-  kind: 'completed' | 'failed',
+  kind: 'queued' | 'completed' | 'failed',
   at: number,
 ): DownloadStore {
   let changed = false
@@ -81,6 +81,14 @@ export function applyCloudTransition(
       return record
     }
     changed = true
+    if (kind === 'queued')
+      return {
+        requestId: record.requestId,
+        filename: record.filename,
+        media: record.media,
+        status: kind,
+        queuedAt: at,
+      }
     return applyOutcome(record, kind, at)
   })
   return changed ? { records } : store

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { Option } from 'effect'
+import { Option, Schema } from 'effect'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import { convexOriginPattern } from '@/packages/sync/convex'
@@ -71,6 +71,11 @@ const styles = stylex.create({
   },
 })
 
+const RelaySetup = Schema.Struct({
+  available: Schema.Boolean,
+  reason: Schema.NullOr(Schema.String),
+})
+
 const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
 }
@@ -82,6 +87,46 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   const [cloudStatus, setCloudStatus] = useState<CloudUploadStatus | null>(null)
   const [connecting, setConnecting] = useState<CloudProviderId | null>(null)
   const [connectMsg, setConnectMsg] = useState('')
+  const [relaySetup, setRelaySetup] = useState<typeof RelaySetup.Type | null>(null)
+  const [checkingRelay, setCheckingRelay] = useState(false)
+  const [relayMessage, setRelayMessage] = useState(
+    'Check your deployment before enabling this experiment.',
+  )
+  const checkRelay = async (): Promise<void> => {
+    setCheckingRelay(true)
+    try {
+      const result = Schema.decodeUnknownSync(RelaySetup)(
+        await browser.runtime.sendMessage({ _tag: 'RelaySetupRequest' }),
+      )
+      setRelaySetup(result)
+      setRelayMessage(result.reason ?? 'Deployment ready. Credentials stay on your deployment.')
+    } catch {
+      setRelaySetup(null)
+      setRelayMessage(
+        'Setup check failed. Verify the deployment, host permission, and sync secret.',
+      )
+    } finally {
+      setCheckingRelay(false)
+    }
+  }
+  const toggleRelay = async (enabled: boolean): Promise<void> => {
+    try {
+      await update({
+        convexDriveEnabled: enabled,
+        convexDriveConnected: enabled || settings.convexDriveConnected,
+        ...(enabled ? { saveToDisk: false, downloadHistoryEnabled: true } : {}),
+      })
+      setRelayMessage(
+        enabled
+          ? 'New grabs submit metadata only. Download History stays queued until Drive confirms completion.'
+          : 'New grabs use your ordinary destinations. Accepted server jobs keep their original ownership and status.',
+      )
+    } catch {
+      setRelayMessage(
+        'The backend did not acknowledge this change. Your settings remain unchanged.',
+      )
+    }
+  }
 
   const cloudOn = settings.cloudSyncEnabled
   const convexUrl = settings.convexUrl
@@ -173,9 +218,22 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   }
 
   const disconnectProvider = async (provider: CloudProviderId): Promise<void> => {
-    await browser.runtime.sendMessage({ _tag: 'CloudDisconnectRequest', provider }).catch(() => {})
+    const result = await browser.runtime
+      .sendMessage({ _tag: 'CloudDisconnectRequest', provider })
+      .catch(() => null)
     await reload()
+    if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true) {
+      const message =
+        'Disconnect was not acknowledged. Backend authorization may still be active; retry before closing the browser.'
+      setConnectMsg(message)
+      setRelayMessage(message)
+      return
+    }
     setConnectMsg(`Disconnected ${PROVIDERS[provider].label}.`)
+    if (provider === 'gdrive')
+      setRelayMessage(
+        'Backend Drive authorization was disconnected. Accepted job status remains available.',
+      )
   }
 
   const backfillUploads = async (): Promise<void> => {
@@ -284,8 +342,59 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
       </Section>
 
       <Section
+        title="Experimental Convex uploads"
+        description="Cloud-only Google Drive uploads through your own deployment. Default off; no browser relay or local file."
+      >
+        <Button
+          type="button"
+          variant="outline"
+          disabled={checkingRelay}
+          onClick={() => void checkRelay()}
+        >
+          {checkingRelay ? 'Checking deployment…' : 'Check deployment setup'}
+        </Button>
+        <output {...stylex.props(styles.statusText, styles.colorMuted)}>{relayMessage}</output>
+        <div {...stylex.props(styles.headerRow)}>
+          <div>
+            <label htmlFor="convexDriveEnabled" {...stylex.props(styles.providerLabel)}>
+              Use Convex for Cloud-only Drive uploads
+            </label>
+            <p id="convexDriveDescription" {...stylex.props(styles.statusText, styles.colorMuted)}>
+              Requires Cloud upload and Drive Upload on, with Dropbox uploads off. Enabling also
+              turns on Download History. Accepted jobs continue after browser closure. No
+              credentials are copied from this extension.
+            </p>
+          </div>
+          <Switch
+            id="convexDriveEnabled"
+            aria-describedby="convexDriveDescription"
+            checked={settings.convexDriveEnabled}
+            disabled={
+              !settings.convexDriveEnabled &&
+              (!relaySetup?.available ||
+                !settings.cloudUploadEnabled ||
+                !settings.gdriveUploadEnabled ||
+                (settings.dropboxUploadEnabled && settings.dropboxRefreshToken !== ''))
+            }
+            onCheckedChange={(checked: boolean) => void toggleRelay(checked)}
+          />
+        </div>
+        {settings.convexDriveConnected && (
+          <Button type="button" variant="outline" onClick={() => void disconnectProvider('gdrive')}>
+            Disconnect backend Drive
+          </Button>
+        )}
+        <FieldDescription>
+          Drive Upload pauses new jobs; accepted jobs drain. The master switch stops requests at the
+          next boundary. Disconnect revokes backend authorization. Turning off this experiment
+          retains accepted job status. See docs/cloud-upload-setup.md for deployment credentials,
+          limits, and unverified live results.
+        </FieldDescription>
+      </Section>
+
+      <Section
         title="Cloud upload — Drive & Dropbox"
-        description="Uploads the real media bytes to your own cloud. Bytes go provider-direct, never through our servers (ADR-0013)."
+        description="Browser uploads are the default. The separate Convex experiment uses your own deployment."
       >
         <Field orientation="horizontal">
           <FieldContent>

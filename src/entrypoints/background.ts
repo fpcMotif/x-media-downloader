@@ -431,9 +431,8 @@ const persistRequestMeta = (): void => {
 const syncOutbox = makeSyncOutbox({ queueError, fetchImpl: fetch })
 const { outboxQueue, recordSync, drainOutbox, runSyncConnectionTest } = syncOutbox
 
-// Cloud upload (ADR-0013): client-side OAuth byte path. Owns its UploadJob ledger
-// + queue + the SW-side cloud-settings write chain; bytes go extension → provider
-// directly (nothing transits Convex). Backfill reads the durable history store.
+// Browser jobs and experimental server receipts retain separate execution ownership.
+// Backfill reads the durable history store and never re-enqueues server-owned media.
 
 // Cloud-only Download History terminals (issue #95): media grabbed with Save to
 // this computer off never gets a Download Handle, so its terminal comes from the
@@ -454,12 +453,13 @@ const handleCloudHistoryNotice = async (notice: CloudHistoryNotice): Promise<voi
   await historyQueue.run(() =>
     persistHistory(settings, [
       {
-        kind: notice.kind === 'completed' ? 'cloud-completed' : 'cloud-failed',
+        kind: `cloud-${notice.kind}`,
         requestId: notice.mediaId,
         at: notice.at,
       },
     ]),
   )
+  if (notice.kind === 'queued') return
   recordSync(settings, [
     outcomeEvent(notice.mediaId, notice.kind, settings.cloudDeviceId, notice.at),
   ])
@@ -629,7 +629,13 @@ const admissionGate = makeAdmissionGate({
   savedMediaIndex,
   queryConvexMedia,
   sizeProbe: makeSizeProbe({ fetch: (url, init) => headFetch(url, init) }),
-  readTodayBudget: () => budgetStore.readToday(),
+  remoteSizeProbe: { probe: cloudUpload.relayProbe },
+  remoteOwns: cloudUpload.remoteOwns,
+  readTodayBudget: async () => {
+    const local = await budgetStore.readToday()
+    const server = await cloudUpload.relayBudget(local.day)
+    return { bytes: local.bytes + server.bytes, count: local.count + server.count }
+  },
 })
 
 // Tweet harvest (spec §8–9): the durable IndexedDB store of harvested tweets and
@@ -1151,6 +1157,7 @@ const handleDownload = (
         ? `scope=${sweep.scope} requests=${requests.length} concurrency=${settings.downloadConcurrency}`
         : `${requests.length} request(s), concurrency ${settings.downloadConcurrency}`,
     })
+    let cloudSubmissionFailures = 0
     const startFx = decideQueueStart({
       metrics: live,
       requests,
@@ -1192,24 +1199,41 @@ const handleDownload = (
           if (!settings.saveToDisk) {
             for (const { item } of uploadItems) cloudGrabs.set(item.id, item)
           }
-          const recording = recordCloudUploads(
-            settings,
-            uploadItems.map(({ item, filename }) => ({
-              item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
-              filename,
-            })),
-          )
+          const candidates = uploadItems.map(({ item, filename }) => ({
+            item: { id: item.id, url: item.url, handle: item.author, ext: item.ext },
+            filename,
+            estimatedBytes: admission.sizeById.get(item.id) ?? 0,
+          }))
           if (settings.saveToDisk) {
-            void recording.catch(queueError('upload'))
+            void recordCloudUploads(settings, candidates).catch(queueError('upload'))
             return
           }
-          const accepted = await recording
-          const bytes = accepted.reduce(
-            (total, mediaId) => total + (admission.sizeById.get(mediaId) ?? 0),
-            0,
-          )
-          if (accepted.length > 0)
-            await budgetQueue.run(() => budgetStore.recordCompletion(bytes, accepted.length))
+          const acceptNext = async (index: number): Promise<void> => {
+            const candidate = candidates[index]
+            if (!candidate) return
+            try {
+              const accepted = await recordCloudUploads(settings, [candidate])
+              const bytes = accepted.reduce(
+                (total, mediaId) => total + (admission.sizeById.get(mediaId) ?? 0),
+                0,
+              )
+              if (accepted.length > 0 && !settings.convexDriveEnabled)
+                await budgetQueue.run(() => budgetStore.recordCompletion(bytes, accepted.length))
+            } catch {
+              cloudSubmissionFailures += 1
+              rejectFailures.push({
+                itemId: candidate.item.id,
+                reason: 'Cloud submission failed. No browser fallback was attempted.',
+              })
+              await handleCloudHistoryNotice({
+                mediaId: candidate.item.id,
+                kind: 'failed',
+                at: Date.now(),
+              })
+            }
+            await acceptNext(index + 1)
+          }
+          await acceptNext(0)
         },
         seedClear: clearSession.seedLedger,
       }),
@@ -1224,8 +1248,8 @@ const handleDownload = (
     if (startFx.diskRequests.length === 0) {
       return {
         _tag: 'QueueUpdate' as const,
-        completed: startFx.uploadItems.length,
-        total: startFx.uploadItems.length + rejectFailures.length,
+        completed: startFx.uploadItems.length - cloudSubmissionFailures,
+        total: startFx.uploadItems.length + rejectFailures.length - cloudSubmissionFailures,
         skipped,
         ...(rejectFailures.length > 0 ? { failures: rejectFailures } : {}),
       }
@@ -1568,6 +1592,11 @@ const messageHandlers: MessageHandlers = {
   CloudDisconnectRequest: handle<'CloudDisconnectRequest'>((msg) =>
     cloudUpload.disconnectProvider(msg.provider),
   ),
+  RelaySetupRequest: () => cloudUpload.relaySetup(),
+  RelayControlRequest: handle<'RelayControlRequest'>(async (msg) => {
+    await cloudUpload.setRelayControl(msg.enabled, msg.accepting, msg.connected)
+    return { ok: true }
+  }),
   CloudStatusRequest: () => cloudUpload.cloudUploadStatus(),
   CloudRetryRequest: () => cloudUpload.retryDeadUploads(),
   CloudBackfillRequest: () => cloudUpload.backfillCloudUploads(),

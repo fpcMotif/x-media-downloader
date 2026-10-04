@@ -1,4 +1,5 @@
 import type { CdnHost } from '../types'
+import { META_MEDIA_HOSTS } from '../../../packages/kernel/source-policy'
 
 /**
  * The CDN host(s) Instagram and Threads share for Original-quality media
@@ -9,6 +10,4 @@ import type { CdnHost } from '../types'
  * (Cloud Upload's SSRF guard in `core/sync/url-guard.ts`, and the Fetched
  * strategy's optional-permission request in `core/download/fetched-strategy.ts`).
  */
-export const META_CDN_HOSTS: readonly CdnHost[] = [
-  { host: 'cdninstagram.com', includeSubdomains: true },
-]
+export const META_CDN_HOSTS: readonly CdnHost[] = META_MEDIA_HOSTS
