@@ -1,6 +1,6 @@
 import { Effect, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import type { Settings } from '@/packages/schema'
+import type { JsonValue, Settings } from '@/packages/schema'
 import { ConvexFunctionError, makeConvexHttpPort } from '@/packages/sync/convex'
 import { makeFetchServiceLive } from '@/packages/kernel/fetch-service'
 import { makeSerialQueue } from '@/packages/kernel/serial-queue'
@@ -26,6 +26,12 @@ const Receipt = Schema.Struct({
 const Receipts = Schema.Array(Receipt)
 type Receipt = typeof Receipt.Type
 const Acceptance = Schema.Struct({ id: Schema.String, created: Schema.Boolean })
+const BatchItemResult = Schema.Struct({
+  mediaId: Schema.String,
+  id: Schema.String,
+  created: Schema.Boolean,
+})
+const BatchAcceptance = Schema.Array(BatchItemResult)
 const Setup = Schema.Struct({ available: Schema.Boolean, reason: Schema.NullOr(Schema.String) })
 const Status = Schema.Array(
   Schema.Struct({
@@ -95,7 +101,7 @@ export function makeRemoteUpload(deps: {
     settings: Settings,
     endpoint: 'mutation' | 'query' | 'action',
     path: string,
-    args: Readonly<Record<string, string | number | boolean | ReadonlyArray<string>>>,
+    args: Readonly<Record<string, JsonValue>>,
     deploymentUrl = settings.convexUrl,
     syncSecret = settings.convexSyncSecret,
   ) => {
@@ -168,8 +174,81 @@ export function makeRemoteUpload(deps: {
       throw error
     }
   }
+  const submitBatch = async (
+    settings: Settings,
+    receipts: ReadonlyArray<Receipt>,
+    isNewByMediaId: ReadonlyMap<string, boolean>,
+  ): Promise<ReadonlyArray<string>> => {
+    if (receipts.length === 0) return []
+    if (receipts.length === 1) {
+      const single = receipts[0]!
+      const created = await submit(settings, single, isNewByMediaId.get(single.mediaId) ?? false)
+      return created ? [single.mediaId] : []
+    }
+    const origin = deploymentOrigin(receipts[0]!.deploymentUrl)
+    const wireItems = receipts.map((r) => ({
+      mediaId: r.mediaId,
+      deviceId: r.deviceId,
+      sourceUrl: r.sourceUrl,
+      path: r.path,
+      contentType: r.contentType,
+      budgetDay: r.budgetDay ?? localDay(Date.now()),
+      estimatedBytes: r.estimatedBytes ?? 0,
+    }))
+    try {
+      const raw = await call(
+        settings,
+        'mutation',
+        'relay:submitBatch',
+        { items: wireItems },
+        origin,
+        receipts[0]!.syncSecret,
+      )
+      const results = Schema.decodeUnknownSync(BatchAcceptance)(raw)
+      const acceptedMediaIds = new Set<string>()
+      const createdMediaIds: string[] = []
+      for (const res of results) {
+        if (!res.id) throw new Error('Missing durable acceptance identity')
+        acceptedMediaIds.add(res.mediaId)
+        if (res.created) createdMediaIds.push(res.mediaId)
+      }
+      const rows = await read()
+      const nextRows = rows.map((r) =>
+        acceptedMediaIds.has(r.mediaId) ? Object.assign({}, r, { accepted: true }) : r,
+      )
+      await store.set(nextRows)
+      return createdMediaIds
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('submitBatch') || error.message.includes('Expected object'))
+      ) {
+        const created: string[] = []
+        const submitSequential = async (idx: number): Promise<void> => {
+          const receipt = receipts[idx]
+          if (!receipt) return
+          if (await submit(settings, receipt, isNewByMediaId.get(receipt.mediaId) ?? false)) {
+            created.push(receipt.mediaId)
+          }
+          await submitSequential(idx + 1)
+        }
+        await submitSequential(0)
+        return created
+      }
+      if (error instanceof ConvexFunctionError) {
+        const newIds = new Set(
+          receipts.filter((r) => isNewByMediaId.get(r.mediaId)).map((r) => r.mediaId),
+        )
+        if (newIds.size > 0) {
+          await store.set((await read()).filter((row) => !newIds.has(row.mediaId)))
+        }
+      }
+      throw error
+    }
+  }
   const record = (settings: Settings, items: ReadonlyArray<UploadCandidate>) =>
     queue.run(async () => {
+      if (items.length === 0) return []
       if (settings.saveToDisk || !settings.convexDriveEnabled)
         throw new Error('Convex uploads require the Cloud-only experiment')
       if (
@@ -184,39 +263,52 @@ export function makeRemoteUpload(deps: {
         throw new Error('Configure a device identity before submitting remote jobs')
       const origin = deploymentOrigin(settings.convexUrl)
       if (!settings.convexSyncSecret) throw new Error('Configure the Convex sync secret')
-      const accepted: string[] = []
-      const submitNext = async (index: number): Promise<void> => {
-        const candidate = items[index]
-        if (!candidate) return
+
+      for (const candidate of items) {
         if (
           !candidate.estimatedBytes ||
           !Number.isSafeInteger(candidate.estimatedBytes) ||
           candidate.estimatedBytes <= 0
         )
           throw new Error('Remote source size is unavailable; no job was submitted')
-        const rows = await read()
-        const existing = rows.find((row) => row.mediaId === candidate.item.id)
-        const receipt: Receipt = existing ?? {
-          mediaId: candidate.item.id,
-          deviceId: settings.cloudDeviceId,
-          deploymentUrl: origin,
-          syncSecret: settings.convexSyncSecret,
-          budgetDay: localDay(Date.now()),
-          sourceUrl: candidate.item.url,
-          path: candidate.filename,
-          contentType: guessMime(candidate.item.ext),
-          accepted: false,
-          ...(candidate.estimatedBytes === undefined
-            ? {}
-            : { estimatedBytes: candidate.estimatedBytes }),
-        }
-        if (!existing) await store.set([...rows, receipt])
-        if (!receipt.accepted && (await submit(settings, receipt, !existing)))
-          accepted.push(receipt.mediaId)
-        await submitNext(index + 1)
       }
-      await submitNext(0)
-      return accepted
+
+      const rows = await read()
+      const existingMap = new Map(rows.map((row) => [row.mediaId, row]))
+      const isNewByMediaId = new Map<string, boolean>()
+      const candidateReceipts: Receipt[] = []
+      const newReceipts: Receipt[] = []
+
+      for (const candidate of items) {
+        const existing = existingMap.get(candidate.item.id)
+        if (existing) {
+          isNewByMediaId.set(candidate.item.id, false)
+          candidateReceipts.push(existing)
+        } else {
+          const receipt: Receipt = {
+            mediaId: candidate.item.id,
+            deviceId: settings.cloudDeviceId,
+            deploymentUrl: origin,
+            syncSecret: settings.convexSyncSecret,
+            budgetDay: localDay(Date.now()),
+            sourceUrl: candidate.item.url,
+            path: candidate.filename,
+            contentType: guessMime(candidate.item.ext),
+            accepted: false,
+            estimatedBytes: candidate.estimatedBytes,
+          }
+          isNewByMediaId.set(candidate.item.id, true)
+          candidateReceipts.push(receipt)
+          newReceipts.push(receipt)
+        }
+      }
+
+      if (newReceipts.length > 0) {
+        await store.set([...rows, ...newReceipts])
+      }
+
+      const unaccepted = candidateReceipts.filter((r) => !r.accepted)
+      return await submitBatch(settings, unaccepted, isNewByMediaId)
     })
   const reconcile = () =>
     queue.run(async () => {

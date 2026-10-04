@@ -17,6 +17,15 @@ export const relayInput = {
   budgetDay: v.string(),
   estimatedBytes: v.number(),
 }
+export interface RelayInputItem {
+  readonly deviceId: string
+  readonly mediaId: string
+  readonly sourceUrl: string
+  readonly path: string
+  readonly contentType: string
+  readonly budgetDay: string
+  readonly estimatedBytes: number
+}
 export const relayProgress = {
   fileId: v.optional(v.string()),
   session: v.optional(v.string()),

@@ -210,3 +210,33 @@ it('preserves accepted status while disabled and rejects conflicting duplicate m
   expect(await t.mutation(submit, input)).toMatchObject({ created: false })
   await expect(t.mutation(submit, { ...input, mediaId: 'new' })).rejects.toThrow()
 })
+
+it('authenticates and durably accepts bulk item submissions in a single mutation', async () => {
+  const t = convexTest(schema, modules)
+  const submitBatch = makeFunctionReference<'mutation'>('relay:submitBatch')
+  await t.mutation(control, { secret, enabled: true, accepting: true, connected: true })
+  const { secret: _s, ...baseItem } = input
+  const items = [
+    { ...baseItem, mediaId: 'batch-1', path: 'twitter/item1.jpg', estimatedBytes: 100 },
+    { ...baseItem, mediaId: 'batch-2', path: 'twitter/item2.jpg', estimatedBytes: 200 },
+    { ...baseItem, mediaId: 'batch-3', path: 'twitter/item3.jpg', estimatedBytes: 300 },
+  ]
+  await expect(t.mutation(submitBatch, { secret: 'wrong', items })).rejects.toThrow()
+  const results = await t.mutation(submitBatch, { secret, items })
+  expect(results).toHaveLength(3)
+  expect(results).toEqual([
+    expect.objectContaining({ mediaId: 'batch-1', created: true }),
+    expect.objectContaining({ mediaId: 'batch-2', created: true }),
+    expect.objectContaining({ mediaId: 'batch-3', created: true }),
+  ])
+  const dupeResults = await t.mutation(submitBatch, { secret, items })
+  expect(dupeResults).toEqual([
+    expect.objectContaining({ mediaId: 'batch-1', created: false }),
+    expect.objectContaining({ mediaId: 'batch-2', created: false }),
+    expect.objectContaining({ mediaId: 'batch-3', created: false }),
+  ])
+  const budget = makeFunctionReference<'query'>('relay:budget')
+  expect(await t.query(budget, { secret, deviceId: input.deviceId, day: input.budgetDay })).toEqual(
+    { bytes: 600, count: 3 },
+  )
+})

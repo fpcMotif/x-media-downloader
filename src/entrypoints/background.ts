@@ -1208,32 +1208,33 @@ const handleDownload = (
             void recordCloudUploads(settings, candidates).catch(queueError('upload'))
             return
           }
-          const acceptNext = async (index: number): Promise<void> => {
-            const candidate = candidates[index]
-            if (!candidate) return
-            try {
-              const accepted = await recordCloudUploads(settings, [candidate])
-              const bytes = accepted.reduce(
-                (total, mediaId) => total + (admission.sizeById.get(mediaId) ?? 0),
-                0,
-              )
-              if (accepted.length > 0 && !settings.convexDriveEnabled)
-                await budgetQueue.run(() => budgetStore.recordCompletion(bytes, accepted.length))
-            } catch {
-              cloudSubmissionFailures += 1
+          try {
+            const accepted = await recordCloudUploads(settings, candidates)
+            const bytes = accepted.reduce(
+              (total, mediaId) => total + (admission.sizeById.get(mediaId) ?? 0),
+              0,
+            )
+            if (accepted.length > 0 && !settings.convexDriveEnabled)
+              await budgetQueue.run(() => budgetStore.recordCompletion(bytes, accepted.length))
+          } catch {
+            cloudSubmissionFailures += candidates.length
+            const now = Date.now()
+            for (const candidate of candidates) {
               rejectFailures.push({
                 itemId: candidate.item.id,
                 reason: 'Cloud submission failed. No browser fallback was attempted.',
               })
-              await handleCloudHistoryNotice({
-                mediaId: candidate.item.id,
-                kind: 'failed',
-                at: Date.now(),
-              })
             }
-            await acceptNext(index + 1)
+            await Promise.all(
+              candidates.map((candidate) =>
+                handleCloudHistoryNotice({
+                  mediaId: candidate.item.id,
+                  kind: 'failed',
+                  at: now,
+                }),
+              ),
+            )
           }
-          await acceptNext(0)
         },
         seedClear: clearSession.seedLedger,
       }),

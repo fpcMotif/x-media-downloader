@@ -15,6 +15,7 @@ import {
   publicJob,
   relayDoc,
   relayInput,
+  type RelayInputItem,
   relayProgress,
   setupReason,
 } from './relayModel'
@@ -24,6 +25,7 @@ import {
   validateSourceUrl,
 } from '../../src/packages/kernel/source-policy'
 
+const MAX_BATCH_ITEMS = 200
 const worker = makeFunctionReference<'action', { id: Id<'relay_jobs'> }, null>('relayWorker:run')
 const wakeRef = makeFunctionReference<'mutation', { id: Id<'relay_jobs'> }, null>('relay:wake')
 const hosts = [...X_MEDIA_HOSTS, ...META_MEDIA_HOSTS]
@@ -108,11 +110,15 @@ export const control = mutation({
   },
 })
 
-export const submit = mutation({
-  args: { secret: v.string(), ...relayInput },
-  returns: v.object({ id: v.id('relay_jobs'), created: v.boolean() }),
-  handler: async (ctx, { secret, ...input }) => {
-    assertSecret(secret)
+async function submitBatchCore(
+  ctx: MutationCtx,
+  secret: string,
+  items: ReadonlyArray<RelayInputItem>,
+) {
+  assertSecret(secret)
+  if (items.length === 0) return []
+  if (items.length > MAX_BATCH_ITEMS) throw new Error('Batch exceeds 200 items limit')
+  for (const input of items) {
     if (
       !input.deviceId ||
       input.deviceId.length > 200 ||
@@ -139,12 +145,35 @@ export const submit = mutation({
       throw new Error('Invalid planned path')
     if (!/^(image|video)\/[a-z0-9.+-]+$/.test(input.contentType))
       throw new Error('Unsupported media content type')
+  }
+  const deduped = new Map<string, RelayInputItem>()
+  for (const input of items) {
+    const key = `${input.deviceId}:${input.mediaId}`
+    const seen = deduped.get(key)
+    if (seen) {
+      if (
+        seen.sourceUrl !== input.sourceUrl ||
+        seen.path !== input.path ||
+        seen.contentType !== input.contentType
+      )
+        throw new Error('Relay idempotency conflict')
+    } else {
+      deduped.set(key, input)
+    }
+  }
+
+  const resultMap = new Map<string, { mediaId: string; id: Id<'relay_jobs'>; created: boolean }>()
+  const toInsert: RelayInputItem[] = []
+
+  for (const input of deduped.values()) {
     const existing = await ctx.db
       .query('relay_jobs')
       .withIndex('by_device_media', (q) =>
         q.eq('deviceId', input.deviceId).eq('mediaId', input.mediaId),
       )
       .unique()
+
+    const key = `${input.deviceId}:${input.mediaId}`
     if (existing) {
       if (
         existing.sourceUrl !== input.sourceUrl ||
@@ -152,17 +181,35 @@ export const submit = mutation({
         existing.contentType !== input.contentType
       )
         throw new Error('Relay idempotency conflict')
-      return { id: existing._id, created: false }
+      resultMap.set(key, { mediaId: input.mediaId, id: existing._id, created: false })
+    } else {
+      toInsert.push(input)
     }
-    const reason = setupReason()
-    if (reason) throw new Error(reason)
-    const c = await controls(ctx)
-    if (!c.enabled || !c.accepting || !c.connected)
-      throw new Error('Relay destination is disabled, paused, or disconnected')
-    const now = Date.now()
-    const configuredLimits = limits()
+  }
+
+  if (toInsert.length === 0) {
+    return items.map((input) => resultMap.get(`${input.deviceId}:${input.mediaId}`)!)
+  }
+
+  const reason = setupReason()
+  if (reason) throw new Error(reason)
+  const c = await controls(ctx)
+  if (!c.enabled || !c.accepting || !c.connected)
+    throw new Error('Relay destination is disabled, paused, or disconnected')
+
+  const now = Date.now()
+  const configuredLimits = limits()
+  const folderId = process.env.RELAY_DRIVE_FOLDER_ID!
+
+  const usageDeltas = new Map<
+    string,
+    { bytes: number; count: number; deviceId: string; day: string }
+  >()
+
+  for (const input of toInsert) {
     if (input.estimatedBytes > configuredLimits.maxBytes)
       throw new Error('Source exceeds deployment byte limit')
+
     const id = await ctx.db.insert('relay_jobs', {
       ...input,
       ...configuredLimits,
@@ -181,28 +228,65 @@ export const submit = mutation({
       sourceBytes: 0,
       uploadedBytes: 0,
       peakRss: 0,
-      folderId: process.env.RELAY_DRIVE_FOLDER_ID!,
+      folderId,
     })
+
+    const usageKey = `${input.deviceId}:${input.budgetDay}`
+    const delta = usageDeltas.get(usageKey) ?? {
+      bytes: 0,
+      count: 0,
+      deviceId: input.deviceId,
+      day: input.budgetDay,
+    }
+    delta.bytes += input.estimatedBytes
+    delta.count += 1
+    usageDeltas.set(usageKey, delta)
+
+    await ctx.scheduler.runAfter(0, worker, { id })
+    resultMap.set(`${input.deviceId}:${input.mediaId}`, { mediaId: input.mediaId, id, created: true })
+  }
+
+  for (const delta of usageDeltas.values()) {
     const usage = await ctx.db
       .query('relay_usage')
-      .withIndex('by_device_day', (q) =>
-        q.eq('deviceId', input.deviceId).eq('day', input.budgetDay),
-      )
+      .withIndex('by_device_day', (q) => q.eq('deviceId', delta.deviceId).eq('day', delta.day))
       .unique()
-    if (usage)
+    if (usage) {
       await ctx.db.patch(usage._id, {
-        bytes: usage.bytes + input.estimatedBytes,
-        count: usage.count + 1,
+        bytes: usage.bytes + delta.bytes,
+        count: usage.count + delta.count,
       })
-    else
+    } else {
       await ctx.db.insert('relay_usage', {
-        deviceId: input.deviceId,
-        day: input.budgetDay,
-        bytes: input.estimatedBytes,
-        count: 1,
+        deviceId: delta.deviceId,
+        day: delta.day,
+        bytes: delta.bytes,
+        count: delta.count,
       })
-    await ctx.scheduler.runAfter(0, worker, { id })
-    return { id, created: true }
+    }
+  }
+
+  return items.map((input) => resultMap.get(`${input.deviceId}:${input.mediaId}`)!)
+}
+
+export const submitBatch = mutation({
+  args: { secret: v.string(), items: v.array(v.object(relayInput)) },
+  returns: v.array(
+    v.object({ mediaId: v.string(), id: v.id('relay_jobs'), created: v.boolean() }),
+  ),
+  handler: async (ctx, { secret, items }) => {
+    return await submitBatchCore(ctx, secret, items)
+  },
+})
+
+export const submit = mutation({
+  args: { secret: v.string(), ...relayInput },
+  returns: v.object({ id: v.id('relay_jobs'), created: v.boolean() }),
+  handler: async (ctx, { secret, ...input }) => {
+    const results = await submitBatchCore(ctx, secret, [input])
+    const result = results[0]
+    if (!result) throw new Error('Submission failed')
+    return { id: result.id, created: result.created }
   },
 })
 

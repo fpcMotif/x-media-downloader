@@ -47,6 +47,7 @@ const RANGE = /^bytes (\d+)-(\d+)\/(\d+)$/
 const CONFIRMED = /^bytes=0-(\d+)$/
 const STRONG_ETAG = /^"[^"\r\n]*"$/
 const HTTP_DATE = /^[A-Za-z]{3},\s\d{2}\s[A-Za-z]{3}\s\d{4}\s\d{2}:\d{2}:\d{2}\sGMT$/
+const MAX_IN_ACTION_MS = 90_000
 const isValidValidator = (val: string): boolean => STRONG_ETAG.test(val) || HTTP_DATE.test(val)
 
 class RelayStopped extends Error {}
@@ -161,6 +162,7 @@ export const run = internalAction({
   args: { id: v.id('relay_jobs') },
   returns: v.null(),
   handler: async (ctx, { id }) => {
+    const startedAt = Date.now()
     const job = await ctx.runMutation(claim, { id })
     if (!job) return null
     const fence = job.fence
@@ -260,107 +262,117 @@ export const run = internalAction({
           await persist()
         } else throw new RelayFailure('Drive resume probe failed')
       }
-      const start = progress.offset
-      const headers = new Headers({
-        Range: `bytes=${start}-${Math.min(start + CHUNK_BYTES, job.maxBytes) - 1}`,
-        'Accept-Encoding': 'identity',
-      })
-      if (progress.etag) headers.set('If-Range', progress.etag)
-      const response = await fetchSource(job.sourceUrl, { headers }, request, (url) =>
-        validateSourceUrl(url, hosts),
-      )
-      if (response.status !== 200 && response.status !== 206)
-        throw new RelayFailure(
-          response.status === 403 || response.status === 404
-            ? 'Source expired or rejected server access'
-            : 'Source request failed',
-          response.status < 500,
-        )
-      if (
-        response.headers.get('content-encoding') &&
-        response.headers.get('content-encoding') !== 'identity'
-      ) {
-        await response.body?.cancel()
-        throw new RelayFailure('Encoded source cannot resume safely', true)
-      }
-      const range = RANGE.exec(response.headers.get('content-range') ?? '')
-      const total = range
-        ? Number(range[3])
-        : Number(response.headers.get('content-length')) || undefined
-      const etag = response.headers.get('etag') ?? response.headers.get('last-modified')
-      const resolvedUrl = response.url || job.sourceUrl
-      const ranged = response.status === 206
-      if (
-        (ranged &&
-          (!range ||
-            Number(range[1]) !== start ||
-            Number(range[2]) !== Math.min(start + CHUNK_BYTES, total ?? 0) - 1)) ||
-        (start > 0 && !ranged) ||
-        (total !== undefined &&
-          (!Number.isSafeInteger(total) || total <= 0 || total > job.maxBytes)) ||
-        (progress.total !== undefined && total !== progress.total) ||
-        (progress.etag && etag !== progress.etag) ||
-        (progress.resolvedUrl && resolvedUrl !== progress.resolvedUrl) ||
-        (start > 0 && (!progress.etag || !progress.resolvedUrl)) ||
-        ((start > 0 || (total ?? 0) > CHUNK_BYTES) && (!etag || !isValidValidator(etag)))
-      ) {
-        await response.body?.cancel()
-        throw new RelayFailure('Source size, identity, or Range validation failed', true)
-      }
-      const bytes = await readChunk(response, Math.min(CHUNK_BYTES, job.maxBytes - start))
-      progress.sourceBytes += bytes.byteLength
-      if (
-        bytes.byteLength === 0 ||
-        (total !== undefined && bytes.byteLength !== Math.min(CHUNK_BYTES, total - start))
-      )
-        throw new RelayFailure('Source length mismatch', true)
-      progress.total = total ?? bytes.byteLength
-      progress.resolvedUrl = resolvedUrl
-      if (etag) progress.etag = etag
-      await persist()
-      if (!progress.session) {
-        const response = await drive(`${UPLOAD}?uploadType=resumable&fields=id,size`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Upload-Content-Type': job.contentType,
-            'X-Upload-Content-Length': String(progress.total),
-          },
-          body: JSON.stringify({
-            id: progress.fileId,
-            name: filename,
-            parents: [job.folderId],
-            mimeType: job.contentType,
-          }),
-        })
-        if (response.status === 409) {
-          if (!(await inspect())) throw new RelayFailure('Drive conflict awaits reconciliation')
+      while (progress.total === undefined || progress.offset < progress.total) {
+        if (deadline.aborted || Date.now() - startedAt > MAX_IN_ACTION_MS) {
+          await persist(true)
           return null
         }
-        if (!response.ok) throw new RelayFailure('Drive session creation failed')
-        progress.session = sessionUrl(response.headers.get('location') ?? '')
-        await persist()
+        const start = progress.offset
+        const headers = new Headers({
+          Range: `bytes=${start}-${Math.min(start + CHUNK_BYTES, job.maxBytes) - 1}`,
+          'Accept-Encoding': 'identity',
+        })
+        if (progress.etag) headers.set('If-Range', progress.etag)
+        const response = await fetchSource(job.sourceUrl, { headers }, request, (url) =>
+          validateSourceUrl(url, hosts),
+        )
+        if (response.status !== 200 && response.status !== 206)
+          throw new RelayFailure(
+            response.status === 403 || response.status === 404
+              ? 'Source expired or rejected server access'
+              : 'Source request failed',
+            response.status < 500,
+          )
+        if (
+          response.headers.get('content-encoding') &&
+          response.headers.get('content-encoding') !== 'identity'
+        ) {
+          await response.body?.cancel()
+          throw new RelayFailure('Encoded source cannot resume safely', true)
+        }
+        const range = RANGE.exec(response.headers.get('content-range') ?? '')
+        const total = range
+          ? Number(range[3])
+          : Number(response.headers.get('content-length')) || undefined
+        const etag = response.headers.get('etag') ?? response.headers.get('last-modified')
+        const resolvedUrl = response.url || job.sourceUrl
+        const ranged = response.status === 206
+        if (
+          (ranged &&
+            (!range ||
+              Number(range[1]) !== start ||
+              Number(range[2]) !== Math.min(start + CHUNK_BYTES, total ?? 0) - 1)) ||
+          (start > 0 && !ranged) ||
+          (total !== undefined &&
+            (!Number.isSafeInteger(total) || total <= 0 || total > job.maxBytes)) ||
+          (progress.total !== undefined && total !== progress.total) ||
+          (progress.etag && etag !== progress.etag) ||
+          (progress.resolvedUrl && resolvedUrl !== progress.resolvedUrl) ||
+          (start > 0 && (!progress.etag || !progress.resolvedUrl)) ||
+          ((start > 0 || (total ?? 0) > CHUNK_BYTES) && (!etag || !isValidValidator(etag)))
+        ) {
+          await response.body?.cancel()
+          throw new RelayFailure('Source size, identity, or Range validation failed', true)
+        }
+        const bytes = await readChunk(response, Math.min(CHUNK_BYTES, job.maxBytes - start))
+        progress.sourceBytes += bytes.byteLength
+        if (
+          bytes.byteLength === 0 ||
+          (total !== undefined && bytes.byteLength !== Math.min(CHUNK_BYTES, total - start))
+        )
+          throw new RelayFailure('Source length mismatch', true)
+        progress.total = total ?? bytes.byteLength
+        progress.resolvedUrl = resolvedUrl
+        if (etag) progress.etag = etag
+        await persist(false)
+        if (!progress.session) {
+          const response = await drive(`${UPLOAD}?uploadType=resumable&fields=id,size`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Upload-Content-Type': job.contentType,
+              'X-Upload-Content-Length': String(progress.total),
+            },
+            body: JSON.stringify({
+              id: progress.fileId,
+              name: filename,
+              parents: [job.folderId],
+              mimeType: job.contentType,
+            }),
+          })
+          if (response.status === 409) {
+            if (!(await inspect())) throw new RelayFailure('Drive conflict awaits reconciliation')
+            return null
+          }
+          if (!response.ok) throw new RelayFailure('Drive session creation failed')
+          progress.session = sessionUrl(response.headers.get('location') ?? '')
+          await persist(false)
+        }
+        const uploaded = await drive(sessionUrl(progress.session), {
+          method: 'PUT',
+          headers: {
+            'Content-Type': job.contentType,
+            'Content-Length': String(bytes.byteLength),
+            'Content-Range': `bytes ${start}-${start + bytes.byteLength - 1}/${progress.total}`,
+          },
+          body: bytes,
+        })
+        progress.uploadedBytes += bytes.byteLength
+        if (uploaded.ok) {
+          if (!(await inspect())) throw new RelayFailure('Drive completion awaits reconciliation')
+          return null
+        }
+        if (uploaded.status !== 308)
+          throw new RelayFailure('Drive chunk response requires reconciliation')
+        const offset = confirmed(uploaded, start + bytes.byteLength)
+        if (offset <= start) throw new RelayFailure('Drive made no confirmed progress')
+        progress.offset = offset
+        if (progress.total !== undefined && progress.offset >= progress.total) {
+          if (!(await inspect())) throw new RelayFailure('Drive completion awaits reconciliation')
+          return null
+        }
+        await persist(false)
       }
-      const uploaded = await drive(sessionUrl(progress.session), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': job.contentType,
-          'Content-Length': String(bytes.byteLength),
-          'Content-Range': `bytes ${start}-${start + bytes.byteLength - 1}/${progress.total}`,
-        },
-        body: bytes,
-      })
-      progress.uploadedBytes += bytes.byteLength
-      if (uploaded.ok) {
-        if (!(await inspect())) throw new RelayFailure('Drive completion awaits reconciliation')
-        return null
-      }
-      if (uploaded.status !== 308)
-        throw new RelayFailure('Drive chunk response requires reconciliation')
-      const offset = confirmed(uploaded, start + bytes.byteLength)
-      if (offset <= start) throw new RelayFailure('Drive made no confirmed progress')
-      progress.offset = offset
-      await persist(true)
     } catch (error) {
       if (error instanceof RelayStopped) {
         await ctx.runMutation(checkpoint, { id, fence, progress, release: true, completed: false })

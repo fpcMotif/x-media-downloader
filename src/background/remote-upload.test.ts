@@ -238,4 +238,32 @@ describe('metadata-only queue acceptance', () => {
     expect(notices.map((notice) => notice.kind)).toEqual(['failed', 'completed'])
     expect(await reopened.owns('m1')).toBe(true)
   })
+
+  it('submits multiple candidates in a single batch request to relay:submitBatch', async () => {
+    const calls: { url: string; body: string }[] = []
+    const fetchImpl: typeof fetch = async (url, init) => {
+      calls.push({ url: String(url), body: String(init?.body) })
+      return Response.json({
+        status: 'success',
+        value: [
+          { mediaId: 'm1', id: 'job-1', created: true },
+          { mediaId: 'm2', id: 'job-2', created: true },
+        ],
+      })
+    }
+    const remote = makeRemoteUpload({
+      getSettings: async () => settings,
+      fetchImpl,
+      store: memoryStore(),
+      onHistoryNotice: () => {},
+    })
+    const item2 = {
+      ...item,
+      item: { ...item.item, id: 'm2', url: 'https://pbs.twimg.com/media/m2.jpg' },
+      filename: 'twitter/m2.jpg',
+    }
+    const accepted = await remote.record(settings, [item, item2])
+    expect(accepted).toEqual(['m1', 'm2'])
+    expect(calls.filter((c) => c.body.includes('relay:submitBatch'))).toHaveLength(1)
+  })
 })

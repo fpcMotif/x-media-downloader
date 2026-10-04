@@ -275,3 +275,125 @@ it('never follows source redirects outside the allowlist', async () => {
     }),
   ])
 })
+
+it('streams multiple chunks to completion within a single action invocation without exiting early', async () => {
+  const t = convexTest(schema, modules)
+  const chunk = 8 * 1024 * 1024
+  const source = new Uint8Array(chunk * 2).fill(73)
+  const remote = new Uint8Array(source.length)
+  let received = 0
+  let complete = false
+  const starts: number[] = []
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    if (url.includes('oauth2.googleapis.com')) return Response.json({ access_token: 'access' })
+    if (url.includes('generateIds')) return Response.json({ ids: ['stable-file'] })
+    if (url.includes('/drive/v3/files/stable-file'))
+      return complete
+        ? Response.json({ id: 'stable-file', size: String(remote.length) })
+        : new Response(null, { status: 404 })
+    const headers = new Headers(init.headers)
+    if (url.includes('pbs.twimg.com')) {
+      const start = Number(headers.get('range')?.split('=')[1]?.split('-')[0])
+      starts.push(start)
+      const end = Math.min(start + chunk, source.length)
+      return new Response(source.slice(start, end), {
+        status: 206,
+        headers: {
+          'Content-Range': `bytes ${start}-${end - 1}/${source.length}`,
+          ETag: '"multi-chunk-etag"',
+        },
+      })
+    }
+    if (init.method === 'POST')
+      return new Response(null, {
+        headers: {
+          Location: 'https://www.googleapis.com/upload/drive/v3/files?upload_id=private',
+        },
+      })
+    if (init.method === 'PUT' && init.body instanceof Uint8Array) {
+      remote.set(init.body, received)
+      received += init.body.length
+      complete = received === source.length
+      return complete
+        ? Response.json({ id: 'stable-file', size: String(received) })
+        : new Response(null, { status: 308, headers: { Range: `bytes=0-${received - 1}` } })
+    }
+    throw new Error(`Unexpected HTTP request: ${url}`)
+  })
+  await t.mutation(control, { secret, enabled: true, accepting: true, connected: true })
+  const { id } = await t.mutation(submit, { ...input, estimatedBytes: source.length })
+  await t.action(run, { id })
+  expect(starts).toEqual([0, chunk])
+  expect(remote.every((byte, index) => byte === source[index])).toBe(true)
+  const result = await t.query(status, { secret, deviceId: 'device', mediaIds: ['image'] })
+  expect(result).toEqual([
+    expect.objectContaining({ status: 'completed', offset: source.length, fileId: 'stable-file' }),
+  ])
+})
+
+it('yields safely when approaching deadline and resumes remaining chunks on next run', async () => {
+  const t = convexTest(schema, modules)
+  const chunk = 8 * 1024 * 1024
+  const source = new Uint8Array(chunk * 2).fill(88)
+  const remote = new Uint8Array(source.length)
+  let received = 0
+  let complete = false
+  const starts: number[] = []
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    if (url.includes('oauth2.googleapis.com')) return Response.json({ access_token: 'access' })
+    if (url.includes('generateIds')) return Response.json({ ids: ['stable-file'] })
+    if (url.includes('/drive/v3/files/stable-file'))
+      return complete
+        ? Response.json({ id: 'stable-file', size: String(remote.length) })
+        : new Response(null, { status: 404 })
+    const headers = new Headers(init.headers)
+    if (url.includes('pbs.twimg.com')) {
+      const start = Number(headers.get('range')?.split('=')[1]?.split('-')[0])
+      starts.push(start)
+      const end = Math.min(start + chunk, source.length)
+      return new Response(source.slice(start, end), {
+        status: 206,
+        headers: {
+          'Content-Range': `bytes ${start}-${end - 1}/${source.length}`,
+          ETag: '"multi-chunk-etag"',
+        },
+      })
+    }
+    if (init.method === 'POST')
+      return new Response(null, {
+        headers: {
+          Location: 'https://www.googleapis.com/upload/drive/v3/files?upload_id=private',
+        },
+      })
+    if (init.method === 'PUT' && !(init.body instanceof Uint8Array))
+      return new Response(null, { status: 308, headers: { Range: `bytes=0-${received - 1}` } })
+    if (init.body instanceof Uint8Array) {
+      remote.set(init.body, received)
+      received += init.body.length
+      complete = received === source.length
+      if (received === chunk) {
+        vi.setSystemTime(Date.now() + 100_000)
+      }
+      return complete
+        ? Response.json({ id: 'stable-file', size: String(received) })
+        : new Response(null, { status: 308, headers: { Range: `bytes=0-${received - 1}` } })
+    }
+    throw new Error(`Unexpected HTTP request: ${url}`)
+  })
+  await t.mutation(control, { secret, enabled: true, accepting: true, connected: true })
+  const { id } = await t.mutation(submit, { ...input, estimatedBytes: source.length })
+  await t.action(run, { id })
+  expect(starts).toEqual([0])
+  const midResult = await t.query(status, { secret, deviceId: 'device', mediaIds: ['image'] })
+  expect(midResult).toEqual([
+    expect.objectContaining({ status: 'queued', offset: chunk }),
+  ])
+  vi.setSystemTime(Date.now() + 10_000)
+  await t.action(run, { id })
+  expect(starts).toEqual([0, chunk])
+  expect(remote.every((byte, index) => byte === source[index])).toBe(true)
+  const finalResult = await t.query(status, { secret, deviceId: 'device', mediaIds: ['image'] })
+  expect(finalResult).toEqual([
+    expect.objectContaining({ status: 'completed', offset: source.length, fileId: 'stable-file' }),
+  ])
+})
