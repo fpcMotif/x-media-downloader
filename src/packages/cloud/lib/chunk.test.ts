@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { streamInChunks, readAll, type ChunkInfo } from './chunk'
 
 /** A ReadableStream that yields the given pieces in order. */
@@ -72,6 +72,30 @@ describe('streamInChunks', () => {
     expect(last.info.offset + last.len).toBe(total)
     expect(last.info.isLast).toBe(true)
     expect(chunks.slice(0, -1).every((c) => !c.info.isLast)).toBe(true)
+  })
+
+  it('copies each input byte once', async () => {
+    const pieces = Array.from({ length: 1000 }, () => bytes(1))
+    const setSpy = vi.spyOn(Uint8Array.prototype, 'set')
+    await streamInChunks(streamOf(pieces), 100, async () => {})
+    const copied = setSpy.mock.calls.reduce((sum, [source]) => sum + source.length, 0)
+    setSpy.mockRestore()
+    expect(copied).toBe(1000)
+  })
+
+  it('a held chunk keeps its bytes while later reads arrive', async () => {
+    const chunks: Uint8Array[] = []
+    await streamInChunks(
+      streamOf([bytes(100, 1), bytes(100, 2), bytes(50, 3)]),
+      100,
+      async (chunk) => {
+        chunks.push(chunk)
+      },
+    )
+    expect(chunks.map((c) => c.length)).toEqual([100, 100, 50])
+    expect([...chunks[0]!].every((b) => b === 1)).toBe(true)
+    expect([...chunks[1]!].every((b) => b === 2)).toBe(true)
+    expect([...chunks[2]!].every((b) => b === 3)).toBe(true)
   })
 })
 

@@ -18,15 +18,6 @@ export interface ChunkInfo {
   readonly isLast: boolean
 }
 
-/** Always copies into a fresh ArrayBuffer-backed array — keeps chunks usable as a
- *  fetch `BodyInit` regardless of the source view's backing buffer. */
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
-  const out = new Uint8Array(a.length + b.length)
-  out.set(a, 0)
-  out.set(b, a.length)
-  return out
-}
-
 export async function streamInChunks(
   body: ReadableStream<Uint8Array>,
   chunkBytes: number,
@@ -34,7 +25,8 @@ export async function streamInChunks(
 ): Promise<number> {
   const size = chunkBytes
   const reader = body.getReader()
-  let buffer: Uint8Array<ArrayBuffer> = new Uint8Array(0)
+  let filling: Uint8Array<ArrayBuffer> | null = null
+  let filled = 0
   let held: Uint8Array<ArrayBuffer> | null = null // a full chunk not yet known to be the last
   let offset = 0
   let total = 0
@@ -49,14 +41,22 @@ export async function streamInChunks(
       // oxlint-disable-next-line no-await-in-loop -- stream reads are inherently sequential
       const { value, done } = await reader.read()
       if (value !== undefined && value.length > 0) {
-        buffer = concat(buffer, value)
         total += value.length
-      }
-      while (buffer.length >= size) {
-        // oxlint-disable-next-line no-await-in-loop -- chunk sinks must run in offset order
-        if (held !== null) await emit(held, false)
-        held = buffer.subarray(0, size)
-        buffer = buffer.subarray(size)
+        let taken = 0
+        while (taken < value.length) {
+          filling ??= new Uint8Array(size)
+          const take = Math.min(size - filled, value.length - taken)
+          filling.set(value.subarray(taken, taken + take), filled)
+          filled += take
+          taken += take
+          if (filled === size) {
+            // oxlint-disable-next-line no-await-in-loop -- chunk sinks must run in offset order
+            if (held !== null) await emit(held, false)
+            held = filling
+            filling = null
+            filled = 0
+          }
+        }
       }
       if (done) break
     }
@@ -66,9 +66,9 @@ export async function streamInChunks(
 
   // Drain: the held full chunk (if any) precedes the remainder; the very last
   // emit carries isLast. remainder.length < size (possibly 0).
-  if (buffer.length > 0) {
+  if (filling !== null && filled > 0) {
     if (held !== null) await emit(held, false)
-    await emit(buffer, true)
+    await emit(filling.subarray(0, filled), true)
   } else if (held !== null) {
     await emit(held, true)
   } else {
