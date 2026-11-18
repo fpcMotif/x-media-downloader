@@ -98,7 +98,7 @@ import { makeScrollDrain } from '@/packages/clear/scroll-drain'
 import { makeSavedStatusLifecycle } from './saved-status-lifecycle'
 import { partitionAllowedMediaItems } from '@/packages/sync/url-guard'
 import { makeTweetClearer } from '@/packages/clear/tweet-clear'
-import { makeMutationWitness } from '@/packages/clear/mutation-witness'
+import { makeMutationWitness, resolveMutationStartedAt } from '@/packages/clear/mutation-witness'
 import { makeReleaseRecheck, type FreshTimelineMembership } from '@/packages/clear/recheck'
 import { timelineTweetIds } from '../../core/adapters/x/walk'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
@@ -127,6 +127,7 @@ declare global {
       status: JsonValue
       body: JsonValue
       requestBody: JsonValue
+      startedAt: JsonValue
     }>
     'xmd:tee-drop': CustomEvent<{ cap?: JsonValue }>
   }
@@ -1858,28 +1859,19 @@ export default defineContentScript({
     // `handleMediaResponse` comment already names for media): shape validation
     // bounds what a forged event can inject — `op` to the 4-member enum,
     // `tweetId` to a genuine numeric snowflake (`tweetIdFromMutationRequestBody`'s
-    // own `isClearableTweetId` guard) — but cannot verify TRUTHFULNESS. A
-    // compromised page (or another extension's content script sharing this
-    // document) can still fabricate a *plausible-shaped* mutation/timeline event,
-    // which would land in the durable diagnostics log as a false server-reject /
-    // re-add-fingerprint / ghost-vs-real reading. No account mutation is possible
-    // this way (the tee only ever OBSERVES; see inject.content.ts) — the exposure
-    // is confined to misleading DIAGNOSTIC output, never a click, retry, or
-    // network request this extension itself makes. Eliminating it fully would mean
-    // not trusting ANY MAIN-world-observed event's content, which the media tee
-    // already accepts the same tradeoff on; out of scope for this ticket chain.
+    // own `isClearableTweetId` guard), and `startedAt` to a finite timestamp `<= t`
+    // (`resolveMutationStartedAt`, so a forged future start cannot wedge `record`) —
+    // but cannot verify TRUTHFULNESS. A compromised page (or another extension's
+    // content script sharing this document) can still fabricate a plausible-shaped
+    // mutation event, skewing an in-flight Release witness verdict or diagnostic
+    // entry. No account mutation is possible this way (the tee only ever OBSERVES;
+    // see inject.content.ts) — the extension never sends a request or replays
+    // credentials of its own.
     // SAFETY: `detail` is attacker-controlled (same forgeable-event posture as
     // `handleMediaResponse` above) — the fields are typed `JsonValue`, not the
     // shape this file's own dispatchers use, precisely so every read below goes
     // through `isString`/`isNumber` rather than trusting the parameter type.
-    const handleMutationResponse = (
-      event: CustomEvent<{
-        path: JsonValue
-        status: JsonValue
-        body: JsonValue
-        requestBody: JsonValue
-      }>,
-    ): void => {
+    const handleMutationResponse = (event: DocumentEventMap['xmd:mutation-response']): void => {
       // X-only regardless of the diagnostics toggle below: the witness recording
       // must run whenever a Release could actually be in flight, which is X only —
       // `matchReleaseMutationOp`/`tweetIdFromMutationRequestBody` are X GraphQL-shaped
@@ -1896,12 +1888,16 @@ export default defineContentScript({
         ? tweetIdFromMutationRequestBody(detail.requestBody)
         : undefined
       const t = Date.now()
+      const startedAt = resolveMutationStartedAt(
+        isNumber(detail.startedAt) ? detail.startedAt : undefined,
+        t,
+      )
       // The witness records EVERY parsed mutation with a tweetId, independent of the
       // diagnostics toggle — it is the authoritative release-confirm signal now
       // (`tweet-clear.ts`'s module doc), not just diagnostics evidence. Only the
       // background forward (durable, exportable log) stays gated.
       if (tweetId !== undefined)
-        mutationWitness.record({ tweetId, op, status: detail.status, error, t })
+        mutationWitness.record({ tweetId, op, status: detail.status, error, t, startedAt })
       if (!releaseMutationDiagnosticsOn) return
       void safeSend(() =>
         browser.runtime.sendMessage({

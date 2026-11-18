@@ -21,16 +21,17 @@ export interface MutationWitnessEvent {
   readonly status: number
   readonly error: boolean
   readonly t: number
+  readonly startedAt: number
 }
 
 export interface MutationWitness {
   /** Record one observed mutation. Never throws. */
   readonly record: (ev: MutationWitnessEvent) => void
   /** The server verdict for `tweetId` leaving `scope`, as of any matching
-   *  mutation observed at or after `sinceT` (the click time) — 'ok' the
-   *  confirming op answered 200 with no error signal, 'error' it answered
-   *  non-200 or carried an error signal, 'none' nothing matching has been
-   *  observed yet (defer to the DOM heuristic). */
+   *  mutation whose request started at or after `sinceT` (the click time) —
+   *  'ok' the confirming op answered 200 with no error signal, 'error' it
+   *  answered non-200 or carried an error signal, 'none' nothing matching has
+   *  been observed yet (defer to the DOM heuristic). */
   readonly outcome: (
     tweetId: string,
     scope: MembershipScope,
@@ -47,6 +48,15 @@ const CONFIRMING_OP = {
   bookmark: 'DeleteBookmark',
 } satisfies Record<MembershipScope, ReleaseMutationOp>
 
+/** Returns `reported` when it is a finite epoch-ms timestamp at or before `receivedAt`, or `receivedAt` otherwise. */
+export const resolveMutationStartedAt = (
+  reported: number | undefined,
+  receivedAt: number,
+): number =>
+  reported !== undefined && Number.isFinite(reported) && reported <= receivedAt
+    ? reported
+    : receivedAt
+
 const DEFAULT_CAPACITY = 256
 
 /** `now`/`capacity` are injected for parity with this package's other ports
@@ -59,16 +69,17 @@ export function makeMutationWitness(opts?: {
   readonly capacity?: number
 }): MutationWitness {
   const capacity = opts?.capacity ?? DEFAULT_CAPACITY
-  // Keyed by `${tweetId}:${op}` — only the NEWEST event per (tweet, op) is
-  // ever read by `outcome`, so overwriting on record is both the ring-buffer
-  // eviction unit AND the "newest matching event wins" rule in one structure.
-  // A `Map` re-inserted key (delete-then-set) moves to the END of iteration
-  // order, so the FIRST key is always the oldest surviving entry — the one
-  // `record` evicts once size exceeds `capacity`.
+  // Keyed by `${tweetId}:${op}` — only the latest-started event per (tweet, op)
+  // is retained (`record` drops late replies whose `startedAt` predates the
+  // stored entry). Re-inserting (delete-then-set) moves an updated key to the
+  // END of `Map` iteration order, so the FIRST key is always the oldest
+  // surviving entry evicted once size exceeds `capacity`.
   const events = new Map<string, MutationWitnessEvent>()
 
   function record(ev: MutationWitnessEvent): void {
     const key = `${ev.tweetId}:${ev.op}`
+    const stored = events.get(key)
+    if (stored !== undefined && stored.startedAt > ev.startedAt) return
     events.delete(key)
     events.set(key, ev)
     if (events.size > capacity) {
@@ -83,7 +94,7 @@ export function makeMutationWitness(opts?: {
     sinceT: number,
   ): 'ok' | 'error' | 'none' {
     const ev = events.get(`${tweetId}:${CONFIRMING_OP[scope]}`)
-    if (ev === undefined || ev.t < sinceT) return 'none'
+    if (ev === undefined || ev.startedAt < sinceT) return 'none'
     return ev.status === 200 && !ev.error ? 'ok' : 'error'
   }
 

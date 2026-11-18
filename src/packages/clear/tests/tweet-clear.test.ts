@@ -665,4 +665,102 @@ describe('makeTweetClearer witness precedence', () => {
     expect(trace).toHaveBeenCalledTimes(1)
     expect(trace.mock.calls[0]![1]).toContain('reason=no-flip')
   })
+
+  it('witness error inside grace after an optimistic DOM flip ⇒ false, reason=mutation-error, onFlip not called', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const { clock, sleeps, onTick } = makeClock()
+    onTick((n) => {
+      if (n === 1) art.querySelector('[data-testid="removeBookmark"]')!.remove()
+    })
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const onFlip = vi.fn<NonNullable<TweetClearerDeps['onFlip']>>()
+    const witness = scriptedWitness(['none', 'none', 'error'])
+    const clearer = makeTweetClearer({ document, clock, trace, onFlip, witness })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(false)
+    expect(sleeps).toEqual([200, 250, 250])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![0]).toBe('clear-attempt-fail')
+    expect(trace.mock.calls[0]![1]).toContain('reason=mutation-error')
+    expect(trace.mock.calls[0]![1]).toContain('attempts=3')
+    expect(trace.mock.calls[0]![1]).toContain('elapsedMs=700')
+    expect(onFlip).not.toHaveBeenCalled()
+  })
+
+  it('witness ok inside grace after an optimistic DOM flip ⇒ true, arm=mutation, onFlip called once', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const { clock, sleeps, onTick } = makeClock()
+    onTick((n) => {
+      if (n === 1) art.querySelector('[data-testid="removeBookmark"]')!.remove()
+    })
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const onFlip = vi.fn<NonNullable<TweetClearerDeps['onFlip']>>()
+    const witness = scriptedWitness(['none', 'none', 'ok'])
+    const clearer = makeTweetClearer({ document, clock, trace, onFlip, witness })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(true)
+    expect(sleeps).toEqual([200, 250, 250])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![0]).toBe('clear-flip')
+    expect(trace.mock.calls[0]![1]).toContain('arm=mutation')
+    expect(trace.mock.calls[0]![1]).not.toContain('witness=none')
+    expect(onFlip.mock.calls).toEqual([['1', 'bookmark', 'settle']])
+  })
+
+  it('silent witness through grace after DOM flip ⇒ falls back to DOM verdict with witness=none', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const { clock, sleeps, onTick } = makeClock()
+    onTick((n) => {
+      if (n === 1)
+        art.querySelector('[data-testid="removeBookmark"]')!.setAttribute('data-testid', 'bookmark')
+    })
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const onFlip = vi.fn<NonNullable<TweetClearerDeps['onFlip']>>()
+    const witness = scriptedWitness(['none'])
+    const clearer = makeTweetClearer({ document, clock, trace, onFlip, witness })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(true)
+    expect(sleeps).toEqual([200, 250, 250, 250, 250, 250, 250, 250, 250])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![0]).toBe('clear-flip')
+    expect(trace.mock.calls[0]![1].endsWith(' witness=none')).toBe(true)
+    expect(onFlip.mock.calls).toEqual([['1', 'bookmark', 'settle']])
+  })
+
+  it('no witness supplied with DOM flip on poll 1 ⇒ sleeps [200] and no witness token', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const { clock, sleeps, onTick } = makeClock()
+    onTick((n) => {
+      if (n === 1) art.querySelector('[data-testid="removeBookmark"]')!.remove()
+    })
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const clearer = makeTweetClearer({ document, clock, trace })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(true)
+    expect(sleeps).toEqual([200])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![1]).not.toContain('witness=')
+  })
+
+  it('witnessGraceAttempts: 0 skips the grace wait and still tags witness=none', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const { clock, sleeps, onTick } = makeClock()
+    onTick((n) => {
+      if (n === 1) art.querySelector('[data-testid="removeBookmark"]')!.remove()
+    })
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const witness = scriptedWitness(['none'])
+    const clearer = makeTweetClearer({
+      document,
+      clock,
+      trace,
+      witness,
+      witnessGraceAttempts: 0,
+    })
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(true)
+    expect(sleeps).toEqual([200])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![1].endsWith(' witness=none')).toBe(true)
+  })
 })

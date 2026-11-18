@@ -6,6 +6,7 @@ import {
   utf8ByteLengthAtMost,
   MAX_TEE_BODY_BYTES,
   TEE_DROP_EVENT,
+  type TeeBudget,
   type TeeDropCap,
 } from '@/packages/kernel/tee-limits'
 
@@ -48,12 +49,13 @@ export default defineContentScript({
     const isStringInitBody = (body: BodyInit | null | undefined): body is string =>
       typeof body === 'string'
 
-    // Shared across both tee legs. Only the fetch paths take a lease: `clone()`
-    // pins the whole body in the PAGE's heap until it is drained, so an unbounded
-    // number of concurrent clones is the real leak. XHR's `responseText` is a
-    // string the page already materialized — nothing extra is pinned by reading
-    // it, so those paths take the byte cap alone.
+    // Separate clone budgets for media (`teeBudget`) and mutation (`mutationTeeBudget`)
+    // fetch paths so media traffic cannot starve Release verdicts. Only fetch paths
+    // take a lease: `clone()` pins the whole body in the PAGE's heap until drained.
+    // XHR's `responseText` is already materialized by the page, so XHR paths take
+    // the byte cap alone.
     const teeBudget = makeTeeBudget()
+    const mutationTeeBudget = makeTeeBudget()
 
     /** Production-visible drop notice (#92 follow-up): the ISOLATED content
      *  script relays this as a `capture`/`tee-drop` DownloadTraceEvent. */
@@ -63,8 +65,11 @@ export default defineContentScript({
 
     /** Bounded read of a fetch response, or null when it must be dropped. Always
      *  releases its slot, including on the refusal paths. */
-    const readTeeBody = async (res: Response): Promise<string | null> => {
-      const lease = teeBudget.acquire()
+    const readTeeBody = async (
+      res: Response,
+      budget: TeeBudget = teeBudget,
+    ): Promise<string | null> => {
+      const lease = budget.acquire()
       if (!lease) {
         emitDrop('in-flight-cap')
         if (import.meta.env.DEV)
@@ -107,10 +112,13 @@ export default defineContentScript({
       status: number,
       body: string,
       requestBody: string | null,
+      startedAt: number,
     ): void => {
       if (import.meta.env.DEV) console.debug(`[XMD] tee mutation · path=${path} · status=${status}`)
       document.dispatchEvent(
-        new CustomEvent('xmd:mutation-response', { detail: { path, status, body, requestBody } }),
+        new CustomEvent('xmd:mutation-response', {
+          detail: { path, status, body, requestBody, startedAt },
+        }),
       )
     }
 
@@ -119,6 +127,7 @@ export default defineContentScript({
     // first, since `open()` always precedes `send()`). A WeakMap so a request that
     // never completes (`load` never fires) can never leak its body.
     const xhrMutationBody = new WeakMap<XMLHttpRequest, string>()
+    const xhrMutationStartedAt = new WeakMap<XMLHttpRequest, number>()
 
     // Class method bodies don't inherit the `!adapter` early-return narrowing the
     // way arrow functions do, so the class reads the platform through this capture.
@@ -175,11 +184,18 @@ export default defineContentScript({
                 withinTeeBudget(body, 'xhr mutation body') &&
                 (requestBody === null || withinTeeBudget(requestBody, 'xhr mutation request'))
               )
-                emitMutation(new URL(this.responseURL).pathname, this.status, body, requestBody)
+                emitMutation(
+                  new URL(this.responseURL).pathname,
+                  this.status,
+                  body,
+                  requestBody,
+                  xhrMutationStartedAt.get(this) ?? Date.now(),
+                )
             } catch {
               /* never break the page */
             }
             xhrMutationBody.delete(this)
+            xhrMutationStartedAt.delete(this)
           })
         }
         if (rest.length === 0) super.open(method, url)
@@ -187,6 +203,7 @@ export default defineContentScript({
       }
 
       override send(body?: Document | XMLHttpRequestBodyInit | null): void {
+        xhrMutationStartedAt.set(this, Date.now())
         if (isStringXhrBody(body)) xhrMutationBody.set(this, body)
         super.send(body)
       }
@@ -195,6 +212,7 @@ export default defineContentScript({
 
     const origFetch = window.fetch
     window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const startedAt = Date.now()
       const promise = origFetch(input, init)
       try {
         const reqUrl = isStringFetchInput(input)
@@ -223,7 +241,7 @@ export default defineContentScript({
           const requestBody = isStringInitBody(init?.body) ? init.body : null
           void promise
             .then((res) =>
-              readTeeBody(res).then((body) => {
+              readTeeBody(res, mutationTeeBudget).then((body) => {
                 if (body === null) return
                 if (requestBody !== null && !withinTeeBudget(requestBody, 'fetch mutation request'))
                   return
@@ -232,6 +250,7 @@ export default defineContentScript({
                   res.status,
                   body,
                   requestBody,
+                  startedAt,
                 )
               }),
             )
