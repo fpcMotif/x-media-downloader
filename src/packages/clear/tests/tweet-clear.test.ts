@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeTweetClearer, type TweetClearerDeps } from '../tweet-clear'
 import { CLEAR_TESTID, CLEARED_STUB_ATTR } from '../clearer'
+import { makeReleaseThrottle } from '../throttle'
 
 /** A sleep-only clock: resolves immediately, records each requested delay, and runs
  *  an optional per-tick hook so a test can mutate the DOM after poll N (fake time,
@@ -762,5 +763,51 @@ describe('makeTweetClearer witness precedence', () => {
     expect(sleeps).toEqual([200])
     expect(trace).toHaveBeenCalledTimes(1)
     expect(trace.mock.calls[0]![1].endsWith(' witness=none')).toBe(true)
+  })
+})
+
+describe('makeTweetClearer throttle gating', () => {
+  const BOOKMARKED = '<button data-testid="removeBookmark"></button>'
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('refuses to click and traces reason=rate-limited attempts=0 while blocked', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const button = art.querySelector('button')!
+    const clickSpy = vi.spyOn(button, 'click')
+    const throttle = makeReleaseThrottle({ now: () => 1_000 })
+    throttle.noteRateLimited()
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const { clock, sleeps } = makeClock()
+    const clearer = makeTweetClearer({ document, clock, trace, throttle })
+
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(false)
+    expect(clickSpy).not.toHaveBeenCalled()
+    expect(sleeps).toEqual([])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![0]).toBe('clear-attempt-fail')
+    expect(trace.mock.calls[0]![1]).toContain('reason=rate-limited attempts=0')
+  })
+
+  it('clicks as before when the throttle is not blocked', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const button = art.querySelector('button')!
+    const clickSpy = vi.spyOn(button, 'click')
+    const throttle = makeReleaseThrottle({ now: () => 1_000 })
+    const { clock, sleeps } = makeClock()
+    const clearer = makeTweetClearer({
+      document,
+      clock,
+      throttle,
+      witness: { outcome: () => 'ok' },
+    })
+
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(true)
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+    expect(sleeps).toEqual([200])
   })
 })

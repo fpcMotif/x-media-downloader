@@ -50,6 +50,7 @@ import {
   notInterestedConfirmed,
 } from './clearer'
 import type { MutationWitness } from './mutation-witness'
+import type { ReleaseThrottle } from './throttle'
 
 // Poll for the post-click testid flip. X updates the control optimistically, but
 // the row removal / re-render can lag well past a single tick, so we poll a fixed
@@ -128,6 +129,7 @@ export interface TweetClearerDeps {
    *  in tests that don't wire one and (defensively) never on platforms other than
    *  X — DOM-only fallback, byte-identical to the pre-witness behaviour. */
   readonly witness?: Pick<MutationWitness, 'outcome'> | undefined
+  readonly throttle?: ReleaseThrottle | undefined
   /** Clock read at click time so the witness knows which mutations postdate THIS
    *  click (`witness.outcome`'s `sinceT`). Defaults to `Date.now` — fake it in
    *  tests to pin `clickedAt` deterministically alongside the fake `clock`. */
@@ -155,6 +157,7 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
     trace,
     onFlip,
     witness,
+    throttle,
     now = Date.now,
     witnessGraceAttempts = WITNESS_GRACE_POLL_ATTEMPTS,
   } = deps
@@ -180,7 +183,7 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
   interface ClearAttemptFailRecord {
     readonly tweetId: string
     readonly scope: ClearScope
-    readonly reason: 'no-article' | 'no-control' | 'no-flip' | 'mutation-error'
+    readonly reason: 'no-article' | 'no-control' | 'no-flip' | 'mutation-error' | 'rate-limited'
     readonly attempts: number
     readonly article: Element | null
     /** What we dispatched at, on the reasons that follow a click (`no-flip`,
@@ -472,6 +475,18 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
       return false
     }
     /* v8 ignore stop */
+    if (throttle !== undefined && throttle.blockedForMs() > 0) {
+      traceAttemptFail({
+        tweetId,
+        scope,
+        reason: 'rate-limited',
+        attempts: 0,
+        article: article.value,
+        click: null,
+        origin,
+      })
+      return false
+    }
     const { target, targetKind, disabled } = resolveClickTarget(ctrl)
     if (log) log(scope, '→ clicking', CLEAR_TESTID[scope].active)
     // Captured IMMEDIATELY before the click — `witness.outcome`'s `sinceT` — so a

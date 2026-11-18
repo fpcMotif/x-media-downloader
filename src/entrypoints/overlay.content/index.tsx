@@ -100,6 +100,7 @@ import { partitionAllowedMediaItems } from '@/packages/sync/url-guard'
 import { makeTweetClearer } from '@/packages/clear/tweet-clear'
 import { makeClickGuard } from '@/packages/clear/click-guard'
 import { makeMutationWitness, resolveMutationStartedAt } from '@/packages/clear/mutation-witness'
+import { makeReleaseThrottle, noteReleaseReply } from '@/packages/clear/throttle'
 import { makeReleaseRecheck, type FreshTimelineMembership } from '@/packages/clear/recheck'
 import { timelineTweetIds } from '../../core/adapters/x/walk'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
@@ -166,6 +167,7 @@ const clearLog = (...args: unknown[]): void => console.info('[XMD clear]', ...ar
 // `clearScope`'s poll loop (reading) share the same log across the page's
 // whole lifetime, not just one clear.
 const mutationWitness = makeMutationWitness()
+const releaseThrottle = makeReleaseThrottle({ now: Date.now })
 
 const { clearScope } = makeTweetClearer({
   document,
@@ -179,6 +181,7 @@ const { clearScope } = makeTweetClearer({
     if (scope !== 'notInterested') releaseRecheck.arm(tweetId, scope, origin)
   },
   witness: mutationWitness,
+  throttle: releaseThrottle,
 })
 
 const clickGuard = makeClickGuard({ now: Date.now })
@@ -1904,6 +1907,7 @@ export default defineContentScript({
       // background forward (durable, exportable log) stays gated.
       if (tweetId !== undefined)
         mutationWitness.record({ tweetId, op, status: detail.status, error, t, startedAt })
+      noteReleaseReply(releaseThrottle, detail.status)
       if (!releaseMutationDiagnosticsOn) return
       void safeSend(() =>
         browser.runtime.sendMessage({
@@ -2280,6 +2284,7 @@ export default defineContentScript({
       runDrain,
       savedStatusActive: () => savedStatusVisible(location.pathname, savedStatusOn),
       witness: mutationWitness,
+      throttle: releaseThrottle,
       clickGuard,
     }
 

@@ -35,6 +35,7 @@ import {
 import type { makeDetectionStore } from '../../core/adapters/detection-store'
 import type { ClickGuard } from '@/packages/clear/click-guard'
 import type { MutationWitness } from '@/packages/clear/mutation-witness'
+import type { ReleaseThrottle } from '@/packages/clear/throttle'
 import type {
   ClearDetectedMediaResponse,
   ClearDrainRequest,
@@ -154,6 +155,7 @@ export interface HandlerDeps {
    *  (`clearMountedForScope`) gets the same server-verdict-first precedence.
    *  Optional: undefined ⇒ DOM-only, unchanged from before the witness existed. */
   readonly witness?: Pick<MutationWitness, 'outcome'> | undefined
+  readonly throttle?: ReleaseThrottle | undefined
   /** Per-page single-flight and recent-release guard shared with `clearScope`, so
    *  manual sweeps and automatic clears never double-click the same `(scope, tweetId)`. */
   readonly clickGuard?: ClickGuard | undefined
@@ -171,7 +173,7 @@ type ClearVisibleResponse = {
 type ClearWholeListResponse = {
   readonly _tag: 'ClearWholeListResponse'
   readonly cleared: number
-  readonly reason?: 'not-x' | 'not-list-page' | 'scope-changed'
+  readonly reason?: 'not-x' | 'not-list-page' | 'scope-changed' | 'rate-limited'
 }
 
 /** "Release this page" (Drain) terminal reply — see `handleDrainPage`. */
@@ -505,6 +507,7 @@ interface ClearVerdictRecord {
   readonly tweetId: string
   readonly scope: MembershipScope
   readonly verdict: 'ok' | 'error' | 'none'
+  readonly rateLimited: boolean
   readonly paceMs: number
   readonly targetKind: 'button' | 'testid-node'
   readonly disabled: boolean
@@ -519,6 +522,7 @@ function recordClearVerdict(input: ClearVerdictRecord): boolean {
     tweetId,
     scope,
     verdict,
+    rateLimited,
     paceMs,
     targetKind,
     disabled,
@@ -526,10 +530,10 @@ function recordClearVerdict(input: ClearVerdictRecord): boolean {
     trace,
   } = input
   if (verdict === 'error') {
-    ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
+    if (!rateLimited) ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
     trace(
       'clear-attempt-fail',
-      `scope=${scope} reason=mutation-error attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
+      `scope=${scope} reason=${rateLimited ? 'rate-limited' : 'mutation-error'} attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
       tweetId,
     )
     return false
@@ -584,15 +588,31 @@ interface MountedScopeClear {
   readonly trace: (stage: string, detail: string, tweetId?: string) => void
   readonly ghosts?: Map<string, number> | undefined
   readonly witness?: Pick<MutationWitness, 'outcome'> | undefined
+  readonly throttle?: ReleaseThrottle | undefined
   readonly clickGuard?: ClickGuard | undefined
   readonly now?: (() => number) | undefined
 }
 
 export async function clearMountedForScope(input: MountedScopeClear): Promise<number> {
-  const { document, scope, paceMs, trace, ghosts, witness, clickGuard, now = Date.now } = input
+  const {
+    document,
+    scope,
+    paceMs,
+    trace,
+    ghosts,
+    witness,
+    throttle,
+    clickGuard,
+    now = Date.now,
+  } = input
   let cleared = 0
   // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
   for (const article of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
+    const waitMs = throttle?.blockedForMs() ?? 0
+    if (waitMs > 0) {
+      trace('clear-sweep-paused', `scope=${scope} waitMs=${waitMs} origin=manual`)
+      break
+    }
     const ctrl = clearControl(article, scope)
     if (ctrl === null) continue
     const { target, targetKind, disabled } = resolveClearTarget(ctrl)
@@ -623,6 +643,7 @@ export async function clearMountedForScope(input: MountedScopeClear): Promise<nu
         tweetId,
         scope,
         verdict,
+        rateLimited: verdict === 'error' && (throttle?.blockedForMs() ?? 0) > 0,
         paceMs,
         targetKind,
         disabled,
@@ -680,6 +701,7 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       trace: deps.reportClear,
       ghosts: sweepGhosts,
       witness: deps.witness,
+      throttle: deps.throttle,
       clickGuard: deps.clickGuard,
     })
     if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
@@ -739,10 +761,12 @@ export const handleClearWholeList: MessageHandler = (_message, deps, sendRespons
         trace: deps.reportClear,
         ghosts: sweepGhosts,
         witness: deps.witness,
+        throttle: deps.throttle,
         clickGuard: deps.clickGuard,
       })
     },
     report: (stage, detail) => deps.reportClear(stage, detail),
+    blockedForMs: () => deps.throttle?.blockedForMs() ?? 0,
   })
   void (async () => {
     // `result.reason` ('scope-changed') rides the response so the popup reports an
@@ -994,6 +1018,13 @@ export async function clearMountedTweet(
   return results
 }
 
+const retryAfterField = (
+  throttle: ReleaseThrottle | undefined,
+): { readonly retryAfterMs?: number } => {
+  const waitMs = throttle?.blockedForMs() ?? 0
+  return waitMs > 0 ? { retryAfterMs: waitMs } : {}
+}
+
 export const handleClearTweet: MessageHandler = (message, deps, sendResponse) => {
   // X-only: findArticle/clearMountedTweet drive X's bookmark/like/notInterested
   // DOM controls — nothing to click on an Instagram/Threads tab. Keep the channel
@@ -1005,6 +1036,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
       mounted: false,
       drainEligible: false,
       results: [],
+      ...retryAfterField(deps.throttle),
     })
     return true
   }
@@ -1059,6 +1091,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
         drainEligible,
         results: [],
         page,
+        ...retryAfterField(deps.throttle),
       })
       return
     }
@@ -1086,6 +1119,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
         mounted: true,
         drainEligible,
         results,
+        ...retryAfterField(deps.throttle),
       })
       return
     }
@@ -1109,6 +1143,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
         mounted: false,
         drainEligible,
         results,
+        ...retryAfterField(deps.throttle),
       })
       return
     }
@@ -1122,6 +1157,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
       mounted: true,
       drainEligible,
       results,
+      ...retryAfterField(deps.throttle),
     })
   })()
   return true

@@ -33,6 +33,7 @@ export interface ListClearDeps {
   readonly clearVisibleForPage: () => Promise<number>
   /** Progress trace sink (start / pass / abort / end). */
   readonly report: (stage: string, detail: string) => void
+  readonly blockedForMs?: (() => number) | undefined
 }
 
 export interface ListClearResult {
@@ -41,7 +42,7 @@ export interface ListClearResult {
    *  clear scope at all. `scope-changed`: it started on one list and the live page
    *  scope moved (off every list, or onto the other one) before the scan finished, so
    *  `cleared` is a PARTIAL count and must not be read as a finished list. */
-  readonly reason?: 'not-list-page' | 'scope-changed'
+  readonly reason?: 'not-list-page' | 'scope-changed' | 'rate-limited'
 }
 
 export interface ListClear {
@@ -69,6 +70,7 @@ export function makeListClear(deps: ListClearDeps): ListClear {
     let cleared = 0
     let noProgress = 0
     let scopeChanged = false
+    let rateLimited = false
     deps.report('clear-list-start', 'scanning the list from the top')
     try {
       deps.scroll.to(0)
@@ -90,6 +92,12 @@ export function makeListClear(deps: ListClearDeps): ListClear {
         }
         const clearedThisStep = await deps.clearVisibleForPage()
         cleared += clearedThisStep
+        const waitMs = deps.blockedForMs?.() ?? 0
+        if (waitMs > 0) {
+          deps.report('clear-list-abort', `reason=rate-limited waitMs=${waitMs} cleared=${cleared}`)
+          rateLimited = true
+          break
+        }
         // Per-pass progress, but only for passes that cleared something — a long
         // scroll over an already-empty list would otherwise flood the bounded
         // trace ring with hundreds of no-op lines.
@@ -114,7 +122,8 @@ export function makeListClear(deps: ListClearDeps): ListClear {
       deps.scroll.to(startY) // put the user back where they were
       deps.report('clear-list-end', `cleared ${cleared}`)
     }
-    return scopeChanged ? { cleared, reason: 'scope-changed' } : { cleared }
+    if (scopeChanged) return { cleared, reason: 'scope-changed' }
+    return rateLimited ? { cleared, reason: 'rate-limited' } : { cleared }
   }
   return { run }
 }

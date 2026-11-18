@@ -10,7 +10,12 @@ const clamp = (v: number, maxY: number): number => Math.max(0, Math.min(maxY, v)
  * viewport. `clearVisibleForPage` clears (deletes from `layout`) every mounted post
  * and returns the count — exactly what the real per-pass click sweep does.
  */
-function harness(opts: { layout?: Record<string, number>; maxY?: number; path?: string }) {
+function harness(opts: {
+  layout?: Record<string, number>
+  maxY?: number
+  path?: string
+  blockedForMs?: () => number
+}) {
   const layout = { ...opts.layout } satisfies Record<string, number>
   const maxY = opts.maxY ?? 4000
   const scroll = { y: 0 }
@@ -57,6 +62,7 @@ function harness(opts: { layout?: Record<string, number>; maxY?: number; path?: 
     path: () => path,
     clearVisibleForPage,
     report,
+    ...(opts.blockedForMs === undefined ? {} : { blockedForMs: opts.blockedForMs }),
   }
   return {
     deps,
@@ -177,6 +183,28 @@ describe('makeListClear', () => {
     )
     // The abort still closes the run — a `clear-list-start` without its end would
     // read as a run that never terminated in the diagnostics export.
+    expect(stagesOf(h.report)).toContain('clear-list-end')
+  })
+
+  it('aborts with rate-limited when blockedForMs becomes positive and restores scroll position', async () => {
+    const blockedForMs = vi.fn<() => number>().mockReturnValueOnce(0).mockReturnValueOnce(30_000)
+    const h = harness({
+      layout: { a: 0, b: 900, c: 1800 },
+      maxY: 3200,
+      blockedForMs,
+    })
+    h.scroll.y = 1400
+    const resP = makeListClear(h.deps).run()
+    await vi.runAllTimersAsync()
+    const res = await resP
+
+    expect(res).toEqual({ cleared: 2, reason: 'rate-limited' })
+    expect(h.clearVisibleForPage).toHaveBeenCalledTimes(2)
+    expect(h.scroll.y).toBe(1400)
+    expect(h.report).toHaveBeenCalledWith(
+      'clear-list-abort',
+      'reason=rate-limited waitMs=30000 cleared=2',
+    )
     expect(stagesOf(h.report)).toContain('clear-list-end')
   })
 })

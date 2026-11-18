@@ -311,6 +311,73 @@ describe('sendClearToTabs — clear targeting', () => {
     expect(tabs.navigated).toEqual(['https://x.com/i/web/status/t1'])
   })
 
+  it('ends the dispatch immediately when a tab replies with retryAfterMs', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([1, 2], {
+      1: {
+        mounted: true,
+        drainEligible: true,
+        results: [{ scope: 'bookmark', ok: false }],
+        retryAfterMs: 60_000,
+      },
+      2: clearResp('bookmark'),
+      [RELEASE_TAB_ID]: clearResp('bookmark'),
+    })
+
+    const res = await makeTabBroadcaster(tabs, {
+      clock: instantClock,
+      trace: t.trace,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.sent.map((sent) => sent.tabId)).toEqual([1])
+    expect(tabs.navigated).toEqual([])
+    expect(t.dispatch()[0]?.detail).toContain('outcome=rate-limited')
+  })
+
+  it('sends no ClearTweetRequest on the next dispatch while inside the rate-limit window', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([1, 2], {
+      1: {
+        mounted: true,
+        drainEligible: true,
+        results: [{ scope: 'bookmark', ok: false }],
+        retryAfterMs: 60_000,
+      },
+      2: clearResp('bookmark'),
+      [RELEASE_TAB_ID]: clearResp('bookmark'),
+    })
+    const broadcaster = makeTabBroadcaster(tabs, { clock: instantClock, trace: t.trace })
+
+    await broadcaster.sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+    tabs.sent.length = 0
+    const second = await broadcaster.sendClearToTabs(
+      't2',
+      ['bookmark'],
+      undefined,
+      undefined,
+      pinned(),
+    )
+
+    expect(second).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.sent).toEqual([])
+    expect(tabs.navigated).toEqual([])
+    expect(t.dispatch()[1]?.detail).toContain('outcome=rate-limited')
+  })
+
+  it('returns mounted as before when a reply has no retryAfterMs', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([1, 2], { 1: clearResp('bookmark') })
+
+    const res = await makeTabBroadcaster(tabs, {
+      clock: instantClock,
+      trace: t.trace,
+    }).sendClearToTabs('t1', ['bookmark'], 1, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(t.dispatch()[0]?.detail).toContain('outcome=mounted')
+  })
+
   it('ends the fan-out after a partly failed mounted answer, escalating straight to the release tab', async () => {
     const tabs = fakeTabs([1, 2], {
       1: {

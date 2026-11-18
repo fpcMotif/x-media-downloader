@@ -462,6 +462,7 @@ export const ClearTweetResponse = Schema.TaggedStruct('ClearTweetResponse', {
   drainEligible: Schema.Boolean,
   results: Schema.Array(ClearResult),
   page: Schema.optional(ClearPageEvidence),
+  retryAfterMs: Schema.optional(Schema.Number),
 })
 export type ClearTweetResponse = typeof ClearTweetResponse.Type
 

@@ -24,6 +24,7 @@ import type { makeDetectionStore } from '../../core/adapters/detection-store'
 import type { BadgeState } from '@/packages/overlay/badge'
 import { findArticle } from '@/packages/clear/clearer'
 import { makeClickGuard } from '@/packages/clear/click-guard'
+import { makeReleaseThrottle } from '@/packages/clear/throttle'
 
 /** What a test actually wants to fix about `HandlerDeps` for one scenario. Every
  *  nested port (`adapter`, `location`, `store`, `getBadge`'s return) stays partial
@@ -1685,5 +1686,111 @@ describe('clearMountedForScope — ghost-row skip', () => {
 
     expect(cleared).toBe(1)
     expect(clicksArt()).toBe(1)
+  })
+})
+
+const rateLimitMountedPost = (id: string): HTMLElement => {
+  const art = document.createElement('article')
+  art.setAttribute('data-testid', 'tweet')
+  art.innerHTML = `<a href="/u/status/${id}"><time></time></a><button data-testid="removeBookmark"></button>`
+  document.body.appendChild(art)
+  return art
+}
+
+const trackRateLimitClicks = (art: HTMLElement): (() => number) => {
+  let n = 0
+  art.querySelector('button')!.addEventListener('click', () => {
+    n++
+  })
+  return () => n
+}
+
+describe('clearMountedForScope — rate-limit throttle', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('stops at the first blocked check without clicking any control', async () => {
+    const posts = [
+      rateLimitMountedPost('101'),
+      rateLimitMountedPost('102'),
+      rateLimitMountedPost('103'),
+    ]
+    const clickCounts = posts.map(trackRateLimitClicks)
+    const throttle = makeReleaseThrottle({ now: () => 1_000 })
+    throttle.noteRateLimited()
+    const lines: Array<{ stage: string; detail: string }> = []
+    const trace = (stage: string, detail: string) => {
+      lines.push({ stage, detail })
+    }
+
+    const cleared = await clearMountedForScope({
+      document,
+      scope: 'bookmark',
+      paceMs: 0,
+      trace,
+      throttle,
+    })
+
+    expect(cleared).toBe(0)
+    expect(clickCounts.map((count) => count())).toEqual([0, 0, 0])
+    expect(lines).toEqual([
+      { stage: 'clear-sweep-paused', detail: 'scope=bookmark waitMs=60000 origin=manual' },
+    ])
+  })
+
+  it('does not count a 429 error as a ghost strike and traces reason=rate-limited', async () => {
+    rateLimitMountedPost('501')
+    const throttle = makeReleaseThrottle({ now: () => 1_000 })
+    const ghosts = new Map<string, number>()
+    const lines: Array<{ stage: string; detail: string; tweetId?: string }> = []
+    const trace = (stage: string, detail: string, tweetId?: string) => {
+      lines.push({ stage, detail, ...(tweetId === undefined ? {} : { tweetId }) })
+    }
+
+    await clearMountedForScope({
+      document,
+      scope: 'bookmark',
+      paceMs: 0,
+      trace,
+      ghosts,
+      throttle,
+      witness: {
+        outcome: () => {
+          throttle.noteRateLimited()
+          return 'error'
+        },
+      },
+    })
+
+    expect(ghosts.has('501')).toBe(false)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]!.stage).toBe('clear-attempt-fail')
+    expect(lines[0]!.detail).toContain('reason=rate-limited')
+  })
+
+  it('still counts a non-429 server error as a ghost strike and traces reason=mutation-error', async () => {
+    rateLimitMountedPost('502')
+    const throttle = makeReleaseThrottle({ now: () => 1_000 })
+    const ghosts = new Map<string, number>()
+    const lines: Array<{ stage: string; detail: string; tweetId?: string }> = []
+    const trace = (stage: string, detail: string, tweetId?: string) => {
+      lines.push({ stage, detail, ...(tweetId === undefined ? {} : { tweetId }) })
+    }
+
+    await clearMountedForScope({
+      document,
+      scope: 'bookmark',
+      paceMs: 0,
+      trace,
+      ghosts,
+      throttle,
+      witness: { outcome: () => 'error' },
+    })
+
+    expect(ghosts.get('502')).toBe(1)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]!.stage).toBe('clear-attempt-fail')
+    expect(lines[0]!.detail).toContain('reason=mutation-error')
   })
 })

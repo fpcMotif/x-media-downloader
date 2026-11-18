@@ -248,6 +248,7 @@ interface ReleaseTabProbe {
  *  (`noop-only` vs `exhausted`). */
 type FanOutOutcome =
   | { readonly kind: 'mounted'; readonly results: ReadonlyArray<ClearScopeResult> }
+  | { readonly kind: 'rate-limited' }
   | { readonly kind: 'exhausted'; readonly sawDiscardedMounted: boolean }
 
 /** One `runFanOut` call's inputs — the ordered tab ids to try plus the clear
@@ -532,6 +533,7 @@ export const makeTabBroadcaster = (
   // broken, each paying the full budget for the same answer. A `mounted` exit
   // clears it immediately: the page recovered, so the next leg deserves a real try.
   let backoffUntil = 0
+  let rateLimitedUntil = 0
 
   // The orphan table (module-scoped, not per-dispatch): a tab that keeps proving
   // itself dead is skipped from the immediate fan-out rather than probed on every
@@ -609,6 +611,8 @@ export const makeTabBroadcaster = (
           ...(probes >= 2 ? { probe: true } : {}),
         }),
       )
+      if (res?.retryAfterMs !== undefined && res.retryAfterMs > 0)
+        rateLimitedUntil = Math.max(rateLimitedUntil, clock.now() + res.retryAfterMs)
       if (res?.mounted === true) return { kind: 'mounted', results: res.results }
       return { kind: 'unmounted', page: res?.page }
     } catch {
@@ -886,6 +890,11 @@ export const makeTabBroadcaster = (
           answered.push(`${id}:mounted`)
           return { kind: 'mounted', results: res.results }
         }
+        if (res?.retryAfterMs !== undefined && res.retryAfterMs > 0) {
+          rateLimitedUntil = Math.max(rateLimitedUntil, clock.now() + res.retryAfterMs)
+          answered.push(`${id}:rate-limited`)
+          return { kind: 'rate-limited' }
+        }
         answered.push(`${id}:${answerToken(res)}`)
         if (res?.mounted === true) sawDiscardedMounted = true
         if (res?.mounted === true && attempted) break
@@ -985,6 +994,11 @@ export const makeTabBroadcaster = (
       )
     }
 
+    if (clock.now() < rateLimitedUntil) {
+      traceDispatch('rate-limited', true)
+      return scopes.map((scope) => ({ scope, ok: false }))
+    }
+
     const fanOut = await runFanOut({
       ids: ordered,
       tweetId,
@@ -997,6 +1011,10 @@ export const makeTabBroadcaster = (
     if (fanOut.kind === 'mounted') {
       traceDispatch('mounted', false)
       return fanOut.results
+    }
+    if (fanOut.kind === 'rate-limited') {
+      traceDispatch('rate-limited', true)
+      return scopes.map((scope) => ({ scope, ok: false }))
     }
 
     // The not-mounted path: the permalink release tab. Membership scopes only — a
