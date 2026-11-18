@@ -5,6 +5,7 @@ import {
   emptyWorklist,
   enqueue,
   isCleared,
+  isDownloaded,
   keyFor,
   markState,
   summarize,
@@ -53,6 +54,20 @@ describe('sweep worklist', () => {
     wl = markState(wl, '1', 'like', 'cleared', 4)
     expect(isCleared(wl, '1', 'like')).toBe(true)
     expect(summarize(wl)).toEqual({ queued: 0, downloaded: 0, cleared: 2, failed: 0 })
+  })
+
+  it('isDownloaded matches only an entry in state downloaded for that exact scope', () => {
+    let wl: SweepWorklist = emptyWorklist
+    expect(isDownloaded(wl, '1', 'bookmark')).toBe(false)
+    wl = enqueue(wl, '1', 'bookmark', 1)
+    expect(isDownloaded(wl, '1', 'bookmark')).toBe(false)
+    wl = markState(wl, '1', 'bookmark', 'downloaded', 2)
+    expect(isDownloaded(wl, '1', 'bookmark')).toBe(true)
+    expect(isDownloaded(wl, '1', 'like')).toBe(false)
+    wl = markState(wl, '1', 'bookmark', 'failed', 3)
+    expect(isDownloaded(wl, '1', 'bookmark')).toBe(false)
+    wl = markState(wl, '1', 'bookmark', 'cleared', 4)
+    expect(isDownloaded(wl, '1', 'bookmark')).toBe(false)
   })
 
   it('markState advances an existing entry through the lifecycle', () => {

@@ -73,6 +73,9 @@ export const decodeWorklist = (raw: JsonValue): SweepWorklist => {
 export const isCleared = (wl: SweepWorklist, tweetId: string, scope: ClearScope): boolean =>
   wl[keyFor(scope, tweetId)]?.state === 'cleared'
 
+export const isDownloaded = (wl: SweepWorklist, tweetId: string, scope: ClearScope): boolean =>
+  wl[keyFor(scope, tweetId)]?.state === 'downloaded'
+
 /** Take responsibility for a (tweet, scope) at `queued`, unless that scope is
  *  already `cleared` (terminal — never re-queue a list we removed it from).
  *  Re-queues `failed`/stale entries so a re-run retries them. */

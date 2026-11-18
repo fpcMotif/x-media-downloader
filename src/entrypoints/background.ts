@@ -1609,11 +1609,13 @@ const handleSweepEnqueue = async (
   let queuedPosts: { readonly items: ReadonlyArray<MediaItem> }[] = []
   let skipped = 0
   let skippedIds: string[] = []
+  let settledIds: string[] = []
   try {
     const enqueued = await clearSession.enqueueSweep(scope, posts)
     queuedPosts = enqueued.queuedPosts
     skipped = enqueued.skipped
     skippedIds = enqueued.skippedIds
+    settledIds = enqueued.settledIds
   } catch (error) {
     traceBackground('clear-sweep-failed', {
       detail: `scope=${scope} phase=enqueue posts=${posts.length} items=${requestedItems} reason=${redactTraceDetail(error instanceof Error ? error.message : String(error))}`,
@@ -1638,6 +1640,14 @@ const handleSweepEnqueue = async (
     traceBackground('clear-sweep-skipped', {
       detail: `scope=${scope} skipped=${skipped} ids=${skippedIds.join(',')}`,
     })
+  if (settledIds.length > 0 && (scope === 'bookmark' || scope === 'like')) {
+    traceBackground('clear-sweep-settled', {
+      detail: `scope=${scope} settled=${settledIds.length} ids=${settledIds.join(',')}`,
+    })
+    void clearSession
+      .releaseSettled(scope, settledIds, originTabId)
+      .catch(queueError('release-settled'))
+  }
   if (items.length > 0)
     void Effect.runPromise(handleDownload(items, { scope }, undefined, originTabId)).catch(
       (error) => {

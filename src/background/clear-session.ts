@@ -16,6 +16,7 @@ import {
   decodeWorklist,
   enqueue as enqueueSweepWorklist,
   isCleared as isSweepCleared,
+  isDownloaded as isSweepDownloaded,
   markState as markSweepState,
   type SweepState,
 } from '@/packages/clear/worklist'
@@ -34,6 +35,7 @@ import { makeSerialQueue } from '@/packages/kernel/serial-queue'
 const SETTLE_CONFIRM_MS = 1500
 
 const SWEEP_WORKLIST_MAX = 5000
+const SETTLED_RETRY_MEDIA_ID = 'settled-retry'
 const NOOP_CANCEL = (): void => {}
 type ClearAttempt = {
   readonly tweetId: string
@@ -135,7 +137,13 @@ export interface ClearSession {
     queuedPosts: { readonly items: ReadonlyArray<I> }[]
     skipped: number
     skippedIds: string[]
+    settledIds: string[]
   }>
+  readonly releaseSettled: (
+    scope: MembershipScope,
+    tweetIds: ReadonlyArray<string>,
+    originTabId: number | undefined,
+  ) => Promise<void>
   /** The manual monitor reset bounds the in-memory clear ledger too. */
   readonly reset: () => Promise<void>
 }
@@ -352,6 +360,46 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     await clearQueue.run(async () => resolveClearAttempt(attempt, results))
   }
 
+  const releaseSettled = async (
+    scope: MembershipScope,
+    tweetIds: ReadonlyArray<string>,
+    originTabId: number | undefined,
+  ): Promise<void> => {
+    const seeded = await clearQueue.run(async () => {
+      const ids: string[] = []
+      for (const tweetId of tweetIds) {
+        const existing = clearLedger.get(tweetId)
+        if (existing !== undefined && !isFullyCleared(existing)) continue
+        rememberOrigin(tweetId, {
+          ...(originTabId === undefined ? {} : { tabId: originTabId }),
+          release: { source: 'consented', scope },
+        })
+        const fresh = createEntry({
+          tweetId,
+          scopes: [scope],
+          origin: 'sweep',
+          strategy: 'browser',
+          expected: [SETTLED_RETRY_MEDIA_ID],
+        })
+        const completed = reduceLedger(fresh, {
+          type: 'Complete',
+          mediaId: SETTLED_RETRY_MEDIA_ID,
+        })
+        clearLedger.set(
+          tweetId,
+          reduceLedger(completed, { type: 'Settle', mediaId: SETTLED_RETRY_MEDIA_ID }),
+        )
+        trace('clear-retry-settled', { tweetId, detail: `scope=${scope}` })
+        ids.push(tweetId)
+      }
+      return ids
+    })
+    await seeded.reduce(
+      (chain, tweetId) => chain.then(() => runClearAttempt(tweetId)),
+      Promise.resolve(),
+    )
+  }
+
   /** A tweet with any permanently-failed media can never be Truly Complete, so it
    *  would otherwise sit in the in-memory map forever — drop it (a re-download
    *  reseeds a fresh entry). The feature targets exactly these post-handoff
@@ -517,6 +565,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     queuedPosts: { readonly items: ReadonlyArray<I> }[]
     skipped: number
     skippedIds: string[]
+    settledIds: string[]
   }> => {
     const queuedPosts: { readonly items: ReadonlyArray<I> }[] = []
     // The skipped IDS, not just the count. A skip means the durable worklist already
@@ -526,6 +575,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     // overlay's `clear-sweep-candidates` id list is the cheapest available proof of that
     // failure mode, which is why the bare count could not diagnose it.
     const skippedIds: string[] = []
+    const settledIds: string[] = []
     await new Promise<void>((resolve) => {
       worklistQueue.push(async () => {
         let wl = decodeWorklist(await worklistStorage.get())
@@ -537,6 +587,10 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
             skippedIds.push(p.tweetId)
             continue
           }
+          if (isSweepDownloaded(wl, p.tweetId, scope)) {
+            settledIds.push(p.tweetId)
+            continue
+          }
           wl = enqueueSweepWorklist(wl, p.tweetId, scope, now)
           queuedPosts.push({ items: p.items })
         }
@@ -544,7 +598,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
         resolve()
       })
     })
-    return { queuedPosts, skipped: skippedIds.length, skippedIds }
+    return { queuedPosts, skipped: skippedIds.length, skippedIds, settledIds }
   }
 
   const reset = async (): Promise<void> => {
@@ -570,6 +624,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     recordFailure,
     setSweepState,
     enqueueSweep,
+    releaseSettled,
     reset,
   }
 }

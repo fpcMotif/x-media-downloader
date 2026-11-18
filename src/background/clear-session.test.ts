@@ -3,7 +3,7 @@ import { fakeBrowser } from 'wxt/testing/fake-browser'
 import { Schema } from 'effect'
 import { makeClearSession, type ClearSessionDeps, type SettleClock } from './clear-session'
 import { Settings as SettingsSchema, type Settings, type JsonValue } from '@/packages/schema'
-import { decodeWorklist, isCleared } from '@/packages/clear/worklist'
+import { decodeWorklist, isCleared, isDownloaded } from '@/packages/clear/worklist'
 
 // ── Settle Port seam ──
 //
@@ -704,5 +704,133 @@ describe('Release diagnostics', () => {
     c.setSweepState('A', ['bookmark'], 'cleared')
 
     expect((await c.enqueueSweep('like', [{ tweetId: 'A', items: ['m0'] }])).skippedIds).toEqual([])
+  })
+})
+
+describe('settled sweep retry', () => {
+  beforeEach(() => {
+    fakeBrowser.reset()
+  })
+
+  it('sets a settled post aside instead of re-queueing it', async () => {
+    let stored: JsonValue = {
+      'bookmark:T': { tweetId: 'T', scope: 'bookmark', state: 'downloaded', at: 1 },
+    }
+    const { deps } = makeDeps({
+      worklistStorage: {
+        get: async () => stored,
+        set: async (value) => {
+          stored = value
+        },
+      },
+    })
+    const c = makeClearSession(deps)
+    const res = await c.enqueueSweep('bookmark', [{ tweetId: 'T', items: ['m0'] }])
+    expect(res).toEqual({
+      queuedPosts: [],
+      skipped: 0,
+      skippedIds: [],
+      settledIds: ['T'],
+    })
+    expect(isDownloaded(decodeWorklist(stored), 'T', 'bookmark')).toBe(true)
+  })
+
+  it('keeps queued and skipped handling unchanged for non-settled posts', async () => {
+    let stored: JsonValue = {
+      'bookmark:C': { tweetId: 'C', scope: 'bookmark', state: 'cleared', at: 1 },
+    }
+    const { deps } = makeDeps({
+      worklistStorage: {
+        get: async () => stored,
+        set: async (value) => {
+          stored = value
+        },
+      },
+    })
+    const c = makeClearSession(deps)
+    const res = await c.enqueueSweep('bookmark', [
+      { tweetId: 'N', items: ['m1'] },
+      { tweetId: 'C', items: ['m2'] },
+    ])
+    expect(res).toEqual({
+      queuedPosts: [{ items: ['m1'] }],
+      skipped: 1,
+      skippedIds: ['C'],
+      settledIds: [],
+    })
+    expect(decodeWorklist(stored)['bookmark:N']?.state).toBe('queued')
+  })
+
+  it('releaseSettled dispatches the click with the swept scope pinned and marks cleared', async () => {
+    let stored: JsonValue = {
+      'bookmark:T': { tweetId: 'T', scope: 'bookmark', state: 'downloaded', at: 1 },
+    }
+    const { deps, dispatchClear } = makeDeps({
+      worklistStorage: {
+        get: async () => stored,
+        set: async (value) => {
+          stored = value
+        },
+      },
+    })
+    const c = makeClearSession(deps)
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).toHaveBeenCalledTimes(1)
+    expect(dispatchClear).toHaveBeenCalledWith('T', ['bookmark'], false, 7, {
+      source: 'consented',
+      scope: 'bookmark',
+    })
+    await vi.waitFor(() => expect(isCleared(decodeWorklist(stored), 'T', 'bookmark')).toBe(true))
+  })
+
+  it('releaseSettled leaves a failed click in state downloaded for a later retry', async () => {
+    let stored: JsonValue = {
+      'bookmark:T': { tweetId: 'T', scope: 'bookmark', state: 'downloaded', at: 1 },
+    }
+    const dispatchClear = vi.fn<ClearSessionDeps['dispatchClear']>(async () => [
+      { scope: 'bookmark', ok: false },
+    ])
+    const { deps } = makeDeps({
+      dispatchClear,
+      worklistStorage: {
+        get: async () => stored,
+        set: async (value) => {
+          stored = value
+        },
+      },
+    })
+    const c = makeClearSession(deps)
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).toHaveBeenCalledTimes(1)
+    await Promise.resolve()
+    expect(isDownloaded(decodeWorklist(stored), 'T', 'bookmark')).toBe(true)
+  })
+
+  it('releaseSettled does not dispatch when Clear after download is off', async () => {
+    const trace = traceSpy()
+    const { deps, dispatchClear } = makeDeps({
+      trace,
+      getSettings: async () => settings({ clearOnSave: false, autoUnbookmarkOnSave: true }),
+    })
+    const c = makeClearSession(deps)
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).not.toHaveBeenCalled()
+    expect(linesFor(trace, 'clear-not-attempted')).toEqual(['reason=clear-off'])
+  })
+
+  it('releaseSettled leaves a post with a live download alone', async () => {
+    const { deps, dispatchClear } = makeDeps()
+    const c = makeClearSession(deps)
+    const liveSeed = {
+      decision: 'seed' as const,
+      byTweet: new Map([['T', ['m0']]]),
+      scopes: ['bookmark' as const],
+      origin: 'sweep' as const,
+      unclearableCount: 0,
+      partialCount: 0,
+    }
+    await c.seedLedger(liveSeed)
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).not.toHaveBeenCalled()
   })
 })
