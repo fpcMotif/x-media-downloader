@@ -31,9 +31,9 @@ export interface TabBroadcaster {
     outcome: 'complete' | 'failed',
     at: number,
   ) => void
-  /** Ask open X tabs to clear the tweet; stops at the first mounted tab. When no tab
-   *  has the post mounted, ONE reused background tab navigates to the tweet's own
-   *  permalink and clears it there. `preferTabId` (the tab the download came from)
+  /** Ask open X tabs to clear the tweet; stops once a mounted tab attempts the clear.
+   *  When no list tab completes it, ONE reused background tab navigates to the tweet's
+   *  own permalink and clears it there. `preferTabId` (the tab the download came from)
    *  is tried FIRST, so a background list tab can't win the clear and un-bookmark a
    *  post the user only meant to drop from its feed. `allLists` rides into EVERY leg
    *  — the fan-out AND the permalink release — so the content script clears every list
@@ -349,7 +349,7 @@ const nextEscalation = (
 }
 
 /** What a tab's `ClearTweetResponse` actually told us, for the folded dispatch line.
- * `mounted-failed` is retryable through another tab or the release tab; `no-receiver`
+ * `mounted-failed` ends the list-tab fan-out and escalates to the release tab; `no-receiver`
  * is an orphaned content script, `no-answer` is a live script that answered nothing,
  * `mounted-noop` deliberately clicked nothing, and `mounted-empty` attempted nothing. */
 const answerToken = (res: ClearTweetResponse | undefined): string => {
@@ -846,10 +846,24 @@ export const makeTabBroadcaster = (
     return { probeIds, skippedCount }
   }
 
-  /** Try immediate Clear in order, stopping at the first tab that really flipped it.
-   *  `tried`/`answered`/`clearErrors` are mutated IN PLACE (not returned) so the
-   *  caller's `traceDispatch` — built before this runs — reads the same arrays/map
-   *  regardless of which exit path fires. */
+  const recordFanOutMiss = (
+    id: number,
+    cause: Error | string,
+    answered: string[],
+    clearErrors: Map<string, number>,
+  ): void => {
+    answered.push(`${id}:no-receiver`)
+    recordOrphanMiss(id)
+    const reason = compactReason(cause)
+    clearErrors.set(reason, (clearErrors.get(reason) ?? 0) + 1)
+  }
+
+  // Tries immediate Clear in order, stopping once a mounted tab attempts the clear:
+  // returning `'mounted'` when every scope succeeded, or breaking out of the fan-out
+  // when any attempted scope failed so later list tabs do not click again.
+  // `tried`/`answered`/`clearErrors` are mutated IN PLACE (not returned) so the
+  // caller's `traceDispatch` — built before this runs — reads the same arrays/map
+  // regardless of which exit path fires.
   const runFanOut = async (input: FanOutDispatch): Promise<FanOutOutcome> => {
     const { ids, tweetId, scopes, allLists, tried, answered, clearErrors } = input
     let sawDiscardedMounted = false
@@ -874,11 +888,9 @@ export const makeTabBroadcaster = (
         }
         answered.push(`${id}:${answerToken(res)}`)
         if (res?.mounted === true) sawDiscardedMounted = true
+        if (res?.mounted === true && attempted) break
       } catch (error) {
-        answered.push(`${id}:no-receiver`)
-        recordOrphanMiss(id)
-        const reason = compactReason(error instanceof Error ? error : String(error))
-        clearErrors.set(reason, (clearErrors.get(reason) ?? 0) + 1)
+        recordFanOutMiss(id, error instanceof Error ? error : String(error), answered, clearErrors)
       }
     }
     // oxlint-enable no-await-in-loop
@@ -923,8 +935,9 @@ export const makeTabBroadcaster = (
     return { asPageScope, clickable }
   }
 
-  /** Try immediate Clear in every tab. When no tab has the post mounted, the
-   *  release tab navigates to the tweet's permalink and clears it there.
+  /** Tries immediate Clear across open tabs until a mounted tab attempts it; when
+   *  fan-out does not complete the clear, the release tab navigates to the tweet's
+   *  permalink and clears it there.
    *
    *  Observability contract: this function NEVER throws, so the caller's
    *  `clear-dispatch-failed` trace (clear-session.ts) is unreachable from here and the

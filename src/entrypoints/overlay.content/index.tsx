@@ -98,6 +98,7 @@ import { makeScrollDrain } from '@/packages/clear/scroll-drain'
 import { makeSavedStatusLifecycle } from './saved-status-lifecycle'
 import { partitionAllowedMediaItems } from '@/packages/sync/url-guard'
 import { makeTweetClearer } from '@/packages/clear/tweet-clear'
+import { makeClickGuard } from '@/packages/clear/click-guard'
 import { makeMutationWitness, resolveMutationStartedAt } from '@/packages/clear/mutation-witness'
 import { makeReleaseRecheck, type FreshTimelineMembership } from '@/packages/clear/recheck'
 import { timelineTweetIds } from '../../core/adapters/x/walk'
@@ -180,6 +181,11 @@ const { clearScope } = makeTweetClearer({
   witness: mutationWitness,
 })
 
+const clickGuard = makeClickGuard({ now: Date.now })
+
+const guardedClearScope: typeof clearScope = (tweetId, scope, origin) =>
+  clickGuard.run(tweetId, scope, () => clearScope(tweetId, scope, origin))
+
 // ── Auto-scroll drain for not-mounted clears ──
 // The bounded scroll-pass loop lives in `core/clear/scroll-drain`; this entrypoint
 // wires the live window/document/timer ports + the real clear and trace sinks into it
@@ -231,7 +237,7 @@ const mountedTweetIds = (): string[] => {
 const drainDeps = (): Pick<HandlerDeps, 'document' | 'location' | 'clearScope' | 'clearLog'> => ({
   document,
   location,
-  clearScope,
+  clearScope: guardedClearScope,
   clearLog,
 })
 
@@ -2270,10 +2276,11 @@ export default defineContentScript({
       notifyContextLost,
       clearLog,
       reportClear,
-      clearScope,
+      clearScope: guardedClearScope,
       runDrain,
       savedStatusActive: () => savedStatusVisible(location.pathname, savedStatusOn),
       witness: mutationWitness,
+      clickGuard,
     }
 
     const handleRuntimeMessage = (

@@ -33,6 +33,7 @@ import {
   type MembershipScope,
 } from '@/packages/clear/clearer'
 import type { makeDetectionStore } from '../../core/adapters/detection-store'
+import type { ClickGuard } from '@/packages/clear/click-guard'
 import type { MutationWitness } from '@/packages/clear/mutation-witness'
 import type {
   ClearDetectedMediaResponse,
@@ -153,6 +154,9 @@ export interface HandlerDeps {
    *  (`clearMountedForScope`) gets the same server-verdict-first precedence.
    *  Optional: undefined ⇒ DOM-only, unchanged from before the witness existed. */
   readonly witness?: Pick<MutationWitness, 'outcome'> | undefined
+  /** Per-page single-flight and recent-release guard shared with `clearScope`, so
+   *  manual sweeps and automatic clears never double-click the same `(scope, tweetId)`. */
+  readonly clickGuard?: ClickGuard | undefined
 }
 
 /** "Clear this page now" reply — see `handleClearVisible`. */
@@ -508,7 +512,7 @@ interface ClearVerdictRecord {
   readonly trace: (stage: string, detail: string, tweetId?: string) => void
 }
 
-function recordClearVerdict(input: ClearVerdictRecord): void {
+function recordClearVerdict(input: ClearVerdictRecord): boolean {
   const {
     document,
     article,
@@ -528,7 +532,7 @@ function recordClearVerdict(input: ClearVerdictRecord): void {
       `scope=${scope} reason=mutation-error attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
       tweetId,
     )
-    return
+    return false
   }
   if (verdict === 'ok') {
     ghosts?.delete(tweetId)
@@ -538,7 +542,7 @@ function recordClearVerdict(input: ClearVerdictRecord): void {
       `scope=${scope} arm=mutation attempt=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} reresolved=${reresolved} origin=manual`,
       tweetId,
     )
-    return
+    return true
   }
   if (flipConfirmed(article, scope)) {
     ghosts?.delete(tweetId)
@@ -550,7 +554,7 @@ function recordClearVerdict(input: ClearVerdictRecord): void {
     // flip smoking gun regardless of which origin produced it.
     if (arm === 'detached' && reresolved === 'member')
       trace('clear-flip-fabricated', detail, tweetId)
-    return
+    return true
   }
   ghosts?.set(tweetId, (ghosts.get(tweetId) ?? 0) + 1)
   trace(
@@ -558,6 +562,7 @@ function recordClearVerdict(input: ClearVerdictRecord): void {
     `scope=${scope} reason=no-flip attempts=1 elapsedMs=${paceMs} target=${targetKind} disabled=${disabled} testids=${actionTestids(article).join(',')} origin=manual`,
     tweetId,
   )
+  return false
 }
 
 /** Click the clear control on every mounted post that is a clearable member of
@@ -569,7 +574,9 @@ function recordClearVerdict(input: ClearVerdictRecord): void {
  *  `tweet-clear.ts`'s poll loop: 'ok' is a confirmed flip (`arm=mutation`)
  *  regardless of the DOM (and deletes the ghost memo entry, same as a DOM
  *  flip), 'error' is `reason=mutation-error`, and 'none' falls through to the
- *  existing DOM check unchanged. */
+ *  existing DOM check unchanged. `clickGuard`, when supplied, skips any post
+ *  already in flight or within the recent-release memo window without
+ *  incrementing `cleared`. */
 interface MountedScopeClear {
   readonly document: Document
   readonly scope: MembershipScope
@@ -577,11 +584,12 @@ interface MountedScopeClear {
   readonly trace: (stage: string, detail: string, tweetId?: string) => void
   readonly ghosts?: Map<string, number> | undefined
   readonly witness?: Pick<MutationWitness, 'outcome'> | undefined
+  readonly clickGuard?: ClickGuard | undefined
   readonly now?: (() => number) | undefined
 }
 
 export async function clearMountedForScope(input: MountedScopeClear): Promise<number> {
-  const { document, scope, paceMs, trace, ghosts, witness, now = Date.now } = input
+  const { document, scope, paceMs, trace, ghosts, witness, clickGuard, now = Date.now } = input
   let cleared = 0
   // oxlint-disable no-await-in-loop -- paced one-at-a-time bulk clear
   for (const article of document.querySelectorAll(TWEET_ARTICLE_SEL)) {
@@ -600,26 +608,30 @@ export async function clearMountedForScope(input: MountedScopeClear): Promise<nu
       )
       continue
     }
-    const clickedAt = now()
-    target.click()
-    cleared++
-    await new Promise((r) => setTimeout(r, paceMs))
-    // No resolvable id (should not happen — TWEET_ARTICLE_SEL articles always carry a
-    // permalink) ⇒ nothing to tag the trace line with; still counts as clicked.
-    if (tweetId === null) continue
-    const verdict = witness?.outcome(tweetId, scope, clickedAt) ?? 'none'
-    recordClearVerdict({
-      document,
-      article,
-      tweetId,
-      scope,
-      verdict,
-      paceMs,
-      targetKind,
-      disabled,
-      ghosts,
-      trace,
-    })
+    const clickAndJudge = async (): Promise<boolean> => {
+      const clickedAt = now()
+      target.click()
+      cleared++
+      await new Promise((r) => setTimeout(r, paceMs))
+      // No resolvable id (should not happen — TWEET_ARTICLE_SEL articles always carry a
+      // permalink) ⇒ nothing to tag the trace line with; still counts as clicked.
+      if (tweetId === null) return false
+      const verdict = witness?.outcome(tweetId, scope, clickedAt) ?? 'none'
+      return recordClearVerdict({
+        document,
+        article,
+        tweetId,
+        scope,
+        verdict,
+        paceMs,
+        targetKind,
+        disabled,
+        ghosts,
+        trace,
+      })
+    }
+    if (clickGuard === undefined || tweetId === null) await clickAndJudge()
+    else await clickGuard.run(tweetId, scope, clickAndJudge)
   }
   // oxlint-enable no-await-in-loop
   return cleared
@@ -668,6 +680,7 @@ export const handleClearVisible: MessageHandler = (_message, deps, sendResponse)
       trace: deps.reportClear,
       ghosts: sweepGhosts,
       witness: deps.witness,
+      clickGuard: deps.clickGuard,
     })
     if (import.meta.env.DEV) deps.clearLog('clear-visible done · cleared', cleared, scope.value)
     deps.reportClear('clear-visible-end', `cleared ${cleared} ${scope.value}`)
@@ -726,6 +739,7 @@ export const handleClearWholeList: MessageHandler = (_message, deps, sendRespons
         trace: deps.reportClear,
         ghosts: sweepGhosts,
         witness: deps.witness,
+        clickGuard: deps.clickGuard,
       })
     },
     report: (stage, detail) => deps.reportClear(stage, detail),

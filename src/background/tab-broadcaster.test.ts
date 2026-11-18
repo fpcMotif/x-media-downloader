@@ -287,6 +287,60 @@ describe('sendClearToTabs — clear targeting', () => {
     ])
   })
 
+  it('ends the fan-out after a mounted tab clicked and failed, escalating straight to the release tab', async () => {
+    const tabs = fakeTabs([1, 2], {
+      1: {
+        mounted: true,
+        drainEligible: true,
+        results: [{ scope: 'bookmark', ok: false }],
+      },
+      2: clearResp('bookmark'),
+      [RELEASE_TAB_ID]: clearResp('bookmark'),
+    })
+
+    const res = await makeTabBroadcaster(tabs, { clock: instantClock }).sendClearToTabs(
+      't1',
+      ['bookmark'],
+      undefined,
+      undefined,
+      pinned(),
+    )
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(tabs.sent.map((sent) => sent.tabId)).toEqual([1, RELEASE_TAB_ID])
+    expect(tabs.navigated).toEqual(['https://x.com/i/web/status/t1'])
+  })
+
+  it('ends the fan-out after a partly failed mounted answer, escalating straight to the release tab', async () => {
+    const tabs = fakeTabs([1, 2], {
+      1: {
+        mounted: true,
+        drainEligible: true,
+        results: [
+          { scope: 'bookmark', ok: true },
+          { scope: 'like', ok: false },
+        ],
+      },
+      2: clearResp('bookmark', 'like'),
+      [RELEASE_TAB_ID]: clearResp('bookmark', 'like'),
+    })
+
+    const res = await makeTabBroadcaster(tabs, { clock: instantClock }).sendClearToTabs(
+      't1',
+      ['bookmark', 'like'],
+      undefined,
+      true,
+      pinned(),
+    )
+
+    expect(res).toEqual([
+      { scope: 'bookmark', ok: true },
+      { scope: 'like', ok: true },
+    ])
+    expect(tabs.sent.map((sent) => sent.tabId)).toEqual([1, RELEASE_TAB_ID])
+    expect(tabs.navigated).toEqual(['https://x.com/i/web/status/t1'])
+  })
+
   it('never navigates the release tab for a notInterested-only claim (feed-only scope)', async () => {
     const tabs = fakeTabs([1], { 1: unmounted(true) })
     const res = await makeTabBroadcaster(tabs, { clock: instantClock }).sendClearToTabs('t1', [

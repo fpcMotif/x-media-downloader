@@ -23,6 +23,7 @@ import type { PlatformAdapter } from '../../core/adapters/types'
 import type { makeDetectionStore } from '../../core/adapters/detection-store'
 import type { BadgeState } from '@/packages/overlay/badge'
 import { findArticle } from '@/packages/clear/clearer'
+import { makeClickGuard } from '@/packages/clear/click-guard'
 
 /** What a test actually wants to fix about `HandlerDeps` for one scenario. Every
  *  nested port (`adapter`, `location`, `store`, `getBadge`'s return) stays partial
@@ -1648,6 +1649,41 @@ describe('clearMountedForScope — ghost-row skip', () => {
     const art = mountedPost('333')
     const clicksArt = trackClicks(art)
     await clearMountedForScope({ document, scope: 'bookmark', paceMs: 0, trace: () => {} })
+    expect(clicksArt()).toBe(1)
+  })
+
+  it('does not click a post that another caller is already clicking through clickGuard', async () => {
+    const art = mountedPost('444')
+    const clicksArt = trackClicks(art)
+    const guard = makeClickGuard({ now: () => 1000 })
+    const gate = Promise.withResolvers<boolean>()
+    const inFlight = guard.run('444', 'bookmark', () => gate.promise)
+
+    const sweep = clearMountedForScope({
+      document,
+      scope: 'bookmark',
+      paceMs: 0,
+      trace: () => {},
+      clickGuard: guard,
+    })
+    gate.resolve(true)
+
+    expect(await Promise.all([inFlight, sweep])).toEqual([true, 0])
+    expect(clicksArt()).toBe(0)
+  })
+
+  it('clicks once and returns 1 when clickGuard is omitted', async () => {
+    const art = mountedPost('444')
+    const clicksArt = trackClicks(art)
+
+    const cleared = await clearMountedForScope({
+      document,
+      scope: 'bookmark',
+      paceMs: 0,
+      trace: () => {},
+    })
+
+    expect(cleared).toBe(1)
     expect(clicksArt()).toBe(1)
   })
 })
