@@ -1907,7 +1907,10 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   [
     'ExportCaptureRequest',
     handle<'ExportCaptureRequest'>(async (msg) => {
-      const records = await captureDb.allRecords()
+      const records =
+        msg.kind === 'jsonl' || msg.conversationId === undefined
+          ? await captureDb.allRecords()
+          : await captureDb.threadWithQuotes(msg.conversationId)
       const built = composeCaptureExport(records, msg.kind, msg.conversationId, Date.now())
       if (built === null) return { ok: false, filename: '', text: '' }
       console.info(

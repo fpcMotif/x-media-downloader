@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { makeCaptureDb, type CaptureStore } from './capture-db'
+import { composeCaptureExport } from '@/packages/capture/build-export'
 import type { TweetRecord } from '@/packages/capture/record'
 
 const mk = (tweetId: string, opts: Partial<TweetRecord> = {}): TweetRecord => ({
@@ -21,11 +22,18 @@ const mk = (tweetId: string, opts: Partial<TweetRecord> = {}): TweetRecord => ({
 /** In-memory stand-in for the IndexedDB store: `upsert` applies the same
  *  read-merge-write the real adapter does, so merge-on-write is exercised
  *  through `makeCaptureDb` without IndexedDB. */
-function fakeStore(): CaptureStore & { rows: Map<string, TweetRecord>; upsertCalls: number } {
+function fakeStore(): CaptureStore & {
+  rows: Map<string, TweetRecord>
+  upsertCalls: number
+  allRecordsCalls: number
+  byIdsCalls: number
+} {
   const rows = new Map<string, TweetRecord>()
   const box = {
     rows,
     upsertCalls: 0,
+    allRecordsCalls: 0,
+    byIdsCalls: 0,
     async upsert(
       records: ReadonlyArray<TweetRecord>,
       merge: (existing: TweetRecord | undefined, incoming: TweetRecord) => TweetRecord,
@@ -38,6 +46,7 @@ function fakeStore(): CaptureStore & { rows: Map<string, TweetRecord>; upsertCal
       }
     },
     async allRecords() {
+      box.allRecordsCalls++
       return [...rows.values()]
     },
     async fold<A>(init: A, step: (acc: A, record: TweetRecord) => A) {
@@ -47,6 +56,13 @@ function fakeStore(): CaptureStore & { rows: Map<string, TweetRecord>; upsertCal
     },
     async conversation(id: string) {
       return [...rows.values()].filter((r) => r.conversationId === id)
+    },
+    async byIds(ids: ReadonlyArray<string>) {
+      box.byIdsCalls++
+      return ids.flatMap((id) => {
+        const row = rows.get(id)
+        return row === undefined ? [] : [row]
+      })
     },
     async count() {
       return rows.size
@@ -120,5 +136,93 @@ describe('makeCaptureDb', () => {
     await db.clear()
 
     expect(await db.count()).toBe(0)
+  })
+})
+
+const threadFixture = (): TweetRecord[] => [
+  mk('10', { conversationId: '10', text: 'root' }),
+  mk('11', {
+    conversationId: '10',
+    inReplyToTweetId: '10',
+    quotedTweetId: '90',
+    text: 'reply quoting outside',
+  }),
+  mk('12', {
+    conversationId: '10',
+    inReplyToTweetId: '10',
+    quotedTweetId: '10',
+    text: 'reply quoting the root',
+  }),
+  mk('13', {
+    conversationId: '10',
+    inReplyToTweetId: '10',
+    quotedTweetId: '404',
+    text: 'quote never captured',
+  }),
+  mk('90', { conversationId: '90', author: { handle: 'bob' }, text: 'quoted elsewhere' }),
+  mk('50', { conversationId: '50', text: 'unrelated thread' }),
+]
+
+describe('threadWithQuotes', () => {
+  it('returns the thread plus outside quotes only', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+    await db.putRecords(threadFixture())
+
+    expect((await db.threadWithQuotes('10')).map((r) => r.tweetId).toSorted()).toEqual([
+      '10',
+      '11',
+      '12',
+      '13',
+      '90',
+    ])
+  })
+
+  it('produces the same export text as the whole-archive path', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+    await db.putRecords(threadFixture())
+
+    const treeExport = composeCaptureExport(await db.threadWithQuotes('10'), 'tree', '10', 0)
+    expect(treeExport).toEqual(composeCaptureExport(await db.allRecords(), 'tree', '10', 0))
+    expect(treeExport?.text).toContain('quoted elsewhere')
+    expect(composeCaptureExport(await db.threadWithQuotes('10'), 'markdown', '10', 0)).toEqual(
+      composeCaptureExport(await db.allRecords(), 'markdown', '10', 0),
+    )
+  })
+
+  it('does not read the whole store', async () => {
+    const store = fakeStore()
+    const db = makeCaptureDb({ store })
+    await db.putRecords(threadFixture())
+    const allRecordsBefore = store.allRecordsCalls
+
+    await db.threadWithQuotes('10')
+
+    expect(store.allRecordsCalls).toBe(allRecordsBefore)
+    expect(store.byIdsCalls).toBe(1)
+  })
+
+  it('a thread with no outside quotes skips the keyed read', async () => {
+    const store = fakeStore()
+    const db = makeCaptureDb({ store })
+    await db.putRecords([mk('1'), mk('2', { conversationId: '1' })])
+
+    const result = await db.threadWithQuotes('1')
+
+    expect(result).toHaveLength(2)
+    expect(store.byIdsCalls).toBe(0)
+  })
+
+  it('an unknown conversation returns an empty list', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+
+    expect(await db.threadWithQuotes('nope')).toEqual([])
+  })
+
+  it('byIds([]) never reaches the store', async () => {
+    const store = fakeStore()
+    const db = makeCaptureDb({ store })
+
+    expect(await db.byIds([])).toEqual([])
+    expect(store.byIdsCalls).toBe(0)
   })
 })

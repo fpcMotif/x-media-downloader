@@ -27,6 +27,7 @@ export interface CaptureStore {
    *  aggregate pass that never materializes the whole store in memory. */
   fold<A>(init: A, step: (acc: A, record: TweetRecord) => A): Promise<A>
   conversation(id: string): Promise<TweetRecord[]>
+  byIds(ids: ReadonlyArray<string>): Promise<TweetRecord[]>
   count(): Promise<number>
   clear(): Promise<void>
 }
@@ -39,6 +40,8 @@ export interface CaptureDb {
   /** Stream every record through `step` without loading the store whole. */
   fold<A>(init: A, step: (acc: A, record: TweetRecord) => A): Promise<A>
   conversation(id: string): Promise<TweetRecord[]>
+  byIds(ids: ReadonlyArray<string>): Promise<TweetRecord[]>
+  threadWithQuotes(conversationId: string): Promise<TweetRecord[]>
   count(): Promise<number>
   clear(): Promise<void>
 }
@@ -55,6 +58,20 @@ export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
     allRecords: () => store.allRecords(),
     fold: (init, step) => store.fold(init, step),
     conversation: (id) => store.conversation(id),
+    byIds: async (ids) => (ids.length === 0 ? [] : store.byIds(ids)),
+    threadWithQuotes: async (conversationId) => {
+      const thread = await store.conversation(conversationId)
+      const inThread = new Set(thread.map((r) => r.tweetId))
+      const quotedIds = new Set<string>()
+      for (const r of thread) {
+        if (r.quotedTweetId !== undefined && !inThread.has(r.quotedTweetId)) {
+          quotedIds.add(r.quotedTweetId)
+        }
+      }
+      if (quotedIds.size === 0) return thread
+      const quoted = await store.byIds([...quotedIds])
+      return [...thread, ...quoted]
+    },
     count: () => store.count(),
     clear: () => writes.run(() => store.clear()),
   }
@@ -157,6 +174,23 @@ function makeIndexedDbStore(): CaptureStore {
       const db = await openDb()
       const index = db.transaction(STORE, 'readonly').objectStore(STORE).index('by_conversation')
       return promisify(index.getAll(id))
+    },
+    async byIds(ids) {
+      const db = await openDb()
+      return new Promise<TweetRecord[]>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly')
+        const store = tx.objectStore(STORE)
+        const found: TweetRecord[] = []
+        for (const id of ids) {
+          const get = getTweetRecord(store, id)
+          get.addEventListener('success', () => {
+            if (get.result !== undefined) found.push(get.result)
+          })
+        }
+        tx.addEventListener('complete', () => resolve(found))
+        tx.addEventListener('error', () => reject(tx.error))
+        tx.addEventListener('abort', () => reject(tx.error))
+      })
     },
     async count() {
       const db = await openDb()
