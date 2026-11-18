@@ -32,7 +32,6 @@ import {
   refreshAccessToken,
 } from '@/packages/cloud/oauth'
 import {
-  applyUploadOutcome,
   capLedger,
   claim,
   cloudHistoryVerdict,
@@ -40,6 +39,7 @@ import {
   enqueue,
   idempotencyKeyFor,
   isTerminal,
+  makeOutcomeApplier,
   MAX_ATTEMPTS,
   MAX_TERMINAL_JOBS,
   readyJobs,
@@ -85,10 +85,10 @@ export type LedgerStore = DurableStore
  * @see ADR-0017
  */
 export interface CloudRuntimePort {
-  uploadDrive(args: DriveArgs, input: UploadInput): Promise<UploadOutcome>
-  uploadDropbox(accessToken: string, input: UploadInput): Promise<UploadOutcome>
-  resolveDriveRoot(accessToken: string): Promise<string>
-  exchangeCode(input: {
+  readonly uploadDrive: (args: DriveArgs, input: UploadInput) => Promise<UploadOutcome>
+  readonly uploadDropbox: (accessToken: string, input: UploadInput) => Promise<UploadOutcome>
+  readonly resolveDriveRoot: (accessToken: string) => Promise<string>
+  readonly exchangeCode: (input: {
     readonly cfg: OAuthConfig
     readonly clientId: string
     readonly clientSecret?: string
@@ -96,24 +96,24 @@ export interface CloudRuntimePort {
     readonly codeVerifier: string
     readonly redirectUri: string
     readonly now: number
-  }): Promise<OAuthTokens>
-  refreshAccessToken(input: {
+  }) => Promise<OAuthTokens>
+  readonly refreshAccessToken: (input: {
     readonly cfg: OAuthConfig
     readonly clientId: string
     readonly clientSecret?: string
     readonly refreshToken: string
     readonly now: number
-  }): Promise<{ readonly accessToken: string; readonly expiresAt: number }>
+  }) => Promise<{ readonly accessToken: string; readonly expiresAt: number }>
   /** Run the control-plane mirror mutation. The gate + the best-effort swallow stay
    *  on the SHELL side (mirrorUploadJob), so a test injects a throwing mirror to
    *  prove the drain survives. The resolved value is never read — only whether
    *  the call succeeded or threw — so the contract is `void`, not the mutation's
    *  actual (unread) response body. */
-  mirror(input: {
+  readonly mirror: (input: {
     readonly deploymentUrl: string
     readonly jobs: ReadonlyArray<ReturnType<typeof toWireUploadJob>>
     readonly secret: string
-  }): Promise<void>
+  }) => Promise<void>
 }
 
 /** Durable wake-up alarm seam (one backoff alarm; the entrypoint owns the listener). */
@@ -374,13 +374,22 @@ const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
   }
 }
 
+const isProviderConnected = (s: Settings, p: CloudProviderId): boolean => {
+  const t = providerTokens(s, p)
+  return t.clientId !== '' && t.refreshToken !== ''
+}
+const isProviderUploadEnabled = (s: Settings, p: CloudProviderId): boolean =>
+  s[PROVIDERS[p].fields.uploadEnabled] === true
+const connectedUploadEnabledProviders = (s: Settings): CloudProviderId[] =>
+  ALL_PROVIDERS.filter((p) => isProviderConnected(s, p) && isProviderUploadEnabled(s, p))
+
 export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const { getSettings, fetchImpl } = deps
   const controlFetch = withTotalTimeout(fetchImpl, CONTROL_FETCH_TIMEOUT_MS)
   // Resolve each side-effect seam to its live binding unless a test injected one.
   // Internal names avoid colliding with the `ledger`/`now` locals in the drain loop.
   const nowFn = deps.now ?? (() => Date.now())
-  const randomFn = deps.random ?? Math.random
+  const applyUploadOutcome = makeOutcomeApplier(deps.random ?? Math.random)
   const authPaused = new Set<CloudProviderId>()
   const writeSettingsImpl = deps.setSettings ?? setSettings
   const store = deps.ledger ?? defaultJsonStore('local:cloudUploadJobs')
@@ -421,15 +430,6 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     capLedger(ledger, MAX_TERMINAL_JOBS, uploadedKeys ?? new Set())
   // Last non-skip failure, for the popup's status line (diagnostic; resets on recycle).
   let lastUploadError: string | null = null
-
-  const isProviderConnected = (s: Settings, p: CloudProviderId): boolean => {
-    const t = providerTokens(s, p)
-    return t.clientId !== '' && t.refreshToken !== ''
-  }
-  const isProviderUploadEnabled = (s: Settings, p: CloudProviderId): boolean =>
-    s[PROVIDERS[p].fields.uploadEnabled] as boolean
-  const connectedUploadEnabledProviders = (s: Settings): CloudProviderId[] =>
-    ALL_PROVIDERS.filter((p) => isProviderConnected(s, p) && isProviderUploadEnabled(s, p))
 
   const notifyCloudHistory = deps.onHistoryNotice ?? (() => {})
   const remote =
@@ -506,26 +506,37 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     items: ReadonlyArray<UploadCandidate>,
   ): Promise<ReadonlyArray<string>> => {
     if (items.length === 0) return []
-    if (settings.convexDriveEnabled && !settings.saveToDisk) {
+    let serverAccepted: ReadonlyArray<string> = []
+    let serverAttempted = false
+    if (
+      settings.convexDriveEnabled &&
+      settings.convexDriveConnected &&
+      settings.gdriveUploadEnabled &&
+      settings.convexUrl !== '' &&
+      settings.convexSyncSecret !== ''
+    ) {
       const existing = await readLedger()
       if (items.some(({ item }) => existing.some((job) => job.mediaId === item.id)))
         throw new Error('This media already belongs to the browser upload queue')
-      return await remote.record(settings, items)
+      serverAttempted = true
+      serverAccepted = await remote.record(settings, items)
     }
-    if (!settings.cloudUploadEnabled) return []
+    if (!settings.cloudUploadEnabled) return serverAccepted
     const owned = await Promise.all(items.map(({ item }) => remote.owns(item.id)))
-    const browserItems = items.filter((_, index) => !owned[index])
     const providers = connectedUploadEnabledProviders(settings)
-    if (providers.length === 0) return []
+    if (providers.length === 0) return serverAccepted
     const uploaded = await loadUploaded()
     const now = nowFn()
-    const accepted = new Set<string>()
+    const accepted = new Set<string>(serverAccepted)
     await updateLedger((current) => {
       let next = current
-      for (const { item, filename } of browserItems) {
+      for (let i = 0; i < items.length; i++) {
+        const { item, filename } = items[i]!
+        const serverOwned = serverAttempted || owned[i]
         const target = cloudTargetFor(item, filename)
         for (const p of providers) {
           if (settings.saveToDisk && uploaded.has(idempotencyKeyFor(item.id, p))) continue
+          if (p === 'gdrive' && serverOwned) continue
           const updated = enqueue(
             next,
             {
@@ -584,6 +595,19 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     }
   }
 
+  /** Mirror a job the drain moved to a new status without an upload attempt,
+   *  and feed a terminal one to the Cloud-only history verdict. */
+  const publishMovedJob = async (
+    settings: Settings,
+    ledger: JobLedger,
+    before: UploadJob,
+  ): Promise<void> => {
+    const moved = ledger.find((j) => j.jobId === before.jobId)
+    if (moved === undefined || moved.status === before.status) return
+    await mirrorUploadJob(settings, moved)
+    if (isTerminal(moved)) await notifyCloudHistoryOnce(await getSettings(), ledger, moved.mediaId)
+  }
+
   /** Arm a durable wake-up at the soonest backoff deadline so failed jobs retry
    *  autonomously even after the SW suspends (setTimeout would not survive). */
   const scheduleUploadWake = async (): Promise<void> => {
@@ -597,25 +621,39 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     else await alarms.clear(UPLOAD_ALARM)
   }
 
-  const failDisconnectedJob = async (job: UploadJob, now: number): Promise<void> => {
+  const failDisconnectedJob = async (
+    job: UploadJob,
+    settings: Settings,
+    now: number,
+  ): Promise<void> => {
+    let afterFailure: JobLedger = []
     await updateLedger((current) => {
       const c = claim(current, job.jobId, now)
       const failed =
         c.claimed && c.token !== undefined
           ? recordFailure(c.ledger, job.jobId, c.token, now, `${job.provider} disconnected`).ledger
           : c.ledger
-      return capJobs(failed)
+      afterFailure = capJobs(failed)
+      return afterFailure
     })
     lastUploadError = `${PROVIDERS[job.provider].label} is not connected.`
+    await publishMovedJob(settings, afterFailure, job)
   }
 
-  const claimJob = async (jobId: string, now: number): Promise<number | undefined> => {
+  const claimJob = async (
+    job: UploadJob,
+    settings: Settings,
+    now: number,
+  ): Promise<number | undefined> => {
     let leaseToken: number | undefined
+    let afterClaim: JobLedger = []
     await updateLedger((current) => {
-      const c = claim(current, jobId, now)
+      const c = claim(current, job.jobId, now)
       leaseToken = c.claimed ? c.token : undefined
-      return capJobs(c.ledger)
+      afterClaim = capJobs(c.ledger)
+      return afterClaim
     })
+    if (leaseToken === undefined) await publishMovedJob(settings, afterClaim, job)
     return leaseToken
   }
 
@@ -677,7 +715,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     let settled: UploadJob | undefined
     let settledLedger: JobLedger = []
     await updateLedger((current) => {
-      const applied = applyUploadOutcome(current, job.jobId, leaseToken, tnow, outcome, randomFn)
+      const applied = applyUploadOutcome(current, job.jobId, leaseToken, tnow, outcome)
       settled = applied.settled
       settledLedger = capJobs(applied.ledger)
       return settledLedger
@@ -716,11 +754,11 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       // Provider disconnected mid-flight: fail the job so it backs off → dies,
       // rather than spinning forever as perpetually-ready.
       if (!isProviderConnected(settings, job.provider)) {
-        await failDisconnectedJob(job, now)
+        await failDisconnectedJob(job, settings, now)
         continue
       }
 
-      const leaseToken = await claimJob(job.jobId, now)
+      const leaseToken = await claimJob(job, settings, now)
       if (leaseToken === undefined) continue
 
       const executed = await runClaimedJob(job, leaseToken, settings, now)
@@ -786,7 +824,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
         [f.clientId]: clientId,
         // Persisted so the token REFRESH an hour later still has it — Google
         // demands the secret on every grant, not only the first.
-        ...(f.clientSecret !== undefined ? { [f.clientSecret]: clientSecret } : {}),
+        ...(f.clientSecret !== undefined && { [f.clientSecret]: clientSecret }),
         [f.accessToken]: tokens.accessToken,
         [f.refreshToken]: tokens.refreshToken,
         [f.expiry]: tokens.expiresAt,
@@ -797,7 +835,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       return {
         ok: true,
         detail: `Connected ${PROVIDERS[provider].label}.`,
-        ...(tokens.account !== undefined ? { account: tokens.account } : {}),
+        ...(tokens.account !== undefined && { account: tokens.account }),
       }
     } catch (err) {
       return {
@@ -829,7 +867,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       [f.refreshToken]: '',
       [f.expiry]: 0,
       [f.account]: '',
-      ...('folderId' in f ? { [f.folderId]: '' } : {}),
+      ...('folderId' in f && { [f.folderId]: '' }),
     })
     return { ok: true }
   }
@@ -917,7 +955,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     detail: string
   }> => {
     const settings = await getSettings()
-    if (settings.convexDriveEnabled)
+    if (settings.convexDriveConnected)
       return { ok: false, queued: 0, detail: 'Backfill is unavailable in the Convex experiment.' }
     if (!settings.cloudUploadEnabled)
       return { ok: false, queued: 0, detail: 'Turn on Cloud upload first.' }

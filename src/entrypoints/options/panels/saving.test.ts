@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { Settings } from '@/packages/schema'
 
-const source = readFileSync('src/entrypoints/options/panels/saving.tsx', 'utf8')
+const source = readFileSync(fileURLToPath(import.meta.resolve('./saving.tsx')), 'utf8')
 
 // Every Field/row the three absorbed panels (General, Downloads, Filters)
 // used to render must still be reachable somewhere in the merged panel — the

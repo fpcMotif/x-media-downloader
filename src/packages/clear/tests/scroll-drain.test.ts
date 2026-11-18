@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeScrollDrain, type ScrollDrainDeps } from '../scroll-drain'
 import type { ClearScopeResult } from '../result'
@@ -57,7 +58,7 @@ function harness(opts: {
       viewport: () => VIEWPORT,
     },
     clock: {
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      sleep: (ms) => sleep(ms),
       after: (ms, fn) => {
         const h = setTimeout(fn, ms)
         return () => clearTimeout(h)
@@ -112,7 +113,7 @@ const throwingRestore = (
 })
 
 describe('makeScrollDrain', () => {
-  beforeEach(() => vi.useFakeTimers())
+  beforeEach(() => vi.useFakeTimers({ fakeNodeBuiltins: true }))
   afterEach(() => vi.useRealTimers())
 
   it('scans from the top, surfaces not-mounted posts, clears them, and restores scroll', async () => {

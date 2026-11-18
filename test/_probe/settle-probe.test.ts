@@ -42,6 +42,7 @@ describe('PROBE: does the harness actually drive the path?', () => {
       scopes: ['bookmark'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
     })
     c.recordComplete('T', 'm0', 123)
     await vi.runAllTimersAsync()

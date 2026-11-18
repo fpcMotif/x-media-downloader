@@ -47,7 +47,7 @@ export function expandText(fullText: string, urlEntities: ReadonlyArray<UrlEntit
 export function linksFromEntities(urlEntities: ReadonlyArray<Omit<UrlEntity, 'indices'>>): Link[] {
   return urlEntities.map((e) => ({
     expandedUrl: e.expanded_url,
-    ...(e.display_url !== undefined ? { displayUrl: e.display_url } : {}),
+    ...(e.display_url !== undefined && { displayUrl: e.display_url }),
   }))
 }
 
@@ -115,9 +115,9 @@ const unifiedMeta = (json: string): CardMeta => {
   const urlData = extractNestedRecord(destination?.data, 'url_data')
   const domain = extractNestedString(urlData, 'vanity')
   return {
-    ...(title !== undefined ? { title } : {}),
-    ...(description !== undefined ? { description } : {}),
-    ...(domain !== undefined ? { domain } : {}),
+    ...(title !== undefined && { title }),
+    ...(description !== undefined && { description }),
+    ...(domain !== undefined && { domain }),
   }
 }
 
@@ -148,9 +148,9 @@ export function cardMeta(cardNode: JsonValue | undefined): CardMeta {
     const description = bindingString(bindings, 'description')
     const domain = bindingString(bindings, 'domain')
     return {
-      ...(title !== undefined ? { title } : {}),
-      ...(description !== undefined ? { description } : {}),
-      ...(domain !== undefined ? { domain } : {}),
+      ...(title !== undefined && { title }),
+      ...(description !== undefined && { description }),
+      ...(domain !== undefined && { domain }),
     }
   } catch {
     return {}

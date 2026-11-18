@@ -14,7 +14,7 @@ Media Item in a Tweet has *truly* landed on disk, the extension **Clears** that 
 from the Worklist (un-bookmark and/or un-like). The lists thereby empty themselves as
 downloads complete.
 
-A Tweet carries up to four photos **or** one video **or** one GIF (CONTEXT.md). All of
+A Tweet carries up to four photos **or** one video **or** one GIF (GLOSSARY.md). All of
 its Media Items must complete before it is Cleared; a partial Tweet is never Cleared.
 
 ## 2. Locked decisions
@@ -47,7 +47,7 @@ and never reads outbound auth headers; `settings.authFallbackEnabled`
 **net-new** capture of `bearer` + `ct0` (CSRF) + `x-client-transaction-id`. Hence v1 is
 DOM-click only.
 
-## 3. Domain nouns (to add to CONTEXT.md)
+## 3. Domain nouns (to add to GLOSSARY.md)
 
 - **Worklist** — the user's Bookmarks or Likes, repurposed as a self-emptying download
   queue; the source list a Clear removes from.
@@ -226,7 +226,7 @@ Because the action is on-by-default and has no undo:
 
 ## 9. Docs & ADR impact
 
-- Add the §3 nouns to **CONTEXT.md**.
+- Add the §3 nouns to **GLOSSARY.md**.
 - **ADR-0015 — Clear-on-complete (DOM-click):** the project's first write action
   (synthetic click on X's own control), full-auto, gated on Truly Complete; narrowly
   annotates ADR-0001's read-only framing and folds in the §6 pacing policy.

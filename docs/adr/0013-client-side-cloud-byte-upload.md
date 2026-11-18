@@ -1,7 +1,7 @@
 # ADR-0013 — Browser cloud uploads by default; opt-in Convex Drive execution
 
 Browser uploads remain the default for Google Drive and Dropbox.
-Cloud-only users may explicitly select an experimental Google Drive relay through their own Convex deployment.
+Users may explicitly select an experimental Google Drive relay through their own Convex deployment.
 The relay is implemented, but real provider transfers and resource costs remain unverified.
 
 ## Browser execution
@@ -30,9 +30,19 @@ The experimental relay is not a public multi-user OAuth service.
 ## Experimental server execution
 
 `convexDriveEnabled` defaults to false.
-The extension requires Cloud-only saving, deployment setup, backend authorization, Drive Upload enabled, and no active Dropbox destination.
+The extension requires deployment setup, backend authorization, and Drive Upload enabled.
+The relay executes Google Drive only.
+It can run with disk saving on, and next to an active Dropbox destination.
+With the relay selected, Drive media goes to the server and never to the browser uploader.
+Dropbox media always uses the browser uploader.
 An unavailable experimental path fails visibly; it never silently falls back to browser upload or disk saving.
-Local+cloud and ordinary Dropbox behavior remain unchanged.
+With disk saving on, the local save proceeds and only the relay submission fails.
+Enabling the experiment turns disk saving off; the user can turn it back on.
+
+One Media Item can therefore have two executors: the server for Drive and the browser for Dropbox.
+Each executor reports its own Cloud-only history outcome.
+The history row completes when either executor completes, and a later failure of the other does not change it.
+Local daily usage is not charged for browser uploads while the experiment is on.
 
 The browser submits only Media Item identity, source URL, planned path, content type, and originating device.
 Size admission uses an authenticated backend HEAD probe rather than a browser source request.

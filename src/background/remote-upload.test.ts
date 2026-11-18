@@ -33,8 +33,14 @@ const item = {
   estimatedBytes: 4,
 }
 
+const urlString = (input: RequestInfo | URL): string =>
+  input instanceof URL ? input.href : input instanceof Request ? input.url : input
+const isStringBody = (body: BodyInit | null | undefined): body is string => typeof body === 'string'
+const bodyText = (init: RequestInit | undefined): string =>
+  isStringBody(init?.body) ? init.body : ''
+
 function memoryStore(): DurableStore {
-  let value: unknown = null
+  let value: JsonValue = null
   return {
     get: async () => value,
     set: async (next) => {
@@ -65,7 +71,7 @@ function makeBatchReconcileFixture(
     store,
     onHistoryNotice: () => {},
     fetchImpl: async (_url, init) => {
-      const body = String(init?.body)
+      const body = bodyText(init)
       if (body.includes('relay:status')) {
         const parsed = Schema.decodeUnknownSync(StatusCall)(JSON.parse(body))
         return Response.json({ status: 'success', value: onStatus(parsed.args.mediaIds) })
@@ -89,8 +95,8 @@ describe('metadata-only queue acceptance', () => {
   it('submits only metadata and reads usage charged by durable server acceptance', async () => {
     const calls: { url: string; body: string }[] = []
     const fetchImpl: typeof fetch = async (url, init) => {
-      calls.push({ url: String(url), body: String(init?.body) })
-      const value = String(init?.body).includes('relay:budget')
+      calls.push({ url: urlString(url), body: bodyText(init) })
+      const value = bodyText(init).includes('relay:budget')
         ? { bytes: 4, count: 1 }
         : { id: 'server-job', created: true }
       return Response.json({ status: 'success', value })
@@ -110,7 +116,6 @@ describe('metadata-only queue acceptance', () => {
     })
     let accepted: ReadonlyArray<string> = []
     await applyQueueStartEffects(effects, 1, {
-      resetCorrelation: () => {},
       setMetrics: () => {},
       persistSnapshot: async () => {},
       recordSync: () => {},
@@ -207,8 +212,8 @@ describe('metadata-only queue acceptance', () => {
       store,
       onHistoryNotice: () => {},
       fetchImpl: (async (url, init) => {
-        const body = String(init?.body)
-        calls.push({ url: String(url), body })
+        const body = bodyText(init)
+        calls.push({ url: urlString(url), body })
         const value = body.includes('relay:status')
           ? [{ mediaId: 'm1', status: 'completed', at: 100 }]
           : body.includes('relay:budget')
@@ -263,7 +268,7 @@ describe('metadata-only queue acceptance', () => {
       fetchImpl: (async (_url, init) =>
         Response.json({
           status: 'success',
-          value: String(init?.body).includes('relay:status')
+          value: bodyText(init).includes('relay:status')
             ? [{ mediaId: 'm1', status: completed ? 'completed' : 'failed', at: 100 }]
             : { id: 'server-job', created: true },
         })) satisfies typeof fetch,
@@ -282,7 +287,7 @@ describe('metadata-only queue acceptance', () => {
   it('submits multiple candidates in a single batch request to relay:submitBatch', async () => {
     const calls: { url: string; body: string }[] = []
     const fetchImpl: typeof fetch = async (url, init) => {
-      calls.push({ url: String(url), body: String(init?.body) })
+      calls.push({ url: urlString(url), body: bodyText(init) })
       return Response.json({
         status: 'success',
         value: [
@@ -324,11 +329,11 @@ describe('metadata-only queue acceptance', () => {
         notices.push(notice)
       },
       fetchImpl: async (url, init) => {
-        const body = String(init?.body)
+        const body = bodyText(init)
         if (!body.includes('relay:status')) {
           return Response.json({ status: 'success', value: { id: 'server-job', created: true } })
         }
-        if (String(url).startsWith(firstSettings.convexUrl)) {
+        if (urlString(url).startsWith(firstSettings.convexUrl)) {
           throw new Error('first deployment offline')
         }
         return Response.json({

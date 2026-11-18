@@ -84,8 +84,8 @@ export const cloudHttpErrorToOutcome = (error: CloudHttpError): UploadOutcome =>
   kind: 'failure',
   reason: error.message,
   status: error.status,
-  ...(isTransientHttp(error.status, error.body) ? { transient: true } : {}),
-  ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+  ...(isTransientHttp(error.status, error.body) && { transient: true }),
+  ...(error.retryAfterMs !== undefined && { retryAfterMs: error.retryAfterMs }),
 })
 
 export const httpFailure = async (provider: string, res: Response): Promise<CloudHttpError> => {
@@ -94,7 +94,7 @@ export const httpFailure = async (provider: string, res: Response): Promise<Clou
     provider,
     status: res.status,
     body: await errText(res),
-    ...(wait !== undefined ? { retryAfterMs: wait } : {}),
+    ...(wait !== undefined && { retryAfterMs: wait }),
   })
 }
 

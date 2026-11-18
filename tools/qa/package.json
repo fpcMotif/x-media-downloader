@@ -1,0 +1,13 @@
+{
+  "name": "xediadownloader-qa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "qa": "bun --no-env-file run.mjs",
+    "test": "bun --no-env-file self-check.mjs",
+    "smoke": "bun --no-env-file run.mjs smoke",
+    "browser": "bun --no-env-file run.mjs browser",
+    "doctor": "bun --no-env-file run.mjs doctor",
+    "setup": "bun --no-env-file run.mjs setup"
+  }
+}

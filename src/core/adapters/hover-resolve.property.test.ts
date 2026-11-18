@@ -93,11 +93,7 @@ type MediaKind = 'img' | 'video'
 type PointerEventsSpec = 'none' | 'auto'
 type PositionSpec = 'static' | 'absolute'
 type OccluderKind =
-  | 'none'
-  | 'overlay'
-  | 'dialog-containing'
-  | 'dialog-not-containing'
-  | 'transparent'
+  'none' | 'overlay' | 'dialog-containing' | 'dialog-not-containing' | 'transparent'
 
 interface SceneSpec {
   readonly mediaRect: Rect

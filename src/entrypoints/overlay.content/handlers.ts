@@ -219,8 +219,8 @@ export type SendResponse = (r: OverlayResponse) => void
  *  `message` is raw extension-messaging JSON — `JsonValue`, narrowed per-handler
  *  after `dispatchOverlayMessage`'s own schema decode (or, in tests, a hand-built
  *  fixture) — never a value this table can assume a domain shape for up front. */
-type MessageHandler = (
-  message: JsonValue,
+type MessageHandler<M = JsonValue> = (
+  message: M,
   deps: HandlerDeps,
   sendResponse: SendResponse,
 ) => boolean | void
@@ -425,13 +425,7 @@ export const handleSavedStatusUpdate: MessageHandler = (message, deps) => {
 // (bytes landed / 403 / timeout). Correct the badge/launcher that fired it,
 // ONLY while still on screen. Broadcast to every X tab, so this no-ops unless
 // this tab is the one whose entrance/batch owns the request. Fire-and-forget.
-export const handleTransferOutcome: MessageHandler = (message, deps) => {
-  // SAFETY: only reachable via the dispatch table in `messageHandlers`, keyed by the
-  // `TransferOutcome` tag — `dispatchOverlayMessage` schema-decodes every inbound
-  // message against `OverlayInboundMessage` (which includes `TransferOutcome`)
-  // before routing it here, so a message that reaches this handler already
-  // conforms to the shape below.
-  const m = message as TransferOutcome
+export const handleTransferOutcome: MessageHandler<TransferOutcome> = (m, deps) => {
   const ok = m.outcome === 'complete'
   const badge = deps.getBadge()
   const badgeMedia = deps.getBadgeMedia()
@@ -462,11 +456,11 @@ export const handleTransferOutcome: MessageHandler = (message, deps) => {
 // The background re-resolves a CDN url from this open tab before an
 // interrupt retry (twimg urls expire). Answer from the detected map, or a
 // fresh DOM scan keyed by tweet/index/type when the item has rotated out.
-export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendResponse) => {
-  // SAFETY: only reachable via `messageHandlers.RefreshMediaUrlRequest`, gated by
-  // `dispatchOverlayMessage`'s decode against `OverlayInboundMessage` (which spreads
-  // in `TAB_MESSAGE_MEMBERS`, including `RefreshMediaUrlRequest`) before dispatch.
-  const req = message as RefreshMediaUrlRequest
+export const handleRefreshMediaUrl: MessageHandler<RefreshMediaUrlRequest> = (
+  req,
+  deps,
+  sendResponse,
+) => {
   let fresh = deps.store.get(req.itemId)
   if (fresh?.postId !== req.tweetId) fresh = undefined
   let rescanAttempted = false
@@ -501,7 +495,7 @@ export const handleRefreshMediaUrl: MessageHandler = (message, deps, sendRespons
         : 'not in store, no index/type to rescan with',
     )
   }
-  sendResponse({ _tag: 'RefreshMediaUrlResponse', ...(fresh ? { url: fresh.url } : {}) })
+  sendResponse({ _tag: 'RefreshMediaUrlResponse', ...(fresh && { url: fresh.url }) })
   return true
 }
 
@@ -1076,7 +1070,7 @@ const retryAfterField = (
   return waitMs > 0 ? { retryAfterMs: waitMs } : {}
 }
 
-export const handleClearTweet: MessageHandler = (message, deps, sendResponse) => {
+export const handleClearTweet: MessageHandler<ClearTweetRequest> = (req, deps, sendResponse) => {
   // X-only: findArticle/clearMountedTweet drive X's bookmark/like/notInterested
   // DOM controls — nothing to click on an Instagram/Threads tab. Keep the channel
   // open (return true) and reply with empty results, same shape as the "queued
@@ -1091,10 +1085,6 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
     })
     return true
   }
-  // SAFETY: only reachable via `messageHandlers.ClearTweetRequest`, gated by
-  // `dispatchOverlayMessage`'s decode against `OverlayInboundMessage` (which spreads
-  // in `TAB_MESSAGE_MEMBERS`, including `ClearTweetRequest`) before dispatch.
-  const req = message as ClearTweetRequest
   const allLists = req.allLists === true
   const onList = pageScope(deps.location.pathname)
   const pageScopeDetail = Option.getOrElse(onList, () => 'none')
@@ -1214,11 +1204,7 @@ export const handleClearTweet: MessageHandler = (message, deps, sendResponse) =>
   return true
 }
 
-export const handleClearDrain: MessageHandler = (message, deps, sendResponse) => {
-  // SAFETY: only reachable via `messageHandlers.ClearDrainRequest`, gated by
-  // `dispatchOverlayMessage`'s decode against `OverlayInboundMessage` (which spreads
-  // in `TAB_MESSAGE_MEMBERS`, including `ClearDrainRequest`) before dispatch.
-  const req = message as ClearDrainRequest
+export const handleClearDrain: MessageHandler<ClearDrainRequest> = (req, deps, sendResponse) => {
   if (deps.adapter.platform !== 'x') {
     sendResponse({
       _tag: 'ClearDrainResponse',
@@ -1252,7 +1238,11 @@ export const handleClearDrain: MessageHandler = (message, deps, sendResponse) =>
 //
 // Currently unreachable from the UI: its only sender was dropped by the in-flight
 // popup rewrite. Kept wired pending that rewrite settling.
-export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResponse) => {
+export const handleClearDetectedMedia: MessageHandler<ClearDetectedMediaRequest> = (
+  req,
+  deps,
+  sendResponse,
+) => {
   const cleared = deps.store.count
   deps.store.clear()
   deps.clearDwell()
@@ -1263,11 +1253,6 @@ export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResp
   deps.clearRescanSpin()
   deps.setLauncher('idle')
   let rescanned = 0
-  // SAFETY: only reachable via `messageHandlers.ClearDetectedMediaRequest`, gated by
-  // `dispatchOverlayMessage`'s decode against `OverlayInboundMessage` (which lists
-  // `ClearDetectedMediaRequest` as one of the three broadcast tags it also answers)
-  // before dispatch.
-  const req = message as ClearDetectedMediaRequest
   if (req.rescanVisible) {
     rescanned = deps.store.addDetected(
       deps.adapter.detectRenderedMedia(deps.document, deps.location.pathname),
@@ -1281,7 +1266,7 @@ export const handleClearDetectedMedia: MessageHandler = (message, deps, sendResp
 /** Maps each runtime-message `_tag` to its handler. The router in index.tsx
  *  reads `dispatch[tag]?.(message, deps, sendResponse)`; an unmapped tag (no
  *  entry) falls through to the same `undefined`/`return false` path as before. */
-export const messageHandlers = {
+export const messageHandlers: MessageHandlerTable = {
   TransferOutcome: handleTransferOutcome,
   SavedStatusUpdate: handleSavedStatusUpdate,
   RefreshMediaUrlRequest: handleRefreshMediaUrl,
@@ -1292,7 +1277,7 @@ export const messageHandlers = {
   ClearTweetRequest: handleClearTweet,
   ClearDrainRequest: handleClearDrain,
   ClearDetectedMediaRequest: handleClearDetectedMedia,
-} satisfies Record<string, MessageHandler>
+}
 
 /** The overlay's TRUE inbound set, decode-gated before any dispatch: the
  *  tab-targeted (`browser.tabs.sendMessage`) tags — spread from the SAME
@@ -1307,6 +1292,19 @@ const OverlayInboundMessage = Schema.Union([
   SavedStatusUpdate,
   ClearDetectedMediaRequest,
 ])
+
+type OverlayInbound = typeof OverlayInboundMessage.Type
+type InboundByTag = { readonly [M in OverlayInbound as M['_tag']]: M }
+type MessageHandlerTable = {
+  readonly [K in keyof InboundByTag]: MessageHandler<InboundByTag[K]>
+}
+
+const runMessageHandler = <K extends keyof InboundByTag>(
+  tag: K,
+  message: InboundByTag[K],
+  deps: HandlerDeps,
+  sendResponse: SendResponse,
+): boolean | void => messageHandlers[tag](message, deps, sendResponse)
 
 /** The overlay's single `runtime.onMessage` entry point: decode-gate, then table
  *  dispatch. A message whose tag/shape falls outside the inventoried set above is
@@ -1329,13 +1327,7 @@ export const dispatchOverlayMessage: MessageHandler = (message, deps, sendRespon
     // open) — the same drop background.ts spells as an explicit `return false`.
     return
   }
-  const handler = messageHandlers[decoded.success._tag]
-  if (handler === undefined) return
-  // SAFETY: `decoded.success` is the plain object `Schema.decodeUnknownResult`
-  // produced — every field decoded from String/Number/Boolean/Literals/Array, i.e.
-  // real JSON data. Effect's own `.Type` computation just doesn't surface an index
-  // signature for `JsonValue`'s structural check to see.
-  return handler(decoded.success as JsonValue, deps, sendResponse)
+  return runMessageHandler(decoded.success._tag, decoded.success, deps, sendResponse)
 }
 
 export interface InlineReplayDeps {

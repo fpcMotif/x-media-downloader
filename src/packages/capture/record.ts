@@ -74,6 +74,8 @@ const isObj = (v: JsonValue | undefined): v is JsonObject => typeof v === 'objec
 
 const isString = (v: JsonValue | undefined): v is string => typeof v === 'string'
 
+const isNumber = (v: JsonValue | undefined): v is number => typeof v === 'number'
+
 const str = (v: JsonValue | undefined): string | undefined => (isString(v) ? v : undefined)
 
 const optionalEntry = <K extends string, V>(key: K, v: V | undefined): Record<K, V> | object =>
@@ -87,15 +89,20 @@ const nestedRestId = (node: JsonObject, key: string): string | undefined => {
 
 const arr = (v: JsonValue | undefined): ReadonlyArray<JsonValue> => (Array.isArray(v) ? v : [])
 
+const isIndexPair = (v: JsonValue | undefined): boolean =>
+  Array.isArray(v) && v.length === 2 && v.every(isNumber)
+
+const isUrlEntity = (v: JsonValue): v is JsonObject & UrlEntity =>
+  isObj(v) &&
+  isString(v['url']) &&
+  isString(v['expanded_url']) &&
+  (v['display_url'] === undefined || isString(v['display_url'])) &&
+  (v['indices'] === undefined || isIndexPair(v['indices']))
+
 const urlEntities = (legacy: JsonObject): UrlEntity[] => {
   const entities = legacy['entities']
   const urls = isObj(entities) ? entities['urls'] : undefined
-  // SAFETY: every UrlEntity field but `url`/`expanded_url` is optional, so this
-  // only asserts the array holds JSON object nodes — `.filter(isObj)` on the
-  // line above already proved that. Callers (`linksFromEntities`, `expandText`)
-  // read each field defensively, so an entity missing `url`/`expanded_url`
-  // degrades to `undefined` reads rather than a bad access.
-  return arr(urls).filter(isObj) as UrlEntity[]
+  return arr(urls).filter(isUrlEntity)
 }
 
 const mentions = (legacy: JsonObject): string[] => {

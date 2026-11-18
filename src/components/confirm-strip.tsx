@@ -18,7 +18,18 @@ import {
 // armed. Module-level by design (spec §2.4 "Arbitration"): every ConfirmStrip
 // instance registers/deregisters itself here regardless of which component
 // tree it lives in.
-let disarmCurrent: (() => void) | null = null
+const armedStrip = (() => {
+  let holder: { readonly owner: symbol; readonly disarm: () => void } | null = null
+  return {
+    take: (owner: symbol, disarm: () => void): void => {
+      holder?.disarm()
+      holder = { owner, disarm }
+    },
+    release: (owner: symbol): void => {
+      if (holder?.owner === owner) holder = null
+    },
+  }
+})()
 
 const TICK_MS = 100
 
@@ -75,10 +86,7 @@ function ConfirmStripArmed({
   return (
     <div
       ref={stripRef}
-      {...stylex.props(
-        styles.armed,
-        preCommitted ? styles.armedMuted : styles.armedDestructiveBg,
-      )}
+      {...stylex.props(styles.armed, preCommitted ? styles.armedMuted : styles.armedDestructiveBg)}
     >
       <p
         {...stylex.props(
@@ -156,7 +164,7 @@ const HOVER = '@media (hover: hover)'
 
 // `transition-colors` (Tailwind v4) — verbatim property list.
 const TRANSITION_COLORS =
-  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to'
+  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to, scale'
 // `focus-visible:ring-3 focus-visible:ring-ring/50` — five box-shadow layers.
 const FOCUS_RING =
   '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
@@ -289,7 +297,77 @@ const styles = stylex.create({
   },
 })
 
+/** One strip's arm state, owned by the component that renders the trigger so
+ *  the trigger can pass `arm` straight to its own event handler. */
+export interface ConfirmStripControl {
+  readonly armedAt: number | null
+  readonly now: number
+  readonly typedValue: string
+  readonly setTypedValue: (value: string) => void
+  /** Arms the strip; call it from the trigger's click or toggle handler. */
+  readonly arm: () => void
+  readonly disarm: () => void
+}
+
+/** Owns one {@link ConfirmStrip}'s arm state: the module-level single-armed
+ *  arbitration, the wall-clock tick, auto-disarm, and Escape-to-cancel. */
+export function useConfirmStrip(): ConfirmStripControl {
+  const [armedAt, setArmedAt] = useState<number | null>(null)
+  const [now, setNow] = useState<number>(() => Date.now())
+  const [typedValue, setTypedValue] = useState('')
+  const triggerFocusRef = useRef<HTMLElement | null>(null)
+
+  // Stable identity (empty deps — it closes only over the useState setters,
+  // which Preact guarantees never change) so the effects below can safely
+  // list it as a dependency without refiring on every render.
+  const [owner] = useState(() => Symbol('confirm-strip'))
+  const disarm = useCallback((): void => {
+    setArmedAt(null)
+    setTypedValue('')
+    armedStrip.release(owner)
+  }, [owner])
+
+  const arm = (): void => {
+    triggerFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    armedStrip.take(owner, disarm)
+    const t = Date.now()
+    setArmedAt(t)
+    setNow(t)
+  }
+
+  // Tick while armed so the guard-window inertness and the auto-disarm
+  // underline are driven by wall-clock timestamps, not CSS transitions — see
+  // confirm-strip-logic.ts's module doc for why that matters under
+  // prefers-reduced-motion.
+  useEffect(() => {
+    if (armedAt === null) return undefined
+    const id = setInterval(() => {
+      const tickedAt = Date.now()
+      if (tickedAt >= disarmDeadline(armedAt)) disarm()
+      else setNow(tickedAt)
+    }, TICK_MS)
+    return () => clearInterval(id)
+  }, [armedAt, disarm])
+
+  useEffect(() => {
+    if (armedAt === null) return undefined
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        disarm()
+        triggerFocusRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [armedAt, disarm])
+
+  return { armedAt, now, typedValue, setTypedValue, arm, disarm }
+}
+
 export interface ConfirmStripProps {
+  /** The arm state from {@link useConfirmStrip} in the rendering component. */
+  readonly control: ConfirmStripControl
   /** The consequence sentence shown once armed (13px, tier-colored). */
   readonly sentence: string
   /** The literal-action confirm button's label — never the bare word
@@ -304,56 +382,19 @@ export interface ConfirmStripProps {
    *  or similar from action-copy.ts. */
   readonly typedWord?: string
   readonly onConfirm: () => void
-  /** Render-prop trigger: the idle control keeps its own styling and calls
-   *  `arm()` on activation (click, or Enter/Space via a normal `<button>`). */
-  readonly children: (arm: () => void) => VNode
+  /** The idle trigger: it keeps its own styling and calls `control.arm` on
+   *  activation (click, or Enter/Space via a normal `<button>`). */
+  readonly children: VNode
 }
 
 /** The shared arm→confirm control behind every destructive/precommitted
  *  action in popup + options (spec §2.4/§2.5). Replaces every `confirm()`
  *  call in the product. */
 export function ConfirmStrip(props: ConfirmStripProps): VNode {
-  const { sentence, confirmLabel, kind, typedWord, onConfirm, children } = props
-  const [armedAt, setArmedAt] = useState<number | null>(null)
-  const [now, setNow] = useState<number>(() => Date.now())
-  const [typedValue, setTypedValue] = useState('')
+  const { control, sentence, confirmLabel, kind, typedWord, onConfirm, children } = props
+  const { armedAt, now, typedValue, setTypedValue, disarm } = control
   const cancelRef = useRef<HTMLButtonElement | null>(null)
-  const triggerFocusRef = useRef<HTMLElement | null>(null)
   const stripRef = useRef<HTMLDivElement | null>(null)
-
-  // Stable identity (empty deps — it closes only over the useState setters,
-  // which Preact guarantees never change) so the effects below can safely
-  // list it as a dependency without refiring on every render.
-  const disarm = useCallback((): void => {
-    setArmedAt(null)
-    setTypedValue('')
-    if (disarmCurrent === disarm) disarmCurrent = null
-  }, [])
-
-  const arm = (): void => {
-    triggerFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null
-    disarmCurrent?.()
-    disarmCurrent = disarm
-    const t = Date.now()
-    setArmedAt(t)
-    setNow(t)
-  }
-
-  // Tick while armed so the guard-window inertness and the auto-disarm
-  // underline are driven by wall-clock timestamps, not CSS transitions — see
-  // confirm-strip-logic.ts's module doc for why that matters under
-  // prefers-reduced-motion.
-  useEffect(() => {
-    if (armedAt === null) return undefined
-    const id = setInterval(() => setNow(Date.now()), TICK_MS)
-    return () => clearInterval(id)
-  }, [armedAt])
-
-  useEffect(() => {
-    if (armedAt === null) return
-    if (now >= disarmDeadline(armedAt)) disarm()
-  }, [now, armedAt, disarm])
 
   // Focus moves to Cancel on arm — repeating the arming keystroke cancels,
   // never confirms (§2.4 "Keyboard path").
@@ -361,18 +402,6 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
     if (armedAt === null) return
     cancelRef.current?.focus()
   }, [armedAt])
-
-  useEffect(() => {
-    if (armedAt === null) return undefined
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        disarm()
-        triggerFocusRef.current?.focus()
-      }
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [armedAt, disarm])
 
   useEffect(() => {
     if (armedAt === null) return undefined
@@ -386,7 +415,7 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
     return () => document.removeEventListener('mousedown', onPointerDown)
   }, [armedAt, disarm])
 
-  const startedAt = armedAt ?? Date.now()
+  const startedAt = armedAt ?? now
   const guardElapsed = armedAt !== null && isGuardElapsed(startedAt, now, kind)
   const guardWindowMs = guardMs(kind)
   const guardProgress = Math.min(1, Math.max(0, (now - startedAt) / guardWindowMs))
@@ -419,7 +448,7 @@ export function ConfirmStrip(props: ConfirmStripProps): VNode {
       </output>
 
       {armedAt === null ? (
-        children(arm)
+        children
       ) : (
         <ConfirmStripArmed
           sentence={sentence}

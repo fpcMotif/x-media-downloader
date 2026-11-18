@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-const overlaySource = readFileSync('src/entrypoints/overlay.content/index.tsx', 'utf8')
-const overlayCss = readFileSync('src/entrypoints/overlay.content/style.css', 'utf8')
+const overlaySource = readFileSync(fileURLToPath(import.meta.resolve('./index.tsx')), 'utf8')
+const overlayCss = readFileSync(fileURLToPath(import.meta.resolve('./style.css')), 'utf8')
 
 describe('overlay save-status announcements (a11y)', () => {
   it('wires the badge name and status to the pure helpers', () => {

@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-const popupCss = readFileSync('src/app.css', 'utf8')
-const popupHtml = readFileSync('src/entrypoints/popup/index.html', 'utf8')
-const popupSource = readFileSync('src/entrypoints/popup/App.tsx', 'utf8')
+const popupCss = readFileSync(fileURLToPath(import.meta.resolve('../../app.css')), 'utf8')
+const popupHtml = readFileSync(fileURLToPath(import.meta.resolve('./index.html')), 'utf8')
+const popupSource = readFileSync(fileURLToPath(import.meta.resolve('./App.tsx')), 'utf8')
 const captureQuickActionsSource = readFileSync(
-  'src/entrypoints/popup/capture-quick-actions.tsx',
+  fileURLToPath(import.meta.resolve('./capture-quick-actions.tsx')),
   'utf8',
 )
 
@@ -190,7 +191,7 @@ describe('popup local data: history wipe stays in Settings, harvest wipe moves i
 
   it('offers a harvest-archive wipe via the inline CaptureQuickActions component', () => {
     expect(popupSource).toContain('CaptureQuickActions')
-    expect(captureQuickActionsSource).toContain('ClearCaptureRequest')
+    expect(captureQuickActionsSource).toContain('runCaptureErase(')
   })
 })
 
@@ -242,7 +243,7 @@ describe('CaptureQuickActions renders a popup-sized recent-archive disclosure', 
     expect(captureQuickActionsSource).toContain(
       'if (tweets === 0 && statusMsg === null) return null',
     )
-    expect(captureQuickActionsSource).toContain("_tag: 'ClearCaptureRequest'")
+    expect(captureQuickActionsSource).toContain('runCaptureErase(')
     expect(captureQuickActionsSource).toContain('Export all')
     expect(captureQuickActionsSource).toContain('ConfirmStrip')
   })

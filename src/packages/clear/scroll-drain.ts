@@ -48,6 +48,24 @@ const compactDetailValue = (value: string, fallback: string): string => {
 const failureReason = (error: Error | string): string =>
   error instanceof Error ? compactDetailValue(error.message, 'error') : 'error'
 
+/** What to do once a scan pass leaves work still pending. Keep going while work
+ *  remains: a pass that cleared something resets the empty budget and re-runs promptly
+ *  (more posts settle mid-scroll); a pass that cleared nothing spends one retry of a
+ *  bounded budget — a longer backoff lets a lazily re-rendering feed catch up — before
+ *  the drain finally gives up. This stops the tail of a batch being abandoned just
+ *  because one pass surfaced nothing, without ever spinning forever on posts that
+ *  genuinely aren't on this list. */
+function classifyPostPassAction(
+  offList: boolean,
+  cleared: number,
+  emptyPassBudgetUsed: number,
+): 'abort-off-list' | 'reschedule-progress' | 'reschedule-retry' | 'give-up' {
+  if (offList) return 'abort-off-list'
+  if (cleared > 0) return 'reschedule-progress'
+  if (emptyPassBudgetUsed < DRAIN_MAX_EMPTY_PASSES) return 'reschedule-retry'
+  return 'give-up'
+}
+
 /** The window-scroll seam: live position + viewport reads, absolute/relative moves. */
 export interface ScrollPort {
   /** Current vertical scroll offset (window.scrollY). */
@@ -213,24 +231,6 @@ export function makeScrollDrain(deps: ScrollDrainDeps): ScrollDrain {
       }
     }
     // oxlint-enable no-await-in-loop
-  }
-
-  /** What to do once a scan pass leaves work still pending. Keep going while work
-   *  remains: a pass that cleared something resets the empty budget and re-runs promptly
-   *  (more posts settle mid-scroll); a pass that cleared nothing spends one retry of a
-   *  bounded budget — a longer backoff lets a lazily re-rendering feed catch up — before
-   *  the drain finally gives up. This stops the tail of a batch being abandoned just
-   *  because one pass surfaced nothing, without ever spinning forever on posts that
-   *  genuinely aren't on this list. */
-  function classifyPostPassAction(
-    offList: boolean,
-    cleared: number,
-    emptyPassBudgetUsed: number,
-  ): 'abort-off-list' | 'reschedule-progress' | 'reschedule-retry' | 'give-up' {
-    if (offList) return 'abort-off-list'
-    if (cleared > 0) return 'reschedule-progress'
-    if (emptyPassBudgetUsed < DRAIN_MAX_EMPTY_PASSES) return 'reschedule-retry'
-    return 'give-up'
   }
 
   function runPostPassAction(cleared: number): void {

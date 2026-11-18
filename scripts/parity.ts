@@ -33,10 +33,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import pixelmatch from 'pixelmatch'
 import { PNG } from 'pngjs'
+import { Schema } from 'effect'
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
 type JsonObject = { [key: string]: Json }
@@ -116,7 +118,7 @@ interface Scenario {
   readonly tabContext: string | undefined
 }
 
-const CHROME_CANDIDATES: Record<string, ReadonlyArray<string>> = {
+const CHROME_CANDIDATES = {
   darwin: [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -132,11 +134,15 @@ const CHROME_CANDIDATES: Record<string, ReadonlyArray<string>> = {
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   ],
-}
+} satisfies Partial<Record<NodeJS.Platform, ReadonlyArray<string>>>
+const isCandidatePlatform = (platform: string): platform is keyof typeof CHROME_CANDIDATES =>
+  Object.hasOwn(CHROME_CANDIDATES, platform)
 
 function chromeBinary(): string {
   if (process.env.CHROME_PATH) return process.env.CHROME_PATH
-  const found = (CHROME_CANDIDATES[process.platform] ?? []).find((p) => existsSync(p))
+  const found = (
+    isCandidatePlatform(process.platform) ? CHROME_CANDIDATES[process.platform] : []
+  ).find((p) => existsSync(p))
   if (!found)
     throw new Error(
       'no Chrome found — set CHROME_PATH (Chrome for Testing: bunx @puppeteer/browsers install chrome@stable)',
@@ -151,8 +157,57 @@ const DEFAULT_STATE_TARGETS =
 const DEFAULT_IGNORED_CUSTOM_PROPERTY =
   '^--(tw-|text-|color-|ease-|leading-|tracking-|font-weight-|container-|spacing$|animate-|radius-(2xl|4xl|sm|lg|xl)$|default-transition|default-font-feature|default-font-variation|default-mono-font-feature|default-mono-font-variation|x-)'
 
+const SchemeSchema = Schema.Literals(['light', 'dark'])
+const ViewportSchema = Schema.Struct({ width: Schema.Number, height: Schema.Number })
+const ConfigSchema = Schema.Struct({
+  viewport: Schema.optionalKey(ViewportSchema),
+  schemes: Schema.optionalKey(Schema.Array(SchemeSchema)),
+  deviceScaleFactor: Schema.optionalKey(Schema.Number),
+  settleMs: Schema.optionalKey(Schema.Number),
+  stateTargets: Schema.optionalKey(Schema.String),
+  settledSelectors: Schema.optionalKey(Schema.Array(Schema.String)),
+  readyScript: Schema.optionalKey(Schema.String),
+  quietMs: Schema.optionalKey(Schema.Number),
+  ignoreAttributes: Schema.optionalKey(Schema.Array(Schema.String)),
+  ignoreCustomProperties: Schema.optionalKey(Schema.String),
+  resetScript: Schema.optionalKey(Schema.String),
+  darkMode: Schema.optionalKey(
+    Schema.Struct({
+      mode: Schema.Literals(['media', 'class', 'attribute']),
+      selector: Schema.optionalKey(Schema.String),
+      name: Schema.optionalKey(Schema.String),
+      value: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  cookies: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        value: Schema.String,
+        url: Schema.optionalKey(Schema.String),
+        domain: Schema.optionalKey(Schema.String),
+        path: Schema.optionalKey(Schema.String),
+        secure: Schema.optionalKey(Schema.Boolean),
+        httpOnly: Schema.optionalKey(Schema.Boolean),
+        sameSite: Schema.optionalKey(Schema.Literals(['Strict', 'Lax', 'None'])),
+      }),
+    ),
+  ),
+  scenarios: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      path: Schema.String,
+      viewport: Schema.optionalKey(ViewportSchema),
+      schemes: Schema.optionalKey(Schema.Array(SchemeSchema)),
+      steps: Schema.optionalKey(Schema.Array(Schema.String)),
+      tabContext: Schema.optionalKey(Schema.String),
+    }),
+  ),
+})
+const decodeConfig: (input: Json) => Config = Schema.decodeUnknownSync(ConfigSchema)
+
 function loadConfig(file: string): Config {
-  const raw = JSON.parse(readFileSync(file, 'utf8')) as Config
+  const raw = decodeConfig(parseJson(readFileSync(file, 'utf8')))
   if (!Array.isArray(raw.scenarios) || raw.scenarios.length === 0)
     throw new Error(`${file}: "scenarios" must be a non-empty array`)
   return raw
@@ -268,17 +323,14 @@ class Cdp {
       once: true,
     })
     this.ws.addEventListener('message', (e) => {
-      const msg = JSON.parse(String(e.data)) as {
-        id?: number
-        result?: JsonObject
-        error?: { message: string }
-      }
-      if (msg.id === undefined) return
+      const msg = obj(parseJson(String(e.data)))
+      if (!isNumber(msg.id)) return
       const p = this.pending.get(msg.id)
       if (!p) return
       this.pending.delete(msg.id)
-      if (msg.error) p.reject(new Error(msg.error.message))
-      else p.resolve(msg.result ?? {})
+      const error = optObj(msg.error)
+      if (error) p.reject(new Error(str(error.message)))
+      else p.resolve(obj(msg.result))
     })
     return promise
   }
@@ -299,7 +351,17 @@ class Cdp {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
-const str = (v: Json | undefined): string => (typeof v === 'string' ? v : '')
+const isString = (v: Json | undefined): v is string => typeof v === 'string'
+const isNumber = (v: Json | undefined): v is number => typeof v === 'number'
+const isObject = (v: Json | undefined): v is JsonObject =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+const str = (v: Json | undefined): string => (isString(v) ? v : '')
+const obj = (v: Json | undefined): JsonObject => (isObject(v) ? v : {})
+const optObj = (v: Json | undefined): JsonObject | undefined => (isObject(v) ? v : undefined)
+const optObjects = (v: Json | undefined): JsonObject[] | undefined =>
+  Array.isArray(v) ? v.filter(isObject) : undefined
+const objects = (v: Json | undefined): JsonObject[] => optObjects(v) ?? []
+const parseJson = (text: string): Json => JSON.parse(text)
 
 // ---------------------------------------------------------------------------
 // Chrome lifecycle
@@ -352,13 +414,21 @@ async function launchChrome(
   throw new Error('Chrome did not expose the DevTools endpoint in time')
 }
 
+const decodeTargetList = Schema.decodeUnknownSync(
+  Schema.Array(
+    Schema.Struct({
+      url: Schema.optionalKey(Schema.String),
+      type: Schema.optionalKey(Schema.String),
+    }),
+  ),
+)
+
 async function discoverExtensionId(port: number): Promise<string> {
   const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
-    const targets = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as Array<{
-      url?: string
-      type?: string
-    }>
+    const targets = decodeTargetList(
+      await (await fetch(`http://127.0.0.1:${port}/json/list`)).json(),
+    )
     const sw = targets.find(
       (t) => t.type === 'service_worker' && (t.url ?? '').startsWith('chrome-extension://'),
     )
@@ -452,11 +522,11 @@ async function capturePage(
       session,
     )
     if (res.exceptionDetails) {
-      const details = res.exceptionDetails as JsonObject
-      const exception = details.exception as JsonObject | undefined
+      const details = obj(res.exceptionDetails)
+      const exception = optObj(details.exception)
       throw new Error(`page script failed: ${str(exception?.description) || str(details.text)}`)
     }
-    return ((res.result as JsonObject | undefined)?.value ?? null) as Json
+    return optObj(res.result)?.value ?? null
   }
   await evaluate(pageHelpers(config))
   await evaluate('__parity.settled()')
@@ -479,7 +549,7 @@ async function capturePage(
       await evaluate(`matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'`),
     ),
   }
-  const dom = JSON.parse(str(await evaluate(DUMP_SCRIPT))) as JsonObject
+  const dom = obj(parseJson(str(await evaluate(DUMP_SCRIPT))))
 
   // Forced pseudo states on every interactive element, one at a time. Transitions and
   // animations were compared in the default dump above; here they are switched off so each
@@ -491,16 +561,17 @@ async function capturePage(
   await cdp.send('DOM.enable', {}, session)
   await cdp.send('CSS.enable', {}, session)
   const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, session)
-  const root = (doc.root as JsonObject).nodeId as number
+  const root = obj(doc.root).nodeId
+  if (!isNumber(root)) throw new Error('DOM.getDocument returned no root node')
   const found = await cdp.send(
     'DOM.querySelectorAll',
     { nodeId: root, selector: config.stateTargets ?? DEFAULT_STATE_TARGETS },
     session,
   )
-  const nodeIds = (found.nodeIds as number[]) ?? []
+  const nodeIds = Array.isArray(found.nodeIds) ? found.nodeIds.filter(isNumber) : []
   for (const nodeId of nodeIds) {
     const resolved = await cdp.send('DOM.resolveNode', { nodeId }, session)
-    const objectId = ((resolved.object as JsonObject).objectId ?? '') as string
+    const objectId = str(obj(resolved.object).objectId)
     if (!objectId) continue
     const pathRes = await cdp.send(
       'Runtime.callFunctionOn',
@@ -516,7 +587,7 @@ async function capturePage(
       },
       session,
     )
-    const nodePath = str(((pathRes.result as JsonObject) ?? {}).value)
+    const nodePath = str(obj(pathRes.result).value)
     for (const state of [['hover'], ['focus', 'focus-visible'], ['active'], ['hover', 'active']]) {
       await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: state }, session)
       const dumpRes = await cdp.send(
@@ -532,9 +603,7 @@ async function capturePage(
         },
         session,
       )
-      states[`${state.join('+')}:${nodePath}`] = JSON.parse(
-        str(((dumpRes.result as JsonObject) ?? {}).value),
-      ) as Json
+      states[`${state.join('+')}:${nodePath}`] = parseJson(str(obj(dumpRes.result).value))
       await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] }, session)
     }
   }
@@ -593,9 +662,10 @@ const tabContextPatch = (contextUrl: string): string => `
 /** Runs `expression` in a throwaway page of the host (an extension page in extension mode). */
 async function inThrowawayPage(host: Host, url: string, expression: string): Promise<Json> {
   const { cdp } = host
-  const target = (await cdp.send('Target.createTarget', { url, ...host.open })).targetId as string
-  const session = (await cdp.send('Target.attachToTarget', { targetId: target, flatten: true }))
-    .sessionId as string
+  const target = str((await cdp.send('Target.createTarget', { url, ...host.open })).targetId)
+  const session = str(
+    (await cdp.send('Target.attachToTarget', { targetId: target, flatten: true })).sessionId,
+  )
   try {
     await cdp.send('Runtime.enable', {}, session)
     await sleep(300)
@@ -605,12 +675,12 @@ async function inThrowawayPage(host: Host, url: string, expression: string): Pro
       session,
     )
     if (res.exceptionDetails) {
-      const details = res.exceptionDetails as JsonObject
+      const details = obj(res.exceptionDetails)
       throw new Error(
-        `page script failed: ${str((details.exception as JsonObject | undefined)?.description) || str(details.text)}`,
+        `page script failed: ${str(optObj(details.exception)?.description) || str(details.text)}`,
       )
     }
-    return ((res.result as JsonObject | undefined)?.value ?? null) as Json
+    return optObj(res.result)?.value ?? null
   } finally {
     await cdp.send('Target.closeTarget', { targetId: target }).catch(() => {})
   }
@@ -628,11 +698,15 @@ const joinUrl = (base: string, scenarioPath: string): string =>
     ? scenarioPath
     : `${base.replace(/\/$/, '')}/${scenarioPath.replace(/^\//, '')}`
 
+const decodeVersion = Schema.decodeUnknownSync(
+  Schema.Struct({
+    webSocketDebuggerUrl: Schema.String,
+    Browser: Schema.optionalKey(Schema.String),
+  }),
+)
+
 async function connect(port: number): Promise<Cdp> {
-  const version = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()) as {
-    webSocketDebuggerUrl: string
-    Browser?: string
-  }
+  const version = decodeVersion(await (await fetch(`http://127.0.0.1:${port}/json/version`)).json())
   if (version.Browser) console.log(`attached to ${version.Browser}`)
   const cdp = new Cdp(version.webSocketDebuggerUrl)
   await cdp.open()
@@ -643,8 +717,9 @@ async function connect(port: number): Promise<Cdp> {
 // builds reject the parameter. Fall back to background tabs, which the capture activates briefly.
 async function probeHiddenTargets(cdp: Cdp): Promise<OpenTarget> {
   try {
-    const id = (await cdp.send('Target.createTarget', { url: 'about:blank', hidden: true }))
-      .targetId as string
+    const id = str(
+      (await cdp.send('Target.createTarget', { url: 'about:blank', hidden: true })).targetId,
+    )
     await cdp.send('Target.closeTarget', { targetId: id }).catch(() => {})
     return { hidden: true }
   } catch {
@@ -684,7 +759,7 @@ async function withStorageGuard(host: Host, outDir: string, reload: boolean): Pr
   }
 }
 
-const MIME: Record<string, string> = {
+const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript',
   '.mjs': 'text/javascript',
@@ -705,7 +780,11 @@ const MIME: Record<string, string> = {
   '.otf': 'font/otf',
   '.wasm': 'application/wasm',
   '.txt': 'text/plain; charset=utf-8',
-}
+} satisfies Record<string, string>
+const isServedExtension = (extension: string): extension is keyof typeof MIME =>
+  Object.hasOwn(MIME, extension)
+const isAddressInfo = (address: string | AddressInfo | null): address is AddressInfo =>
+  typeof address === 'object' && address !== null
 
 // Serves a built directory the way a static host would: files by path, directories through their
 // index.html, and any unknown path through the root index.html (client-side routing).
@@ -725,15 +804,16 @@ async function serveStatic(dir: string): Promise<{ url: string; close: () => Pro
       res.writeHead(404).end()
       return
     }
+    const extension = path.extname(file)
     res.writeHead(200, {
-      'content-type': MIME[path.extname(file)] ?? 'application/octet-stream',
+      'content-type': isServedExtension(extension) ? MIME[extension] : 'application/octet-stream',
       'cache-control': 'no-store',
     })
     res.end(readFileSync(file))
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
-  const port = typeof address === 'object' && address ? address.port : 0
+  const port = isAddressInfo(address) ? address.port : 0
   return {
     url: `http://127.0.0.1:${port}`,
     close: () => new Promise((resolve) => server.close(() => resolve())),
@@ -801,10 +881,12 @@ async function captureAll(host: Host, config: Config, outDir: string): Promise<v
     for (const sc of expandScenarios(config)) {
       // Every scenario starts from pristine state — one scenario's toggles must not leak into the next.
       if (host.extension) await inThrowawayPage(host, host.resolve(''), storageClearScript)
-      const target = (await cdp.send('Target.createTarget', { url: 'about:blank', ...host.open }))
-        .targetId as string
-      const session = (await cdp.send('Target.attachToTarget', { targetId: target, flatten: true }))
-        .sessionId as string
+      const target = str(
+        (await cdp.send('Target.createTarget', { url: 'about:blank', ...host.open })).targetId,
+      )
+      const session = str(
+        (await cdp.send('Target.attachToTarget', { targetId: target, flatten: true })).sessionId,
+      )
       await cdp.send('Page.enable', {}, session)
       await cdp.send('Runtime.enable', {}, session)
       for (const cookie of config.cookies ?? []) {
@@ -903,6 +985,8 @@ interface Diff {
   readonly detail: string
 }
 
+type StyleScope = Pick<Diff, 'scenario' | 'kind' | 'path'>
+
 interface CompareRules {
   readonly ignoredAttribute: Set<string>
   readonly ignoredCustomProperty: RegExp
@@ -910,9 +994,7 @@ interface CompareRules {
 
 function diffStyles(
   rules: CompareRules,
-  scenario: string,
-  kind: Diff['kind'],
-  pathKey: string,
+  scope: StyleScope,
   a: JsonObject,
   b: JsonObject,
   out: Diff[],
@@ -927,7 +1009,7 @@ function diffStyles(
     if (!(k in a) || !(k in b)) continue
     const av = normalise(k, str(a[k]))
     const bv = normalise(k, str(b[k]))
-    if (av !== bv) out.push({ scenario, kind, path: pathKey, detail: `${k}: "${av}" → "${bv}"` })
+    if (av !== bv) out.push({ ...scope, detail: `${k}: "${av}" → "${bv}"` })
   }
 }
 
@@ -949,17 +1031,17 @@ function compareScenario(
     })
     return out
   }
-  const base = JSON.parse(readFileSync(bp, 'utf8')) as Capture
-  const cand = JSON.parse(readFileSync(cp, 'utf8')) as Capture
-  const bn = (base.dom.nodes ?? []) as JsonObject[]
-  const cn = (cand.dom.nodes ?? []) as JsonObject[]
+  const base = obj(parseJson(readFileSync(bp, 'utf8')))
+  const cand = obj(parseJson(readFileSync(cp, 'utf8')))
+  const baseDom = obj(base.dom)
+  const candDom = obj(cand.dom)
+  const bn = objects(baseDom.nodes)
+  const cn = objects(candDom.nodes)
   diffStyles(
     rules,
-    name,
-    'style',
-    '/html',
-    (base.dom.html ?? {}) as JsonObject,
-    (cand.dom.html ?? {}) as JsonObject,
+    { scenario: name, kind: 'style', path: '/html' },
+    obj(baseDom.html),
+    obj(candDom.html),
     out,
   )
   if (bn.length !== cn.length)
@@ -971,8 +1053,8 @@ function compareScenario(
     })
   const n = Math.min(bn.length, cn.length)
   for (let i = 0; i < n; i++) {
-    const a = bn[i] as JsonObject
-    const b = cn[i] as JsonObject
+    const a = obj(bn[i])
+    const b = obj(cn[i])
     const p = str(a.path)
     if (a.tag !== b.tag || a.path !== b.path) {
       out.push({
@@ -983,8 +1065,8 @@ function compareScenario(
       })
       break
     }
-    const aa = (a.attrs ?? {}) as JsonObject
-    const ba = (b.attrs ?? {}) as JsonObject
+    const aa = obj(a.attrs)
+    const ba = obj(b.attrs)
     for (const k of new Set([...Object.keys(aa), ...Object.keys(ba)])) {
       if (rules.ignoredAttribute.has(k) || isHeadAsset(p, k)) continue
       if (str(aa[k]) !== str(ba[k]))
@@ -1002,18 +1084,10 @@ function compareScenario(
         path: p,
         detail: `"${str(a.text)}" → "${str(b.text)}"`,
       })
-    diffStyles(
-      rules,
-      name,
-      'style',
-      p,
-      (a.styles ?? {}) as JsonObject,
-      (b.styles ?? {}) as JsonObject,
-      out,
-    )
+    diffStyles(rules, { scenario: name, kind: 'style', path: p }, obj(a.styles), obj(b.styles), out)
     for (const pseudo of ['::before', '::after', '::placeholder', '::file-selector-button']) {
-      const ap = a[pseudo] as JsonObject | undefined
-      const bpv = b[pseudo] as JsonObject | undefined
+      const ap = optObj(a[pseudo])
+      const bpv = optObj(b[pseudo])
       if (!ap && !bpv) continue
       if (!ap || !bpv) {
         out.push({
@@ -1024,14 +1098,14 @@ function compareScenario(
         })
         continue
       }
-      diffStyles(rules, name, 'style', `${p}${pseudo}`, ap, bpv, out)
+      diffStyles(rules, { scenario: name, kind: 'style', path: `${p}${pseudo}` }, ap, bpv, out)
     }
   }
-  const bs = (base.states ?? {}) as JsonObject
-  const cs = (cand.states ?? {}) as JsonObject
+  const bs = obj(base.states)
+  const cs = obj(cand.states)
   for (const key of new Set([...Object.keys(bs), ...Object.keys(cs)])) {
-    const av = bs[key] as JsonObject[] | undefined
-    const bv = cs[key] as JsonObject[] | undefined
+    const av = optObjects(bs[key])
+    const bv = optObjects(cs[key])
     if (!av || !bv) {
       out.push({
         scenario: name,
@@ -1049,21 +1123,25 @@ function compareScenario(
         detail: `subtree size ${av.length} → ${bv.length}`,
       })
     for (let i = 0; i < Math.min(av.length, bv.length); i++) {
-      const ae = av[i] as JsonObject
-      const be = bv[i] as JsonObject
+      const ae = obj(av[i])
+      const be = obj(bv[i])
       diffStyles(
         rules,
-        name,
-        'state',
-        `${key} #${i}<${str(ae.tag)}>`,
-        (ae.styles ?? {}) as JsonObject,
-        (be.styles ?? {}) as JsonObject,
+        { scenario: name, kind: 'state', path: `${key} #${i}<${str(ae.tag)}>` },
+        obj(ae.styles),
+        obj(be.styles),
         out,
       )
-      const aAfter = ae['::after'] as JsonObject | undefined
-      const bAfter = be['::after'] as JsonObject | undefined
+      const aAfter = optObj(ae['::after'])
+      const bAfter = optObj(be['::after'])
       if (aAfter && bAfter)
-        diffStyles(rules, name, 'state', `${key} #${i}<${str(ae.tag)}>::after`, aAfter, bAfter, out)
+        diffStyles(
+          rules,
+          { scenario: name, kind: 'state', path: `${key} #${i}<${str(ae.tag)}>::after` },
+          aAfter,
+          bAfter,
+          out,
+        )
       else if (aAfter || bAfter)
         out.push({
           scenario: name,

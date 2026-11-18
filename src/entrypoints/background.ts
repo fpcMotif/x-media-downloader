@@ -61,8 +61,9 @@ import {
 import { decideQueueStart } from '@/packages/download/queue-start'
 import type { PendingInterruptRetry } from '@/packages/download/interrupt-retry'
 import { syndicationUrl } from '../core/adapters/x/syndication'
+import { makeTransferCorrelation } from '@/background/transfer-correlation'
+import { collectWithheldMedia, type WithheldMedia } from '@/packages/clear/seed'
 import {
-  classifyTransfer,
   emptyTracker,
   partitionOwnership,
   planBootReconcile,
@@ -164,8 +165,16 @@ const syndicationFetch = withTotalTimeout(fetch, SYNDICATION_FETCH_TIMEOUT_MS)
 // recycle; the persisted snapshot is the popup's source of truth. Rehydrating
 // the full accumulator across a recycle is the remaining work (ADR-0008).
 let live: MetricsState | null = null
-const requestIdByDownloadId = new Map<number, string>()
-const requestStartedAt = new Map<string, number>()
+// The ports are forward references to helpers declared further down. They only
+// resolve when a reconcile runs, long after module evaluation.
+const transferCorrelation = makeTransferCorrelation({
+  search: async (downloadId) => (await browser.downloads.search({ id: downloadId }))[0],
+  retryOwns: (id) => retryQueue.has(id),
+  complete: (id, downloadId, now) => completeBrowserDownload(id, downloadId, now),
+  fail: (id, downloadId, now) => failBrowserDownload(id, downloadId, now),
+  trace: (stage, entry) => traceBackground(stage, entry),
+  now: () => Date.now(),
+})
 let traceEvents: DownloadTraceEntry[] = []
 
 // In-flight request ids. A duplicate id (Quick Grab + '⬇ tweet' overlapping on
@@ -173,6 +182,10 @@ let traceEvents: DownloadTraceEntry[] = []
 // counts both, the idempotent recordOutcome counts one, and `completed` can
 // never reach `total`. Duplicates are dropped while the original is in flight.
 const inFlight = new Set<string>()
+// Requests handed to the Download Strategy whose start has not returned yet.
+// They are in `inFlight` but have no download id, so neither the correlation
+// map nor the retry queue counts them.
+let startingRequests = 0
 
 // Browser download metadata for interrupted auto-retry (url/filename + item).
 // Aliased to the persisted codec's decoded type so the in-memory shape and the
@@ -198,7 +211,7 @@ const retryQueueItem = storage.defineItem<ReadonlyArray<PendingInterruptRetry>>(
 )
 
 // Durable in-flight browser-transfer ledger (Transfer Tracker). The in-memory
-// `requestIdByDownloadId` correlation dies with the SW (ADR-0002); this survives
+// `transferCorrelation` map dies with the SW (ADR-0002); this survives
 // the recycle so an outcome that lands while the worker is dead is recovered by
 // reconciling against `downloads.search` on restart. Only browser transfers are
 // tracked — aria2 hand-offs are terminal at enqueue (ADR-0006) and never enter it.
@@ -218,7 +231,9 @@ const transfersItem = storage.defineItem<TrackerState>('session:transfers', {
 // `bookmark:fail`, which is the single most common false diagnosis on this path.
 const tabBroadcaster = makeTabBroadcaster(undefined, {
   trace: (stage, detail, tweetId) =>
-    traceBackground(stage, { detail, ...(tweetId === undefined ? {} : { tweetId }) }),
+    traceBackground(stage, { detail, ...(tweetId !== undefined && { tweetId }) }),
+  // `clearSession` is built further down; this only runs once a release is queued.
+  releaseAuthorized: (tweetId) => clearSession.releaseStillAuthorized(tweetId),
 })
 const { reportTransferOutcome, sendClearToTabs, resolveTabListScope } = tabBroadcaster
 
@@ -238,7 +253,7 @@ const resolveRetryUrl = async (meta: RequestMeta): Promise<string> => {
   traceBackground(fresh ? 'retry-url-refreshed' : 'retry-url-refresh-miss', {
     itemId: meta.item.id,
     type: meta.item.type,
-    ...(fresh ? {} : { detail: 'no open tab returned a fresher url — reusing the stale one' }),
+    ...(!fresh && { detail: 'no open tab returned a fresher url — reusing the stale one' }),
   })
   return fresh ?? meta.url
 }
@@ -343,7 +358,7 @@ type WithoutExplicitUndefined<T> = { [K in keyof T]: T[K] } extends infer O
  *  genuinely-`undefined`-valued key before the value reaches a `JsonValue`-typed
  *  boundary (durable storage), so the result really does satisfy the type the
  *  caller declares for it. Generic over the caller's own type — never `unknown`. */
-const toJsonValue = <T, R extends JsonValue>(value: T & WithoutExplicitUndefined<T>): R =>
+const toJsonValue = <T>(value: T & WithoutExplicitUndefined<T>): WithoutExplicitUndefined<T> =>
   JSON.parse(JSON.stringify(value))
 
 /** Structural twin of `packages/clear/diagnostics.ts`'s `ReleaseDiagnosticsLog` — a
@@ -358,6 +373,13 @@ type ReleaseDiagnosticsLogValue = {
   readonly decodeDropped: number
 }
 
+const toLogValue = (log: ReleaseDiagnosticsLog): ReleaseDiagnosticsLogValue => ({
+  events: log.events.map(toJsonValue),
+  evicted: log.evicted,
+  appended: log.appended,
+  decodeDropped: log.decodeDropped,
+})
+
 /** Drain the buffer into the durable log in ONE serialized read-modify-write.
  *  Awaitable so the export handler can flush before it reads — a user clicking
  *  "Export diagnostics" must never race the tail of their own Release run. */
@@ -371,7 +393,6 @@ const flushReleaseDiagnostics = async (): Promise<void> => {
   // next flush, not this one, or they'd be dropped by the reassignment below.
   const batch = releaseDiagnosticsBuffer
   releaseDiagnosticsBuffer = []
-  const toLogValue = (log: ReleaseDiagnosticsLog): ReleaseDiagnosticsLogValue => toJsonValue(log)
   await runSerializedRmw(
     releaseDiagnosticsQueue,
     {
@@ -731,7 +752,7 @@ function chooseStrategy(settings: Settings): DownloadStrategy {
     return makeSchemeRoutingStrategy(
       makeAria2Strategy(
         port,
-        { split: settings.aria2Split, ...(settings.aria2Dir ? { dir: settings.aria2Dir } : {}) },
+        { split: settings.aria2Split, ...(settings.aria2Dir && { dir: settings.aria2Dir }) },
         makeFetchServiceLive(fetch),
       ),
       direct,
@@ -755,9 +776,10 @@ const settleBrowserDownload = async (
   now: number,
 ): Promise<void> => {
   const tweetId = requestMetaById.get(id)?.item?.postId
+  const startedAt = transferCorrelation.startedAt(downloadId)
   inFlight.delete(id)
   clearInterruptRetryState(id)
-  requestIdByDownloadId.delete(downloadId)
+  transferCorrelation.release(downloadId)
   stopStuckPollIfIdle() // last download settled → let the watchdog go quiet
   // The terminal-outcome fan-out is ONE pure decision (packages/download/terminal-outcome):
   // it advances the tracker + metrics and emits the sync/history/backlink intents. This
@@ -772,7 +794,7 @@ const settleBrowserDownload = async (
     outcome,
     now,
     deviceId: settings.cloudDeviceId,
-    context: { ...(tweetId === undefined ? {} : { tweetId }), downloadId },
+    context: { ...(tweetId !== undefined && { tweetId }), downloadId },
   })
   await applyOutcomeEffects(
     fx,
@@ -800,10 +822,9 @@ const settleBrowserDownload = async (
   )
   traceBackground(outcome === 'complete' ? 'browser-complete' : 'browser-failed', {
     itemId: id,
-    elapsedMs: now - (requestStartedAt.get(id) ?? now),
+    elapsedMs: now - (startedAt ?? now),
     detail: `downloadId ${downloadId}`,
   })
-  requestStartedAt.delete(id)
 }
 
 const failBrowserDownload = (id: string, downloadId: number, now: number): Promise<void> =>
@@ -812,7 +833,7 @@ const failBrowserDownload = (id: string, downloadId: number, now: number): Promi
 const completeBrowserDownload = (id: string, downloadId: number, now: number): Promise<void> =>
   settleBrowserDownload(id, downloadId, 'complete', now)
 
-// Retry Scheduler shell (CONTEXT.md's Clock Port entry): the queue owns the
+// Retry Scheduler shell (GLOSSARY.md's Clock Port entry): the queue owns the
 // whole interrupt-retry state machine — attempt counter, queue row, live timer,
 // and the durable `session:interruptRetries` mirror move together behind its
 // interface (packages/download/retry-queue). `fire` is a forward reference to
@@ -863,7 +884,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
       filename: meta.filename,
       conflictAction: 'uniquify',
     })
-    requestIdByDownloadId.set(downloadId, id)
+    transferCorrelation.register(downloadId, id, Date.now())
     ensureStuckPoll() // watchdog recovers a missed terminal onChanged for this retry too
     // Remove from the retry queue BEFORE adding to the transfers ledger (mirrors
     // scheduleInterruptRetry's safe remove-then-add): a crash in this window then
@@ -875,7 +896,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
     transfersState = trackTransfer(transfersState, {
       id,
       downloadId,
-      ...(meta.item?.postId ? { tweetId: meta.item.postId } : {}),
+      ...(meta.item?.postId && { tweetId: meta.item.postId }),
       startedAt: Date.now(),
     })
     persistTransfers()
@@ -896,7 +917,7 @@ const fireInterruptRetry = async (id: string): Promise<void> => {
       downloadId: -1,
       url,
       filename: meta.filename,
-      ...(meta.item ? { item: meta.item } : {}),
+      ...(meta.item && { item: meta.item }),
       reason: 'NETWORK_FAILED',
       traceLabel: 'start-failed',
       now: Date.now(),
@@ -931,11 +952,11 @@ const scheduleInterruptRetry = (
     downloadId,
     url: meta.url,
     filename: meta.filename,
-    ...(meta.item ? { item: meta.item } : {}),
+    ...(meta.item && { item: meta.item }),
     reason,
     now,
     onScheduled: () => {
-      requestIdByDownloadId.delete(downloadId)
+      transferCorrelation.release(downloadId)
       // The dead downloadId leaves the active ledger; the retry is now tracked by
       // the durable retry queue (`session:interruptRetries`) until it fires a fresh one.
       transfersState = settleTransfer(transfersState, id)
@@ -953,7 +974,7 @@ const rehydrateInterruptRetries = async (): Promise<void> => {
     requestMetaById.set(item.id, {
       url: item.url,
       filename: item.filename,
-      ...(item.item ? { item: item.item } : {}),
+      ...(item.item && { item: item.item }),
     })
     inFlight.add(item.id)
   }
@@ -1025,7 +1046,7 @@ const reconcileTransfersOnBoot = async (): Promise<void> => {
     live: transfersState,
   })
   for (const t of plan.reSeed) {
-    requestIdByDownloadId.set(t.downloadId, t.id)
+    transferCorrelation.register(t.downloadId, t.id, t.startedAt)
     inFlight.add(t.id)
   }
   transfersState = plan.nextState
@@ -1072,44 +1093,14 @@ const STUCK_RECONCILE_POLL_MS = 6_000
 let stuckPollTimer: ReturnType<typeof setInterval> | null = null
 
 const stopStuckPollIfIdle = (): void => {
-  if (stuckPollTimer !== null && requestIdByDownloadId.size === 0) {
+  if (stuckPollTimer !== null && transferCorrelation.size() === 0) {
     clearInterval(stuckPollTimer)
     stuckPollTimer = null
   }
 }
 
 const reconcileStuckDownloads = async (): Promise<void> => {
-  const now = Date.now()
-  // Snapshot first — the settle helpers below mutate requestIdByDownloadId mid-loop.
-  const stuck = [...requestIdByDownloadId.entries()].filter(
-    ([, id]) =>
-      // The durable interrupt-retry queue owns its ids — never double-drive them here.
-      !retryQueue.has(id) && now - (requestStartedAt.get(id) ?? now) >= STUCK_RECONCILE_AFTER_MS,
-  )
-  // oxlint-disable no-await-in-loop -- few items; outcome side-effects are serial
-  for (const [downloadId, id] of stuck) {
-    let row: ReconcileRow | undefined
-    try {
-      row = (await browser.downloads.search({ id: downloadId }))[0]
-    } catch {
-      continue // transient search failure — try again next tick
-    }
-    // A live onChanged may have settled it during the await; only act if still mapped.
-    if (requestIdByDownloadId.get(downloadId) !== id) continue
-    const verdict = classifyTransfer(row)
-    if (verdict === 'complete') {
-      traceBackground('reconcile-stuck-complete', {
-        itemId: id,
-        detail: `downloadId ${downloadId}`,
-      })
-      await completeBrowserDownload(id, downloadId, now)
-    } else if (verdict === 'failed') {
-      traceBackground('reconcile-stuck-failed', { itemId: id, detail: `downloadId ${downloadId}` })
-      await failBrowserDownload(id, downloadId, now)
-    }
-    // 'in-progress' (genuinely downloading) / 'unknown' (purged record) → leave it.
-  }
-  // oxlint-enable no-await-in-loop
+  await transferCorrelation.reconcile({ minAgeMs: STUCK_RECONCILE_AFTER_MS })
   stopStuckPollIfIdle()
 }
 
@@ -1147,7 +1138,7 @@ const describeDedupedRequest = (
     completed: 0,
     total: rejectFailures.length,
     skipped,
-    ...(rejectFailures.length > 0 ? { failures: rejectFailures } : {}),
+    ...(rejectFailures.length > 0 && { failures: rejectFailures }),
   } satisfies QueueUpdate
   return { detail, response }
 }
@@ -1161,9 +1152,9 @@ interface QueueStartAssembly {
   readonly metrics: MetricsState | null
   readonly sweep: { readonly scope: Scope } | undefined
   readonly clearExpect:
-    | ReadonlyArray<{ readonly tweetId: string; readonly ids: ReadonlyArray<string> }>
-    | undefined
+    ReadonlyArray<{ readonly tweetId: string; readonly ids: ReadonlyArray<string> }> | undefined
   readonly originTabId: number | undefined
+  readonly withheld: ReadonlyArray<WithheldMedia>
 }
 
 /** Assemble `decideQueueStart`'s input, respecting `exactOptionalPropertyTypes`
@@ -1178,9 +1169,10 @@ const buildQueueStartArgs = (input: QueueStartAssembly) => {
     mediaById,
     settings,
     startedAt,
-    ...(sweep ? { sweep } : {}),
-    ...(clearExpect ? { clearExpect } : {}),
-    ...(originTabId === undefined ? {} : { originTabId }),
+    withheld: input.withheld,
+    ...(sweep && { sweep }),
+    ...(clearExpect && { clearExpect }),
+    ...(originTabId !== undefined && { originTabId }),
   }
 }
 
@@ -1198,7 +1190,7 @@ const markRequestsInFlight = (
     requestMetaById.set(r.id, {
       url: r.url,
       filename: r.filename,
-      ...(item ? { item } : {}),
+      ...(item && { item }),
     })
   }
 }
@@ -1243,7 +1235,7 @@ const applyStartFailedOutcome = (input: StartFailedOutcomeRecord): boolean => {
       outcome,
       now: ctx.now,
       deviceId: ctx.settings.cloudDeviceId,
-      ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
+      ...(media?.postId !== undefined && { tweetId: media.postId }),
     }),
     ctx.enqueuePorts,
   )
@@ -1251,7 +1243,7 @@ const applyStartFailedOutcome = (input: StartFailedOutcomeRecord): boolean => {
   failures.push({ itemId: o.id, reason })
   traceBackground(traceStageForSweep('start-failed', ctx.sweep), {
     itemId: o.id,
-    elapsedMs: ctx.now - (requestStartedAt.get(o.id) ?? ctx.startedAt),
+    elapsedMs: ctx.now - ctx.startedAt,
     detail: ctx.sweep ? `scope=${ctx.sweep.scope} reason=${redactTraceDetail(reason)}` : reason,
   })
   return dropped
@@ -1270,14 +1262,14 @@ const applyBrowserStartedOutcome = (
   metrics: MetricsState,
   ctx: OutcomeApplyCtx,
 ): MetricsState => {
-  requestIdByDownloadId.set(handle.id, o.id)
+  transferCorrelation.register(handle.id, o.id, ctx.startedAt)
   ensureStuckPoll() // watchdog recovers a missed terminal onChanged for this download
   if (!o.id.endsWith('.json'))
     transfersState = trackTransfer(transfersState, {
       id: o.id,
       downloadId: handle.id,
-      ...(media?.postId ? { tweetId: media.postId } : {}),
-      startedAt: requestStartedAt.get(o.id) ?? ctx.startedAt,
+      ...(media?.postId && { tweetId: media.postId }),
+      startedAt: ctx.startedAt,
     })
   const nextMetrics = recordSample(metrics, {
     id: o.id,
@@ -1287,7 +1279,7 @@ const applyBrowserStartedOutcome = (
   })
   traceBackground(traceStageForSweep('browser-started', ctx.sweep), {
     itemId: o.id,
-    elapsedMs: ctx.now - (requestStartedAt.get(o.id) ?? ctx.startedAt),
+    elapsedMs: ctx.now - ctx.startedAt,
     detail: ctx.sweep
       ? `scope=${ctx.sweep.scope} downloadId=${handle.id}`
       : `downloadId ${handle.id}`,
@@ -1321,7 +1313,7 @@ const applyExternalCompleteOutcome = (input: ExternalCompleteOutcomeRecord): boo
       outcome,
       now: ctx.now,
       deviceId: ctx.settings.cloudDeviceId,
-      ...(media?.postId === undefined ? {} : { tweetId: media.postId }),
+      ...(media?.postId !== undefined && { tweetId: media.postId }),
       bytes: sizeById.get(o.id) ?? 0,
     }),
     ctx.enqueuePorts,
@@ -1335,8 +1327,8 @@ const applyExternalCompleteOutcome = (input: ExternalCompleteOutcomeRecord): boo
       : undefined
   traceBackground(traceStageForSweep('external-complete', ctx.sweep), {
     itemId: o.id,
-    elapsedMs: ctx.now - (requestStartedAt.get(o.id) ?? ctx.startedAt),
-    ...(externalCompleteDetail === undefined ? {} : { detail: externalCompleteDetail }),
+    elapsedMs: ctx.now - ctx.startedAt,
+    ...(externalCompleteDetail !== undefined && { detail: externalCompleteDetail }),
   })
   return dropped
 }
@@ -1435,6 +1427,15 @@ const handleDownload = (
         sweep,
         clearExpect,
         originTabId,
+        // Read `inFlight` before this batch marks its own ids below.
+        withheld: collectWithheldMedia({
+          items,
+          admitted: admission.admitted,
+          alreadySavedIds: new Set(
+            admission.skipped.filter((s) => s.reason === 'duplicate').map((s) => s.item.id),
+          ),
+          isInFlight: (id) => inFlight.has(id),
+        }),
       }),
     )
     // Only the DISK requests enter the browser-transfer bookkeeping — in-flight
@@ -1449,7 +1450,6 @@ const handleDownload = (
     }
     live = yield* Effect.promise(() =>
       applyQueueStartEffects(startFx, startedAt, {
-        resetCorrelation: () => requestIdByDownloadId.clear(),
         setMetrics: (metrics) => {
           live = metrics
         },
@@ -1483,7 +1483,7 @@ const handleDownload = (
             for (const candidate of candidates) {
               rejectFailures.push({
                 itemId: candidate.item.id,
-                reason: 'Cloud submission failed. No browser fallback was attempted.',
+                reason: 'Cloud submission failed. No disk save was attempted.',
               })
             }
             await Promise.all(
@@ -1499,6 +1499,18 @@ const handleDownload = (
         },
         seedClear: clearSession.seedLedger,
       }),
+    ).pipe(
+      // A rejected queue-start write ends this batch before any save starts.
+      // Release its ids, or every later request for them is dropped as a duplicate.
+      Effect.onError(() =>
+        Effect.sync(() => {
+          for (const r of startFx.diskRequests) {
+            inFlight.delete(r.id)
+            requestMetaById.delete(r.id)
+          }
+          persistRequestMeta()
+        }),
+      ),
     )
 
     // Cloud-only (issue #95): the Download Strategy never runs (`diskRequests`
@@ -1507,17 +1519,25 @@ const handleDownload = (
     // reports the admitted media as both counts: `queue.enqueue([])` would answer
     // {completed: 0, total: 0}, which the overlay reads as "nothing admitted",
     // while everything admitted here WAS accepted — onto the upload ledger.
-    if (startFx.diskRequests.length === 0) {
+    const diskToEnqueue = startFx.diskRequests
+    if (diskToEnqueue.length === 0) {
       return {
         _tag: 'QueueUpdate' as const,
         completed: startFx.uploadItems.length - cloudSubmissionFailures,
         total: startFx.uploadItems.length + rejectFailures.length - cloudSubmissionFailures,
         skipped,
-        ...(rejectFailures.length > 0 ? { failures: rejectFailures } : {}),
+        ...(rejectFailures.length > 0 && { failures: rejectFailures }),
       }
     }
 
-    const res = yield* queue.enqueue(startFx.diskRequests)
+    startingRequests += diskToEnqueue.length
+    const res = yield* queue.enqueue(diskToEnqueue).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          startingRequests -= diskToEnqueue.length
+        }),
+      ),
+    )
 
     // Reconcile precise per-request outcomes: browser transfers go in-flight
     // (tracked by downloadId for the onChanged/search loop), aria2 hand-offs are
@@ -1551,7 +1571,7 @@ const handleDownload = (
       now,
       startedAt,
       enqueuePorts,
-      ...(sweep ? { sweep } : {}),
+      ...(sweep && { sweep }),
     } satisfies OutcomeApplyCtx
     for (const o of res.outcomes) {
       const media = mediaById.get(o.id)
@@ -1583,13 +1603,25 @@ const handleDownload = (
     recordHistory(settings, historyActions)
     persistTransfers()
     yield* Effect.promise(() => persistSnapshot(now))
+    // The ids above were registered only after the whole batch started. A
+    // download that already finished sent its terminal `onChanged` to an
+    // unregistered id, so ask `downloads.search` once for each of them now.
+    const startedDownloadIds = res.outcomes.flatMap((o) =>
+      o.ok && o.handle?.kind === 'browser' ? [o.handle.id] : [],
+    )
+    if (startedDownloadIds.length > 0)
+      yield* Effect.promise(() =>
+        transferCorrelation
+          .reconcile({ minAgeMs: 0, only: startedDownloadIds })
+          .then(stopStuckPollIfIdle, queueError('late-terminal')),
+      )
 
     return {
       _tag: 'QueueUpdate' as const,
       completed: res.completed,
       total: res.total + rejectFailures.length,
       skipped,
-      ...(failures.length > 0 ? { failures } : {}),
+      ...(failures.length > 0 && { failures }),
     }
   }).pipe(Effect.provide(SettingsServiceLive))
 
@@ -1671,11 +1703,11 @@ const handleSweepEnqueue = async (
 /** Byte progress is not carried in the onChanged delta (§d) — pull it from
  *  search and fold each sample into `live`. A gone record / transient search
  *  error drops this tick's progress (best-effort) but is now traced, not fully
- *  swallowed. Closes over `live`/`requestIdByDownloadId` like the terminal helpers. */
+ *  swallowed. Closes over `live`/`transferCorrelation` like the terminal helpers. */
 const sampleBytes = async (downloadId: number, now: number): Promise<void> => {
   try {
     const rows = await browser.downloads.search({ id: downloadId })
-    for (const sample of samplesFromSearch(rows, requestIdByDownloadId, now)) {
+    for (const sample of samplesFromSearch(rows, transferCorrelation.requestIds(), now)) {
       if (live) live = recordSample(live, sample)
     }
   } catch (err) {
@@ -1691,13 +1723,15 @@ const sampleBytes = async (downloadId: number, now: number): Promise<void> => {
  *  delta to complete / interrupt-retry / persist. Extracted from the inline
  *  onChanged IIFE; identical control flow. */
 const onDownloadChanged = async (delta: Browser.downloads.DownloadDelta): Promise<void> => {
-  const id = requestIdByDownloadId.get(delta.id)
+  const id = transferCorrelation.requestFor(delta.id)
   // Process any tracked transfer even when the metrics accumulator is null (e.g.
   // just after a boot reconcile re-seeded the correlation): the durable outcome
   // and badge backlink must still fire; the byte-sample writes stay `live`-guarded.
   if (id === undefined) return
   const now = Date.now()
   await sampleBytes(delta.id, now)
+  // A reconcile may have settled this id during the sample.
+  if (transferCorrelation.requestFor(delta.id) !== id) return
   if (delta.state?.current === 'complete') {
     await completeBrowserDownload(id, delta.id, now)
   } else if (delta.state?.current === 'interrupted') {
@@ -1712,12 +1746,16 @@ const onDownloadChanged = async (delta: Browser.downloads.DownloadDelta): Promis
  *  Kept as a named function (not inlined into the handler table) — large and
  *  stateful. Returns the popup-facing ClearDownloadMonitorResponse. */
 const clearDownloadMonitor = async (): Promise<ClearDownloadMonitorResponse> => {
-  const snap = (await metricsItem.getValue()) ?? ZERO_SNAPSHOT
-  if (snap.active > 0) {
+  // Liveness comes from what the browser and the retry queue report now. The
+  // persisted snapshot reads `active: 0` after a worker restart and while a
+  // batch is still starting, with transfers in flight in both cases.
+  const { inProgress } = await transferCorrelation.reconcile({ minAgeMs: 0 })
+  const active = inProgress + retryQueue.ownedIds().size + startingRequests
+  if (active > 0) {
     return {
       _tag: 'ClearDownloadMonitorResponse',
       ok: false,
-      active: snap.active,
+      active,
       clearedMetrics: false,
       clearedLocks: 0,
       reason: 'active-downloads',
@@ -1725,9 +1763,8 @@ const clearDownloadMonitor = async (): Promise<ClearDownloadMonitorResponse> => 
   }
   const clearedLocks = inFlight.size
   inFlight.clear()
-  requestIdByDownloadId.clear()
+  transferCorrelation.clear()
   stopStuckPollIfIdle() // map emptied → tear the watchdog down
-  requestStartedAt.clear()
   requestMetaById.clear()
   persistRequestMeta()
   // Timer/row/attempt/mirror teardown is atomic inside the queue — no
@@ -1778,19 +1815,18 @@ type MsgSender = { readonly tab?: { readonly id?: number | undefined } | undefin
  *  the shape built for exactly this: keyed by the full tag union, looked up
  *  with `.get`, no dictionary-typed binding required. */
 type MessageHandlerFn = (msg: Message, sender: MsgSender) => Promise<JsonValue>
-const handle =
-  <T extends Message['_tag']>(
-    fn: (msg: Extract<Message, { _tag: T }>, sender: MsgSender) => Promise<JsonValue>,
-  ) =>
-  (msg: Message, sender: MsgSender): Promise<JsonValue> => {
-    // SAFETY: The type parameter T is bound to Message['_tag'], so Extract<Message, { _tag: T }>
-    // narrows msg to the specific message type with that tag. The assertion is sound.
-    return fn(msg as Extract<Message, { _tag: T }>, sender)
-  }
+const handle = <T extends Message['_tag']>(
+  tag: T,
+  fn: (msg: Extract<Message, { _tag: T }>, sender: MsgSender) => Promise<JsonValue>,
+): MessageHandlerFn => {
+  const hasTag = (msg: Message): msg is Extract<Message, { _tag: T }> => msg._tag === tag
+  return (msg, sender) =>
+    hasTag(msg) ? fn(msg, sender) : Promise.reject(new Error(`${tag} handler received ${msg._tag}`))
+}
 const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   [
     'DownloadRequest',
-    handle<'DownloadRequest'>((msg, sender) =>
+    handle('DownloadRequest', (msg, sender) =>
       Effect.runPromise(handleDownload(msg.items, undefined, msg.clearExpect, sender.tab?.id)),
     ),
   ],
@@ -1808,17 +1844,17 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   // legs, which have no `sender.tab`, simply omit it).
   [
     'DownloadTraceEvent',
-    handle<'DownloadTraceEvent'>(async (msg, sender) => {
+    handle('DownloadTraceEvent', async (msg, sender) => {
       recordTrace({
         source: msg.source,
         stage: msg.stage,
         t: msg.t,
-        ...(msg.itemId !== undefined ? { itemId: msg.itemId } : {}),
-        ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
-        ...(msg.type !== undefined ? { type: msg.type } : {}),
-        ...(msg.elapsedMs !== undefined ? { elapsedMs: msg.elapsedMs } : {}),
-        ...(msg.detail !== undefined ? { detail: msg.detail } : {}),
-        ...(sender.tab?.id !== undefined ? { tabId: sender.tab.id } : {}),
+        ...(msg.itemId !== undefined && { itemId: msg.itemId }),
+        ...(msg.tweetId !== undefined && { tweetId: msg.tweetId }),
+        ...(msg.type !== undefined && { type: msg.type }),
+        ...(msg.elapsedMs !== undefined && { elapsedMs: msg.elapsedMs }),
+        ...(msg.detail !== undefined && { detail: msg.detail }),
+        ...(sender.tab?.id !== undefined && { tabId: sender.tab.id }),
       })
       await persistSnapshot(Date.now())
       return { ok: true }
@@ -1838,7 +1874,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
         records: decodeStore(await historyItem.getValue()).records,
       })),
   ],
-  ['SavedStatusRequest', handle<'SavedStatusRequest'>((msg) => savedStatusCoordinator.handle(msg))],
+  ['SavedStatusRequest', handle('SavedStatusRequest', (msg) => savedStatusCoordinator.handle(msg))],
   [
     'ClearHistoryRequest',
     () =>
@@ -1850,18 +1886,19 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   ['SyncTestRequest', async () => runSyncConnectionTest(await getSettings())],
   ['SyncStatusRequest', () => syncOutbox.getSyncStatus()],
   [
-    handle<'CloudConnectRequest'>((msg) =>
+    'CloudConnectRequest',
+    handle('CloudConnectRequest', (msg) =>
       cloudUpload.runOAuthConnect(msg.provider, msg.clientId, msg.clientSecret),
     ),
   ],
   [
     'CloudDisconnectRequest',
-    handle<'CloudDisconnectRequest'>((msg) => cloudUpload.disconnectProvider(msg.provider)),
+    handle('CloudDisconnectRequest', (msg) => cloudUpload.disconnectProvider(msg.provider)),
   ],
   ['RelaySetupRequest', () => cloudUpload.relaySetup()],
   [
     'RelayControlRequest',
-    handle<'RelayControlRequest'>(async (msg) => {
+    handle('RelayControlRequest', async (msg) => {
       await cloudUpload.setRelayControl(msg.enabled, msg.accepting, msg.connected)
       return { ok: true }
     }),
@@ -1871,7 +1908,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   ['CloudBackfillRequest', () => cloudUpload.backfillCloudUploads()],
   [
     'SweepEnqueueRequest',
-    handle<'SweepEnqueueRequest'>((msg, sender) =>
+    handle('SweepEnqueueRequest', (msg, sender) =>
       handleSweepEnqueue(msg.scope, msg.posts, sender.tab?.id),
     ),
   ],
@@ -1879,9 +1916,9 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   // DOM can't expose). Reply with the raw body; the content script parses it.
   [
     'RecoverTweetMediaRequest',
-    handle<'RecoverTweetMediaRequest'>(async (msg) => {
+    handle('RecoverTweetMediaRequest', async (msg) => {
       const body = await recoverSyndicationBody(msg.tweetId)
-      return { _tag: 'RecoverTweetMediaResponse', ...(body !== null ? { body } : {}) }
+      return { _tag: 'RecoverTweetMediaResponse', ...(body !== null && { body }) }
     }),
   ],
   // Knowledge Capture (spec §8/§9/§10/§12). The dispatcher persists the batch to
@@ -1890,7 +1927,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   // affects the `{ stored }` reply.
   [
     'CaptureTweets',
-    handle<'CaptureTweets'>(async (msg) => {
+    handle('CaptureTweets', async (msg) => {
       await captureDb.putRecords(msg.records)
       const total = await captureDb.count()
       console.info(`[XMD] capture received ${msg.records.length} record(s); store total=${total}`)
@@ -1903,7 +1940,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   // memory on each popup open just to compute three aggregates.
   [
     'CaptureSummaryRequest',
-    handle<'CaptureSummaryRequest'>(async (msg) =>
+    handle('CaptureSummaryRequest', async (msg) =>
       finishCaptureSummary(
         await captureDb.fold(emptyCaptureSummary(), foldCaptureSummary),
         msg.limit ?? captureRecentLimit,
@@ -1912,7 +1949,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   ],
   [
     'ExportCaptureRequest',
-    handle<'ExportCaptureRequest'>(async (msg) => {
+    handle('ExportCaptureRequest', async (msg) => {
       const records =
         msg.kind === 'jsonl' || msg.conversationId === undefined
           ? await captureDb.allRecords()
@@ -1930,12 +1967,13 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
     async () => {
       const cleared = await captureDb.count()
       await captureDb.clear()
+      await captureOutbox.clear()
       return { cleared }
     },
   ],
   [
     'ExportDiagnosticsRequest',
-    handle<'ExportDiagnosticsRequest'>(async () => {
+    handle('ExportDiagnosticsRequest', async () => {
       await flushReleaseDiagnostics()
       const log = await releaseDiagnosticsQueue.run(async () =>
         decodeReleaseDiagnostics(await releaseDiagnosticsItem.getValue()),
@@ -1945,9 +1983,9 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   ],
   [
     'ReleaseMutationEvent',
-    handle<'ReleaseMutationEvent'>(async (msg) => {
+    handle('ReleaseMutationEvent', async (msg) => {
       traceBackground('clear-mutation', {
-        ...(msg.tweetId !== undefined ? { tweetId: msg.tweetId } : {}),
+        ...(msg.tweetId !== undefined && { tweetId: msg.tweetId }),
         detail: `op=${msg.op} status=${msg.status} error=${msg.error}`,
       })
       return { _tag: 'ReleaseMutationAck' }
@@ -1955,7 +1993,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   ],
   [
     'ReleaseTickRequest',
-    handle<'ReleaseTickRequest'>(async (msg) => {
+    handle('ReleaseTickRequest', async (msg) => {
       const waitMs = Math.max(0, Math.min(msg.ms, RELEASE_TICK_MAX_MS))
       await new Promise<void>((resolve) => setTimeout(resolve, waitMs))
       return { ok: true }

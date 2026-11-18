@@ -73,8 +73,8 @@ function harness(
     probe,
     freshTimelineHasMember,
     report,
-    ...(opts.intervalMs === undefined ? {} : { intervalMs: opts.intervalMs }),
-    ...(opts.attempts === undefined ? {} : { attempts: opts.attempts }),
+    ...(opts.intervalMs !== undefined && { intervalMs: opts.intervalMs }),
+    ...(opts.attempts !== undefined && { attempts: opts.attempts }),
   })
   return { recheck, probe, report, freshTimelineHasMember, delays, pending, runAll, drain }
 }

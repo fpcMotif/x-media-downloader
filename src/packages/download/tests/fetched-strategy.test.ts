@@ -53,8 +53,8 @@ function makePorts(
       overrides.permissions?.request ??
       (async (pr) => {
         permissionCalls.push({
-          ...(pr.permissions ? { permissions: [...pr.permissions] } : {}),
-          ...(pr.origins ? { origins: [...pr.origins] } : {}),
+          ...(pr.permissions && { permissions: [...pr.permissions] }),
+          ...(pr.origins && { origins: [...pr.origins] }),
         })
         return true
       }),
@@ -148,8 +148,8 @@ describe('makeFetchedStrategy', () => {
         contains: async () => false,
         request: async (pr) => {
           permissionCalls.push({
-            ...(pr.permissions ? { permissions: [...pr.permissions] } : {}),
-            ...(pr.origins ? { origins: [...pr.origins] } : {}),
+            ...(pr.permissions && { permissions: [...pr.permissions] }),
+            ...(pr.origins && { origins: [...pr.origins] }),
           })
           return true
         },
@@ -555,8 +555,8 @@ describe('ensureFetchedPermissions', () => {
         contains: async () => true,
         request: async (pr) => {
           permissionCalls.push({
-            ...(pr.permissions ? { permissions: [...pr.permissions] } : {}),
-            ...(pr.origins ? { origins: [...pr.origins] } : {}),
+            ...(pr.permissions && { permissions: [...pr.permissions] }),
+            ...(pr.origins && { origins: [...pr.origins] }),
           })
           return true
         },
@@ -573,8 +573,8 @@ describe('ensureFetchedPermissions', () => {
         contains: async () => false,
         request: async (pr) => {
           permissionCalls.push({
-            ...(pr.permissions ? { permissions: [...pr.permissions] } : {}),
-            ...(pr.origins ? { origins: [...pr.origins] } : {}),
+            ...(pr.permissions && { permissions: [...pr.permissions] }),
+            ...(pr.origins && { origins: [...pr.origins] }),
           })
           return true
         },
@@ -596,8 +596,8 @@ describe('ensureFetchedPermissions', () => {
         contains: async () => false,
         request: async (pr) => {
           permissionCalls.push({
-            ...(pr.permissions ? { permissions: [...pr.permissions] } : {}),
-            ...(pr.origins ? { origins: [...pr.origins] } : {}),
+            ...(pr.permissions && { permissions: [...pr.permissions] }),
+            ...(pr.origins && { origins: [...pr.origins] }),
           })
           return false
         },

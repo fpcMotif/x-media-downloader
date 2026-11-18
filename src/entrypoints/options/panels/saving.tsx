@@ -356,10 +356,10 @@ export function SavingPanel({ settings, update }: PanelProps) {
       >
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="saveToDisk">Save to this computer</FieldLabel>
+            <FieldLabel htmlFor="saveToDisk">Download offline</FieldLabel>
             <FieldDescription>
-              Off sends new grabs only to your enabled cloud destinations — the Download mode below
-              then never writes a file
+              When off, new grabs default to the download server (via Convex). Turn on to download
+              offline to this computer
             </FieldDescription>
           </FieldContent>
           {/* The off position needs a live Cloud destination (issue #95); turning
@@ -368,7 +368,11 @@ export function SavingPanel({ settings, update }: PanelProps) {
           <Switch
             id="saveToDisk"
             checked={settings.saveToDisk}
-            disabled={settings.saveToDisk && !hasLiveCloudDestination(settings)}
+            disabled={
+              settings.saveToDisk &&
+              !settings.convexDriveEnabled &&
+              !hasLiveCloudDestination(settings)
+            }
             onCheckedChange={(checked: boolean) =>
               void update(saveToDiskToggleDelta(checked, settings))
             }

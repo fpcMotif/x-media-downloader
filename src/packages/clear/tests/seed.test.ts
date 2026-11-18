@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { Schema } from 'effect'
-import { planClearSeed } from '../seed'
+import { collectWithheldMedia, planClearSeed } from '../seed'
 import { Settings as SettingsSchema, type MediaItem, type Settings } from '@/packages/schema'
 import type { SaveRequest } from '@/packages/download/strategy'
 
-const baseSettings = Schema.decodeUnknownSync(SettingsSchema)({})
+const baseSettings: Settings = { ...Schema.decodeUnknownSync(SettingsSchema)({}), saveToDisk: true }
 const settings = (over: Partial<Settings> = {}): Settings => ({ ...baseSettings, ...over })
 
 // Clear-on-save + un-bookmark enabled — the minimal settings under which a hook
@@ -154,6 +154,118 @@ describe('planClearSeed — seeding', () => {
     if (verdict.decision !== 'seed') return
     expect([...verdict.byTweet.keys()]).toEqual(['100'])
     expect(verdict.byTweet.get('100')).toEqual(['m0'])
+  })
+
+  // Spec §1: "a partial Tweet is never Cleared".
+  it('does not seed a tweet when one of its media was withheld unsaved', () => {
+    const verdict = planClearSeed({
+      requests: [req('m0'), req('n0')],
+      mediaById: mediaById(photo('m0', '100'), photo('n0', '200')),
+      // m1 belongs to tweet 100 and was skipped by the daily budget.
+      withheld: [{ tweetId: '100', id: 'm1', cause: 'not-saved' }],
+      settings: CLEAR_ON,
+    })
+    expect(verdict.decision).toBe('seed')
+    if (verdict.decision !== 'seed') return
+    expect([...verdict.byTweet.keys()]).toEqual(['200'])
+    expect(verdict.partialCount).toBe(1)
+  })
+
+  it('a withheld media beats a clearExpect widening of the same tweet', () => {
+    const verdict = planClearSeed({
+      requests: [req('m0')],
+      mediaById: mediaById(photo('m0', '100')),
+      clearExpect: [{ tweetId: '100', ids: ['m0', 'm1'] }],
+      withheld: [{ tweetId: '100', id: 'm1', cause: 'not-saved' }],
+      settings: CLEAR_ON,
+    })
+    expect(verdict.decision).toBe('seed')
+    if (verdict.decision !== 'seed') return
+    expect(verdict.byTweet.size).toBe(0)
+  })
+
+  it('expects media of the same tweet that an earlier batch is still downloading', () => {
+    const verdict = planClearSeed({
+      requests: [req('m2'), req('m3')],
+      mediaById: mediaById(photo('m2', '100'), photo('m3', '100')),
+      // m0 and m1 were dropped from this batch as already in flight.
+      withheld: [
+        { tweetId: '100', id: 'm0', cause: 'in-flight' },
+        { tweetId: '100', id: 'm1', cause: 'in-flight' },
+      ],
+      settings: CLEAR_ON,
+    })
+    expect(verdict.decision).toBe('seed')
+    if (verdict.decision !== 'seed') return
+    expect(verdict.byTweet.get('100')?.toSorted()).toEqual(['m0', 'm1', 'm2', 'm3'])
+    expect(verdict.partialCount).toBe(0)
+  })
+
+  it('an in-flight media of a tweet with no request in this batch seeds nothing', () => {
+    const verdict = planClearSeed({
+      requests: [req('n0')],
+      mediaById: mediaById(photo('n0', '200')),
+      withheld: [{ tweetId: '100', id: 'm0', cause: 'in-flight' }],
+      settings: CLEAR_ON,
+    })
+    expect(verdict.decision).toBe('seed')
+    if (verdict.decision !== 'seed') return
+    expect([...verdict.byTweet.keys()]).toEqual(['200'])
+  })
+})
+
+describe('collectWithheldMedia', () => {
+  const m0 = photo('m0', '100')
+  const m1 = photo('m1', '100')
+  const m2 = photo('m2', '100')
+  const m3 = photo('m3', '100')
+
+  it('reports a rejected or admission-skipped item as not saved', () => {
+    expect(
+      collectWithheldMedia({
+        items: [m0, m1, m2],
+        // m1 was skipped for the daily budget; m2 never passed the URL guard.
+        admitted: [m0],
+        alreadySavedIds: new Set(),
+        isInFlight: () => false,
+      }),
+    ).toEqual([
+      { tweetId: '100', id: 'm1', cause: 'not-saved' },
+      { tweetId: '100', id: 'm2', cause: 'not-saved' },
+    ])
+  })
+
+  it('does not withhold an item skipped because it is already saved', () => {
+    expect(
+      collectWithheldMedia({
+        items: [m0, m1],
+        admitted: [m0],
+        alreadySavedIds: new Set(['m1']),
+        isInFlight: () => false,
+      }),
+    ).toEqual([])
+  })
+
+  it('does not withhold the repeat of an admitted id', () => {
+    expect(
+      collectWithheldMedia({
+        items: [m0, m0],
+        admitted: [m0],
+        alreadySavedIds: new Set(),
+        isInFlight: () => false,
+      }),
+    ).toEqual([])
+  })
+
+  it('reports an admitted item an earlier batch is still downloading as in flight', () => {
+    expect(
+      collectWithheldMedia({
+        items: [m0, m3],
+        admitted: [m0, m3],
+        alreadySavedIds: new Set(),
+        isInFlight: (id) => id === 'm3',
+      }),
+    ).toEqual([{ tweetId: '100', id: 'm3', cause: 'in-flight' }])
   })
 })
 

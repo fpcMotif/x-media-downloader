@@ -2,6 +2,7 @@ import { Schema } from 'effect'
 import { describe, it, expect } from 'vitest'
 import {
   applyUploadOutcome,
+  makeOutcomeApplier,
   backoffMs,
   capLedger,
   claim,
@@ -81,6 +82,23 @@ describe('enqueue / idempotency', () => {
     expect(l[0]!.attempts).toBe(0)
     expect(l[0]!.nextAttemptAt).toBe(10_000)
     expect(l[0]!.error).toBeNull()
+  })
+
+  // The history verdict keys off `cloudOnly`. A revived job must follow the
+  // mode of the request that revived it, not the mode it was first created in.
+  it('takes cloudOnly from the reviving request when a FAILED job is re-armed', () => {
+    let l = enqueue([], spec('m1'), 0)
+    const [c, jobId, token] = claimFirst(l, 0)
+    l = recordFailure(c, jobId, token, 0, 'twimg 500').ledger
+    expect(l[0]!.cloudOnly).toBeUndefined()
+
+    l = enqueue(l, { ...spec('m1'), cloudOnly: true }, 10_000)
+    expect(l[0]!.cloudOnly).toBe(true)
+
+    const [c2, jobId2, token2] = claimFirst(l, 10_000)
+    l = recordFailure(c2, jobId2, token2, 10_000, 'twimg 500').ledger
+    l = enqueue(l, spec('m1'), 20_000)
+    expect(l[0]!.cloudOnly).toBeUndefined()
   })
 
   it('revives a SKIPPED (source-gone) job when a fresh URL arrives', () => {
@@ -312,14 +330,13 @@ describe('applyUploadOutcome', () => {
   it('transient failure with retryAfterMs honours Retry-After and does not increment attempts', () => {
     const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
     const now = 1_000
-    const r = applyUploadOutcome(
-      l,
-      id,
-      t,
-      now,
-      { kind: 'failure', reason: 'r', status: 429, transient: true, retryAfterMs: 120_000 },
-      () => 0,
-    )
+    const r = makeOutcomeApplier(() => 0)(l, id, t, now, {
+      kind: 'failure',
+      reason: 'r',
+      status: 429,
+      transient: true,
+      retryAfterMs: 120_000,
+    })
     expect(r.settled!.status).toBe('failed')
     expect(r.settled!.attempts).toBe(0)
     expect(r.settled!.transientFailures).toBe(1)
@@ -329,14 +346,12 @@ describe('applyUploadOutcome', () => {
   it('transient failure without retryAfterMs applies full jitter to backoff', () => {
     const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
     const now = 1_000
-    const r = applyUploadOutcome(
-      l,
-      id,
-      t,
-      now,
-      { kind: 'failure', reason: 'r', status: 429, transient: true },
-      () => 0.5,
-    )
+    const r = makeOutcomeApplier(() => 0.5)(l, id, t, now, {
+      kind: 'failure',
+      reason: 'r',
+      status: 429,
+      transient: true,
+    })
     expect(r.settled!.status).toBe('failed')
     expect(r.settled!.attempts).toBe(0)
     expect(r.settled!.transientFailures).toBe(1)
@@ -351,28 +366,24 @@ describe('applyUploadOutcome', () => {
     for (let i = 1; i <= 20; i += 1) {
       const c = claim(l, id, now)
       expect(c.claimed).toBe(true)
-      l = applyUploadOutcome(
-        c.ledger,
-        id,
-        c.token!,
-        now,
-        { kind: 'failure', reason: `transient ${i}`, status: 503, transient: true },
-        () => 1,
-      ).ledger
+      l = makeOutcomeApplier(() => 1)(c.ledger, id, c.token!, now, {
+        kind: 'failure',
+        reason: `transient ${i}`,
+        status: 503,
+        transient: true,
+      }).ledger
       expect(l[0]!.attempts).toBe(0)
       expect(l[0]!.transientFailures).toBe(i)
       now = l[0]!.nextAttemptAt
     }
     const c = claim(l, id, now)
     expect(c.claimed).toBe(true)
-    const final = applyUploadOutcome(
-      c.ledger,
-      id,
-      c.token!,
-      now,
-      { kind: 'failure', reason: 'transient 21', status: 503, transient: true },
-      () => 1,
-    )
+    const final = makeOutcomeApplier(() => 1)(c.ledger, id, c.token!, now, {
+      kind: 'failure',
+      reason: 'transient 21',
+      status: 503,
+      transient: true,
+    })
     expect(final.settled!.status).toBe('failed')
     expect(final.settled!.attempts).toBe(1)
   })
@@ -380,7 +391,7 @@ describe('applyUploadOutcome', () => {
   it('non-transient failure applies jitter from random source', () => {
     const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
     const now = 1_000
-    const r = applyUploadOutcome(l, id, t, now, { kind: 'failure', reason: 'boom' }, () => 0.5)
+    const r = makeOutcomeApplier(() => 0.5)(l, id, t, now, { kind: 'failure', reason: 'boom' })
     expect(r.settled!.status).toBe('failed')
     expect(r.settled!.attempts).toBe(1)
     expect(r.settled!.nextAttemptAt).toBe(now + Math.floor(0.5 * backoffMs(1)))

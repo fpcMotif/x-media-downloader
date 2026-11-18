@@ -2,6 +2,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import pixelmatch from 'pixelmatch'
 import { PNG } from 'pngjs'
 
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
+type JsonObject = { [key: string]: Json }
+
+const isNumber = (v: Json | undefined): v is number => typeof v === 'number'
+const isString = (v: Json | undefined): v is string => typeof v === 'string'
+const isObject = (v: Json | undefined): v is JsonObject =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+const parseJson = (text: string): Json => JSON.parse(text)
+
 interface Checkpoint {
   name: string
   urlPath: string
@@ -18,11 +27,17 @@ const CHECKPOINTS: Checkpoint[] = [
 
 async function getCDPOptionsTarget(): Promise<{ wsUrl: string; extBaseUrl: string }> {
   const targets = await (await fetch('http://127.0.0.1:9222/json/list')).json()
-  const optTarget = targets.find((t: { url?: string; type?: string }) =>
-    t.type === 'page' && t.url && t.url.includes('chrome-extension://') && (t.url.includes('options.html') || t.url.includes('popup.html'))
+  const optTarget = targets.find(
+    (t: { url?: string; type?: string }) =>
+      t.type === 'page' &&
+      t.url &&
+      t.url.includes('chrome-extension://') &&
+      (t.url.includes('options.html') || t.url.includes('popup.html')),
   )
   if (!optTarget) {
-    throw new Error('Could not find extension page target on CDP port 9222. Ensure Chrome extension is running.')
+    throw new Error(
+      'Could not find extension page target on CDP port 9222. Ensure Chrome extension is running.',
+    )
   }
   const match = optTarget.url.match(/chrome-extension:\/\/[a-z0-9]+/i)
   const extBaseUrl = match ? match[0] : ''
@@ -32,7 +47,7 @@ async function getCDPOptionsTarget(): Promise<{ wsUrl: string; extBaseUrl: strin
 class CDPClient {
   private ws: WebSocket
   private id = 1
-  private pending = new Map<number, (res: unknown) => void>()
+  private pending = new Map<number, (res: JsonObject) => void>()
 
   constructor(wsUrl: string) {
     this.ws = new WebSocket(wsUrl)
@@ -42,18 +57,19 @@ class CDPClient {
     const { promise, resolve } = Promise.withResolvers<void>()
     this.ws.addEventListener('open', () => resolve(), { once: true })
     this.ws.addEventListener('message', (e) => {
-      const msg = JSON.parse(e.data as string)
-      if (msg.id && this.pending.has(msg.id)) {
-        const cb = this.pending.get(msg.id)!
+      const msg = parseJson(String(e.data))
+      if (!isObject(msg) || !isNumber(msg.id)) return
+      const cb = this.pending.get(msg.id)
+      if (cb) {
         this.pending.delete(msg.id)
-        cb(msg.result)
+        cb(isObject(msg.result) ? msg.result : {})
       }
     })
     return promise
   }
 
-  send(method: string, params: Record<string, unknown> = {}): Promise<any> {
-    const { promise, resolve } = Promise.withResolvers<any>()
+  send(method: string, params: JsonObject = {}): Promise<JsonObject> {
+    const { promise, resolve } = Promise.withResolvers<JsonObject>()
     const curId = this.id++
     this.pending.set(curId, resolve)
     this.ws.send(JSON.stringify({ id: curId, method, params }))
@@ -106,7 +122,7 @@ async function captureCheckpoints(mode: 'baseline' | 'candidate'): Promise<void>
       awaitPromise: true,
     })
     const ss = await client.send('Page.captureScreenshot', { format: 'png' })
-    const buf = Buffer.from(ss.data, 'base64')
+    const buf = Buffer.from(isString(ss.data) ? ss.data : '', 'base64')
     writeFileSync(`${outDir}/${cp.name}.png`, buf)
   }
 
@@ -152,17 +168,10 @@ function compareSnapshots(): DiffResult[] {
     const height = Math.max(img1.height, img2.height)
     const diff = new PNG({ width, height })
 
-    const numDiffPixels = pixelmatch(
-      img1.data,
-      img2.data,
-      diff.data,
-      width,
-      height,
-      {
-        threshold: 0.1,
-        diffColor: [253, 141, 104], // Frameshift signature coral
-      }
-    )
+    const numDiffPixels = pixelmatch(img1.data, img2.data, diff.data, width, height, {
+      threshold: 0.1,
+      diffColor: [253, 141, 104], // Frameshift signature coral
+    })
 
     writeFileSync(diffPath, PNG.sync.write(diff))
 
@@ -190,12 +199,12 @@ function generateFrameshiftReport(results: DiffResult[]): void {
     tool: 'frameshift-visual-diff-workflow',
     summary: {
       total: results.length,
-      unchanged: results.filter(r => r.status === 'unchanged').length,
-      changed: results.filter(r => r.status === 'changed').length,
-      added: results.filter(r => r.status === 'added').length,
-      removed: results.filter(r => r.status === 'removed').length,
+      unchanged: results.filter((r) => r.status === 'unchanged').length,
+      changed: results.filter((r) => r.status === 'changed').length,
+      added: results.filter((r) => r.status === 'added').length,
+      removed: results.filter((r) => r.status === 'removed').length,
     },
-    screens: results.map(r => ({
+    screens: results.map((r) => ({
       name: r.name,
       status: r.status,
       diffPixels: r.diffPixels,
@@ -268,7 +277,9 @@ function generateFrameshiftReport(results: DiffResult[]): void {
     <div>Unchanged: <strong style="color: var(--success)">${report.summary.unchanged}</strong></div>
     <div>Changed: <strong style="color: var(--accent)">${report.summary.changed}</strong></div>
   </div>
-  ${report.screens.map(s => `
+  ${report.screens
+    .map(
+      (s) => `
     <div class="card">
       <div class="card-header">
         <strong>${s.name}</strong>
@@ -289,7 +300,9 @@ function generateFrameshiftReport(results: DiffResult[]): void {
         </div>
       </div>
     </div>
-  `).join('')}
+  `,
+    )
+    .join('')}
 </body>
 </html>`
 
@@ -313,7 +326,9 @@ async function main() {
     const results = compareSnapshots()
     generateFrameshiftReport(results)
     for (const r of results) {
-      console.log(`  ${r.name.padEnd(25)}: ${r.status} (${r.diffPixels} diff px / ${(r.diffRatio * 100).toFixed(3)}%)`)
+      console.log(
+        `  ${r.name.padEnd(25)}: ${r.status} (${r.diffPixels} diff px / ${(r.diffRatio * 100).toFixed(3)}%)`,
+      )
     }
   }
 }

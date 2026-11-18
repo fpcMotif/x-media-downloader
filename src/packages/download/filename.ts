@@ -13,6 +13,14 @@ export function sanitizeSegment(seg: string): string {
     .trim()
 }
 
+// Sanitize every `/`-separated segment and drop the empties → a safe relative path.
+const toRelPath = (raw: string): string =>
+  raw
+    .split('/')
+    .map(sanitizeSegment)
+    .filter((s) => s.length > 0)
+    .join('/')
+
 /**
  * The download-folder name for a platform — what the `{platform}` token renders.
  * X's internal id is `x`, but the folder users expect (and the default template
@@ -55,13 +63,6 @@ export function renderFilename(template: string, item: MediaItem, date?: string)
     ['type', item.type],
     ['date', date ?? ''],
   ])
-  // Sanitize every `/`-separated segment and drop the empties → a safe relative path.
-  const toRelPath = (raw: string): string =>
-    raw
-      .split('/')
-      .map(sanitizeSegment)
-      .filter((s) => s.length > 0)
-      .join('/')
   const path = toRelPath(template.replace(/\{(\w+)\}/g, (_, key: string) => tokens.get(key) ?? ''))
   if (path.length > 0) return path
   // The template sanitized away to nothing — run the id/index fallback through the

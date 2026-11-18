@@ -56,8 +56,8 @@ export function findAuthor(node: JsonValue): Author {
       const userId = n['rest_id']
       found = {
         handle,
-        ...(isJsonString(name) ? { name } : {}),
-        ...(isJsonString(userId) ? { userId } : {}),
+        ...(isJsonString(name) && { name }),
+        ...(isJsonString(userId) && { userId }),
       }
       return
     }
@@ -83,15 +83,34 @@ const tweetLegacy = (n: JsonObject): JsonObject | null => {
 const tweetIdOf = (n: JsonObject, legacy: JsonObject): string =>
   idString(n['rest_id']) || idString(legacy['id_str'])
 
+const isVariant = (v: JsonValue): boolean =>
+  isJsonObject(v) &&
+  isJsonString(v['content_type']) &&
+  isJsonString(v['url']) &&
+  (v['bitrate'] === undefined || isJsonNumber(v['bitrate']))
+
+const isVideoInfo = (v: JsonValue | undefined): boolean => {
+  if (v === undefined) return true
+  if (!isJsonObject(v)) return false
+  const variants = v['variants']
+  return Array.isArray(variants) && variants.every(isVariant)
+}
+
+const isRawMedia = (v: JsonValue): v is JsonObject & RawMedia => {
+  if (!isJsonObject(v)) return false
+  const type = v['type']
+  return (
+    (type === 'photo' || type === 'video' || type === 'animated_gif') &&
+    isJsonString(v['media_url_https']) &&
+    (v['id_str'] === undefined || isJsonString(v['id_str'])) &&
+    isVideoInfo(v['video_info'])
+  )
+}
+
 const mediaOf = (legacy: JsonObject): RawMedia[] => {
   const ee = legacy['extended_entities']
   const media = isJsonObject(ee) ? ee['media'] : undefined
-  // SAFETY: `media` is only ever X's own `extended_entities.media` array — each
-  // entry is a `type`/`media_url_https`(+ optional `video_info`) object per X's
-  // GraphQL schema. This walker reads it defensively (never assumes a caller
-  // already validated it), same posture as the module doc's "walk, don't
-  // schema-decode" stance for undocumented third-party payloads.
-  return Array.isArray(media) ? (media as RawMedia[]) : []
+  return Array.isArray(media) ? media.filter(isRawMedia) : []
 }
 
 /**

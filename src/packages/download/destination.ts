@@ -103,8 +103,8 @@ export function buildSidecar(item: MediaItem, ctx?: SidecarContext): SidecarMeta
     type: item.type,
     index: item.index,
     url: item.url,
-    ...(ctx?.tweetUrl !== undefined ? { tweetUrl: ctx.tweetUrl } : {}),
-    ...(ctx?.capturedAt !== undefined ? { capturedAt: ctx.capturedAt } : {}),
+    ...(ctx?.tweetUrl !== undefined && { tweetUrl: ctx.tweetUrl }),
+    ...(ctx?.capturedAt !== undefined && { capturedAt: ctx.capturedAt }),
   }
 }
 

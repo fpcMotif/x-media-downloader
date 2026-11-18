@@ -1,6 +1,9 @@
 {
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react", "jsx-a11y", "vitest", "jsdoc"],
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react", "jsx-a11y", "vitest"],
+  "jsPlugins": [
+    { "name": "anti-slop", "specifier": "./tools/anti-slop/plugin.mjs" },
+    { "name": "jsdoc-js", "specifier": "eslint-plugin-jsdoc" }
+  ],
   "categories": {
     "correctness": "error",
     "suspicious": "warn",
@@ -18,10 +21,68 @@
   },
   "rules": {
     "react/react-in-jsx-scope": "off",
+    "react/purity": "off",
+    "react/immutability": "off",
+    "react/refs": "off",
+    "react/globals": "off",
     "no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
     "import/no-unassigned-import": ["warn", { "allow": ["**/*.css"] }],
     "vitest/expect-expect": ["error", { "assertFunctionNames": ["expect", "fc.assert"] }],
-    "jsdoc/check-tag-names": ["error", { "definedTags": ["defaultValue", "remarks"], "typed": true }]
+    "jsdoc-js/check-tag-names": [
+      "error",
+      { "definedTags": ["defaultValue", "remarks"], "typed": true }
+    ],
+
+    "typescript/no-explicit-any": "error",
+    "typescript/ban-ts-comment": "error",
+    "eqeqeq": ["error", "always"],
+    "typescript/no-unnecessary-type-assertion": "warn",
+
+    "no-console": ["warn", { "allow": ["warn", "error", "info", "debug"] }],
+    "no-warning-comments": ["warn", { "terms": ["todo", "fixme", "xxx", "hack"] }],
+    "unicorn/no-abusive-eslint-disable": "error",
+
+    "max-depth": ["warn", { "max": 4 }],
+    "max-nested-callbacks": ["warn", { "max": 4 }],
+    "max-params": ["warn", { "max": 5 }],
+
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-module-mocking": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-reflect-apply": "error",
+    "anti-slop/no-reflect-get": "error",
+    "anti-slop/no-runtime-typeof": ["error", { "allowInTypeGuards": true }],
+    "anti-slop/no-shape-in-symbol-names": "error",
+    "anti-slop/no-unknown-parameters": "error",
+    "anti-slop/no-unknown-returns": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-unsafe-dictionary-type": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "error",
+
+    "bun/fast-check-no-unseeded-random": "error",
+    "bun/jsx-no-forbidden-nesting": "error",
+    "bun/no-array-just-to-count": "error",
+    "bun/no-cast-to-brand": "error",
+    "bun/no-cwd-dependent-path": "error",
+    "bun/no-eager-dynamic-import": "error",
+    "bun/no-env-at-module-scope": "error",
+    "bun/no-literal-temp-dir": "error",
+    "bun/no-negative-repeat-count": "error",
+    "bun/no-redundant-catch-type": "error",
+    "bun/no-side-effects-on-import": "error",
+    "bun/no-unhandled-emitter-errors": "error",
+    "bun/no-unportable-commands": "error",
+    "bun/no-useless-spread-fallback": "error",
+    "bun/prefer-builtin-sleep": "error",
+    "bun/prefer-local-module": "error",
+    "bun/prefer-timeout-signal": "error",
+    "bun/prefer-url-for-sibling-files": "error",
+    "bun/react-no-latest-value-ref": "error",
+    "bun/react-no-local-render-helpers": "error",
+    "bun/react-no-namespace-hooks": "error",
+    "bun/react-prefer-updater-function": "error"
   },
   "overrides": [
     {
@@ -32,7 +93,78 @@
         "promise/prefer-await-to-then": "off",
         "promise/no-nesting": "off"
       }
+    },
+    {
+      "files": [
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "test/**",
+        "scripts/**",
+        "tools/**",
+        "block-replies.js"
+      ],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off",
+        "max-nested-callbacks": "off",
+        "no-await-in-loop": "off",
+        "no-console": "off"
+      }
+    },
+    {
+      "files": ["src/**/*.ts", "src/**/*.tsx"],
+      "excludeFiles": ["**/*.test.ts", "**/*.test.tsx"],
+      "rules": {
+        "bun/prefer-builtin-sleep": "off",
+        "bun/no-env-at-module-scope": "off"
+      }
+    },
+    {
+      "files": [
+        "src/entrypoints/background.ts",
+        "src/entrypoints/*/main.ts",
+        "src/entrypoints/*/main.tsx"
+      ],
+      "rules": {
+        "bun/no-side-effects-on-import": "off"
+      }
+    },
+    {
+      "files": ["scripts/**", "tools/**", "test/**", "*.config.ts", "*.js", "*.mjs"],
+      "rules": {
+        "bun/fast-check-no-unseeded-random": "off",
+        "bun/jsx-no-forbidden-nesting": "off",
+        "bun/no-array-just-to-count": "off",
+        "bun/no-cast-to-brand": "off",
+        "bun/no-cwd-dependent-path": "off",
+        "bun/no-eager-dynamic-import": "off",
+        "bun/no-env-at-module-scope": "off",
+        "bun/no-literal-temp-dir": "off",
+        "bun/no-negative-repeat-count": "off",
+        "bun/no-redundant-catch-type": "off",
+        "bun/no-side-effects-on-import": "off",
+        "bun/no-unhandled-emitter-errors": "off",
+        "bun/no-unportable-commands": "off",
+        "bun/no-useless-spread-fallback": "off",
+        "bun/prefer-builtin-sleep": "off",
+        "bun/prefer-local-module": "off",
+        "bun/prefer-timeout-signal": "off",
+        "bun/prefer-url-for-sibling-files": "off",
+        "bun/react-no-latest-value-ref": "off",
+        "bun/react-no-local-render-helpers": "off",
+        "bun/react-no-namespace-hooks": "off",
+        "bun/react-prefer-updater-function": "off"
+      }
     }
   ],
-  "ignorePatterns": [".output", ".wxt", "study", ".agents", ".claude", "backend", "src/components/ui", "tools/anti-slop"]
+  "ignorePatterns": [
+    ".output",
+    ".wxt",
+    "study",
+    ".agents",
+    ".claude",
+    "backend",
+    "src/components/ui",
+    "env.d.ts",
+    "tools/anti-slop"
+  ]
 }

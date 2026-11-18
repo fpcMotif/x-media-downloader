@@ -1,15 +1,13 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
-import { EraserIcon, iconSize } from '@/components/icons'
+import { ChevronDownIcon, EraserIcon, iconSize } from '@/components/icons'
 import { runCaptureExport, type CaptureSummary } from '@/components/capture-export'
-import {
-  plural,
-  fmtDay,
-  confirmEraseArchiveCopy,
-  erasedArchiveCopy,
-} from '@/components/capture-copy'
-import { ConfirmStrip } from '@/components/confirm-strip'
+import { plural, fmtDay, confirmEraseArchiveCopy } from '@/components/capture-copy'
+import { runCaptureErase } from '@/components/capture-erase'
+import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
+import { useOwnedTimer } from '@/components/owned-timer'
+import { Collapse, useLingeringValue } from './collapse'
 
 // Keep this in sync with the eager fetch in App.tsx (fetchCaptureSummary(3)) —
 // the popup asks the background for exactly this many recent conversations, so
@@ -20,29 +18,19 @@ const HOVER = '@media (hover: hover)'
 
 // `transition-colors` (Tailwind v4) — verbatim property list.
 const TRANSITION_COLORS =
-  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to'
+  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to, scale'
 // `focus-visible:ring-3 focus-visible:ring-ring/50` — five box-shadow layers.
 const FOCUS_RING =
   '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
 
-// `animate-in fade-in slide-in-from-top-1`.
-const enterFadeSlideTop1 = stylex.keyframes({
-  '0%': {
-    opacity: 0,
-    transform: 'translate3d(0, calc(1 * 0.25rem * -1), 0) scale3d(1, 1, 1) rotate(0)',
-    filter: 'blur(0)',
-  },
-})
-
 const styles = stylex.create({
   root: {
     display: 'grid',
-    gap: '0.5rem',
     borderTopStyle: 'solid',
     borderTopWidth: '1px',
     borderColor: tokens['--border'],
     paddingInline: '0.875rem',
-    paddingBlock: '1rem',
+    paddingBlock: '0.5rem',
   },
   // `data-slot="button"` override baked in: transitionDuration '0.16s',
   // transitionTimingFunction 'var(--xmd-ease)' (spec §3).
@@ -66,51 +54,33 @@ const styles = stylex.create({
     scale: { default: null, ':active': 0.97 },
     boxShadow: { default: null, ':focus-visible': FOCUS_RING },
   },
-  chevronWrap: {
-    position: 'relative',
-    display: 'inline-grid',
-    width: '0.75rem',
-    height: '0.75rem',
-    placeItems: 'center',
-  },
-  // No data-slot on these spans, so the 0.18s + var(--xmd-ease) utility
-  // values apply directly (no override).
-  chevronGlyph: {
-    gridColumnStart: 1,
-    gridRowStart: 1,
-    transitionProperty: 'opacity, transform',
-    transitionDuration: '0.18s',
+  chevron: {
+    flexShrink: 0,
+    transitionProperty: 'rotate',
+    transitionDuration: '0.26s',
     transitionTimingFunction: 'var(--xmd-ease)',
   },
-  chevronVisible: {
-    scale: '100% 100%',
-    opacity: 1,
-  },
-  chevronHidden: {
-    scale: '90% 90%',
-    opacity: 0,
-  },
+  chevronCollapsed: { rotate: '0deg' },
+  chevronExpanded: { rotate: '180deg' },
   panel: {
     display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr)',
     gap: '0.625rem',
-    animationName: enterFadeSlideTop1,
-    animationDuration: '0.22s',
-    animationTimingFunction: 'var(--xmd-ease)',
+    paddingTop: '0.25rem',
+    paddingBottom: '0.5rem',
     // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
     // (default `transition-property: all`).
     transitionDuration: '0.22s',
     transitionTimingFunction: 'var(--xmd-ease)',
-    animationDelay: '0s',
-    animationIterationCount: 1,
-    animationDirection: 'normal',
-    animationFillMode: 'none',
   },
   gridGap2: {
     display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr)',
     gap: '0.5rem',
   },
   recentRow: {
     display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr)',
     gap: '0.125rem',
     fontSize: '0.75rem',
     lineHeight: tokens['--text-xs--line-height'],
@@ -200,6 +170,7 @@ const styles = stylex.create({
     textWrap: 'pretty',
     fontSize: '0.75rem',
     lineHeight: 1.375,
+    paddingBottom: '0.5rem',
   },
 })
 
@@ -221,10 +192,10 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
   // One owned status-flash timer: a newer flash cancels the older timer before
   // rearming, and unmount cancels whatever is pending. Hooks stay above the
   // conditional return below.
-  const statusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => {
-    return () => clearTimeout(statusTimer.current)
-  }, [])
+  const statusTimer = useOwnedTimer()
+  const eraseStrip = useConfirmStrip()
+
+  const shownStatusMsg = useLingeringValue(statusMsg)
 
   const tweets = summary?.tweets ?? 0
   // A successful erase zeroes the parent's captureSummary synchronously in
@@ -235,11 +206,7 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
 
   const flashStatus = (msg: string): void => {
     setStatusMsg(msg)
-    clearTimeout(statusTimer.current)
-    statusTimer.current = setTimeout(() => {
-      setStatusMsg(null)
-      statusTimer.current = undefined
-    }, 5000)
+    statusTimer.arm(() => setStatusMsg(null), 5000)
   }
 
   const exportAll = async (): Promise<void> => {
@@ -258,13 +225,12 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
     flashStatus(outcome.detail)
   }
 
-  // Fire-and-forget, matching the Archive settings panel's eraseArchive: the
-  // local reset + status message happen unconditionally, since ClearCaptureRequest
-  // is a durable local wipe with no partial-failure mode worth branching on.
+  // The local reset happens only after the worker confirms the erase, matching
+  // the Archive settings panel's eraseArchive.
   const eraseArchive = async (): Promise<void> => {
-    await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
-    onCleared()
-    flashStatus(erasedArchiveCopy(tweets))
+    const outcome = await runCaptureErase(tweets)
+    if (outcome.ok) onCleared()
+    flashStatus(outcome.detail)
   }
 
   const recent = (summary?.recent ?? []).slice(0, RECENT_LIMIT)
@@ -279,27 +245,17 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
         onClick={() => setOpen((v) => !v)}
       >
         Recent
-        <span aria-hidden="true" {...stylex.props(styles.chevronWrap)}>
-          <span
-            {...stylex.props(
-              styles.chevronGlyph,
-              open ? styles.chevronVisible : styles.chevronHidden,
-            )}
-          >
-            ⌃
-          </span>
-          <span
-            {...stylex.props(
-              styles.chevronGlyph,
-              open ? styles.chevronHidden : styles.chevronVisible,
-            )}
-          >
-            ⌄
-          </span>
-        </span>
+        <ChevronDownIcon
+          aria-hidden="true"
+          sx={[
+            iconSize.s35,
+            styles.chevron,
+            open ? styles.chevronExpanded : styles.chevronCollapsed,
+          ]}
+        />
       </button>
 
-      {open && (
+      <Collapse open={open}>
         <div {...stylex.props(styles.panel)}>
           {recent.length > 0 ? (
             <ol {...stylex.props(styles.gridGap2)} aria-label="Recently captured conversations">
@@ -356,34 +312,35 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
             </button>
 
             <ConfirmStrip
+              control={eraseStrip}
               sentence={confirmEraseArchiveCopy(tweets)}
               confirmLabel="Erase the archive"
               kind="one-shot"
               onConfirm={() => void eraseArchive()}
             >
-              {(arm) => (
-                <button
-                  type="button"
-                  data-slot="button"
-                  {...stylex.props(styles.eraseText, styles.linkSlop)}
-                  onClick={arm}
-                >
-                  <EraserIcon sx={iconSize.s35} />
-                  Erase archive…
-                </button>
-              )}
+              <button
+                type="button"
+                data-slot="button"
+                {...stylex.props(styles.eraseText, styles.linkSlop)}
+                onClick={eraseStrip.arm}
+              >
+                <EraserIcon sx={iconSize.s35} />
+                Erase archive…
+              </button>
             </ConfirmStrip>
           </div>
         </div>
-      )}
+      </Collapse>
 
-      <output
-        aria-live="polite"
-        aria-atomic="true"
-        {...stylex.props(styles.statusOutput, styles.mutedForeground)}
-      >
-        {statusMsg}
-      </output>
+      <Collapse open={statusMsg !== null}>
+        <output
+          aria-live="polite"
+          aria-atomic="true"
+          {...stylex.props(styles.statusOutput, styles.mutedForeground)}
+        >
+          {shownStatusMsg}
+        </output>
+      </Collapse>
     </div>
   )
 }

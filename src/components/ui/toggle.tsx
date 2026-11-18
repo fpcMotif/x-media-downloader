@@ -30,9 +30,9 @@ const base = stylex.create({
     lineHeight: tokens['--text-sm--line-height'],
     fontWeight: { default: 500, '[data-pressed]': 600 },
     whiteSpace: 'nowrap',
-    transitionProperty: 'color, background-color, border-color, box-shadow, transform',
-    transitionDuration: '0.15s',
-    transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
+    transitionProperty: 'color, background-color, border-color, box-shadow, transform, scale',
+    transitionDuration: '0.16s',
+    transitionTimingFunction: 'var(--xmd-ease)',
     outlineStyle: 'none',
     backgroundColor: {
       default: null,

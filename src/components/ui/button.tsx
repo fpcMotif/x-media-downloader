@@ -36,7 +36,7 @@ const styles = stylex.create({
     lineHeight: tokens['--text-sm--line-height'],
     fontWeight: 500,
     whiteSpace: 'nowrap',
-    transitionProperty: 'color, background-color, border-color, box-shadow, transform',
+    transitionProperty: 'color, background-color, border-color, box-shadow, transform, scale',
     transitionDuration: '0.16s',
     transitionTimingFunction: 'var(--xmd-ease)',
     outlineStyle: 'none',

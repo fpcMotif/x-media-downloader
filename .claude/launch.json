@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "popup-harness",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "/private/tmp/claude-501/-Users-martinfan--claude-spares-spare-DNE81x/22c19180-483a-45cf-9747-393a494d4142/scratchpad/harness/serve.mjs",
+        ".output/chrome-mv3",
+        "4599"
+      ],
+      "port": 4599
+    },
+    {
+      "name": "ui-preview",
+      "runtimeExecutable": "bunx",
+      "runtimeArgs": [
+        "serve",
+        "-l",
+        "4391",
+        "/private/tmp/claude-501/-Users-martinfan--claude-spares-spare-SpkLIe/c2af06f8-655f-4442-a7ea-ef20b514cddc/scratchpad/site"
+      ],
+      "port": 4391
+    }
+  ]
+}

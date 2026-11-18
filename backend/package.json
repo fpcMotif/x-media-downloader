@@ -17,10 +17,10 @@
   },
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
-    "@types/node": "^25.9.3",
-    "@vitest/coverage-v8": "4.1.9",
-    "convex-test": "^0.0.53",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "@types/node": "^26.6.4",
+    "@vitest/coverage-v8": "5.0.3",
+    "convex-test": "^0.0.60",
+    "typescript": "next",
+    "vitest": "^5.0.3"
   }
 }

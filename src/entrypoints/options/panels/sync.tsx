@@ -76,6 +76,37 @@ const RelaySetup = Schema.Struct({
   reason: Schema.NullOr(Schema.String),
 })
 
+const decodeSyncStatus = Schema.decodeUnknownOption(
+  Schema.Struct({ ok: Schema.Boolean, detail: Schema.String, pending: Schema.Number }),
+)
+
+const decodeCloudUploadStatus = Schema.decodeUnknownOption(
+  Schema.Struct({
+    summary: Schema.Struct({
+      pending: Schema.Number,
+      uploading: Schema.Number,
+      succeeded: Schema.Number,
+      failed: Schema.Number,
+      dead: Schema.Number,
+      skipped: Schema.Number,
+    }),
+    lastError: Schema.NullOr(Schema.String),
+  }),
+)
+
+const decodeOkReply = Schema.decodeUnknownOption(Schema.Struct({ ok: Schema.Boolean }))
+
+const decodeDetailReply = Schema.decodeUnknownOption(Schema.Struct({ detail: Schema.String }))
+
+const replyDetail = (reply: Option.Option<{ readonly detail: string }>): string =>
+  Option.match(reply, {
+    onNone: () => 'The extension background did not respond.',
+    onSome: (r) => r.detail,
+  })
+
+const inputValue = (e: Event): string =>
+  e.target instanceof HTMLInputElement ? e.target.value : ''
+
 const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
 }
@@ -114,7 +145,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
       await update({
         convexDriveEnabled: enabled,
         convexDriveConnected: enabled || settings.convexDriveConnected,
-        ...(enabled ? { saveToDisk: false, downloadHistoryEnabled: true } : {}),
+        ...(enabled && { saveToDisk: false, downloadHistoryEnabled: true }),
       })
       setRelayMessage(
         enabled
@@ -147,7 +178,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
     }
     void browser.runtime
       .sendMessage({ _tag: 'SyncStatusRequest' })
-      .then((s) => setSyncStatus((s as SyncStatus | null) ?? null))
+      .then((s) => setSyncStatus(Option.getOrNull(decodeSyncStatus(s))))
       .catch(() => {})
   }, [cloudOn])
   useEffect(() => {
@@ -158,12 +189,12 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   useEffect(() => {
     if (!uploadOn) {
       setCloudStatus(null)
-      return
+      return undefined
     }
     const poll = (): void => {
       void browser.runtime
         .sendMessage({ _tag: 'CloudStatusRequest' })
-        .then((s) => setCloudStatus((s as CloudUploadStatus | null) ?? null))
+        .then((s) => setCloudStatus(Option.getOrNull(decodeCloudUploadStatus(s))))
         .catch(() => {})
     }
     poll()
@@ -181,7 +212,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
     setTestingSync(true)
     try {
       const res = await browser.runtime.sendMessage({ _tag: 'SyncTestRequest' })
-      setSyncStatus((res as SyncStatus | null) ?? null)
+      setSyncStatus(Option.getOrNull(decodeSyncStatus(res)))
     } catch {
       setSyncStatus({ ok: false, detail: 'The extension background did not respond.', pending: 0 })
     } finally {
@@ -207,11 +238,13 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         )
         return
       }
-      const res = (await browser.runtime
-        .sendMessage({ _tag: 'CloudConnectRequest', provider, clientId, clientSecret })
-        .catch(() => null)) as { ok?: boolean; detail?: string } | null
+      const res = decodeDetailReply(
+        await browser.runtime
+          .sendMessage({ _tag: 'CloudConnectRequest', provider, clientId, clientSecret })
+          .catch(() => null),
+      )
       await reload()
-      setConnectMsg(res?.detail ?? 'The extension background did not respond.')
+      setConnectMsg(replyDetail(res))
     } finally {
       setConnecting(null)
     }
@@ -222,7 +255,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
       .sendMessage({ _tag: 'CloudDisconnectRequest', provider })
       .catch(() => null)
     await reload()
-    if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true) {
+    if (!Option.exists(decodeOkReply(result), (r) => r.ok)) {
       const message =
         'Disconnect was not acknowledged. Backend authorization may still be active; retry before closing the browser.'
       setConnectMsg(message)
@@ -238,10 +271,10 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 
   const backfillUploads = async (): Promise<void> => {
     setConnectMsg('Queuing past downloads…')
-    const res = (await browser.runtime
-      .sendMessage({ _tag: 'CloudBackfillRequest' })
-      .catch(() => null)) as { detail?: string } | null
-    setConnectMsg(res?.detail ?? 'The extension background did not respond.')
+    const res = decodeDetailReply(
+      await browser.runtime.sendMessage({ _tag: 'CloudBackfillRequest' }).catch(() => null),
+    )
+    setConnectMsg(replyDetail(res))
   }
 
   return (
@@ -266,9 +299,8 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
             onCheckedChange={(checked: boolean) =>
               void update({
                 cloudSyncEnabled: checked,
-                ...(checked && settings.cloudDeviceId === ''
-                  ? { cloudDeviceId: crypto.randomUUID() }
-                  : {}),
+                ...(checked &&
+                  settings.cloudDeviceId === '' && { cloudDeviceId: crypto.randomUUID() }),
               })
             }
           />
@@ -282,9 +314,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
                 id="convexUrl"
                 placeholder="https://<deployment>.convex.cloud"
                 value={settings.convexUrl}
-                onChange={(e: Event) =>
-                  void update({ convexUrl: (e.target as HTMLInputElement).value })
-                }
+                onChange={(e: Event) => void update({ convexUrl: inputValue(e) })}
               />
             </Field>
             <Field>
@@ -294,9 +324,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
                 type="password"
                 placeholder="must match the deployment's SYNC_SHARED_SECRET"
                 value={settings.convexSyncSecret}
-                onChange={(e: Event) =>
-                  void update({ convexSyncSecret: (e.target as HTMLInputElement).value })
-                }
+                onChange={(e: Event) => void update({ convexSyncSecret: inputValue(e) })}
               />
             </Field>
             <div {...stylex.props(styles.flexWrapRow)}>
@@ -343,7 +371,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 
       <Section
         title="Experimental Convex uploads"
-        description="Cloud-only Google Drive uploads through your own deployment. Default off; no browser relay or local file."
+        description="Google Drive uploads through your own deployment. Default off; Drive never falls back to a browser upload."
       >
         <Button
           type="button"
@@ -357,12 +385,13 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
         <div {...stylex.props(styles.headerRow)}>
           <div>
             <label htmlFor="convexDriveEnabled" {...stylex.props(styles.providerLabel)}>
-              Use Convex for Cloud-only Drive uploads
+              Use Convex for Drive uploads
             </label>
             <p id="convexDriveDescription" {...stylex.props(styles.statusText, styles.colorMuted)}>
-              Requires Cloud upload and Drive Upload on, with Dropbox uploads off. Enabling also
-              turns on Download History. Accepted jobs continue after browser closure. No
-              credentials are copied from this extension.
+              Requires Cloud upload and Drive Upload on. Dropbox keeps uploading from this browser.
+              Enabling also turns on Download History and turns off saving to this computer.
+              Accepted jobs continue after browser closure. No credentials are copied from this
+              extension.
             </p>
           </div>
           <Switch
@@ -373,8 +402,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               !settings.convexDriveEnabled &&
               (!relaySetup?.available ||
                 !settings.cloudUploadEnabled ||
-                !settings.gdriveUploadEnabled ||
-                (settings.dropboxUploadEnabled && settings.dropboxRefreshToken !== ''))
+                !settings.gdriveUploadEnabled)
             }
             onCheckedChange={(checked: boolean) => void toggleRelay(checked)}
           />
@@ -416,6 +444,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               earlier.
             </FieldDescription>
             <CloudProviderRow
+              key={`gdrive:${settings.gdriveClientId}:${settings.gdriveClientSecret}`}
               provider="gdrive"
               clientId={settings.gdriveClientId}
               clientSecret={settings.gdriveClientSecret}
@@ -430,6 +459,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               onDisconnect={() => void disconnectProvider('gdrive')}
             />
             <CloudProviderRow
+              key={`dropbox:${settings.dropboxClientId}`}
               provider="dropbox"
               clientId={settings.dropboxClientId}
               clientSecret=""
@@ -520,13 +550,7 @@ function CloudProviderRow({
   // writes it to the settings blob (single-writer, ADR-0005). Seed from the
   // persisted value and resync when it changes (e.g. after a successful connect).
   const [draft, setDraft] = useState(clientId)
-  useEffect(() => {
-    setDraft(clientId)
-  }, [clientId])
   const [secretDraft, setSecretDraft] = useState(clientSecret)
-  useEffect(() => {
-    setSecretDraft(clientSecret)
-  }, [clientSecret])
   return (
     <div {...stylex.props(styles.providerRoot)}>
       <div {...stylex.props(styles.headerRow)}>
@@ -545,7 +569,7 @@ function CloudProviderRow({
           id={`${provider}ClientId`}
           placeholder={provider === 'gdrive' ? 'xxxx.apps.googleusercontent.com' : 'your app key'}
           value={draft}
-          onChange={(e: Event) => setDraft((e.target as HTMLInputElement).value)}
+          onChange={(e: Event) => setDraft(inputValue(e))}
         />
         <FieldDescription>
           <a
@@ -570,7 +594,7 @@ function CloudProviderRow({
             type="password"
             placeholder="GOCSPX-…"
             value={secretDraft}
-            onChange={(e: Event) => setSecretDraft((e.target as HTMLInputElement).value)}
+            onChange={(e: Event) => setSecretDraft(inputValue(e))}
           />
           <FieldDescription>
             Google issues this beside the client ID. It rejects the connection without it, even

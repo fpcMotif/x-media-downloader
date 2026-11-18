@@ -21,7 +21,13 @@ import {
   handleLocationChange,
 } from './handlers'
 import type { HandlerDeps, LocationChangeDeps, SendResponse, TrackedSendResult } from './handlers'
-import type { ClearTweetResponse, JsonValue, MediaItem } from '@/packages/schema'
+import type {
+  ClearScope,
+  ClearTweetRequest,
+  ClearTweetResponse,
+  JsonValue,
+  MediaItem,
+} from '@/packages/schema'
 import type { PlatformAdapter } from '../../core/adapters/types'
 import { makeDetectionStore } from '../../core/adapters/detection-store'
 import { instagramAdapter } from '../../core/adapters/instagram/adapter'
@@ -29,7 +35,7 @@ import { threadsAdapter } from '../../core/adapters/threads/adapter'
 import { xAdapter } from '../../core/adapters/x/adapter'
 import { wholePostItemsFor } from './post-grab'
 import { isReleaseDiagnosticsEvent } from '@/packages/clear/diagnostics'
-import type { BadgeState } from '@/packages/overlay/badge'
+import { hiddenBadge, type BadgeState } from '@/packages/overlay/badge'
 import { findArticle } from '@/packages/clear/clearer'
 import { makeClickGuard } from '@/packages/clear/click-guard'
 import { makeReleaseThrottle } from '@/packages/clear/throttle'
@@ -48,12 +54,67 @@ type HandlerDepsOverrides = Partial<
 }
 
 /** Build a `HandlerDeps` test double from only the fields a scenario needs. */
+const notStubbed = (field: string) => (): never => {
+  throw new Error(`HandlerDeps.${field} is not stubbed in this test`)
+}
+
+const testLocation = () => {
+  const url = new URL(window.location.href)
+  return {
+    ancestorOrigins: window.location.ancestorOrigins,
+    hash: url.hash,
+    host: url.host,
+    hostname: url.hostname,
+    href: url.href,
+    origin: url.origin,
+    pathname: url.pathname,
+    port: url.port,
+    protocol: url.protocol,
+    search: url.search,
+    assign: notStubbed('location.assign'),
+    reload: notStubbed('location.reload'),
+    replace: notStubbed('location.replace'),
+    toString: () => url.href,
+  }
+}
+
 const makeHandlerDeps = (overrides: HandlerDepsOverrides = {}): HandlerDeps => {
-  // SAFETY: every field left unset here is simply never read by the handler(s)
-  // exercised in this suite — each call site (or the shared `makeDeps`/`depsWith`
-  // helpers below) documents which fields matter for its path, same contract the
-  // old per-call-site `as unknown as HandlerDeps` casts asserted individually.
-  return overrides as HandlerDeps
+  const { adapter, location, store, getBadge, ...rest } = overrides
+  return {
+    document,
+    rerender: notStubbed('rerender'),
+    setBadge: notStubbed('setBadge'),
+    getBadgeMedia: notStubbed('getBadgeMedia'),
+    getBadgeRequestId: notStubbed('getBadgeRequestId'),
+    getBadgeRequestKey: notStubbed('getBadgeRequestKey'),
+    clearBadgeTimers: notStubbed('clearBadgeTimers'),
+    resetBadge: notStubbed('resetBadge'),
+    previewKeyFromMedia: notStubbed('previewKeyFromMedia'),
+    getLauncher: notStubbed('getLauncher'),
+    setLauncher: notStubbed('setLauncher'),
+    getLauncherBatchIds: notStubbed('getLauncherBatchIds'),
+    clearLauncherRevert: notStubbed('clearLauncherRevert'),
+    clearDwell: notStubbed('clearDwell'),
+    setCursorActive: notStubbed('setCursorActive'),
+    resetGrab: notStubbed('resetGrab'),
+    clearRescanSpin: notStubbed('clearRescanSpin'),
+    sendTracked: notStubbed('sendTracked'),
+    recoverMissingVideos: notStubbed('recoverMissingVideos'),
+    notifyContextLost: notStubbed('notifyContextLost'),
+    clearLog: notStubbed('clearLog'),
+    reportClear: notStubbed('reportClear'),
+    clearScope: notStubbed('clearScope'),
+    runDrain: notStubbed('runDrain'),
+    savedStatusActive: notStubbed('savedStatusActive'),
+    ...rest,
+    adapter: { ...xAdapter, ...adapter },
+    location: Object.assign(location ?? {}, { ...testLocation(), ...location }),
+    store: {
+      ...makeDetectionStore({ mediaKeyFromUrl: (url) => xAdapter.mediaKeyFromUrl(url) }),
+      ...store,
+    },
+    getBadge: () => ({ ...hiddenBadge, ...getBadge?.() }),
+  }
 }
 
 // handleClearTweet is the (previously untested) wiring that decides WHICH scopes
@@ -115,13 +176,7 @@ const isClearTweetResponse = (r: Parameters<SendResponse>[0]): r is ClearTweetRe
 /** Drive the handler to completion (it returns true sync, then resolves async). */
 const run = (
   deps: HandlerDeps,
-  message: {
-    tweetId: string
-    scopes: string[]
-    allLists?: boolean
-    asPageScope?: 'bookmark' | 'like'
-    probe?: boolean
-  },
+  message: Omit<ClearTweetRequest, '_tag'>,
 ): Promise<ClearTweetResponse> =>
   new Promise((resolve) => {
     // This helper exists solely to await handleClearTweet's one async reply for
@@ -129,7 +184,7 @@ const run = (
     // (see every `sendResponse({ _tag: 'ClearTweetResponse', ... })` call in its
     // implementation) — a mismatched tag throws instead of leaving this Promise to
     // hang forever, so a future regression fails the test fast, not on a timeout.
-    handleClearTweet(message, deps, (r) => {
+    handleClearTweet({ _tag: 'ClearTweetRequest', ...message }, deps, (r) => {
       if (!isClearTweetResponse(r)) {
         throw new Error(`run: expected ClearTweetResponse, got ${r._tag}`)
       }
@@ -137,7 +192,7 @@ const run = (
     })
   })
 
-const ALL: string[] = ['bookmark', 'like', 'notInterested']
+const ALL: ClearScope[] = ['bookmark', 'like', 'notInterested']
 
 const mediaItem = (id: string, postId: string): MediaItem => ({
   id,
@@ -280,7 +335,7 @@ describe('handleClearTweet — scope wiring', () => {
     const runDrain = vi.fn<HandlerDeps['runDrain']>(async () => [{ scope: 'like', ok: true }])
     const response = await new Promise<unknown>((resolve) => {
       handleClearDrain(
-        { tweetId: '999', scopes: ['like'], allLists: false },
+        { _tag: 'ClearDrainRequest', tweetId: '999', scopes: ['like'], allLists: false },
         makeDeps({
           clearScope: async () => true,
           runDrain,
@@ -300,7 +355,7 @@ describe('handleClearTweet — scope wiring', () => {
   it('worker-authorized Drain converts a thrown DOM path into failure results', async () => {
     const response = await new Promise<unknown>((resolve) => {
       handleClearDrain(
-        { tweetId: '999', scopes: ['like'], allLists: false },
+        { _tag: 'ClearDrainRequest', tweetId: '999', scopes: ['like'], allLists: false },
         makeDeps({
           clearScope: async () => true,
           runDrain: async () => {
@@ -1775,7 +1830,7 @@ describe('clearMountedForScope — ghost-row skip', () => {
     const ghosts = new Map<string, number>()
     const lines: Array<{ stage: string; tweetId?: string }> = []
     const trace = (stage: string, _detail: string, tweetId?: string) =>
-      lines.push({ stage, ...(tweetId === undefined ? {} : { tweetId }) })
+      lines.push({ stage, ...(tweetId !== undefined && { tweetId }) })
 
     for (let pass = 0; pass < GHOST_NOFLIP_LIMIT; pass++) {
       await clearMountedForScope({ document, scope: 'bookmark', paceMs: 0, trace, ghosts })
@@ -1907,7 +1962,7 @@ describe('clearMountedForScope — rate-limit throttle', () => {
     const ghosts = new Map<string, number>()
     const lines: Array<{ stage: string; detail: string; tweetId?: string }> = []
     const trace = (stage: string, detail: string, tweetId?: string) => {
-      lines.push({ stage, detail, ...(tweetId === undefined ? {} : { tweetId }) })
+      lines.push({ stage, detail, ...(tweetId !== undefined && { tweetId }) })
     }
 
     await clearMountedForScope({
@@ -1937,7 +1992,7 @@ describe('clearMountedForScope — rate-limit throttle', () => {
     const ghosts = new Map<string, number>()
     const lines: Array<{ stage: string; detail: string; tweetId?: string }> = []
     const trace = (stage: string, detail: string, tweetId?: string) => {
-      lines.push({ stage, detail, ...(tweetId === undefined ? {} : { tweetId }) })
+      lines.push({ stage, detail, ...(tweetId !== undefined && { tweetId }) })
     }
 
     await clearMountedForScope({
@@ -2027,12 +2082,7 @@ const makeLocationDeps = (
     readonly platform: LocationChangeDeps['platform']
     readonly store: LocationChangeDeps['store']
   },
-): {
-  readonly deps: LocationChangeDeps
-  readonly calls: string[]
-  readonly traces: Array<{ readonly stage: string; readonly detail: string }>
-  readonly syncedPaths: string[]
-} => {
+) => {
   const calls: string[] = []
   const traces: Array<{ readonly stage: string; readonly detail: string }> = []
   const syncedPaths: string[] = []
@@ -2071,7 +2121,9 @@ describe('handleLocationChange and replayInlineData', () => {
   })
 
   it('Instagram route change resets page scope while preserving hover and whole-post resolution and emits capture traces', () => {
-    const store = makeDetectionStore({ mediaKeyFromUrl: instagramAdapter.mediaKeyFromUrl })
+    const store = makeDetectionStore({
+      mediaKeyFromUrl: (url) => instagramAdapter.mediaKeyFromUrl(url),
+    })
     const reelVideo = {
       id: 'ig-reel-1',
       platform: 'instagram',
@@ -2161,7 +2213,9 @@ describe('handleLocationChange and replayInlineData', () => {
     script.textContent = inlineReelPayload('DaH4la4pRtC', '3929358061996940098')
     document.head.appendChild(script)
 
-    const store = makeDetectionStore({ mediaKeyFromUrl: instagramAdapter.mediaKeyFromUrl })
+    const store = makeDetectionStore({
+      mediaKeyFromUrl: (url) => instagramAdapter.mediaKeyFromUrl(url),
+    })
     const dispatchedPaths: string[] = []
     const onMediaResponse = (event: CustomEvent<{ path: string; body: string }>): void => {
       dispatchedPaths.push(event.detail.path)
@@ -2224,7 +2278,9 @@ describe('handleLocationChange and replayInlineData', () => {
     script.textContent = inlineReelPayload('ThreadsCode1', '7777777')
     document.head.appendChild(script)
 
-    const store = makeDetectionStore({ mediaKeyFromUrl: threadsAdapter.mediaKeyFromUrl })
+    const store = makeDetectionStore({
+      mediaKeyFromUrl: (url) => threadsAdapter.mediaKeyFromUrl(url),
+    })
     const onMediaResponse = (event: CustomEvent<{ path: string; body: string }>): void => {
       const json: JsonValue = JSON.parse(event.detail.body)
       store.addDetected(threadsAdapter.detectFromResponse(event.detail.path, json))
@@ -2273,7 +2329,9 @@ describe('handleLocationChange and replayInlineData', () => {
     document.addEventListener('xmd:media-response', dispatched)
 
     try {
-      const store = makeDetectionStore({ mediaKeyFromUrl: xAdapter.mediaKeyFromUrl })
+      const store = makeDetectionStore({
+        mediaKeyFromUrl: (url) => xAdapter.mediaKeyFromUrl(url),
+      })
       const xPhoto = {
         id: 'x-p1',
         platform: 'x',

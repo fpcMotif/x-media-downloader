@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeListClear, type ListClearDeps } from '../list-clear'
 
@@ -53,7 +54,7 @@ function harness(opts: {
       viewport: () => VIEWPORT,
     },
     clock: {
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      sleep: (ms) => sleep(ms),
       after: (ms, fn) => {
         const h = setTimeout(fn, ms)
         return () => clearTimeout(h)
@@ -62,7 +63,7 @@ function harness(opts: {
     path: () => path,
     clearVisibleForPage,
     report,
-    ...(opts.blockedForMs === undefined ? {} : { blockedForMs: opts.blockedForMs }),
+    ...(opts.blockedForMs !== undefined && { blockedForMs: opts.blockedForMs }),
   }
   return {
     deps,
@@ -80,7 +81,7 @@ const stagesOf = (report: ReturnType<typeof harness>['report']): string[] =>
   report.mock.calls.map((c) => c[0])
 
 describe('makeListClear', () => {
-  beforeEach(() => vi.useFakeTimers())
+  beforeEach(() => vi.useFakeTimers({ fakeNodeBuiltins: true }))
   afterEach(() => vi.useRealTimers())
 
   it('scrolls the whole list top-to-bottom, clears every post, and restores scroll position', async () => {

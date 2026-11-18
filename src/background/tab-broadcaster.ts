@@ -1,8 +1,7 @@
-import { Option } from 'effect'
+import { Option, Schema } from 'effect'
 import { adapterForUrl, allAdapterHostMatch } from '../core/adapters/registry'
-import { isJsonObject } from '@/packages/schema'
+import { ClearTweetResponse, isJsonObject } from '@/packages/schema'
 import type { Message, TabMessage, JsonValue } from '@/packages/schema'
-import type { ClearTweetResponse } from '@/packages/schema'
 import type { TabMessagingPort } from '@/packages/download/media-url-refresh'
 import type { Scope } from '@/packages/clear/ledger'
 import type { ReleaseScopePin } from '@/packages/clear/seed'
@@ -111,8 +110,10 @@ export interface TabBroadcasterDeps {
    *  settable `now` so a never-mounting page doesn't cost the whole poll budget
    *  in wall time. */
   readonly clock?:
-    | { readonly sleep: (ms: number) => Promise<void>; readonly now: () => number }
-    | undefined
+    { readonly sleep: (ms: number) => Promise<void>; readonly now: () => number } | undefined
+  /** Whether a queued permalink release may still navigate and click. Asked once,
+   *  when the leg reaches the front of the release queue. Omitted ⇒ always allowed. */
+  readonly releaseAuthorized?: ((tweetId: string) => Promise<boolean>) | undefined
 }
 
 /** Fold a thrown `tabs.sendMessage` rejection into one grep-safe token. Mirrors the
@@ -463,14 +464,10 @@ const asRefreshMediaUrlReply = (
   return hasStringUrlField(value) ? { url: value.url } : {}
 }
 
-/** Narrow a `TabsPort.sendTabMessage` reply to `ClearTweetResponse` for the
- *  `ClearTweetRequest` tag — the ONE cast both `probeReleaseTab` and `runFanOut`
- *  need, named here instead of repeated at each call site.
- *  SAFETY: a `ClearTweetRequest` is always answered with a `ClearTweetResponse`
- *  (or the tab dies and `sendTabMessage` throws instead, caught by the caller) —
- *  the overlay's dispatch gate never replies to this tag with any other shape. */
+const decodeClearTweetResponse = Schema.decodeUnknownOption(ClearTweetResponse)
+
 const asClearTweetResponse = (value: JsonValue | undefined): ClearTweetResponse | undefined =>
-  value as ClearTweetResponse | undefined
+  value === undefined ? undefined : Option.getOrUndefined(decodeClearTweetResponse(value))
 
 export const makeTabBroadcaster = (
   tabs: TabsPort = defaultTabsPort(),
@@ -646,8 +643,8 @@ export const makeTabBroadcaster = (
         tweetId,
         scopes,
         allLists,
-        ...(asPageScope === undefined ? {} : { asPageScope }),
-        ...(probes >= 2 ? { probe: true } : {}),
+        ...(asPageScope !== undefined && { asPageScope }),
+        ...(probes >= 2 && { probe: true }),
       })
       if (reply === TAB_MESSAGE_TIMED_OUT) return { kind: 'timed-out' }
       const res = asClearTweetResponse(reply)
@@ -1052,9 +1049,17 @@ export const makeTabBroadcaster = (
         traceDispatch('release-skipped', true)
         return scopes.map((scope) => ({ scope, ok: false }))
       }
-      const released = await releaseQueue.run(() =>
-        releaseViaStatusTab(tweetId, scopes, allLists, plan.asPageScope),
+      // The leg may have waited behind other legs since its scopes were claimed.
+      // Ask again here, inside the queue, right before it navigates and clicks.
+      const released = await releaseQueue.run(async () =>
+        deps.releaseAuthorized === undefined || (await deps.releaseAuthorized(tweetId))
+          ? releaseViaStatusTab(tweetId, scopes, allLists, plan.asPageScope)
+          : ('revoked' as const),
       )
+      if (released === 'revoked') {
+        traceDispatch('release-revoked', true)
+        return scopes.map((scope) => ({ scope, ok: false }))
+      }
       if (released.ok) {
         traceDispatch('release-tab', false, released.tabId)
         return released.results

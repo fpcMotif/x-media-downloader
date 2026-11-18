@@ -4,7 +4,7 @@
 - **Status:** Ready for implementation (TDD)
 - **Triage:** ready-for-agent (local PRD — no tracker configured; publish on request)
 - **Sources:** [spec](../superpowers/specs/2026-06-07-x-media-downloader-design.md) ·
-  [grounding](../research/2026-06-07-grounding.md) · [CONTEXT.md](../../CONTEXT.md) ·
+  [grounding](../research/2026-06-07-grounding.md) · [GLOSSARY.md](../../GLOSSARY.md) ·
   [ADRs](../adr/) · [plan](../plans/2026-06-07-x-media-downloader-plan/_index.md)
 
 ## Problem Statement

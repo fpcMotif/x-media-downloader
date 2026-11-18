@@ -29,7 +29,9 @@ const driveConnected: Settings = {
 
 describe('saveToDiskToggleDelta', () => {
   it('refuses Cloud-only when no Cloud Provider is connected and enabled', () => {
-    expect(saveToDiskToggleDelta(false, settings)).toEqual({ saveToDisk: true })
+    expect(saveToDiskToggleDelta(false, { ...settings, convexDriveEnabled: false })).toEqual({
+      saveToDisk: true,
+    })
   })
 
   it('allows Cloud-only when Cloud upload has a connected enabled provider', () => {
@@ -41,15 +43,24 @@ describe('saveToDiskToggleDelta', () => {
   })
 
   it('refuses Cloud-only when the only connected provider is paused', () => {
-    expect(saveToDiskToggleDelta(false, { ...driveConnected, gdriveUploadEnabled: false })).toEqual(
-      { saveToDisk: true },
-    )
+    expect(
+      saveToDiskToggleDelta(false, {
+        ...driveConnected,
+        convexDriveEnabled: false,
+        gdriveUploadEnabled: false,
+      }),
+    ).toEqual({ saveToDisk: true })
   })
 })
 
 describe('destinationLostDelta', () => {
   it('forces Save to this computer on when Cloud-only loses its last destination', () => {
-    const cloudOnly: Settings = { ...driveConnected, saveToDisk: false, gdriveUploadEnabled: false }
+    const cloudOnly: Settings = {
+      ...driveConnected,
+      convexDriveEnabled: false,
+      saveToDisk: false,
+      gdriveUploadEnabled: false,
+    }
     expect(destinationLostDelta(cloudOnly)).toEqual({ saveToDisk: true })
   })
 

@@ -14,14 +14,14 @@ const Receipt = Schema.Struct({
   mediaId: Schema.String,
   deviceId: Schema.String,
   deploymentUrl: Schema.String,
-  syncSecret: Schema.optional(Schema.String),
-  budgetDay: Schema.optional(Schema.String),
+  syncSecret: Schema.optionalKey(Schema.String),
+  budgetDay: Schema.optionalKey(Schema.String),
   sourceUrl: Schema.String,
   path: Schema.String,
   contentType: Schema.String,
   accepted: Schema.Boolean,
-  estimatedBytes: Schema.optional(Schema.Number),
-  historyOutcome: Schema.optional(Schema.Literals(['queued', 'completed', 'failed'])),
+  estimatedBytes: Schema.optionalKey(Schema.Number),
+  historyOutcome: Schema.optionalKey(Schema.Literals(['queued', 'completed', 'failed'])),
 })
 const Receipts = Schema.Array(Receipt)
 type Receipt = typeof Receipt.Type
@@ -41,21 +41,24 @@ const Status = Schema.Array(
   }),
 )
 
-export interface RelaySetup {
+export type RelaySetup = {
   readonly available: boolean
   readonly reason: string | null
 }
 export interface RemoteUploadPort {
-  record(settings: Settings, items: ReadonlyArray<UploadCandidate>): Promise<ReadonlyArray<string>>
-  owns(mediaId: string): Promise<boolean>
-  summary(): Promise<UploadSummary>
-  budget(day: string): Promise<{ bytes: number; count: number }>
-  reconcile(): Promise<void>
-  setup(): Promise<RelaySetup>
-  probe(url: string): Promise<number | null>
-  control(enabled: boolean, accepting: boolean, connected: boolean): Promise<void>
-  disconnect(): Promise<void>
-  retry(): Promise<void>
+  readonly record: (
+    settings: Settings,
+    items: ReadonlyArray<UploadCandidate>,
+  ) => Promise<ReadonlyArray<string>>
+  readonly owns: (mediaId: string) => Promise<boolean>
+  readonly summary: () => Promise<UploadSummary>
+  readonly budget: (day: string) => Promise<{ bytes: number; count: number }>
+  readonly reconcile: () => Promise<void>
+  readonly setup: () => Promise<RelaySetup>
+  readonly probe: (url: string) => Promise<number | null>
+  readonly control: (enabled: boolean, accepting: boolean, connected: boolean) => Promise<void>
+  readonly disconnect: () => Promise<void>
+  readonly retry: () => Promise<void>
 }
 
 function deploymentOrigin(raw: string): string {
@@ -77,7 +80,7 @@ export function makeRemoteUpload(deps: {
   readonly onHistoryNotice: (notice: CloudHistoryNotice) => void | Promise<void>
   readonly store?: DurableStore
 }): RemoteUploadPort {
-  const item = storage.defineItem<unknown>('local:convexDriveReceipts', { fallback: null })
+  const item = storage.defineItem<JsonValue>('local:convexDriveReceipts', { fallback: null })
   const store: DurableStore = deps.store ?? {
     get: () => item.getValue(),
     set: (value) => item.setValue(value),
@@ -97,7 +100,7 @@ export function makeRemoteUpload(deps: {
     await store.set(
       rows.map((row) => {
         const patch = patches.get(row.mediaId)
-        return patch ? { ...row, ...patch } : row
+        return patch ? Object.assign(row, patch) : row
       }),
     )
   }
@@ -109,10 +112,12 @@ export function makeRemoteUpload(deps: {
     endpoint: 'mutation' | 'query' | 'action',
     path: string,
     args: Readonly<Record<string, JsonValue>>,
-    deploymentUrl = settings.convexUrl,
-    syncSecret = settings.convexSyncSecret,
+    target: { readonly deploymentUrl: string; readonly syncSecret?: string | undefined } = {
+      deploymentUrl: settings.convexUrl,
+    },
   ) => {
-    const origin = deploymentOrigin(deploymentUrl)
+    const syncSecret = target.syncSecret ?? settings.convexSyncSecret
+    const origin = deploymentOrigin(target.deploymentUrl)
     const currentOrigin = URL.canParse(settings.convexUrl)
       ? new URL(settings.convexUrl).origin
       : null
@@ -168,8 +173,7 @@ export function makeRemoteUpload(deps: {
             budgetDay: receipt.budgetDay ?? localDay(Date.now()),
             estimatedBytes: receipt.estimatedBytes ?? 0,
           },
-          receipt.deploymentUrl,
-          receipt.syncSecret,
+          receipt,
         ),
       )
       if (!result.id) throw new Error('Missing durable acceptance identity')
@@ -208,8 +212,7 @@ export function makeRemoteUpload(deps: {
         'mutation',
         'relay:submitBatch',
         { items: wireItems },
-        origin,
-        receipts[0]!.syncSecret,
+        { deploymentUrl: origin, syncSecret: receipts[0]!.syncSecret },
       )
       const results = Schema.decodeUnknownSync(BatchAcceptance)(raw)
       const acceptedMediaIds = new Set<string>()
@@ -256,16 +259,14 @@ export function makeRemoteUpload(deps: {
   const record = (settings: Settings, items: ReadonlyArray<UploadCandidate>) =>
     queue.run(async () => {
       if (items.length === 0) return []
-      if (settings.saveToDisk || !settings.convexDriveEnabled)
-        throw new Error('Convex uploads require the Cloud-only experiment')
+      if (!settings.convexDriveEnabled)
+        throw new Error('Convex uploads require Convex Drive to be enabled')
       if (
         !settings.cloudUploadEnabled ||
         !settings.gdriveUploadEnabled ||
         !settings.convexDriveConnected
       )
         throw new Error('The backend Drive destination is disabled, paused, or disconnected')
-      if (settings.dropboxUploadEnabled && settings.dropboxRefreshToken)
-        throw new Error('Disable Dropbox uploads before selecting the Drive-only experiment')
       if (!settings.cloudDeviceId)
         throw new Error('Configure a device identity before submitting remote jobs')
       const origin = deploymentOrigin(settings.convexUrl)
@@ -302,7 +303,9 @@ export function makeRemoteUpload(deps: {
             path: candidate.filename,
             contentType: guessMime(candidate.item.ext),
             accepted: false,
-            estimatedBytes: candidate.estimatedBytes,
+            ...(candidate.estimatedBytes !== undefined && {
+              estimatedBytes: candidate.estimatedBytes,
+            }),
           }
           isNewByMediaId.set(candidate.item.id, true)
           candidateReceipts.push(receipt)
@@ -329,7 +332,7 @@ export function makeRemoteUpload(deps: {
       if (!status || !kind || row.historyOutcome === kind) return []
       return [{ mediaId: row.mediaId, kind, at: status.at }]
     })
-    await Promise.all(changed.map((entry) => deps.onHistoryNotice(entry)))
+    await Promise.all(changed.map(async (entry) => deps.onHistoryNotice(entry)))
     await patchReceipts(
       new Map(
         changed.map((entry) => [entry.mediaId, { accepted: true, historyOutcome: entry.kind }]),
@@ -358,8 +361,7 @@ export function makeRemoteUpload(deps: {
               'query',
               'relay:status',
               { deviceId: first.deviceId, mediaIds: batch.map((row) => row.mediaId) },
-              first.deploymentUrl,
-              first.syncSecret,
+              first,
             ),
           )
           await applyStatuses(batch, statuses)
@@ -396,8 +398,7 @@ export function makeRemoteUpload(deps: {
           'mutation',
           'relay:retry',
           { deviceId: row.deviceId, mediaId: row.mediaId },
-          row.deploymentUrl,
-          row.syncSecret,
+          row,
         )
         await retryNext(index + 1)
       }
@@ -455,8 +456,7 @@ export function makeRemoteUpload(deps: {
           'query',
           'relay:budget',
           { deviceId, day },
-          deploymentUrl,
-          syncSecret,
+          { deploymentUrl, syncSecret },
         )
         return Schema.decodeUnknownSync(
           Schema.Struct({ bytes: Schema.Number, count: Schema.Number }),

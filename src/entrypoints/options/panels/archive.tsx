@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import { Button } from '@/components/ui/button'
@@ -12,13 +12,10 @@ import {
   type CaptureExportKind,
   type CaptureSummary,
 } from '@/components/capture-export'
-import {
-  plural,
-  fmtDay,
-  confirmEraseArchiveCopy,
-  erasedArchiveCopy,
-} from '@/components/capture-copy'
-import { ConfirmStrip } from '@/components/confirm-strip'
+import { plural, fmtDay, confirmEraseArchiveCopy } from '@/components/capture-copy'
+import { runCaptureErase } from '@/components/capture-erase'
+import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
+import { useOwnedTimer } from '@/components/owned-timer'
 
 // The archive browser loads the newest ARCHIVE_FETCH_LIMIT conversations in one
 // message and pages through them client-side — no per-click round-trips. Archives
@@ -128,21 +125,15 @@ export function ArchivePanel() {
   const [visible, setVisible] = useState(PAGE_SIZE)
   // One owned status-flash timer: a newer flash cancels the older timer before
   // rearming, and unmount cancels whatever is pending.
-  const statusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => {
-    return () => clearTimeout(statusTimer.current)
-  }, [])
+  const statusTimer = useOwnedTimer()
+  const eraseStrip = useConfirmStrip()
 
   const refreshSummary = (): void => void fetchCaptureSummary(ARCHIVE_FETCH_LIMIT).then(setSummary)
   useEffect(refreshSummary, [])
 
   const flashStatus = (msg: string): void => {
     setStatusMsg(msg)
-    clearTimeout(statusTimer.current)
-    statusTimer.current = setTimeout(() => {
-      setStatusMsg(null)
-      statusTimer.current = undefined
-    }, 5000)
+    statusTimer.arm(() => setStatusMsg(null), 5000)
   }
 
   const doExport = async (kind: CaptureExportKind, conversationId?: string): Promise<void> => {
@@ -151,12 +142,13 @@ export function ArchivePanel() {
   }
 
   const eraseArchive = async (): Promise<void> => {
-    const tweets = summary?.tweets ?? 0
-    await browser.runtime.sendMessage({ _tag: 'ClearCaptureRequest' }).catch(() => {})
-    setSummary({ tweets: 0, conversations: 0, recent: [] })
-    setQuery('')
-    setVisible(PAGE_SIZE)
-    flashStatus(erasedArchiveCopy(tweets))
+    const outcome = await runCaptureErase(summary?.tweets ?? 0)
+    if (outcome.ok) {
+      setSummary({ tweets: 0, conversations: 0, recent: [] })
+      setQuery('')
+      setVisible(PAGE_SIZE)
+    }
+    flashStatus(outcome.detail)
   }
 
   const loaded = summary?.recent ?? []
@@ -292,26 +284,25 @@ export function ArchivePanel() {
         </div>
 
         <ConfirmStrip
+          control={eraseStrip}
           sentence={confirmEraseArchiveCopy(summary?.tweets ?? 0)}
           confirmLabel="Erase the archive"
           kind="one-shot"
           onConfirm={() => void eraseArchive()}
         >
-          {(arm) => (
-            <button
-              type="button"
-              {...stylex.props(
-                styles.linkFocus,
-                styles.eraseLayout,
-                styles.text13,
-                styles.linkDestructive,
-              )}
-              onClick={arm}
-            >
-              <EraserIcon sx={iconSize.s35} />
-              Erase archive…
-            </button>
-          )}
+          <button
+            type="button"
+            {...stylex.props(
+              styles.linkFocus,
+              styles.eraseLayout,
+              styles.text13,
+              styles.linkDestructive,
+            )}
+            onClick={eraseStrip.arm}
+          >
+            <EraserIcon sx={iconSize.s35} />
+            Erase archive…
+          </button>
         </ConfirmStrip>
 
         <output aria-live="polite" aria-atomic="true" {...stylex.props(styles.status)}>

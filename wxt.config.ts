@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { defineConfig } from 'wxt'
-import preact from '@preact/preset-vite'
+import { preact } from '@preact/preset-vite'
 import stylex from '@stylexjs/unplugin/vite'
 import browserslist from 'browserslist'
 import { browserslistToTargets } from 'lightningcss'

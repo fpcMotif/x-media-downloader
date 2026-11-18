@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-const popupSource = readFileSync('src/entrypoints/popup/App.tsx', 'utf8')
+const popupSource = readFileSync(fileURLToPath(import.meta.resolve('./App.tsx')), 'utf8')
 
 describe('popup platform identity derives from the adapter registry (ADR-0019)', () => {
   it('imports adapterForUrl from the registry, not isXUrl from the X adapter', () => {
@@ -74,24 +75,12 @@ describe('cluster status lines auto-clear after 6s unless persistent (spec §2.6
     expect(popupSource).toContain('isPersistentStatus')
   })
 
-  it('gates a 6000ms clear effect on downloadMsg behind isPersistentStatus', () => {
-    const idx = popupSource.indexOf(
-      'if (downloadMsg === null || isPersistentStatus(downloadMsg)) return',
-    )
-    expect(idx).toBeGreaterThan(-1)
-    expect(popupSource.slice(idx, idx + 200)).toContain(
-      'setTimeout(() => setDownloadMsg(null), 6000)',
-    )
+  it('clears downloadMsg through its own owned timer', () => {
+    expect(popupSource).toContain('armStatusClear(downloadMsgTimer, m, () => setDownloadMsg(null))')
   })
 
-  it('gates a 6000ms clear effect on releaseMsg behind isPersistentStatus', () => {
-    const idx = popupSource.indexOf(
-      'if (releaseMsg === null || isPersistentStatus(releaseMsg)) return',
-    )
-    expect(idx).toBeGreaterThan(-1)
-    expect(popupSource.slice(idx, idx + 200)).toContain(
-      'setTimeout(() => setReleaseMsg(null), 6000)',
-    )
+  it('clears releaseMsg through its own owned timer', () => {
+    expect(popupSource).toContain('armStatusClear(releaseMsgTimer, m, () => setReleaseMsg(null))')
   })
 })
 
@@ -177,14 +166,28 @@ describe('metrics polling cannot rearm or set state after unmount (react-doctor/
 })
 
 describe('the "Saved" feedback timer is owned (cancel-before-rearm, unmount cleanup)', () => {
-  it('cancels the prior timer before rearming with the same 1200ms delay', () => {
-    expect(popupSource).toContain('clearTimeout(savedTimer.current)')
-    expect(popupSource).toContain('savedTimer.current = setTimeout(() => {')
-    expect(popupSource).toContain('setSaved(false)')
+  it('arms one owned timer with the same 1200ms delay, then the exit step', () => {
+    expect(popupSource).toContain('const savedTimer = useOwnedTimer()')
+    expect(popupSource).toContain('savedTimer.arm(() => {')
+    expect(popupSource).toContain('savedTimer.arm(() => setSaved(false), TOAST_EXIT_MS)')
     expect(popupSource).toContain('}, 1200)')
   })
+})
 
-  it('unmount cancels the pending saved timer', () => {
-    expect(popupSource).toContain('return () => clearTimeout(savedTimer.current)')
+describe('cluster status lines clear from an owned timer, not an effect', () => {
+  it('arms the clear where the message is set', () => {
+    expect(popupSource).toContain('const STATUS_CLEAR_MS = 6000')
+    expect(popupSource).toContain('else timer.arm(clear, STATUS_CLEAR_MS)')
+    expect(popupSource).toContain('setMsg: trackReleaseMsg')
+    expect(popupSource).not.toContain('setMsg: setReleaseMsg')
+  })
+
+  it('keeps persistent statuses on screen', () => {
+    expect(popupSource).toContain('if (m === null || isPersistentStatus(m)) timer.cancel()')
+  })
+
+  it('has no effect keyed on a status message', () => {
+    expect(popupSource).not.toContain('}, [downloadMsg])')
+    expect(popupSource).not.toContain('}, [releaseMsg])')
   })
 })

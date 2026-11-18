@@ -149,21 +149,24 @@ export function decideTerminalOutcome(input: TerminalOutcomeRecord): OutcomeEffe
       ? progress.totalBytes
       : progress.bytesReceived
     : 0
+  // The caller reads the Tweet from in-memory request meta, which a worker
+  // restart loses. The tracked transfer carries the same provenance durably.
+  const tweetId = context?.tweetId ?? state.transfers.transfers.find((t) => t.id === id)?.tweetId
   const clearNotice: ClearNotice | null =
-    sidecar || context === undefined || context.tweetId === undefined
+    sidecar || context === undefined || tweetId === undefined
       ? null
       : complete
         ? {
             outcome: 'complete',
-            tweetId: context.tweetId,
+            tweetId,
             requestId: id,
             downloadId: context.downloadId,
           }
-        : { outcome: 'failed', tweetId: context.tweetId, requestId: id }
+        : { outcome: 'failed', tweetId, requestId: id }
   const completion = decideCompletionIntents({
     id,
     outcome,
-    ...(context?.tweetId === undefined ? {} : { tweetId: context.tweetId }),
+    ...(tweetId !== undefined && { tweetId }),
     bytes,
     terminalTransitioned,
   })
@@ -216,7 +219,7 @@ export function decideEnqueueOutcome(args: {
   const completion = decideCompletionIntents({
     id,
     outcome,
-    ...(tweetId === undefined ? {} : { tweetId }),
+    ...(tweetId !== undefined && { tweetId }),
     bytes,
     terminalTransitioned: metrics !== args.metrics,
   })

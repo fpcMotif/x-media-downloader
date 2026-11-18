@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-const appSource = readFileSync('src/entrypoints/options/App.tsx', 'utf8')
+const appSource = readFileSync(fileURLToPath(import.meta.resolve('./App.tsx')), 'utf8')
 
 /** Pull the `group: '<...>'` value out of a `{ id: '<id>', ... }` SECTIONS entry. */
 const sectionGroup = (id: string): string | undefined => {
@@ -64,15 +65,11 @@ describe('hash aliases (§3.2 — add-only, every old deep-link must still resol
 })
 
 describe('the "Saved" feedback timer is owned (cancel-before-rearm, unmount cleanup)', () => {
-  it('cancels the prior timer before rearming with the same 1400ms delay', () => {
-    expect(appSource).toContain('clearTimeout(savedTimer.current)')
-    expect(appSource).toContain('savedTimer.current = setTimeout(() => {')
-    expect(appSource).toContain('setSaved(false)')
+  it('arms one owned timer with the same 1400ms delay, then the exit step', () => {
+    expect(appSource).toContain('const savedTimer = useOwnedTimer()')
+    expect(appSource).toContain('savedTimer.arm(() => {')
+    expect(appSource).toContain('savedTimer.arm(() => setSaved(false), TOAST_EXIT_MS)')
     expect(appSource).toContain('}, 1400)')
-  })
-
-  it('unmount cancels the pending saved timer', () => {
-    expect(appSource).toContain('return () => clearTimeout(savedTimer.current)')
   })
 })
 

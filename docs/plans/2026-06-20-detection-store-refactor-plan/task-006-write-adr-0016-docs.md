@@ -21,12 +21,12 @@ image downloads once), and a real trade-off — it clears the ADR bar.
   ONCE, filed under the last-writer tweet; Sweep/clear-on-save for that media key
   off the last-writer tweet. Chosen over the `${tweetId}:${mediaKey}` composite.
 - **Consequences:** double-count fixed; SaveRequest.id stays unique (store collapses
-  pre-queue); filenames unaffected (use tweetId+index, not id); CONTEXT.md **Media
+  pre-queue); filenames unaffected (use tweetId+index, not id); GLOSSARY.md **Media
   Key** term already landed.
 
 ## Verification
 ```
 test -f docs/adr/0016-media-key-identity.md && echo OK
-rg -n "Media Key" CONTEXT.md   # term present (landed in the grilling session)
+rg -n "Media Key" GLOSSARY.md   # term present (landed in the grilling session)
 ```
 Done when: ADR-0016 exists and covers Context / Decision / Trade-off / Consequences.

@@ -23,9 +23,9 @@ beforeEach(() => {
 })
 
 describe('SettingsService', () => {
-  it('defaults server execution off', async () => {
+  it('defaults server execution on', async () => {
     const settings = await getSettings()
-    expect(settings.convexDriveEnabled).toBe(false)
+    expect(settings.convexDriveEnabled).toBe(true)
     expect(settings.convexDriveConnected).toBe(false)
   })
 
@@ -122,6 +122,7 @@ describe('SettingsService', () => {
   it('forces Save to this computer back on when a write removes the last cloud destination', async () => {
     await fakeBrowser.storage.local.set({
       settings: {
+        convexDriveEnabled: false,
         cloudUploadEnabled: true,
         saveToDisk: false,
         gdriveClientId: 'gdrive-client',

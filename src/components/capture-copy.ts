@@ -15,3 +15,5 @@ export const confirmEraseArchiveCopy = (count: number): string =>
 
 export const erasedArchiveCopy = (count: number): string =>
   `Erased ${plural(count, 'tweet')} from the archive.`
+
+export const eraseFailedCopy = 'Could not erase the archive. Nothing was removed. Try again.'

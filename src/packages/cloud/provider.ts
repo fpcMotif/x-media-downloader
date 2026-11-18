@@ -11,7 +11,7 @@ import {
 } from './types'
 
 /**
- * The **Cloud Provider** record (CONTEXT.md): one cloud byte-upload destination
+ * The **Cloud Provider** record (GLOSSARY.md): one cloud byte-upload destination
  *. The single place provider identity is encoded — every dispatch site
  * reads a record from {@link PROVIDERS} instead of forking on `'gdrive' vs
  * 'dropbox'`. The byte adapters themselves are the `DriveUploader`/`DropboxUploader`

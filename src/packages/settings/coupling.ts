@@ -12,13 +12,12 @@ export function dedupeToggleDelta(enabled: boolean): Partial<Settings> {
  *  one Cloud Provider both connected (client id + refresh token) and not paused. */
 export function hasLiveCloudDestination(settings: Settings): boolean {
   if (!settings.cloudUploadEnabled) return false
-  if (settings.convexDriveEnabled)
-    return (
-      settings.convexDriveConnected &&
-      settings.gdriveUploadEnabled &&
-      settings.convexUrl !== '' &&
-      settings.convexSyncSecret !== ''
-    )
+  const hasConvex =
+    settings.convexDriveEnabled &&
+    settings.convexDriveConnected &&
+    settings.gdriveUploadEnabled &&
+    settings.convexUrl !== '' &&
+    settings.convexSyncSecret !== ''
   const gdrive =
     settings.gdriveClientId !== '' &&
     settings.gdriveRefreshToken !== '' &&
@@ -27,15 +26,16 @@ export function hasLiveCloudDestination(settings: Settings): boolean {
     settings.dropboxClientId !== '' &&
     settings.dropboxRefreshToken !== '' &&
     settings.dropboxUploadEnabled
-  return gdrive || dropbox
+  return hasConvex || gdrive || dropbox
 }
 
 /** Settings delta when Save to this computer changes. Cloud-only (`false`) is
  *  refused unless Cloud upload has a live destination; otherwise the switch
  *  stays on so a grab always has somewhere to put bytes. */
 export function saveToDiskToggleDelta(enabled: boolean, settings: Settings): Partial<Settings> {
-  if (enabled || !hasLiveCloudDestination(settings)) return { saveToDisk: true }
-  return { saveToDisk: false }
+  if (enabled) return { saveToDisk: true }
+  if (settings.convexDriveEnabled || hasLiveCloudDestination(settings)) return { saveToDisk: false }
+  return { saveToDisk: true }
 }
 
 /** Settings delta after Cloud upload, Connect, or a per-provider pause changes.

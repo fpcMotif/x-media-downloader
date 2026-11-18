@@ -7,6 +7,7 @@ import type { SizeProbePort } from '@/packages/download/size-probe'
 
 const baseSettings = (over: Partial<typeof Settings.Type>): typeof Settings.Type => ({
   ...Schema.decodeUnknownSync(Settings)({}),
+  saveToDisk: true,
   ...over,
 })
 

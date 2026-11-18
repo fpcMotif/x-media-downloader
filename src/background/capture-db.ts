@@ -53,7 +53,11 @@ export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
     putRecords: (records) =>
       writes.run(async () => {
         if (records.length === 0) return
-        await store.upsert(records, mergeRecord)
+        const byTweet = new Map<string, TweetRecord>()
+        for (const record of records) {
+          byTweet.set(record.tweetId, mergeRecord(byTweet.get(record.tweetId), record))
+        }
+        await store.upsert([...byTweet.values()], mergeRecord)
       }),
     allRecords: () => store.allRecords(),
     fold: (init, step) => store.fold(init, step),

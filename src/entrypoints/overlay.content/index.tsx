@@ -183,7 +183,7 @@ const releaseSleep = makeHiddenAwareSleep({
 const { clearScope } = makeTweetClearer({
   document,
   clock: { sleep: releaseSleep },
-  ...(import.meta.env.DEV ? { log: clearLog } : {}),
+  ...(import.meta.env.DEV && { log: clearLog }),
   trace: (stage, detail, tweetId) => reportClear(stage, detail, tweetId),
   // Every CONFIRMED flip arms the re-appearance watchdog. `notInterested` is
   // excluded by type (it has no membership control to re-probe) and never gets here
@@ -264,7 +264,7 @@ const reportClear = (stage: string, detail: string, tweetId?: string): void => {
       source: 'clear',
       stage,
       t: Date.now(),
-      ...(tweetId !== undefined ? { tweetId } : {}),
+      ...(tweetId !== undefined && { tweetId }),
       detail,
     }),
   )
@@ -560,7 +560,7 @@ const sendTracked = (
     browser.runtime.sendMessage({
       _tag: 'DownloadRequest',
       items,
-      ...(clearExpect ? { clearExpect } : {}),
+      ...(clearExpect && { clearExpect }),
     }),
   ).then((out) => {
     if (out.status === 'context-invalidated') {
@@ -595,6 +595,13 @@ const sendTracked = (
   })
 }
 
+// The handlers' door onto `sendTracked`: it forwards the drain's `ReleaseRun`
+// (and nothing else does), which is what authorizes the terminal. No
+// `clearExpect` — the drain has never widened the For You clear gate, and this
+// is a pure relocation of that behavior, not a change to it.
+const handlerSendTracked: HandlerDeps['sendTracked'] = (items, release) =>
+  sendTracked(items, undefined, release)
+
 const traceDownloadUi =
   (source: 'quickgrab' | 'badge') =>
   (
@@ -621,11 +628,9 @@ const traceDownloadUi =
       source,
       stage,
       t: Date.now(),
-      ...(opts.item
-        ? { itemId: opts.item.id, tweetId: opts.item.postId, type: opts.item.type }
-        : {}),
-      ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}),
-      ...((opts.detail ?? opts.key) ? { detail: opts.detail ?? `key ${opts.key}` } : {}),
+      ...(opts.item && { itemId: opts.item.id, tweetId: opts.item.postId, type: opts.item.type }),
+      ...(opts.elapsedMs !== undefined && { elapsedMs: opts.elapsedMs }),
+      ...((opts.detail ?? opts.key) && { detail: opts.detail ?? `key ${opts.key}` }),
     })
   }
 
@@ -737,12 +742,10 @@ export default defineContentScript({
 
     const store = makeDetectionStore({
       mediaKeyFromUrl: (url) => adapter.mediaKeyFromUrl(url),
-      ...(adapter.findMediaNeedingRecovery
-        ? {
-            findMediaNeedingRecovery: (root, detectedKeys, attemptedTweetIds) =>
-              adapter.findMediaNeedingRecovery?.(root, detectedKeys, attemptedTweetIds) ?? [],
-          }
-        : {}),
+      ...(adapter.findMediaNeedingRecovery && {
+        findMediaNeedingRecovery: (root, detectedKeys, attemptedTweetIds) =>
+          adapter.findMediaNeedingRecovery?.(root, detectedKeys, attemptedTweetIds) ?? [],
+      }),
     })
     let host: HTMLElement | null = null
 
@@ -879,6 +882,9 @@ export default defineContentScript({
           // `browser.runtime.sendMessage`'s reply types as `any`, so this is a plain
           // annotation, not a cast: `any` is assignable to any declared type without
           // an assertion.
+          // A navigation since the send cleared the store and this claim with it.
+          // The reply describes the previous page, so it must not enter this one.
+          if (!store.holdsRecoveryClaim(tweetId)) return
           const reply: RecoverTweetMediaResponse | undefined = out.reply
           const verdict = classifyRecoveryReply(tweetId, reply?.body)
           if (verdict.kind === 'retryable') {
@@ -1137,7 +1143,7 @@ export default defineContentScript({
         if (trace)
           trace.fn('queued', {
             item: trace.item,
-            ...(trace.armedAt !== undefined ? { elapsedMs: sendStartedAt - trace.armedAt } : {}),
+            ...(trace.armedAt !== undefined && { elapsedMs: sendStartedAt - trace.armedAt }),
           })
         const { ok } = await sendTracked(items, forYouClearExpect(items))
         if (trace)
@@ -1935,7 +1941,7 @@ export default defineContentScript({
           op,
           status: detail.status,
           error,
-          ...(tweetId !== undefined ? { tweetId } : {}),
+          ...(tweetId !== undefined && { tweetId }),
           t,
         }),
       )
@@ -2269,13 +2275,6 @@ export default defineContentScript({
       )
     })
 
-    // The handlers' door onto `sendTracked`: it forwards the drain's `ReleaseRun`
-    // (and nothing else does), which is what authorizes the terminal. No
-    // `clearExpect` — the drain has never widened the For You clear gate, and this
-    // is a pure relocation of that behavior, not a change to it.
-    const handlerSendTracked: HandlerDeps['sendTracked'] = (items, release) =>
-      sendTracked(items, undefined, release)
-
     // LIVE handles on the closed-over state + helpers above. Scalars are threaded
     // as getter/setter pairs so each handler reads the current value and writes
     // back into THIS closure variable (never a copy) — the badge/launcher
@@ -2380,6 +2379,7 @@ export default defineContentScript({
       // `browser.runtime` is already undefined once the context is invalidated.
       browser.runtime?.onMessage?.removeListener(handleRuntimeMessage)
       document.removeEventListener('xmd:media-response', handleMediaResponse)
+      document.removeEventListener('xmd:mutation-response', handleMutationResponse)
       document.removeEventListener(TEE_DROP_EVENT, handleTeeDrop)
     })
   },

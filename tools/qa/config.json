@@ -1,0 +1,29 @@
+{
+  "project": "xediadownloader",
+  "surface": "extension",
+  "choice": "agent-browser with Chrome for Testing for fresh unpacked-extension UI smoke; preserve existing unit and regression suites",
+  "commands": {
+    "dev": {
+      "cwd": ".",
+      "argv": ["bun", "run", "dev"]
+    },
+    "build": {
+      "cwd": ".",
+      "argv": ["bun", "run", "build"]
+    },
+    "test": {
+      "cwd": ".",
+      "argv": ["bun", "run", "test"]
+    },
+    "check": {
+      "cwd": ".",
+      "argv": ["bun", "run", "check"]
+    },
+    "harness:check": {
+      "argv": ["bun", "--no-env-file", "tools/qa/self-check.mjs"]
+    }
+  },
+  "extension": {
+    "directory": ".output/chrome-mv3"
+  }
+}

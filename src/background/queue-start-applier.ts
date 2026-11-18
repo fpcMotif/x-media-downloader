@@ -5,7 +5,6 @@ import type { HistoryAction } from '@/packages/history/wiring'
 import type { SyncEvent } from '@/packages/sync/events'
 
 export interface QueueStartPorts {
-  readonly resetCorrelation: () => void
   readonly setMetrics: (metrics: MetricsState) => void
   readonly persistSnapshot: (at: number) => Promise<void>
   readonly recordSync: (events: ReadonlyArray<SyncEvent>) => void
@@ -20,7 +19,6 @@ export async function applyQueueStartEffects(
   startedAt: number,
   ports: QueueStartPorts,
 ): Promise<MetricsState> {
-  if (effects.resetCorrelation) ports.resetCorrelation()
   ports.setMetrics(effects.metrics)
   await ports.persistSnapshot(startedAt)
   ports.recordSync(effects.syncEvents)

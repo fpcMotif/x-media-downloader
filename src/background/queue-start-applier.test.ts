@@ -32,7 +32,6 @@ describe('applyQueueStartEffects', () => {
     const order: string[] = []
     await expect(
       applyQueueStartEffects(effects, 100, {
-        resetCorrelation: () => {},
         setMetrics: () => {},
         persistSnapshot: async () => {},
         recordSync: () => {},
@@ -59,7 +58,6 @@ describe('applyQueueStartEffects', () => {
     const order: string[] = []
 
     await applyQueueStartEffects(effects, 100, {
-      resetCorrelation: () => void order.push('correlation'),
       setMetrics: () => void order.push('metrics'),
       persistSnapshot: async () => void order.push('snapshot'),
       recordSync: () => void order.push('sync'),
@@ -69,15 +67,6 @@ describe('applyQueueStartEffects', () => {
     })
     order.push('save')
 
-    expect(order).toEqual([
-      'correlation',
-      'metrics',
-      'snapshot',
-      'sync',
-      'history',
-      'uploads',
-      'clear',
-      'save',
-    ])
+    expect(order).toEqual(['metrics', 'snapshot', 'sync', 'history', 'uploads', 'clear', 'save'])
   })
 })

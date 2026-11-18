@@ -18,7 +18,7 @@ import { parseSyndicationTweet } from './syndication'
  * - `exhausted` — keep the claim; the endpoint answered, and the answer is that
  *   there is no media. Re-asking would loop forever.
  *
- * Deliberately NOT called "terminal": CONTEXT.md binds Terminal to a Download
+ * Deliberately NOT called "terminal": GLOSSARY.md binds Terminal to a Download
  * Handle's final state, owned by `packages/download/terminal-outcome.ts`. This
  * is about a Recovery attempt, a different lifecycle.
  */

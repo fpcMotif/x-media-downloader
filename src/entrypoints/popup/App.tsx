@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type MutableRef } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
+import { Option, Schema } from 'effect'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import { getSettings, setSettings } from '@/packages/settings'
@@ -8,15 +9,16 @@ import { adapterForUrl } from '@/core/adapters/registry'
 import type { PlatformAdapter } from '@/core/adapters/types'
 import type { MembershipScope } from '@/packages/clear/clearer'
 import { formatReleaseSummaryLine } from '@/packages/clear/correlate'
-import type { MetricsSnapshot, Settings } from '@/packages/schema'
+import type { JsonValue, MetricsSnapshot, Settings } from '@/packages/schema'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Progress } from '@/components/ui/progress'
+import { type OwnedTimer, useOwnedTimer } from '@/components/owned-timer'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { LayersIcon, CheckIcon, iconSize } from '@/components/icons'
+import { LayersIcon, CheckIcon, ChevronDownIcon, iconSize } from '@/components/icons'
 import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
 import { plural } from '@/components/capture-copy'
-import { ConfirmStrip } from '@/components/confirm-strip'
+import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
 import {
   RELEASE_WORD,
   RELEASE_PAGE_CONFIRM_LABEL,
@@ -28,7 +30,6 @@ import {
   releasedListResult,
   turnOnReleaseConfirm,
   drainResult,
-  type DrainResult,
   sweepResult,
   hoverGrabLine,
   wholePostLine,
@@ -44,6 +45,7 @@ import { planClearSeed } from '@/packages/clear/seed'
 import type { Scope } from '@/packages/clear/ledger'
 import { recordOpen, markDone, shouldShowIntro, type FirstRunState } from './first-run'
 import { CaptureQuickActions } from './capture-quick-actions'
+import { Collapse, useLingeringValue } from './collapse'
 
 const KB = 1000
 const MB = 1_000_000
@@ -66,6 +68,8 @@ function fmtBytes(bytes: number): string {
 // the SW every second is wasted work for an open popup with no batch running.
 const POLL_ACTIVE_MS = 1000
 const POLL_IDLE_MS = 3000
+const TOAST_EXIT_MS = 150
+const STATUS_CLEAR_MS = 6000
 
 // [inline] — not in action-copy.ts's landed surface (Batch A shipped without
 // an aria2-caveat builder); action-copy.ts is Batch A's file, out of this
@@ -108,25 +112,21 @@ const HOVER = '@media (hover: hover)'
 const XMD_EASE = 'var(--xmd-ease)'
 const BUTTON_TRANSITION_DURATION = '0.16s'
 const TRANSITION_COLORS =
-  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to'
+  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to, scale'
 const RING_FOCUS_VISIBLE =
   '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
 const DESTRUCTIVE_HOVER_BG = 'color-mix(in oklab, var(--destructive) 10%, transparent)'
 
-// `animate-in fade-in slide-in-from-top-1` — shared by FirstRunStrip,
-// MonitorZone, ReleaseSummaryZone, and the expanded release panel (spec §3).
-const enterFadeSlideTop1 = stylex.keyframes({
-  '0%': {
-    opacity: 0,
-    transform: 'translate3d(0, calc(1 * 0.25rem * -1), 0) scale3d(1, 1, 1) rotate(0)',
-    filter: 'blur(0)',
-  },
-})
+const SECTION_OUTLINE = 'inset 0 0 0 1px var(--input)'
+
+const fadeIn = stylex.keyframes({ '0%': { opacity: 0 } })
 
 const styles = stylex.create({
   // ── Popup shell (spec §7 — moved out of app.css) ──
   popup: {
     boxSizing: 'border-box',
+    display: 'flex',
+    flexDirection: 'column',
     width: '380px',
     maxWidth: '100%',
     minHeight: '360px',
@@ -181,18 +181,11 @@ const styles = stylex.create({
     backgroundColor: 'color-mix(in oklab, var(--muted) 30%, transparent)',
     paddingInline: '0.875rem',
     paddingBlock: '0.5rem',
-    animationName: enterFadeSlideTop1,
-    animationDuration: '0.22s',
-    animationTimingFunction: XMD_EASE,
     // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
     // (with the default `transition-property: all`), so theme/colour changes
     // on these zones ease over 220ms too.
     transitionDuration: '0.22s',
     transitionTimingFunction: XMD_EASE,
-    animationDelay: '0s',
-    animationIterationCount: 1,
-    animationDirection: 'normal',
-    animationFillMode: 'none',
   },
   firstRunBodyText: {
     flex: 1,
@@ -230,22 +223,15 @@ const styles = stylex.create({
     borderColor: tokens['--border'],
     paddingInline: '0.875rem',
     paddingBlock: '1rem',
-    animationName: enterFadeSlideTop1,
-    animationDuration: '0.22s',
-    animationTimingFunction: XMD_EASE,
     // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
     // (with the default `transition-property: all`), so theme/colour changes
     // on these zones ease over 220ms too.
     transitionDuration: '0.22s',
     transitionTimingFunction: XMD_EASE,
-    animationDelay: '0s',
-    animationIterationCount: 1,
-    animationDirection: 'normal',
-    animationFillMode: 'none',
   },
   monitorHeaderRow: {
     display: 'flex',
-    alignItems: 'flex-end',
+    alignItems: 'baseline',
     justifyContent: 'space-between',
     gap: '0.75rem',
   },
@@ -262,7 +248,7 @@ const styles = stylex.create({
     lineHeight: tokens['--text-xs--line-height'],
     color: tokens['--muted-foreground'],
   },
-  monitorRightGroup: { display: 'flex', alignItems: 'center', gap: '0.5rem' },
+  monitorRightGroup: { display: 'flex', alignItems: 'baseline', gap: '0.5rem' },
   resetButton: {
     display: 'flex',
     minHeight: '2.5rem',
@@ -270,6 +256,9 @@ const styles = stylex.create({
     borderRadius: tokens['--xmd-radius-3'],
     paddingInline: '0.5rem',
     marginBlock: '-0.75rem',
+    animationName: fadeIn,
+    animationDuration: '0.2s',
+    animationTimingFunction: XMD_EASE,
     fontSize: '0.75rem',
     lineHeight: tokens['--text-xs--line-height'],
     fontWeight: 500,
@@ -280,8 +269,6 @@ const styles = stylex.create({
     transitionDuration: BUTTON_TRANSITION_DURATION,
     scale: { default: null, ':active': 0.97 },
     boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
-    pointerEvents: { default: null, ':disabled': 'none' },
-    opacity: { default: null, ':disabled': 0.5 },
   },
   monitorPercent: {
     fontFamily: tokens['--font-mono'],
@@ -307,18 +294,11 @@ const styles = stylex.create({
     borderColor: tokens['--border'],
     paddingInline: '0.875rem',
     paddingBlock: '0.625rem',
-    animationName: enterFadeSlideTop1,
-    animationDuration: '0.22s',
-    animationTimingFunction: XMD_EASE,
     // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
     // (with the default `transition-property: all`), so theme/colour changes
     // on these zones ease over 220ms too.
     transitionDuration: '0.22s',
     transitionTimingFunction: XMD_EASE,
-    animationDelay: '0s',
-    animationIterationCount: 1,
-    animationDirection: 'normal',
-    animationFillMode: 'none',
   },
   releaseSummaryLine: {
     fontFamily: tokens['--font-mono'],
@@ -369,21 +349,26 @@ const styles = stylex.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: '0.375rem',
-    borderRadius: tokens['--xmd-radius-3'],
+    borderRadius: tokens['--xmd-radius-2'],
     fontSize: '0.75rem',
     lineHeight: tokens['--text-xs--line-height'],
     fontWeight: 500,
     color: 'color-mix(in oklab, var(--foreground) 80%, transparent)',
     outlineStyle: 'none',
-    transitionProperty: TRANSITION_COLORS,
+    transitionProperty: `${TRANSITION_COLORS}, box-shadow`,
     transitionTimingFunction: XMD_EASE,
     transitionDuration: BUTTON_TRANSITION_DURATION,
     backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
     scale: { default: null, ':active': 0.97 },
-    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    boxShadow: {
+      default: SECTION_OUTLINE,
+      ':focus-visible': `${SECTION_OUTLINE}, ${RING_FOCUS_VISIBLE}`,
+    },
     pointerEvents: { default: null, ':disabled': 'none' },
     opacity: { default: null, ':disabled': 0.5 },
   },
+  sectionTail: { marginTop: '-0.5rem' },
+  tailItem: { paddingTop: '0.5rem' },
   willClearLine: {
     display: 'flex',
     alignItems: 'center',
@@ -430,7 +415,7 @@ const styles = stylex.create({
     paddingBlock: '1rem',
   },
   unsupportedHeadline: { textWrap: 'balance', fontSize: '13px', fontWeight: 500 },
-  routesGrid: { display: 'grid' },
+  routesGrid: { display: 'grid', marginInline: '-0.25rem' },
   routeButton: {
     display: 'flex',
     minHeight: '2.5rem',
@@ -478,7 +463,7 @@ const styles = stylex.create({
     letterSpacing: '0.025em',
     color: tokens['--muted-foreground'],
   },
-  confirmGroupGrid: { display: 'grid', gap: '0.25rem' },
+  confirmGroupGrid: { display: 'grid', marginInline: '-0.25rem' },
   releaseExpandButton: {
     display: 'flex',
     minHeight: '2.5rem',
@@ -497,38 +482,14 @@ const styles = stylex.create({
     scale: { default: null, ':active': 0.97 },
     boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
   },
-  chevronIconWrap: {
-    position: 'relative',
-    display: 'inline-grid',
-    width: '0.75rem',
-    height: '0.75rem',
-    placeItems: 'center',
-  },
-  // No `data-slot="button"` on these spans — they keep their own
-  // transition-[opacity,transform] duration-[180ms] timing, not the button override.
-  chevronLayer: {
-    gridColumnStart: 1,
-    gridRowStart: 1,
-    transitionProperty: 'opacity, transform',
+  chevron: {
+    flexShrink: 0,
+    transitionProperty: 'rotate',
     transitionTimingFunction: XMD_EASE,
-    transitionDuration: '0.18s',
+    transitionDuration: '0.26s',
   },
-  chevronVisible: { scale: '100% 100%', opacity: 1 },
-  chevronHidden: { scale: '90% 90%', opacity: 0 },
-  releaseExpandedPanel: {
-    animationName: enterFadeSlideTop1,
-    animationDuration: '0.22s',
-    animationTimingFunction: XMD_EASE,
-    // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
-    // (with the default `transition-property: all`), so theme/colour changes
-    // on these zones ease over 220ms too.
-    transitionDuration: '0.22s',
-    transitionTimingFunction: XMD_EASE,
-    animationDelay: '0s',
-    animationIterationCount: 1,
-    animationDirection: 'normal',
-    animationFillMode: 'none',
-  },
+  chevronCollapsed: { rotate: '-90deg' },
+  chevronExpanded: { rotate: '0deg' },
 
   // ── Zone 5 — Preferences ──
   preferencesSection: {
@@ -580,9 +541,13 @@ const styles = stylex.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: '0.5rem',
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
+    position: 'sticky',
+    bottom: 0,
+    zIndex: 10,
+    flexShrink: 0,
+    marginTop: 'auto',
+    backgroundColor: tokens['--background'],
+    boxShadow: '0 -1px 0 0 var(--border)',
     paddingInline: '0.875rem',
     paddingBlock: '0.75rem',
     fontSize: '0.75rem',
@@ -597,12 +562,17 @@ const styles = stylex.create({
     pointerEvents: 'none',
     position: 'fixed',
     right: '0.75rem',
-    bottom: '0.75rem',
+    bottom: '3.25rem',
+    zIndex: 20,
     transitionProperty: 'opacity, transform',
     transitionTimingFunction: XMD_EASE,
   },
   toastSaved: { translate: '0 0', opacity: 1, transitionDuration: '0.2s' },
-  toastNotSaved: { translate: '0 0.25rem', opacity: 0, transitionDuration: '0.15s' },
+  toastNotSaved: {
+    translate: '0 0.25rem',
+    opacity: 0,
+    transitionDuration: `${TOAST_EXIT_MS}ms`,
+  },
   savedBadge: {
     display: 'flex',
     alignItems: 'center',
@@ -632,6 +602,25 @@ interface PageActionHandle {
   readonly run: () => Promise<void>
 }
 
+const DrainReply = Schema.Struct({
+  count: Schema.optionalKey(Schema.Number),
+  admitted: Schema.optionalKey(Schema.Number),
+  skipped: Schema.optionalKey(Schema.Number),
+  ok: Schema.optionalKey(Schema.Boolean),
+  onList: Schema.optionalKey(Schema.Boolean),
+})
+
+const SweepReply = Schema.Struct({
+  queued: Schema.optionalKey(Schema.Number),
+  skipped: Schema.optionalKey(Schema.Number),
+  reason: Schema.optionalKey(Schema.String),
+})
+
+const ReleaseReply = Schema.Struct({
+  cleared: Schema.optionalKey(Schema.Number),
+  reason: Schema.optionalKey(Schema.String),
+})
+
 /** A page action that messages the active tab's content script and turns the
  *  reply into a status line. Owns its own busy state and the query-tab → send
  *  → format → error skeleton, writing the result into a shared `setMsg` slot
@@ -639,6 +628,7 @@ interface PageActionHandle {
  *  invoked (JSX-level, spec §2.6) — this hook no longer knows about confirm. */
 function usePageAction<R>(config: {
   request: { _tag: string }
+  reply: Schema.Codec<R>
   format: (res: R | null) => string
   /** Cluster-scoped status-line setter (downloadMsg or releaseMsg) — cleared
    *  on run start, set on completion/error. */
@@ -658,11 +648,8 @@ function usePageAction<R>(config: {
         config.setMsg(NO_ACTIVE_TAB)
         return
       }
-      // `browser.tabs.sendMessage`'s reply types as `any` (the polyfill has no way to
-      // know the content script's response shape), so this is a plain annotation, not
-      // a cast: `any` is assignable to any declared type without an assertion.
-      const res: R | null = await browser.tabs.sendMessage(tab.id, config.request)
-      config.setMsg(config.format(res))
+      const res: JsonValue = await browser.tabs.sendMessage(tab.id, config.request)
+      config.setMsg(config.format(Option.getOrNull(Schema.decodeUnknownOption(config.reply)(res))))
     } catch {
       config.setMsg(PAGE_UNREACHABLE)
     } finally {
@@ -690,24 +677,20 @@ function canRelease(settings: Settings | null, sweepScope?: { scope: Scope }): b
   const decision = planClearSeed({
     requests: [],
     mediaById: new Map(),
-    ...(sweepScope ? { sweep: sweepScope } : {}),
+    ...(sweepScope && { sweep: sweepScope }),
     settings,
   }).decision
   return decision === 'seed'
 }
 
-/** Create an async runner that dismisses first-run UI on success. */
-function createFirstRunAwareRunner(
+/** Runs a Stage action, then dismisses the first-run UI if it succeeded. */
+async function runFirstRunAware(
   actionRun: () => Promise<void>,
-  downloadOkRef: MutableRef<boolean>,
+  lastDownloadOk: () => boolean,
   dismissFirstRun: () => void,
-): () => void {
-  return () => {
-    void (async () => {
-      await actionRun()
-      if (downloadOkRef.current) dismissFirstRun()
-    })()
-  }
+): Promise<void> {
+  await actionRun()
+  if (lastDownloadOk()) dismissFirstRun()
 }
 
 /** Determine whether to show the active monitor (only when a batch is really running). */
@@ -814,16 +797,16 @@ function MonitorZone({ metrics, onReset }: { metrics: MetricsSnapshot; onReset: 
           <span {...stylex.props(styles.monitorSavedLabel)}>saved</span>
         </div>
         <div {...stylex.props(styles.monitorRightGroup)}>
-          <button
-            type="button"
-            data-slot="button"
-            {...stylex.props(styles.resetButton)}
-            disabled={!canReset}
-            title={!canReset ? 'Downloads still active' : undefined}
-            onClick={onReset}
-          >
-            {!canReset ? 'Active' : 'Reset'}
-          </button>
+          {canReset && (
+            <button
+              type="button"
+              data-slot="button"
+              {...stylex.props(styles.resetButton)}
+              onClick={onReset}
+            >
+              Reset
+            </button>
+          )}
           <span {...stylex.props(styles.monitorPercent)}>{pct}%</span>
         </div>
       </div>
@@ -893,6 +876,8 @@ function StageZone({
   mod: string
   mod2: string
 }) {
+  const shownDownloadMsg = useLingeringValue(downloadMsg)
+
   if (ctx === 'x' || ctx === 'x-list') {
     return (
       <section aria-label="Stage" {...stylex.props(styles.borderedSectionGap2)}>
@@ -921,17 +906,26 @@ function StageZone({
           {sweepBusy ? 'Sweeping…' : 'One by one'}
         </button>
 
-        {willClear && (
-          <p {...stylex.props(styles.willClearLine)}>
-            <span {...stylex.props(styles.willClearDot)} />
-            Release after download is on
-          </p>
-        )}
-        {aria2Caveat && <p {...stylex.props(styles.aria2CaveatText)}>{ARIA2_CAVEAT}</p>}
-
-        <output aria-live="polite" aria-atomic="true" {...stylex.props(styles.statusOutput)}>
-          {downloadMsg}
-        </output>
+        <div {...stylex.props(styles.sectionTail)}>
+          <Collapse open={willClear}>
+            <p {...stylex.props(styles.willClearLine, styles.tailItem)}>
+              <span {...stylex.props(styles.willClearDot)} />
+              Release after download is on
+            </p>
+          </Collapse>
+          <Collapse open={aria2Caveat}>
+            <p {...stylex.props(styles.aria2CaveatText, styles.tailItem)}>{ARIA2_CAVEAT}</p>
+          </Collapse>
+          <Collapse open={downloadMsg !== null}>
+            <output
+              aria-live="polite"
+              aria-atomic="true"
+              {...stylex.props(styles.statusOutput, styles.tailItem)}
+            >
+              {shownDownloadMsg}
+            </output>
+          </Collapse>
+        </div>
       </section>
     )
   }
@@ -1008,6 +1002,9 @@ function ReleaseCluster({
   onReleaseList: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
+  const shownReleaseMsg = useLingeringValue(releaseMsg)
+  const releasePageStrip = useConfirmStrip()
+  const releaseListStrip = useConfirmStrip()
 
   return (
     <section aria-label="Release" {...stylex.props(styles.borderedSectionGap2)}>
@@ -1016,29 +1013,31 @@ function ReleaseCluster({
       {onListPage ? (
         <div {...stylex.props(styles.confirmGroupGrid)}>
           <ConfirmStrip
+            control={releasePageStrip}
             sentence={releasePageConfirm}
             confirmLabel={RELEASE_PAGE_CONFIRM_LABEL}
             kind="one-shot"
             onConfirm={onReleasePage}
           >
-            {(arm) => (
-              <ReleaseTrigger label="Release this page…" busy={releasePageBusy} onClick={arm} />
-            )}
+            <ReleaseTrigger
+              label="Release this page…"
+              busy={releasePageBusy}
+              onClick={releasePageStrip.arm}
+            />
           </ConfirmStrip>
           <ConfirmStrip
+            control={releaseListStrip}
             sentence={releaseListConfirm}
             confirmLabel={RELEASE_LIST_CONFIRM_LABEL}
             kind="one-shot"
             typedWord={RELEASE_WORD.toLowerCase()}
             onConfirm={onReleaseList}
           >
-            {(arm) => (
-              <ReleaseTrigger
-                label="Release the whole list…"
-                busy={releaseListBusy}
-                onClick={arm}
-              />
-            )}
+            <ReleaseTrigger
+              label="Release the whole list…"
+              busy={releaseListBusy}
+              onClick={releaseListStrip.arm}
+            />
           </ConfirmStrip>
         </div>
       ) : (
@@ -1051,45 +1050,44 @@ function ReleaseCluster({
             onClick={() => setExpanded((v) => !v)}
           >
             Release
-            <span aria-hidden="true" {...stylex.props(styles.chevronIconWrap)}>
-              <span
-                {...stylex.props(
-                  styles.chevronLayer,
-                  expanded ? styles.chevronVisible : styles.chevronHidden,
-                )}
-              >
-                ⌃
-              </span>
-              <span
-                {...stylex.props(
-                  styles.chevronLayer,
-                  expanded ? styles.chevronHidden : styles.chevronVisible,
-                )}
-              >
-                ›
-              </span>
-            </span>
+            <ChevronDownIcon
+              aria-hidden="true"
+              sx={[
+                iconSize.s35,
+                styles.chevron,
+                expanded ? styles.chevronExpanded : styles.chevronCollapsed,
+              ]}
+            />
           </button>
-          {expanded && (
-            <div {...stylex.props(styles.releaseExpandedPanel)}>
-              <ConfirmStrip
-                sentence={releasePageConfirm}
-                confirmLabel={RELEASE_PAGE_CONFIRM_LABEL}
-                kind="one-shot"
-                onConfirm={onReleasePage}
-              >
-                {(arm) => (
-                  <ReleaseTrigger label="Release this page…" busy={releasePageBusy} onClick={arm} />
-                )}
-              </ConfirmStrip>
-            </div>
-          )}
+          <Collapse open={expanded}>
+            <ConfirmStrip
+              control={releasePageStrip}
+              sentence={releasePageConfirm}
+              confirmLabel={RELEASE_PAGE_CONFIRM_LABEL}
+              kind="one-shot"
+              onConfirm={onReleasePage}
+            >
+              <ReleaseTrigger
+                label="Release this page…"
+                busy={releasePageBusy}
+                onClick={releasePageStrip.arm}
+              />
+            </ConfirmStrip>
+          </Collapse>
         </div>
       )}
 
-      <output aria-live="polite" aria-atomic="true" {...stylex.props(styles.statusOutput)}>
-        {releaseMsg}
-      </output>
+      <div {...stylex.props(styles.sectionTail)}>
+        <Collapse open={releaseMsg !== null}>
+          <output
+            aria-live="polite"
+            aria-atomic="true"
+            {...stylex.props(styles.statusOutput, styles.tailItem)}
+          >
+            {shownReleaseMsg}
+          </output>
+        </Collapse>
+      </div>
     </section>
   )
 }
@@ -1109,6 +1107,7 @@ function PreferencesZone({
 }) {
   const isMetaContext = ctx === 'instagram' || ctx === 'threads'
   const tweets = captureSummary?.tweets ?? 0
+  const turnOnStrip = useConfirmStrip()
 
   return (
     <section {...stylex.props(styles.preferencesSection)}>
@@ -1145,42 +1144,41 @@ function PreferencesZone({
       ) : (
         <>
           <ConfirmStrip
+            control={turnOnStrip}
             sentence={turnOnReleaseConfirm}
             confirmLabel={TURN_ON_RELEASE_LABEL}
             kind="pre-committed"
             onConfirm={() => void update({ clearOnSave: true })}
           >
-            {(arm) => (
-              <Field orientation="horizontal">
-                <FieldContent>
-                  <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
-                  {settings.clearOnSave ? (
-                    <FieldDescription sx={styles.fieldDescMono}>
-                      {clearScopeSummary(settings)} ·{' '}
-                      <button
-                        type="button"
-                        data-slot="button"
-                        {...stylex.props(styles.linkSlop, styles.linkText, styles.linkFontSans)}
-                        onClick={openReleaseSettings}
-                      >
-                        Edit ›
-                      </button>
-                    </FieldDescription>
-                  ) : (
-                    <FieldDescription>{CLEAR_AFTER_DOWNLOAD.description}</FieldDescription>
-                  )}
-                </FieldContent>
-                <Switch
-                  id="clearOnSave"
-                  aria-label="Release after download"
-                  checked={settings.clearOnSave}
-                  onCheckedChange={(checked: boolean) => {
-                    if (checked) arm()
-                    else void update({ clearOnSave: false })
-                  }}
-                />
-              </Field>
-            )}
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
+                {settings.clearOnSave ? (
+                  <FieldDescription sx={styles.fieldDescMono}>
+                    {clearScopeSummary(settings)} ·{' '}
+                    <button
+                      type="button"
+                      data-slot="button"
+                      {...stylex.props(styles.linkSlop, styles.linkText, styles.linkFontSans)}
+                      onClick={openReleaseSettings}
+                    >
+                      Edit ›
+                    </button>
+                  </FieldDescription>
+                ) : (
+                  <FieldDescription>{CLEAR_AFTER_DOWNLOAD.description}</FieldDescription>
+                )}
+              </FieldContent>
+              <Switch
+                id="clearOnSave"
+                aria-label="Release after download"
+                checked={settings.clearOnSave}
+                onCheckedChange={(checked: boolean) => {
+                  if (checked) turnOnStrip.arm()
+                  else void update({ clearOnSave: false })
+                }}
+              />
+            </Field>
           </ConfirmStrip>
 
           <Field orientation="horizontal">
@@ -1245,9 +1243,15 @@ function Footer({
   )
 }
 
+const armStatusClear = (timer: OwnedTimer, m: string | null, clear: () => void): void => {
+  if (m === null || isPersistentStatus(m)) timer.cancel()
+  else timer.arm(clear, STATUS_CLEAR_MS)
+}
+
 export function App() {
   const [settings, setSettingsState] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
+  const [toastShown, setToastShown] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
   const [tabAdapter, setTabAdapter] = useState<PlatformAdapter | undefined>(undefined)
   const [ctx, setCtx] = useState<TabContext>('none')
@@ -1256,6 +1260,12 @@ export function App() {
   // overwrite the release cluster's line, and vice versa.
   const [downloadMsg, setDownloadMsg] = useState<string | null>(null)
   const [releaseMsg, setReleaseMsg] = useState<string | null>(null)
+  // Cluster status lines auto-clear after 6s (§2.6) — except the actionable
+  // errors in isPersistentStatus, which stay put until the next action in
+  // that same cluster starts (already handled: usePageAction's `run()` clears
+  // its own slot on start via `config.setMsg(null)`).
+  const downloadMsgTimer = useOwnedTimer()
+  const releaseMsgTimer = useOwnedTimer()
   const [captureSummary, setCaptureSummary] = useState<CaptureSummary | null>(null)
   const [introState, setIntroState] = useState<FirstRunState | null>(null)
 
@@ -1269,6 +1279,11 @@ export function App() {
   const trackDownloadMsg = (m: string | null): void => {
     downloadOkRef.current = isDownloadOk(m)
     setDownloadMsg(m)
+    armStatusClear(downloadMsgTimer, m, () => setDownloadMsg(null))
+  }
+  const trackReleaseMsg = (m: string | null): void => {
+    setReleaseMsg(m)
+    armStatusClear(releaseMsgTimer, m, () => setReleaseMsg(null))
   }
 
   // Whether a Stage action will ALSO release. Asks the real gate — planClearSeed
@@ -1287,14 +1302,16 @@ export function App() {
   // The reply is terminal (it settles after the background answers), so `busy` — the
   // "Queuing…" label — now covers the real hand-off, and the status line reports what
   // was ADMITTED rather than what was detected.
-  const drain = usePageAction<DrainResult>({
+  const drain = usePageAction({
     request: { _tag: 'DrainPageRequest' },
+    reply: DrainReply,
     format: (res) => drainResult(res, willClear),
     setMsg: trackDownloadMsg,
   })
 
-  const sweep = usePageAction<{ queued?: number; skipped?: number; reason?: string }>({
+  const sweep = usePageAction({
     request: { _tag: 'SweepPageRequest' },
+    reply: SweepReply,
     format: (res) => sweepResult(res, willClearSweep),
     setMsg: trackDownloadMsg,
   })
@@ -1307,19 +1324,21 @@ export function App() {
   // `reason: 'not-list-page'`, and a count-only format rendered that refusal as
   // "Released 0 posts on this page." — the off-list disclosure's only control
   // (spec §2.2) reporting success for an action that never ran.
-  const releasePage = usePageAction<{ cleared?: number; reason?: string }>({
+  const releasePage = usePageAction({
     request: { _tag: 'ClearVisibleRequest' },
+    reply: ReleaseReply,
     format: (res) => releasedPageResult(res),
-    setMsg: setReleaseMsg,
+    setMsg: trackReleaseMsg,
   })
 
   // Whole-list release: auto-scroll the entire Likes/Bookmarks list and
   // un-like / un-bookmark every post — heavier and irreversible, gated by the
   // typed-word Confirm Strip and to list pages only.
-  const releaseList = usePageAction<{ cleared?: number; reason?: string }>({
+  const releaseList = usePageAction({
     request: { _tag: 'ClearWholeListRequest' },
+    reply: ReleaseReply,
     format: (res) => releasedListResult(res),
-    setMsg: setReleaseMsg,
+    setMsg: trackReleaseMsg,
   })
 
   useEffect(() => {
@@ -1392,28 +1411,14 @@ export function App() {
     }
   }, [])
 
-  // Cluster status lines auto-clear after 6s (§2.6) — except the actionable
-  // errors in isPersistentStatus, which stay put until the next action in
-  // that same cluster starts (already handled: usePageAction's `run()` clears
-  // its own slot on start via `config.setMsg(null)`).
-  useEffect(() => {
-    if (downloadMsg === null || isPersistentStatus(downloadMsg)) return undefined
-    const timer = setTimeout(() => setDownloadMsg(null), 6000)
-    return () => clearTimeout(timer)
-  }, [downloadMsg])
-
-  useEffect(() => {
-    if (releaseMsg === null || isPersistentStatus(releaseMsg)) return undefined
-    const timer = setTimeout(() => setReleaseMsg(null), 6000)
-    return () => clearTimeout(timer)
-  }, [releaseMsg])
-
   // One owned "Saved" feedback timer: a newer save cancels the older timer
   // before rearming, and unmount cancels whatever is pending.
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => {
-    return () => clearTimeout(savedTimer.current)
-  }, [])
+  const savedTimer = useOwnedTimer()
+
+  // Only surface the monitor for a real download batch — not for stray hover/UI
+  // trace events that also ride the metrics snapshot.
+  const monitor = getActiveMonitor(metrics)
+  const shownMonitor = useLingeringValue(monitor)
 
   if (!settings) {
     return (
@@ -1430,17 +1435,20 @@ export function App() {
   const update = async (patch: Partial<Settings>): Promise<void> => {
     setSettingsState(await setSettings(patch))
     setSaved(true)
-    clearTimeout(savedTimer.current)
-    savedTimer.current = setTimeout(() => {
-      setSaved(false)
-      savedTimer.current = undefined
+    setToastShown(true)
+    savedTimer.arm(() => {
+      setToastShown(false)
+      savedTimer.arm(() => setSaved(false), TOAST_EXIT_MS)
     }, 1200)
   }
 
   const dismissFirstRun = (): void => void markDone().then(setIntroState)
 
-  const runDrain = createFirstRunAwareRunner(() => drain.run(), downloadOkRef, dismissFirstRun)
-  const runSweep = createFirstRunAwareRunner(() => sweep.run(), downloadOkRef, dismissFirstRun)
+  const lastDownloadOk = (): boolean => downloadOkRef.current
+  const runDrain = (): void =>
+    void runFirstRunAware(() => drain.run(), lastDownloadOk, dismissFirstRun)
+  const runSweep = (): void =>
+    void runFirstRunAware(() => sweep.run(), lastDownloadOk, dismissFirstRun)
 
   const resetMonitor = async (): Promise<void> => {
     const res: { ok?: boolean } | null = await browser.runtime
@@ -1451,9 +1459,6 @@ export function App() {
     setMetrics(null)
   }
 
-  // Only surface the monitor for a real download batch — not for stray hover/UI
-  // trace events that also ride the metrics snapshot.
-  const monitor = getActiveMonitor(metrics)
   // Independent of `monitor`: a Release run's diagnostics can exist (and matter)
   // well after its download batch finished, or without one having been the popup's
   // own concern at all (a manual "Release the whole list…" pass, say).
@@ -1467,10 +1472,16 @@ export function App() {
     <div {...stylex.props(styles.popup)} data-xmd-popup="ready">
       <ContextStrip ctx={ctx} scope={scope} />
 
-      {showFirstRun && <FirstRunStrip mod={mod} onDismiss={dismissFirstRun} />}
+      <Collapse open={showFirstRun}>
+        <FirstRunStrip mod={mod} onDismiss={dismissFirstRun} />
+      </Collapse>
 
-      {monitor && <MonitorZone metrics={monitor} onReset={() => void resetMonitor()} />}
-      {releaseSummary && <ReleaseSummaryZone summary={releaseSummary} />}
+      <Collapse open={monitor !== null}>
+        {shownMonitor && <MonitorZone metrics={shownMonitor} onReset={() => void resetMonitor()} />}
+      </Collapse>
+      <Collapse open={releaseSummary !== null}>
+        {releaseSummary && <ReleaseSummaryZone summary={releaseSummary} />}
+      </Collapse>
 
       <StageZone
         ctx={ctx}
@@ -1516,7 +1527,7 @@ export function App() {
       <output
         aria-live="polite"
         aria-atomic="true"
-        {...stylex.props(styles.toastOutput, saved ? styles.toastSaved : styles.toastNotSaved)}
+        {...stylex.props(styles.toastOutput, toastShown ? styles.toastSaved : styles.toastNotSaved)}
       >
         {saved && (
           <span {...stylex.props(styles.savedBadge)}>

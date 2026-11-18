@@ -1,9 +1,10 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import type { JsonValue } from '@/packages/schema'
 import { makeSerialQueue } from '../serial-queue'
 import { runSerializedRmw, type DurableStore } from '../durable-store'
 
-const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+const tick = (): Promise<void> => sleep(0)
 const decodeStrings = (raw: JsonValue): string[] => (Array.isArray(raw) ? raw.map(String) : [])
 
 function delayedStore(initial: JsonValue): DurableStore & { value: JsonValue } {
