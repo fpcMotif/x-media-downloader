@@ -87,15 +87,22 @@ export function makeRemoteUpload(deps: {
     const raw = await store.get()
     return raw === null ? [] : Schema.decodeUnknownSync(Receipts)(raw)
   }
-  const patchReceipt = async (mediaId: string, patch: Partial<Receipt>): Promise<void> => {
+  const patchReceipts = async (patches: ReadonlyMap<string, Partial<Receipt>>): Promise<void> => {
+    if (patches.size === 0) return
     const rows = await read()
-    const index = rows.findIndex((row) => row.mediaId === mediaId)
-    const previous = rows[index]
-    if (!previous) throw new Error('Missing durable server receipt')
-    const next = rows.slice()
-    next[index] = { ...previous, ...patch }
-    await store.set(next)
+    const byMediaId = new Set(rows.map((row) => row.mediaId))
+    for (const mediaId of patches.keys()) {
+      if (!byMediaId.has(mediaId)) throw new Error('Missing durable server receipt')
+    }
+    await store.set(
+      rows.map((row) => {
+        const patch = patches.get(row.mediaId)
+        return patch ? { ...row, ...patch } : row
+      }),
+    )
   }
+  const patchReceipt = async (mediaId: string, patch: Partial<Receipt>): Promise<void> =>
+    patchReceipts(new Map([[mediaId, patch]]))
   const http = makeFetchServiceLive(deps.fetchImpl)
   const call = async (
     settings: Settings,
@@ -310,32 +317,62 @@ export function makeRemoteUpload(deps: {
       const unaccepted = candidateReceipts.filter((r) => !r.accepted)
       return await submitBatch(settings, unaccepted, isNewByMediaId)
     })
+  const STATUS_BATCH = 100
+  const applyStatuses = async (
+    batch: ReadonlyArray<Receipt>,
+    statuses: typeof Status.Type,
+  ): Promise<void> => {
+    const byMediaId = new Map(statuses.map((entry) => [entry.mediaId, entry]))
+    const changed = batch.flatMap((row) => {
+      const status = byMediaId.get(row.mediaId)
+      const kind = status?.status === 'uploading' ? 'queued' : status?.status
+      if (!status || !kind || row.historyOutcome === kind) return []
+      return [{ mediaId: row.mediaId, kind, at: status.at }]
+    })
+    await Promise.all(changed.map((entry) => deps.onHistoryNotice(entry)))
+    await patchReceipts(
+      new Map(
+        changed.map((entry) => [entry.mediaId, { accepted: true, historyOutcome: entry.kind }]),
+      ),
+    )
+  }
   const reconcile = () =>
     queue.run(async () => {
       const settings = await deps.getSettings()
       const rows = (await read()).filter((row) => row.historyOutcome !== 'completed')
-      const reconcileNext = async (index: number): Promise<void> => {
-        const row = rows[index]
-        if (!row) return
-        const statuses = Schema.decodeUnknownSync(Status)(
-          await call(
-            settings,
-            'query',
-            'relay:status',
-            { deviceId: row.deviceId, mediaIds: [row.mediaId] },
-            row.deploymentUrl,
-            row.syncSecret,
-          ),
-        )
-        const status = statuses[0]
-        const kind = status?.status === 'uploading' ? 'queued' : status?.status
-        if (status && kind && row.historyOutcome !== kind && row.historyOutcome !== 'completed') {
-          await deps.onHistoryNotice({ mediaId: row.mediaId, kind, at: status.at })
-          await patchReceipt(row.mediaId, { accepted: true, historyOutcome: kind })
+      const groups = Map.groupBy(rows, (row) => `${row.deploymentUrl}\n${row.deviceId}`)
+      const batches = [...groups.values()].flatMap((group) =>
+        Array.from({ length: Math.ceil(group.length / STATUS_BATCH) }, (_, index) =>
+          group.slice(index * STATUS_BATCH, (index + 1) * STATUS_BATCH),
+        ),
+      )
+      const failures: Array<string> = []
+      const reconcileBatch = async (index: number): Promise<void> => {
+        const batch = batches[index]
+        const first = batch?.[0]
+        if (!batch || !first) return
+        try {
+          const statuses = Schema.decodeUnknownSync(Status)(
+            await call(
+              settings,
+              'query',
+              'relay:status',
+              { deviceId: first.deviceId, mediaIds: batch.map((row) => row.mediaId) },
+              first.deploymentUrl,
+              first.syncSecret,
+            ),
+          )
+          await applyStatuses(batch, statuses)
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error))
         }
-        await reconcileNext(index + 1)
+        await reconcileBatch(index + 1)
       }
-      await reconcileNext(0)
+      await reconcileBatch(0)
+      if (failures.length > 0)
+        throw new Error(
+          `Relay reconcile failed for ${failures.length} of ${batches.length} batches: ${failures[0]}`,
+        )
     })
   const disconnect = async (): Promise<void> => {
     const settings = await deps.getSettings()

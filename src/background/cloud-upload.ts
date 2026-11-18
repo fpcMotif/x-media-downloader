@@ -770,7 +770,12 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
 
   const reconcileCloudOnlyHistory = (): Promise<void> =>
     uploadQueue.run(async () => {
-      await remote.reconcile()
+      let relayFailure: Error | null = null
+      try {
+        await remote.reconcile()
+      } catch (error) {
+        relayFailure = error instanceof Error ? error : new Error(String(error))
+      }
       const settings = await getSettings()
       const ledger = await readLedger()
       const mediaIds = [
@@ -781,6 +786,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       await Promise.all(
         mediaIds.map((mediaId) => notifyCloudHistoryOnce(settings, ledger, mediaId)),
       )
+      if (relayFailure !== null) throw relayFailure
     })
 
   /** Reflect permanently-failed (dead) uploads on the toolbar badge so the user

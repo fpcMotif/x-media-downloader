@@ -266,4 +266,144 @@ describe('metadata-only queue acceptance', () => {
     expect(accepted).toEqual(['m1', 'm2'])
     expect(calls.filter((c) => c.body.includes('relay:submitBatch'))).toHaveLength(1)
   })
+
+  it('reconcile continues past a failing deployment', async () => {
+    const store = memoryStore()
+    const notices: CloudHistoryNotice[] = []
+    const firstSettings = { ...settings, convexUrl: 'https://first.convex.cloud' }
+    const secondSettings = { ...settings, convexUrl: 'https://second.convex.cloud' }
+    const secondItem = {
+      ...item,
+      item: { ...item.item, id: 'm2', url: 'https://pbs.twimg.com/media/m2.jpg' },
+      filename: 'twitter/m2.jpg',
+    }
+    const remote = makeRemoteUpload({
+      getSettings: async () => secondSettings,
+      store,
+      onHistoryNotice: (notice) => {
+        notices.push(notice)
+      },
+      fetchImpl: async (url, init) => {
+        const body = String(init?.body)
+        if (!body.includes('relay:status')) {
+          return Response.json({ status: 'success', value: { id: 'server-job', created: true } })
+        }
+        if (String(url).startsWith(firstSettings.convexUrl)) {
+          throw new Error('first deployment offline')
+        }
+        return Response.json({
+          status: 'success',
+          value: [{ mediaId: 'm2', status: 'completed', at: 200 }],
+        })
+      },
+    })
+    await remote.record(firstSettings, [item])
+    await remote.record(secondSettings, [secondItem])
+    await expect(remote.reconcile()).rejects.toThrow(/first deployment offline/)
+    expect(notices).toEqual([{ mediaId: 'm2', kind: 'completed', at: 200 }])
+    expect(await store.get()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ mediaId: 'm2', historyOutcome: 'completed' }),
+      ]),
+    )
+  })
+
+  it('reconcile batches status queries', async () => {
+    const StatusCall = Schema.Struct({
+      args: Schema.Struct({ mediaIds: Schema.Array(Schema.String) }),
+    })
+    const candidates = Array.from({ length: 150 }, (_, index) => ({
+      item: {
+        ...item.item,
+        id: `m${index}`,
+        url: `https://pbs.twimg.com/media/m${index}.jpg`,
+      },
+      filename: `twitter/m${index}.jpg`,
+      estimatedBytes: 4,
+    }))
+    const statusBodies: Array<string> = []
+    const remote = makeRemoteUpload({
+      getSettings: async () => settings,
+      store: memoryStore(),
+      onHistoryNotice: () => {},
+      fetchImpl: async (_url, init) => {
+        const body = String(init?.body)
+        if (body.includes('relay:status')) {
+          statusBodies.push(body)
+          return Response.json({ status: 'success', value: [] })
+        }
+        return Response.json({
+          status: 'success',
+          value: candidates.map((candidate) => ({
+            mediaId: candidate.item.id,
+            id: `job-${candidate.item.id}`,
+            created: true,
+          })),
+        })
+      },
+    })
+    await remote.record(settings, candidates)
+    await remote.reconcile()
+    expect(statusBodies).toHaveLength(2)
+    const firstBatch = Schema.decodeUnknownSync(StatusCall)(JSON.parse(statusBodies[0] ?? '{}'))
+    const secondBatch = Schema.decodeUnknownSync(StatusCall)(JSON.parse(statusBodies[1] ?? '{}'))
+    expect(firstBatch.args.mediaIds).toHaveLength(100)
+    expect(secondBatch.args.mediaIds).toHaveLength(50)
+  })
+
+  it('reconcile writes the store once per batch', async () => {
+    const StatusCall = Schema.Struct({
+      args: Schema.Struct({ mediaIds: Schema.Array(Schema.String) }),
+    })
+    const candidates = Array.from({ length: 150 }, (_, index) => ({
+      item: {
+        ...item.item,
+        id: `m${index}`,
+        url: `https://pbs.twimg.com/media/m${index}.jpg`,
+      },
+      filename: `twitter/m${index}.jpg`,
+      estimatedBytes: 4,
+    }))
+    const baseStore = memoryStore()
+    let sets = 0
+    const store: DurableStore = {
+      get: () => baseStore.get(),
+      set: async (next) => {
+        sets += 1
+        await baseStore.set(next)
+      },
+    }
+    const remote = makeRemoteUpload({
+      getSettings: async () => settings,
+      store,
+      onHistoryNotice: () => {},
+      fetchImpl: async (_url, init) => {
+        const body = String(init?.body)
+        if (body.includes('relay:status')) {
+          const parsed = Schema.decodeUnknownSync(StatusCall)(JSON.parse(body))
+          return Response.json({
+            status: 'success',
+            value: parsed.args.mediaIds.map((mediaId) => ({
+              mediaId,
+              status: 'completed',
+              at: 300,
+            })),
+          })
+        }
+        return Response.json({
+          status: 'success',
+          value: candidates.map((candidate) => ({
+            mediaId: candidate.item.id,
+            id: `job-${candidate.item.id}`,
+            created: true,
+          })),
+        })
+      },
+    })
+    await remote.record(settings, candidates)
+    sets = 0
+    await remote.reconcile()
+    expect(sets).toBe(2)
+    expect((await remote.summary()).succeeded).toBe(150)
+  })
 })

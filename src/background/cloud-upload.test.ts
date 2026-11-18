@@ -504,6 +504,54 @@ describe('Cloud-only history verdicts (issue #95)', () => {
       expect(notices).toHaveLength(2)
     },
   )
+
+  it('runs the local history sweep when relay reconcile fails', async () => {
+    const relaySettings = connected({
+      saveToDisk: false,
+      convexDriveEnabled: true,
+      convexDriveConnected: true,
+      convexUrl: 'https://test.convex.cloud',
+      convexSyncSecret: 'test-secret',
+      cloudDeviceId: 'device',
+    })
+    const receiptStore = fakeLedger()
+    await makeRemoteUpload({
+      getSettings: async () => relaySettings,
+      store: receiptStore,
+      onHistoryNotice: () => {},
+      fetchImpl: async () =>
+        Response.json({ status: 'success', value: { id: 'server-id', created: true } }),
+    }).record(relaySettings, [
+      {
+        item: {
+          id: 'relay-item',
+          url: 'https://pbs.twimg.com/media/relay.jpg',
+          handle: 'alice',
+          ext: 'jpg',
+        },
+        filename: 'twitter/relay.jpg',
+        estimatedBytes: 4,
+      },
+    ])
+    const notices: CloudHistoryNotice[] = []
+    const remote = makeRemoteUpload({
+      getSettings: async () => connected({ saveToDisk: false }),
+      store: receiptStore,
+      onHistoryNotice: (notice) => void notices.push(notice),
+      fetchImpl: async () => {
+        throw new Error('relay status unavailable')
+      },
+    })
+    const ledger = fakeLedger([{ ...seedJobs(1)[0]!, status: 'succeeded', cloudOnly: true }])
+    const cu = makeCU({
+      remote,
+      ledger,
+      getSettings: async () => connected({ saveToDisk: false }),
+      onHistoryNotice: (notice) => void notices.push(notice),
+    })
+    await expect(cu.reconcileCloudOnlyHistory()).rejects.toThrow(/relay status unavailable/)
+    expect(notices).toEqual([{ mediaId: 'm0', kind: 'completed', at: NOW }])
+  })
 })
 
 describe('runOAuthConnect — wiring (NOT the consent popup)', () => {
