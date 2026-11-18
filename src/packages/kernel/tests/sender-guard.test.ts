@@ -17,6 +17,7 @@ describe('CONTENT_SCRIPT_TAGS', () => {
         'CaptureTweets',
         'SavedStatusRequest',
         'ReleaseMutationEvent',
+        'ReleaseTickRequest',
       ].toSorted(),
     )
   })

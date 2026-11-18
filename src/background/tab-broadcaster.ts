@@ -105,6 +105,7 @@ export interface TabBroadcasterDeps {
    *  durable log drops them (`isReleaseDiagnosticsEvent`, packages/clear/diagnostics.ts).
    *  Omitted ⇒ a no-op: observation must never be load-bearing for a clear. */
   readonly trace?: ((stage: string, detail: string, tweetId?: string) => void) | undefined
+  readonly schedule?: ((fn: () => void, ms: number) => () => void) | undefined
   /** Injected sleep + wall clock for the release-tab readiness poll. Defaults to
    *  the real `setTimeout` / `Date.now`; tests hand an instant clock with a
    *  settable `now` so a never-mounting page doesn't cost the whole poll budget
@@ -191,6 +192,8 @@ export const RELEASE_STUCK_MS = 4_000
 // STILL there), later legs fail fast without navigating until this passes —
 // a burst of queued releases can't hammer a page that's already proven broken.
 export const RELEASE_BACKOFF_MS = 60_000
+export const TAB_MESSAGE_DEADLINE_MS = 20_000
+const TAB_MESSAGE_TIMED_OUT = Symbol('tab-message-timed-out')
 
 // Orphan policy for the IMMEDIATE fan-out (not the release leg): a tab that answers
 // `no-receiver` on 2 consecutive dispatches almost certainly has no injected content
@@ -219,6 +222,7 @@ type ReleasePollReason =
   | 'nav-failed'
   | 'page-error'
   | 'backoff'
+  | 'probe-timeout'
 
 /** The page-state evidence an unmounted `ClearTweetResponse` carries (Part B). */
 type ReleasePageEvidence = NonNullable<ClearTweetResponse['page']>
@@ -228,6 +232,7 @@ type ReleasePageEvidence = NonNullable<ClearTweetResponse['page']>
  *  isn't mounted yet (carries whatever page evidence Part B attached, if any). */
 type ProbeResult =
   | { readonly kind: 'threw' }
+  | { readonly kind: 'timed-out' }
   | { readonly kind: 'mounted'; readonly results: ReadonlyArray<ClearScopeResult> }
   | { readonly kind: 'unmounted'; readonly page: ReleasePageEvidence | undefined }
 
@@ -248,6 +253,7 @@ interface ReleaseTabProbe {
  *  (`noop-only` vs `exhausted`). */
 type FanOutOutcome =
   | { readonly kind: 'mounted'; readonly results: ReadonlyArray<ClearScopeResult> }
+  | { readonly kind: 'timed-out' }
   | { readonly kind: 'rate-limited' }
   | { readonly kind: 'exhausted'; readonly sawDiscardedMounted: boolean }
 
@@ -275,6 +281,7 @@ interface ReleasePollSummary {
   readonly lastPage: ReleasePageEvidence | undefined
   readonly reloaded: boolean
   readonly elapsedMs: number
+  readonly maxProbeMs: number
   readonly reason: ReleasePollReason
 }
 
@@ -283,12 +290,13 @@ interface ReleasePollSummary {
  *  the content-script side once `probe: true`, Part B) with a single summary of
  *  the WHOLE poll, so a burst of queued legs can't eat the durable log's cap. */
 const formatReleasePoll = (input: ReleasePollSummary): string => {
-  const { tabId, probes, threw, unmounted, lastPage, reloaded, elapsedMs, reason } = input
+  const { tabId, probes, threw, unmounted, lastPage, reloaded, elapsedMs, maxProbeMs, reason } =
+    input
   return (
     `tab=${tabId ?? 'none'} probes=${probes} threw=${threw} unmounted=${unmounted} ` +
     `lastArticles=${lastPage?.articles ?? 'none'} lastCells=${lastPage?.cells ?? 'none'} ` +
     `lastReady=${lastPage?.ready ?? 'none'} lastError=${lastPage?.error ?? 'none'} ` +
-    `reloaded=${reloaded} elapsedMs=${elapsedMs} reason=${reason}`
+    `reloaded=${reloaded} elapsedMs=${elapsedMs} maxProbeMs=${maxProbeMs} reason=${reason}`
   )
 }
 
@@ -512,6 +520,22 @@ export const makeTabBroadcaster = (
     now: () => Date.now(),
   }
 
+  const schedule =
+    deps.schedule ??
+    ((fn: () => void, ms: number) => {
+      const handle = setTimeout(fn, ms)
+      return () => clearTimeout(handle)
+    })
+
+  const sendWithDeadline = (
+    tabId: number,
+    message: Message | TabMessage,
+  ): Promise<JsonValue | undefined | typeof TAB_MESSAGE_TIMED_OUT> =>
+    new Promise((resolve, reject) => {
+      const cancel = schedule(() => resolve(TAB_MESSAGE_TIMED_OUT), TAB_MESSAGE_DEADLINE_MS)
+      tabs.sendTabMessage(tabId, message).finally(cancel).then(resolve, reject)
+    })
+
   type ReleaseTabOutcome =
     | {
         readonly ok: true
@@ -601,16 +625,16 @@ export const makeTabBroadcaster = (
   const probeReleaseTab = async (input: ReleaseTabProbe): Promise<ProbeResult> => {
     const { tabId, tweetId, scopes, allLists, asPageScope, probes } = input
     try {
-      const res = asClearTweetResponse(
-        await tabs.sendTabMessage(tabId, {
-          _tag: 'ClearTweetRequest',
-          tweetId,
-          scopes,
-          allLists,
-          ...(asPageScope === undefined ? {} : { asPageScope }),
-          ...(probes >= 2 ? { probe: true } : {}),
-        }),
-      )
+      const reply = await sendWithDeadline(tabId, {
+        _tag: 'ClearTweetRequest',
+        tweetId,
+        scopes,
+        allLists,
+        ...(asPageScope === undefined ? {} : { asPageScope }),
+        ...(probes >= 2 ? { probe: true } : {}),
+      })
+      if (reply === TAB_MESSAGE_TIMED_OUT) return { kind: 'timed-out' }
+      const res = asClearTweetResponse(reply)
       if (res?.retryAfterMs !== undefined && res.retryAfterMs > 0)
         rateLimitedUntil = Math.max(rateLimitedUntil, clock.now() + res.retryAfterMs)
       if (res?.mounted === true) return { kind: 'mounted', results: res.results }
@@ -649,6 +673,7 @@ export const makeTabBroadcaster = (
           lastPage: undefined,
           reloaded: false,
           elapsedMs: 0,
+          maxProbeMs: 0,
           reason: 'backoff',
         }),
         tweetId,
@@ -676,6 +701,7 @@ export const makeTabBroadcaster = (
           lastPage: undefined,
           reloaded: false,
           elapsedMs: 0,
+          maxProbeMs: 0,
           reason: 'nav-failed',
         }),
         tweetId,
@@ -693,12 +719,34 @@ export const makeTabBroadcaster = (
     let errorStreak = 0
     let stuckSince: number | undefined
     let elapsed = 0
+    let maxProbeMs = 0
     // oxlint-disable no-await-in-loop -- bounded readiness poll; the first mounted answer performs the clear
     while (elapsed < RELEASE_POLL_BUDGET_MS) {
       await clock.sleep(RELEASE_POLL_INTERVAL_MS)
       elapsed = clock.now() - start
       probes++
+      const probeStartedAt = clock.now()
       const probe = await probeReleaseTab({ tabId, tweetId, scopes, allLists, asPageScope, probes })
+      maxProbeMs = Math.max(maxProbeMs, clock.now() - probeStartedAt)
+
+      if (probe.kind === 'timed-out') {
+        trace(
+          'clear-release-poll',
+          formatReleasePoll({
+            tabId,
+            probes,
+            threw,
+            unmounted,
+            lastPage,
+            reloaded,
+            elapsedMs: clock.now() - start,
+            maxProbeMs,
+            reason: 'probe-timeout',
+          }),
+          tweetId,
+        )
+        return { ok: false, tabId }
+      }
 
       if (probe.kind === 'threw') {
         threw++
@@ -713,6 +761,7 @@ export const makeTabBroadcaster = (
               lastPage,
               reloaded,
               elapsedMs: elapsed,
+              maxProbeMs,
               reason: 'unreachable',
             }),
             tweetId,
@@ -734,6 +783,7 @@ export const makeTabBroadcaster = (
             lastPage,
             reloaded,
             elapsedMs: elapsed,
+            maxProbeMs,
             reason: 'mounted',
           }),
           tweetId,
@@ -769,6 +819,7 @@ export const makeTabBroadcaster = (
             lastPage,
             reloaded,
             elapsedMs: elapsed,
+            maxProbeMs,
             reason: 'page-error',
           }),
           tweetId,
@@ -792,6 +843,7 @@ export const makeTabBroadcaster = (
         lastPage,
         reloaded,
         elapsedMs: elapsed,
+        maxProbeMs,
         reason,
       }),
       tweetId,
@@ -875,14 +927,17 @@ export const makeTabBroadcaster = (
     for (const id of ids) {
       tried.push(id)
       try {
-        const res = asClearTweetResponse(
-          await tabs.sendTabMessage(id, {
-            _tag: 'ClearTweetRequest',
-            tweetId,
-            scopes,
-            allLists,
-          }),
-        )
+        const reply = await sendWithDeadline(id, {
+          _tag: 'ClearTweetRequest',
+          tweetId,
+          scopes,
+          allLists,
+        })
+        if (reply === TAB_MESSAGE_TIMED_OUT) {
+          answered.push(`${id}:timeout`)
+          return { kind: 'timed-out' }
+        }
+        const res = asClearTweetResponse(reply)
         clearOrphanRecord(id)
         const attempted = res?.results.some((result) => !result.noop) === true
         const allSucceeded = res?.results.every((result) => result.ok) === true
@@ -1011,6 +1066,10 @@ export const makeTabBroadcaster = (
     if (fanOut.kind === 'mounted') {
       traceDispatch('mounted', false)
       return fanOut.results
+    }
+    if (fanOut.kind === 'timed-out') {
+      traceDispatch('tab-timeout', true)
+      return scopes.map((scope) => ({ scope, ok: false }))
     }
     if (fanOut.kind === 'rate-limited') {
       traceDispatch('rate-limited', true)

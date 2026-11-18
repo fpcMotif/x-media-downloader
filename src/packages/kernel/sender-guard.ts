@@ -43,6 +43,7 @@ export const CONTENT_SCRIPT_TAGS: ReadonlySet<Message['_tag']> = new Set([
   // Release diagnostics: the overlay relays one observed bookmark/like mutation
   // event off the MAIN-world tee. Never triggers a mutation itself — observe only.
   'ReleaseMutationEvent',
+  'ReleaseTickRequest',
 ])
 
 // Derived from the adapter registry (docs/adr/0019-platform-identity-derives-from-adapter-registry.md)

@@ -153,6 +153,7 @@ const ZERO_SNAPSHOT: MetricsSnapshot = {
 }
 
 const MAX_TRACE_EVENTS = 12
+const RELEASE_TICK_MAX_MS = 1_000
 
 // Live monitoring accumulator. In-SW memory: best-effort and resets on SW
 // recycle; the persisted snapshot is the popup's source of truth. Rehydrating
@@ -1945,6 +1946,14 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
         detail: `op=${msg.op} status=${msg.status} error=${msg.error}`,
       })
       return { _tag: 'ReleaseMutationAck' }
+    }),
+  ],
+  [
+    'ReleaseTickRequest',
+    handle<'ReleaseTickRequest'>(async (msg) => {
+      const waitMs = Math.max(0, Math.min(msg.ms, RELEASE_TICK_MAX_MS))
+      await new Promise<void>((resolve) => setTimeout(resolve, waitMs))
+      return { ok: true }
     }),
   ],
 ])

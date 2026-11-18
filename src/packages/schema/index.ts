@@ -603,6 +603,11 @@ export const ReleaseMutationEvent = Schema.TaggedStruct('ReleaseMutationEvent', 
 })
 export type ReleaseMutationEvent = typeof ReleaseMutationEvent.Type
 
+export const ReleaseTickRequest = Schema.TaggedStruct('ReleaseTickRequest', {
+  ms: Schema.Number,
+})
+export type ReleaseTickRequest = typeof ReleaseTickRequest.Type
+
 /** background → content: acknowledges a `ReleaseMutationEvent` — no payload, the
  *  overlay only needs to know the message was received (mirrors the other
  *  fire-and-forget content→background diagnostics sinks, which reply so
@@ -688,6 +693,7 @@ export const Message = Schema.Union([
   ClearCaptureRequest,
   ExportDiagnosticsRequest,
   ReleaseMutationEvent,
+  ReleaseTickRequest,
   ReleaseMutationAck,
 ])
 export type Message = typeof Message.Type

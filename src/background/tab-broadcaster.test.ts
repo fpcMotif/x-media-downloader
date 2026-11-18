@@ -4,6 +4,7 @@ import {
   makeTabBroadcaster,
   RELEASE_BACKOFF_MS,
   ORPHAN_REPROBE_MS,
+  TAB_MESSAGE_DEADLINE_MS,
   type TabsPort,
 } from './tab-broadcaster'
 import { allAdapterHostMatch } from '../core/adapters/registry'
@@ -603,7 +604,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
         detail:
           `tab=${RELEASE_TAB_ID} probes=7 threw=7 unmounted=0 lastArticles=none ` +
           'lastCells=none lastReady=none lastError=none reloaded=false elapsedMs=4200 ' +
-          'reason=unreachable',
+          'maxProbeMs=0 reason=unreachable',
       },
     ])
   })
@@ -626,7 +627,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
         tweetId: 't1',
         detail:
           `tab=${RELEASE_TAB_ID} probes=20 threw=0 unmounted=20 lastArticles=0 lastCells=0 ` +
-          'lastReady=complete lastError=false reloaded=true elapsedMs=12000 reason=exhausted',
+          'lastReady=complete lastError=false reloaded=true elapsedMs=12000 maxProbeMs=0 reason=exhausted',
       },
     ])
   })
@@ -654,7 +655,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
         tweetId: 't1',
         detail:
           `tab=${RELEASE_TAB_ID} probes=4 threw=0 unmounted=4 lastArticles=0 lastCells=0 ` +
-          'lastReady=complete lastError=true reloaded=true elapsedMs=2400 reason=page-error',
+          'lastReady=complete lastError=true reloaded=true elapsedMs=2400 maxProbeMs=0 reason=page-error',
       },
     ])
 
@@ -671,7 +672,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
     expect(tabs.reloaded).toEqual([RELEASE_TAB_ID]) // no second reload — the leg never ran
     expect(t.releasePoll().at(-1)!.detail).toBe(
       'tab=none probes=0 threw=0 unmounted=0 lastArticles=none lastCells=none lastReady=none ' +
-        'lastError=none reloaded=false elapsedMs=0 reason=backoff',
+        'lastError=none reloaded=false elapsedMs=0 maxProbeMs=0 reason=backoff',
     )
 
     // Past RELEASE_BACKOFF_MS the breaker clears and the leg navigates again.
@@ -711,7 +712,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
         tweetId: 't1',
         detail:
           `tab=${RELEASE_TAB_ID} probes=20 threw=0 unmounted=20 lastArticles=0 lastCells=0 ` +
-          'lastReady=loading lastError=false reloaded=false elapsedMs=12000 reason=exhausted',
+          'lastReady=loading lastError=false reloaded=false elapsedMs=12000 maxProbeMs=0 reason=exhausted',
       },
     ])
   })
@@ -748,9 +749,97 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
         tweetId: 't1',
         detail:
           `tab=${RELEASE_TAB_ID} probes=3 threw=0 unmounted=2 lastArticles=none lastCells=none ` +
-          'lastReady=none lastError=none reloaded=false elapsedMs=1800 reason=mounted',
+          'lastReady=none lastError=none reloaded=false elapsedMs=1800 maxProbeMs=0 reason=mounted',
       },
     ])
+  })
+})
+
+const fakeSchedule = () => {
+  const scheduled: Array<{
+    readonly fn: () => void
+    readonly ms: number
+    readonly cancel: ReturnType<typeof vi.fn<() => void>>
+  }> = []
+  const schedule = (fn: () => void, ms: number): (() => void) => {
+    const cancel = vi.fn<() => void>()
+    scheduled.push({ fn, ms, cancel })
+    return cancel
+  }
+  return { scheduled, schedule }
+}
+
+describe('sendClearToTabs — message deadlines', () => {
+  it('ends the release leg with reason=probe-timeout when a probe never answers', async () => {
+    const t = traceSpy()
+    const { scheduled, schedule } = fakeSchedule()
+    const tabs = fakeTabs([], {
+      [RELEASE_TAB_ID]: () => new Promise<undefined>(() => {}),
+    })
+
+    const pending = makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+      schedule,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    await vi.waitFor(() => expect(scheduled).toHaveLength(1), { timeout: 200 })
+    expect(scheduled[0]?.ms).toBe(TAB_MESSAGE_DEADLINE_MS)
+    now += 20_000
+    scheduled[0]?.fn()
+
+    await expect(pending).resolves.toEqual([{ scope: 'bookmark', ok: false }])
+    expect(t.releasePoll()[0]?.detail).toContain('maxProbeMs=20000 reason=probe-timeout')
+    expect(tabs.sent.filter((s) => s.tabId === RELEASE_TAB_ID)).toHaveLength(1)
+  })
+
+  it('ends the dispatch with outcome=tab-timeout when a list tab never answers', async () => {
+    const t = traceSpy()
+    const { scheduled, schedule } = fakeSchedule()
+    const tabs = fakeTabs([1, 2], {
+      1: () => new Promise<undefined>(() => {}),
+      2: clearResp('bookmark'),
+      [RELEASE_TAB_ID]: clearResp('bookmark'),
+    })
+
+    const pending = makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+      schedule,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    await vi.waitFor(() => expect(scheduled).toHaveLength(1), { timeout: 200 })
+    scheduled[0]?.fn()
+
+    await expect(pending).resolves.toEqual([{ scope: 'bookmark', ok: false }])
+    expect(t.dispatch()[0]?.detail).toContain('outcome=tab-timeout')
+    expect(tabs.sent.map((s) => s.tabId)).toEqual([1])
+    expect(tabs.navigated).toEqual([])
+  })
+
+  it('cancels the deadline when a tab answers', async () => {
+    const { scheduled, schedule } = fakeSchedule()
+    const tabs = fakeTabs([1], { 1: clearResp('bookmark') })
+
+    const res = await makeTabBroadcaster(tabs, { schedule }).sendClearToTabs('t1', ['bookmark'])
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(scheduled[0]?.cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels the deadline and records no-receiver when sendTabMessage rejects', async () => {
+    const t = traceSpy()
+    const { scheduled, schedule } = fakeSchedule()
+    const tabs = fakeTabs([1], { 1: new Error('no content script') })
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      schedule,
+    }).sendClearToTabs('t1', ['notInterested'])
+
+    expect(res).toEqual([{ scope: 'notInterested', ok: false }])
+    expect(t.dispatch()[0]?.detail).toContain('answered=1:no-receiver')
+    expect(scheduled[0]?.cancel).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1013,7 +1102,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
         detail:
           `tab=${RELEASE_TAB_ID} probes=20 threw=0 unmounted=20 lastArticles=none ` +
           'lastCells=none lastReady=none lastError=none reloaded=false elapsedMs=12000 ' +
-          'reason=exhausted',
+          'maxProbeMs=0 reason=exhausted',
       },
     ])
     expect(t.dispatch()[0]!.detail).toBe(
@@ -1047,7 +1136,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
         tweetId: 't1',
         detail:
           'tab=none probes=0 threw=0 unmounted=0 lastArticles=none lastCells=none ' +
-          'lastReady=none lastError=none reloaded=false elapsedMs=0 reason=nav-failed',
+          'lastReady=none lastError=none reloaded=false elapsedMs=0 maxProbeMs=0 reason=nav-failed',
       },
     ])
     expect(t.dispatch()[0]!.detail).toBe(

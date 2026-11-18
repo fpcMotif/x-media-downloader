@@ -101,6 +101,7 @@ import { makeTweetClearer } from '@/packages/clear/tweet-clear'
 import { makeClickGuard } from '@/packages/clear/click-guard'
 import { makeMutationWitness, resolveMutationStartedAt } from '@/packages/clear/mutation-witness'
 import { makeReleaseThrottle, noteReleaseReply } from '@/packages/clear/throttle'
+import { makeHiddenAwareSleep } from '@/packages/clear/hidden-sleep'
 import { makeReleaseRecheck, type FreshTimelineMembership } from '@/packages/clear/recheck'
 import { timelineTweetIds } from '../../core/adapters/x/walk'
 import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
@@ -168,10 +169,18 @@ const clearLog = (...args: unknown[]): void => console.info('[XMD clear]', ...ar
 // whole lifetime, not just one clear.
 const mutationWitness = makeMutationWitness()
 const releaseThrottle = makeReleaseThrottle({ now: Date.now })
+const releaseSleep = makeHiddenAwareSleep({
+  isHidden: () => document.visibilityState === 'hidden',
+  now: Date.now,
+  timerSleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  workerSleep: async (ms) => {
+    await browser.runtime.sendMessage({ _tag: 'ReleaseTickRequest', ms })
+  },
+})
 
 const { clearScope } = makeTweetClearer({
   document,
-  clock: { sleep: (ms) => new Promise((r) => setTimeout(r, ms)) },
+  clock: { sleep: releaseSleep },
   ...(import.meta.env.DEV ? { log: clearLog } : {}),
   trace: (stage, detail, tweetId) => reportClear(stage, detail, tweetId),
   // Every CONFIRMED flip arms the re-appearance watchdog. `notInterested` is
