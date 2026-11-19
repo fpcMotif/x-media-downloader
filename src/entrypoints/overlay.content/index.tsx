@@ -62,6 +62,7 @@ import {
   settleLauncher,
   type LauncherPhase,
 } from '@/packages/overlay/launcher'
+import { sameOverlaySettings, type OverlaySettings } from '@/packages/overlay/settings-view'
 import { getSettings, watchSettings } from '@/packages/settings'
 import { idlePostHotkey, postHotkeyKey } from '../../core/post-hotkey'
 import { fireCurrentPost, wholePostItemsFor, type PostGrabDeps } from './post-grab'
@@ -109,7 +110,6 @@ import type {
   MediaItem,
   QueueUpdate,
   RecoverTweetMediaResponse,
-  Settings,
   SavedStatusResponse,
 } from '@/packages/schema'
 
@@ -1523,7 +1523,10 @@ export default defineContentScript({
     // Settings reach open tabs live (popup writes → storage watch). Any change
     // disarms an active grab: a swapped modifier would otherwise never see its
     // keyup, leaving grab mode stuck on.
-    const applySettings = (s: Settings): void => {
+    let appliedSettings: OverlaySettings | null = null
+    const applySettings = (s: OverlaySettings): void => {
+      if (appliedSettings !== null && sameOverlaySettings(appliedSettings, s)) return
+      appliedSettings = s
       qgEnabled = s.quickGrabEnabled
       qgModifier = s.quickGrabModifier
       badgeEnabled = s.downloadBadgeEnabled
