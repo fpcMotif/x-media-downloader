@@ -13,6 +13,7 @@ import {
   releaseRunDetail,
   releaseTerminalStage,
   sweepSavedStatus,
+  isOnlySavedChipMutation,
   isSavedStatusScope,
   savedStatusVisible,
   dispatchOverlayMessage,
@@ -1314,6 +1315,160 @@ describe('sweepSavedStatus — Saved ✓ chip', () => {
 
     expect(requestSavedStatus).toHaveBeenCalledWith(['1'])
     expect(document.querySelectorAll('.xdl-saved-chip').length).toBe(0)
+  })
+
+  it('does not re-ask about a post that already carries a chip', async () => {
+    document.body.append(tweetArticle({ tweetId: '1' }), tweetArticle({ tweetId: '2' }))
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(async () => ['1'])
+
+    await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
+    await sweepSavedStatus({ document, inScope: () => true, requestSavedStatus })
+
+    expect(requestSavedStatus).toHaveBeenNthCalledWith(1, ['1', '2'])
+    expect(requestSavedStatus).toHaveBeenNthCalledWith(2, ['2'])
+  })
+
+  it('does not re-ask about a post answered not saved inside the memo window', async () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+    const unsavedUntil = new Map<string, number>()
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(
+      async (): Promise<string[]> => [],
+    )
+
+    await sweepSavedStatus({
+      document,
+      inScope: () => true,
+      requestSavedStatus,
+      unsavedUntil,
+      now: () => 1_000,
+    })
+    await sweepSavedStatus({
+      document,
+      inScope: () => true,
+      requestSavedStatus,
+      unsavedUntil,
+      now: () => 1_000,
+    })
+
+    expect(requestSavedStatus).toHaveBeenCalledTimes(1)
+    expect(requestSavedStatus).toHaveBeenCalledWith(['1'])
+  })
+
+  it('re-asks after the 60 s memo window expires', async () => {
+    document.body.append(tweetArticle({ tweetId: '1' }))
+    const unsavedUntil = new Map<string, number>()
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(
+      async (): Promise<string[]> => [],
+    )
+
+    await sweepSavedStatus({
+      document,
+      inScope: () => true,
+      requestSavedStatus,
+      unsavedUntil,
+      now: () => 1_000,
+    })
+    await sweepSavedStatus({
+      document,
+      inScope: () => true,
+      requestSavedStatus,
+      unsavedUntil,
+      now: () => 1_000 + 60_001,
+    })
+
+    expect(requestSavedStatus).toHaveBeenCalledTimes(2)
+    expect(requestSavedStatus).toHaveBeenNthCalledWith(2, ['1'])
+  })
+
+  it('evicts the oldest memo entries first once the 2,000-entry cap is reached', async () => {
+    const unsavedUntil = new Map<string, number>()
+    for (let i = 1; i <= 2_000; i += 1) unsavedUntil.set(String(i), 1_000 + 30_000)
+    document.body.append(tweetArticle({ tweetId: '2001' }), tweetArticle({ tweetId: '2002' }))
+    const requestSavedStatus = vi.fn<(tweetIds: string[]) => Promise<string[]>>(
+      async (): Promise<string[]> => [],
+    )
+
+    await sweepSavedStatus({
+      document,
+      inScope: () => true,
+      requestSavedStatus,
+      unsavedUntil,
+      now: () => 1_000,
+    })
+
+    expect(unsavedUntil.size).toBe(2_000)
+    expect(unsavedUntil.has('1')).toBe(false)
+    expect(unsavedUntil.has('2')).toBe(false)
+    expect(unsavedUntil.has('3')).toBe(true)
+    expect(unsavedUntil.has('2001')).toBe(true)
+    expect(unsavedUntil.has('2002')).toBe(true)
+
+    document.body.append(tweetArticle({ tweetId: '1' }), tweetArticle({ tweetId: '3' }))
+    await sweepSavedStatus({
+      document,
+      inScope: () => true,
+      requestSavedStatus,
+      unsavedUntil,
+      now: () => 1_000,
+    })
+
+    expect(requestSavedStatus).toHaveBeenNthCalledWith(2, ['1'])
+    expect(unsavedUntil.size).toBe(2_000)
+  })
+})
+
+describe('isOnlySavedChipMutation', () => {
+  it('recognises a mutation batch that only inserts saved chips', () => {
+    const container = document.createElement('div')
+    const observer = new MutationObserver(() => {})
+    observer.observe(container, { childList: true, subtree: true })
+
+    const chip = document.createElement('div')
+    chip.className = 'xdl-saved-chip'
+    container.appendChild(chip)
+
+    const records = observer.takeRecords()
+    observer.disconnect()
+
+    expect(records.length).toBeGreaterThan(0)
+    expect(isOnlySavedChipMutation(records)).toBe(true)
+  })
+
+  it('returns false for empty, non-chip, mixed, and removal mutations', () => {
+    const container = document.createElement('div')
+    const existing = document.createElement('div')
+    existing.className = 'xdl-saved-chip'
+    container.appendChild(existing)
+
+    const observer = new MutationObserver(() => {})
+    observer.observe(container, { childList: true, subtree: true })
+
+    expect(isOnlySavedChipMutation([])).toBe(false)
+
+    container.appendChild(document.createElement('div'))
+    const plainRecords = observer.takeRecords()
+    expect(plainRecords.length).toBeGreaterThan(0)
+    expect(isOnlySavedChipMutation(plainRecords)).toBe(false)
+
+    const chip = document.createElement('div')
+    chip.className = 'xdl-saved-chip'
+    const other = document.createElement('div')
+    container.append(chip, other)
+    const mixedRecords = observer.takeRecords()
+    expect(mixedRecords.length).toBeGreaterThan(0)
+    expect(isOnlySavedChipMutation(mixedRecords)).toBe(false)
+
+    existing.remove()
+    const removalRecords = observer.takeRecords()
+    expect(removalRecords.length).toBeGreaterThan(0)
+    expect(isOnlySavedChipMutation(removalRecords)).toBe(false)
+
+    container.appendChild(document.createTextNode('note'))
+    const textRecords = observer.takeRecords()
+    expect(textRecords.length).toBeGreaterThan(0)
+    expect(isOnlySavedChipMutation(textRecords)).toBe(false)
+
+    observer.disconnect()
   })
 })
 

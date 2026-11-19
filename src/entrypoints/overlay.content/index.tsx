@@ -88,6 +88,7 @@ import {
   isString,
   releaseRunDetail,
   releaseTerminalStage,
+  isOnlySavedChipMutation,
   sweepSavedStatus,
   savedStatusVisible,
   type HandlerDeps,
@@ -1029,15 +1030,20 @@ export default defineContentScript({
      *  everywhere else, so every later read (the debounced sweep, the observer's
      *  reschedules, applySettings) still sees the live `location`. */
     let savedStatusCommittedPath: string | null = null
+    const savedStatusUnsavedUntil = new Map<string, number>()
     const savedStatusIsActive = (): boolean =>
       savedStatusAlive &&
       adapter.platform === 'x' &&
+      document.visibilityState === 'visible' &&
       savedStatusVisible(savedStatusCommittedPath ?? location.pathname, savedStatusOn)
     const savedStatusLifecycle = makeSavedStatusLifecycle({
       isActive: savedStatusIsActive,
       root: document.body,
       delayMs: SAVED_SWEEP_DEBOUNCE_MS,
-      makeObserver: (notify) => new MutationObserver(notify),
+      makeObserver: (notify) =>
+        new MutationObserver((records) => {
+          if (!isOnlySavedChipMutation(records)) notify()
+        }),
       clock: {
         after: (ms, run) => {
           const t = setTimeout(run, ms)
@@ -1049,6 +1055,7 @@ export default defineContentScript({
           document,
           inScope: savedStatusIsActive,
           requestSavedStatus,
+          unsavedUntil: savedStatusUnsavedUntil,
         }),
     })
 
@@ -1982,6 +1989,7 @@ export default defineContentScript({
     ctx.addEventListener(window, 'pagehide', flushCaptures)
     ctx.addEventListener(document, 'visibilitychange', () => {
       if (document.visibilityState === 'hidden') flushCaptures()
+      savedStatusLifecycle.sync()
     })
 
     // Quick Grab hover tracking: hold the configured modifier and hover a real

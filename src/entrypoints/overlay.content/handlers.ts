@@ -293,6 +293,8 @@ const sweepCandidatesDetail = (
 
 /** CSS class of an injected chip — and the idempotency guard (one per article). */
 const SAVED_CHIP_CLASS = 'xdl-saved-chip'
+const SAVED_UNSAVED_MEMO_MS = 60_000
+const SAVED_UNSAVED_MEMO_CAP = 2_000
 
 /** The pages where the "Saved" status is shown: the home timeline (For You /
  *  Following) and List timelines. Profiles, Likes, Bookmarks, search, and
@@ -322,6 +324,33 @@ function markArticleSaved(article: Element, doc: Document): void {
   article.appendChild(chip)
 }
 
+function pruneExpiredUnsaved(memo: Map<string, number>, now: number): void {
+  for (const [tweetId, until] of memo) if (until <= now) memo.delete(tweetId)
+}
+
+function rememberUnsaved(memo: Map<string, number>, tweetId: string, until: number): void {
+  if (!memo.has(tweetId)) {
+    while (memo.size >= SAVED_UNSAVED_MEMO_CAP) {
+      const oldest = memo.keys().next()
+      if (oldest.done) break
+      memo.delete(oldest.value)
+    }
+  }
+  memo.set(tweetId, until)
+}
+
+function recordUnsavedBatch(
+  memo: Map<string, number>,
+  asked: Iterable<string>,
+  saved: ReadonlyArray<string>,
+  until: number,
+): void {
+  const hits = new Set(saved)
+  for (const tweetId of asked) {
+    if (!hits.has(tweetId)) rememberUnsaved(memo, tweetId, until)
+  }
+}
+
 /** Sweep the visible timeline: enumerate posts (de-duped by tweetId), ask the
  *  background which are already downloaded cross-device, and chip each saved one.
  *  Fail-safe by construction — a chip appears ONLY on a positive reply, so missing
@@ -330,16 +359,25 @@ export async function sweepSavedStatus(deps: {
   readonly document: Document
   readonly inScope: () => boolean
   readonly requestSavedStatus: (tweetIds: string[]) => Promise<string[]>
+  readonly unsavedUntil?: Map<string, number>
+  readonly now?: () => number
 }): Promise<void> {
   if (!deps.inScope()) return
+  const memo = deps.unsavedUntil
+  const now = deps.now === undefined ? Date.now() : deps.now()
+  if (memo !== undefined) pruneExpiredUnsaved(memo, now)
   const byTweet = new Map<string, Element>()
   for (const article of deps.document.querySelectorAll(TWEET_ARTICLE_SEL)) {
     const tweetId = tweetIdOfArticle(article)
     if (Option.isNone(tweetId) || byTweet.has(tweetId.value)) continue
+    if (article.querySelector(`.${SAVED_CHIP_CLASS}`) !== null) continue
+    if (memo?.has(tweetId.value) === true) continue
     byTweet.set(tweetId.value, article)
   }
   if (byTweet.size === 0) return
   const saved = await deps.requestSavedStatus([...byTweet.keys()])
+  if (memo !== undefined)
+    recordUnsavedBatch(memo, byTweet.keys(), saved, now + SAVED_UNSAVED_MEMO_MS)
   // The route/setting may have changed while the request was in flight — never
   // paint chips after scope was lost.
   if (!deps.inScope()) return
@@ -348,6 +386,17 @@ export async function sweepSavedStatus(deps: {
     if (article !== undefined) markArticleSaved(article, deps.document)
   }
 }
+
+export const isOnlySavedChipMutation = (records: ReadonlyArray<MutationRecord>): boolean =>
+  records.length > 0 &&
+  records.every(
+    (record) =>
+      record.removedNodes.length === 0 &&
+      record.addedNodes.length > 0 &&
+      [...record.addedNodes].every(
+        (node) => node instanceof Element && node.classList.contains(SAVED_CHIP_CLASS),
+      ),
+  )
 
 /** LATE cross-device hits pushed by the background (`SavedStatusUpdate`): the sweep's
  *  instant reply carries only the locally-known subset; once the Convex backstop
