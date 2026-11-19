@@ -17,11 +17,18 @@ import {
   isSavedStatusScope,
   savedStatusVisible,
   dispatchOverlayMessage,
+  replayInlineData,
+  handleLocationChange,
 } from './handlers'
-import type { HandlerDeps, SendResponse, TrackedSendResult } from './handlers'
-import type { ClearTweetResponse, MediaItem } from '@/packages/schema'
+import type { HandlerDeps, LocationChangeDeps, SendResponse, TrackedSendResult } from './handlers'
+import type { ClearTweetResponse, JsonValue, MediaItem } from '@/packages/schema'
 import type { PlatformAdapter } from '../../core/adapters/types'
-import type { makeDetectionStore } from '../../core/adapters/detection-store'
+import { makeDetectionStore } from '../../core/adapters/detection-store'
+import { instagramAdapter } from '../../core/adapters/instagram/adapter'
+import { threadsAdapter } from '../../core/adapters/threads/adapter'
+import { xAdapter } from '../../core/adapters/x/adapter'
+import { wholePostItemsFor } from './post-grab'
+import { isReleaseDiagnosticsEvent } from '@/packages/clear/diagnostics'
 import type { BadgeState } from '@/packages/overlay/badge'
 import { findArticle } from '@/packages/clear/clearer'
 import { makeClickGuard } from '@/packages/clear/click-guard'
@@ -1840,5 +1847,366 @@ describe('clearMountedForScope — ghost-row skip', () => {
 
     expect(cleared).toBe(1)
     expect(clicksArt()).toBe(1)
+  })
+})
+
+const inlineReelPayload = (code: string, pk: string): string =>
+  JSON.stringify({
+    require: [
+      [
+        'ScheduledServerJS',
+        'handle',
+        null,
+        [
+          {
+            __bbox: {
+              require: [
+                [
+                  'RelayPrefetchedStreamCache',
+                  'next',
+                  [],
+                  [
+                    'adp_PolarisClipsTabDesktopContainerQueryRelayPreloader',
+                    {
+                      __bbox: {
+                        complete: true,
+                        result: {
+                          data: {
+                            xdt_api__v1__clips__home__connection_v2: {
+                              edges: [
+                                {
+                                  node: {
+                                    media: {
+                                      __typename: 'XDTMediaDict',
+                                      code,
+                                      pk,
+                                      user: { id: '123', username: 'alice' },
+                                      video_versions: [
+                                        {
+                                          type: 101,
+                                          url: 'https://scontent.cdninstagram.com/o1/v/t16/f2/m86/AQEXAMPLE.mp4?efg=x',
+                                        },
+                                      ],
+                                      image_versions2: {
+                                        candidates: [
+                                          {
+                                            height: 1919,
+                                            width: 1080,
+                                            url: 'https://scontent.cdninstagram.com/v/t51.2885-15/POSTER.jpg?x=1',
+                                          },
+                                        ],
+                                      },
+                                    },
+                                  },
+                                },
+                              ],
+                            },
+                          },
+                        },
+                      },
+                    },
+                  ],
+                ],
+              ],
+            },
+          },
+        ],
+      ],
+    ],
+  })
+
+const makeLocationDeps = (
+  overrides: Partial<LocationChangeDeps> & {
+    readonly platform: LocationChangeDeps['platform']
+    readonly store: LocationChangeDeps['store']
+  },
+): {
+  readonly deps: LocationChangeDeps
+  readonly calls: string[]
+  readonly traces: Array<{ readonly stage: string; readonly detail: string }>
+  readonly syncedPaths: string[]
+} => {
+  const calls: string[] = []
+  const traces: Array<{ readonly stage: string; readonly detail: string }> = []
+  const syncedPaths: string[] = []
+  const deps: LocationChangeDeps = {
+    document,
+    clearMouseHitTest: () => calls.push('clearMouseHitTest'),
+    releaseAll: () => calls.push('releaseAll'),
+    resetBadge: () => calls.push('resetBadge'),
+    clearHover: () => calls.push('clearHover'),
+    clearMetaFocusedPost: () => calls.push('clearMetaFocusedPost'),
+    traceCapture: (stage, detail) => {
+      calls.push(`trace:${stage}`)
+      traces.push({ stage, detail })
+    },
+    cancelReleaseRecheck: () => calls.push('cancelReleaseRecheck'),
+    settleRenderedScan: () => calls.push('settleRenderedScan'),
+    syncSavedStatus: (newPathname) => {
+      calls.push('syncSavedStatus')
+      syncedPaths.push(newPathname)
+    },
+    rerender: () => calls.push('rerender'),
+    ...overrides,
+  }
+  return { deps, calls, traces, syncedPaths }
+}
+
+describe('handleLocationChange and replayInlineData', () => {
+  beforeEach(() => {
+    document.head.innerHTML = ''
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    document.head.innerHTML = ''
+    document.body.innerHTML = ''
+  })
+
+  it('Instagram route change resets page scope while preserving hover and whole-post resolution and emits capture traces', () => {
+    const store = makeDetectionStore({ mediaKeyFromUrl: instagramAdapter.mediaKeyFromUrl })
+    const reelVideo: MediaItem = {
+      id: 'ig-reel-1',
+      platform: 'instagram',
+      postId: '3929358061996940098',
+      author: 'alice',
+      type: 'video',
+      url: 'https://scontent.cdninstagram.com/o1/v/t16/f2/m86/AQVIDEO1.mp4',
+      previewUrl: 'https://scontent.cdninstagram.com/v/t51.2885-15/POSTER1.jpg',
+      ext: 'mp4',
+      index: 0,
+    }
+    store.registerPostCode('3929358061996940098', 'DcV75F4ys05')
+    store.addDetected([reelVideo])
+    expect(store.count).toBe(1)
+
+    const { deps, calls, traces, syncedPaths } = makeLocationDeps({
+      platform: 'instagram',
+      store,
+    })
+
+    handleLocationChange(deps, '/reels/DcQedLDqVpf/')
+
+    expect(store.count).toBe(0)
+    expect(store.values()).toEqual([])
+
+    const article = document.createElement('article')
+    article.innerHTML = '<a href="/p/DcV75F4ys05/">reel</a><video></video>'
+    document.body.appendChild(article)
+    const videoEl = article.querySelector('video')!
+    const hoverKey = instagramAdapter.postKeyFromVideoElement!(videoEl, '/reel/DcV75F4ys05/')!
+
+    expect(instagramAdapter.canResolveHoverItem(videoEl, hoverKey, store.keyIndex())).toBe(true)
+    expect(
+      instagramAdapter.resolveHoverItem(videoEl, hoverKey, store.keyIndex(), '/reel/DcV75F4ys05/'),
+    ).toEqual(reelVideo)
+    expect(
+      wholePostItemsFor(
+        {
+          adapter: instagramAdapter,
+          store,
+          pathname: () => '/reel/DcV75F4ys05/',
+        },
+        videoEl,
+        reelVideo,
+      ),
+    ).toEqual([reelVideo])
+
+    expect(syncedPaths).toEqual(['/reels/DcQedLDqVpf/'])
+    expect(calls).toEqual([
+      'clearMouseHitTest',
+      'releaseAll',
+      'resetBadge',
+      'clearHover',
+      'clearMetaFocusedPost',
+      'trace:route-scope-reset',
+      'trace:inline-reseed',
+      'cancelReleaseRecheck',
+      'settleRenderedScan',
+      'syncSavedStatus',
+      'rerender',
+    ])
+    expect(traces).toEqual([
+      {
+        stage: 'route-scope-reset',
+        detail: 'instagram reset=1 retained=1 keys=5 codes=1',
+      },
+      {
+        stage: 'inline-reseed',
+        detail: 'instagram payloads=0 landed=0',
+      },
+    ])
+    for (const trace of traces) {
+      expect(
+        isReleaseDiagnosticsEvent({
+          source: 'capture',
+          stage: trace.stage,
+          t: 1,
+          detail: trace.detail,
+        }),
+      ).toBe(false)
+    }
+  })
+
+  it('replays inline application/json payloads through xmd:media-response on route change and deduplicates repeat replays', () => {
+    const script = document.createElement('script')
+    script.type = 'application/json'
+    script.textContent = inlineReelPayload('DaH4la4pRtC', '3929358061996940098')
+    document.head.appendChild(script)
+
+    const store = makeDetectionStore({ mediaKeyFromUrl: instagramAdapter.mediaKeyFromUrl })
+    const dispatchedPaths: string[] = []
+    const onMediaResponse = (event: CustomEvent<{ path: string; body: string }>): void => {
+      dispatchedPaths.push(event.detail.path)
+      const json: JsonValue = JSON.parse(event.detail.body)
+      store.addDetected(instagramAdapter.detectFromResponse(event.detail.path, json))
+      const codes = instagramAdapter.extractPostCodes?.(json)
+      if (codes) {
+        for (const [postId, code] of codes) store.registerPostCode(postId, code)
+      }
+    }
+    document.addEventListener('xmd:media-response', onMediaResponse)
+
+    try {
+      const boot = replayInlineData({
+        platform: 'instagram',
+        document,
+        storeCount: () => store.count,
+      })
+      expect(boot).toEqual({ payloads: 1, landed: 1 })
+      expect(store.count).toBe(1)
+
+      const repeat = replayInlineData({
+        platform: 'instagram',
+        document,
+        storeCount: () => store.count,
+      })
+      expect(repeat).toEqual({ payloads: 1, landed: 0 })
+      expect(store.count).toBe(1)
+
+      const { deps, traces } = makeLocationDeps({
+        platform: 'instagram',
+        store,
+      })
+      handleLocationChange(deps, '/reels/NextReel/')
+
+      expect(dispatchedPaths).toEqual(['inline:document', 'inline:document', 'inline:document'])
+      expect(store.count).toBe(1)
+      expect(store.resolve('post:code:DaH4la4pRtC')).toMatchObject({
+        postId: '3929358061996940098',
+        type: 'video',
+      })
+      expect(traces).toEqual([
+        {
+          stage: 'route-scope-reset',
+          detail: 'instagram reset=1 retained=1 keys=4 codes=1',
+        },
+        {
+          stage: 'inline-reseed',
+          detail: 'instagram payloads=1 landed=1',
+        },
+      ])
+    } finally {
+      document.removeEventListener('xmd:media-response', onMediaResponse)
+    }
+  })
+
+  it('Threads route change replays inline payloads and preserves hover resolution', () => {
+    const script = document.createElement('script')
+    script.type = 'application/json'
+    script.textContent = inlineReelPayload('ThreadsCode1', '7777777')
+    document.head.appendChild(script)
+
+    const store = makeDetectionStore({ mediaKeyFromUrl: threadsAdapter.mediaKeyFromUrl })
+    const onMediaResponse = (event: CustomEvent<{ path: string; body: string }>): void => {
+      const json: JsonValue = JSON.parse(event.detail.body)
+      store.addDetected(threadsAdapter.detectFromResponse(event.detail.path, json))
+      const codes = threadsAdapter.extractPostCodes?.(json)
+      if (codes) {
+        for (const [postId, code] of codes) store.registerPostCode(postId, code)
+      }
+    }
+    document.addEventListener('xmd:media-response', onMediaResponse)
+
+    try {
+      const { deps, traces } = makeLocationDeps({
+        platform: 'threads',
+        store,
+      })
+      handleLocationChange(deps, '/@alice/post/ThreadsCode1')
+
+      expect(store.count).toBe(1)
+      expect(store.resolve('post:code:ThreadsCode1')).toMatchObject({
+        platform: 'threads',
+        postId: '7777777',
+        type: 'video',
+      })
+      expect(traces).toEqual([
+        {
+          stage: 'route-scope-reset',
+          detail: 'threads reset=0 retained=0 keys=0 codes=0',
+        },
+        {
+          stage: 'inline-reseed',
+          detail: 'threads payloads=1 landed=1',
+        },
+      ])
+    } finally {
+      document.removeEventListener('xmd:media-response', onMediaResponse)
+    }
+  })
+
+  it('X route change resets Release/Bulk page scope without dispatching inline replay or inline-reseed trace', () => {
+    const script = document.createElement('script')
+    script.type = 'application/json'
+    script.textContent = '{"ignored":true}'
+    document.head.appendChild(script)
+
+    const dispatched = vi.fn<() => void>()
+    document.addEventListener('xmd:media-response', dispatched)
+
+    try {
+      const store = makeDetectionStore({ mediaKeyFromUrl: xAdapter.mediaKeyFromUrl })
+      const xPhoto: MediaItem = {
+        id: 'x-p1',
+        platform: 'x',
+        postId: '101',
+        author: 'alice',
+        type: 'photo',
+        url: 'https://pbs.twimg.com/media/K1.jpg?name=orig',
+        previewUrl: 'https://pbs.twimg.com/media/K1.jpg',
+        ext: 'jpg',
+        index: 0,
+      }
+      store.addDetected([xPhoto])
+      expect(store.count).toBe(1)
+
+      expect(
+        replayInlineData({
+          platform: 'x',
+          document,
+          storeCount: () => store.count,
+        }),
+      ).toEqual({ payloads: 0, landed: 0 })
+
+      const { deps, traces } = makeLocationDeps({
+        platform: 'x',
+        store,
+      })
+      handleLocationChange(deps, '/i/bookmarks')
+
+      expect(store.count).toBe(0)
+      expect(store.values()).toEqual([])
+      expect(store.resolve('K1')).toEqual(xPhoto)
+      expect(dispatched).not.toHaveBeenCalled()
+      expect(traces).toEqual([
+        {
+          stage: 'route-scope-reset',
+          detail: 'x reset=1 retained=1 keys=1 codes=0',
+        },
+      ])
+    } finally {
+      document.removeEventListener('xmd:media-response', dispatched)
+    }
   })
 })

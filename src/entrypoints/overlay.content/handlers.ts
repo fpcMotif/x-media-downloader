@@ -33,6 +33,7 @@ import {
   type MembershipScope,
 } from '@/packages/clear/clearer'
 import type { makeDetectionStore } from '../../core/adapters/detection-store'
+import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type { ClickGuard } from '@/packages/clear/click-guard'
 import type { MutationWitness } from '@/packages/clear/mutation-witness'
 import type {
@@ -44,6 +45,7 @@ import type {
   ClearTweetResponse,
   JsonValue,
   MediaItem,
+  Platform,
   RefreshMediaUrlRequest,
   RefreshMediaUrlResponse,
 } from '@/packages/schema'
@@ -1298,4 +1300,78 @@ export const dispatchOverlayMessage: MessageHandler = (message, deps, sendRespon
   // real JSON data. Effect's own `.Type` computation just doesn't surface an index
   // signature for `JsonValue`'s structural check to see.
   return handler(decoded.success as JsonValue, deps, sendResponse)
+}
+
+export interface InlineReplayDeps {
+  readonly platform: Platform
+  readonly document: Document
+  readonly storeCount: () => number
+}
+
+export interface InlineReplayResult {
+  readonly payloads: number
+  readonly landed: number
+}
+
+const isMetaInlinePlatform = (platform: Platform): boolean =>
+  platform === 'instagram' || platform === 'threads'
+
+export function replayInlineData(deps: InlineReplayDeps): InlineReplayResult {
+  if (!isMetaInlinePlatform(deps.platform)) return { payloads: 0, landed: 0 }
+  const bodies = inlineDataPayloads(deps.document.scripts)
+  if (import.meta.env.DEV)
+    console.debug(
+      `[XMD] inline-data replay · ${deps.platform} · ${bodies.length} candidate script(s)`,
+    )
+  const before = deps.storeCount()
+  for (const body of bodies) {
+    deps.document.dispatchEvent(
+      new CustomEvent('xmd:media-response', { detail: { path: 'inline:document', body } }),
+    )
+  }
+  return { payloads: bodies.length, landed: Math.max(0, deps.storeCount() - before) }
+}
+
+export interface LocationChangeDeps {
+  readonly platform: Platform
+  readonly document: Document
+  readonly store: Pick<DetectionStore, 'resetPageScope' | 'count'>
+  readonly clearMouseHitTest: () => void
+  readonly releaseAll: () => void
+  readonly resetBadge: () => void
+  readonly clearHover: () => void
+  readonly clearMetaFocusedPost: () => void
+  readonly traceCapture: (stage: string, detail: string) => void
+  readonly cancelReleaseRecheck: () => void
+  readonly settleRenderedScan: () => void
+  readonly syncSavedStatus: (newPathname: string) => void
+  readonly rerender: () => void
+}
+
+export function handleLocationChange(deps: LocationChangeDeps, newPathname: string): void {
+  deps.clearMouseHitTest()
+  deps.releaseAll()
+  deps.resetBadge()
+  deps.clearHover()
+  deps.clearMetaFocusedPost()
+  const reset = deps.store.resetPageScope()
+  deps.traceCapture(
+    'route-scope-reset',
+    `${deps.platform} reset=${reset.resetItems} retained=${reset.retainedItems} keys=${reset.retainedKeys} codes=${reset.retainedCodes}`,
+  )
+  if (isMetaInlinePlatform(deps.platform)) {
+    const reseed = replayInlineData({
+      platform: deps.platform,
+      document: deps.document,
+      storeCount: () => deps.store.count,
+    })
+    deps.traceCapture(
+      'inline-reseed',
+      `${deps.platform} payloads=${reseed.payloads} landed=${reseed.landed}`,
+    )
+  }
+  deps.cancelReleaseRecheck()
+  deps.settleRenderedScan()
+  deps.syncSavedStatus(newPathname)
+  deps.rerender()
 }

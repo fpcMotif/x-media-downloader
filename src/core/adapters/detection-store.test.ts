@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { MediaItem } from '@/packages/schema'
 import {
+  DEFAULT_MAX_RETAINED_ITEMS,
   makeDetectionStore,
   keysForItem,
   postGrabItems,
@@ -561,5 +562,295 @@ describe('post-level video key (post:code:{code})', () => {
     // postK's code-keyed entry must still resolve to vK, unaffected by postL's sync.
     expect(s.keyIndex().get(postVideoKey('CODEK'))).toEqual(vK)
     expect(s.keyIndex().get(postVideoKey('CODEL'))).toEqual(vL)
+  })
+})
+
+describe('route-scope reset (resetPageScope)', () => {
+  it('clears Bulk count and values() while keeping post:code and plain media keys resolvable', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4A', 'POSTA', 'post1', 0)
+    s.registerPostCode('post1', 'DcV75F4ys05')
+    s.addDetected([v])
+
+    const summary = s.resetPageScope()
+
+    expect(summary).toEqual({
+      resetItems: 1,
+      retainedItems: 1,
+      retainedKeys: 5,
+      retainedCodes: 1,
+    })
+    expect(s.count).toBe(0)
+    expect(s.values()).toEqual([])
+    expect(s.resolve(postVideoKey('DcV75F4ys05'))).toEqual(v)
+    expect(s.resolve('MP4A')).toEqual(v)
+    expect(s.resolve('POSTA')).toEqual(v)
+  })
+
+  it('preserves postIdForCode, valuesForTweet, keysForTweet, and get across resetPageScope', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4A', 'POSTA', 'post1', 0)
+    const p = photo('p1', 'KA', 'post1')
+    s.registerPostCode('post1', 'CODE1')
+    s.addDetected([v, p])
+
+    s.resetPageScope()
+
+    expect(s.postIdForCode('CODE1')).toBe('post1')
+    expect(s.get('v1')).toEqual(v)
+    expect(s.get('p1')).toEqual(p)
+    expect(s.valuesForTweet('post1')).toEqual([v, p])
+    expect(s.keysForTweet('post1')).toEqual(
+      expect.arrayContaining([
+        'MP4A',
+        'POSTA',
+        'KA',
+        postVideoKey('CODE1'),
+        postVideoKeyIndexed('CODE1', 0),
+        postVideoKeyByDomSlot('CODE1', 0),
+      ]),
+    )
+  })
+
+  it('keeps multi-video carousel indexed and dom-slot keys resolvable after resetPageScope', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v0 = video('v0', 'MP4A', 'POSTA', 'postM', 0)
+    const v1 = video('v1', 'MP4B', 'POSTB', 'postM', 1)
+    s.registerPostCode('postM', 'CODEM')
+    s.addDetected([v0, v1])
+
+    s.resetPageScope()
+
+    expect(s.count).toBe(0)
+    expect(s.resolve(postVideoKey('CODEM'))).toBeUndefined()
+    expect(s.resolve(postVideoKeyIndexed('CODEM', 0))).toEqual(v0)
+    expect(s.resolve(postVideoKeyIndexed('CODEM', 1))).toEqual(v1)
+    expect(s.resolve(postVideoKeyByDomSlot('CODEM', 0))).toEqual(v0)
+    expect(s.resolve(postVideoKeyByDomSlot('CODEM', 1))).toEqual(v1)
+  })
+
+  it('re-seeds page scope idempotently when a retained item is captured again after resetPageScope', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const v = video('v1', 'MP4A', 'POSTA', 'post1', 0)
+    s.addDetected([v])
+    s.resetPageScope()
+    expect(s.count).toBe(0)
+
+    expect(s.addDetected([v])).toEqual([v])
+    expect(s.count).toBe(1)
+    expect(s.values()).toEqual([v])
+
+    expect(s.addDetected([v])).toEqual([])
+    expect(s.count).toBe(1)
+    expect(s.valuesForTweet('post1')).toEqual([v])
+  })
+
+  it('releases attempted-recovery claims while keeping retained keys visible to needsRecovery', () => {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <article data-testid="tweet">
+        <a href="/alice/status/55"><time>now</time></a>
+        <div data-testid="videoPlayer"><video></video>
+          <img src="https://pbs.twimg.com/ext_tw_video_thumb/9/pu/img/POST.jpg" />
+        </div>
+      </article>`
+    const s = makeDetectionStore({
+      mediaKeyFromUrl,
+      findMediaNeedingRecovery: videoTweetsNeedingRecovery,
+    })
+    expect(s.markAttempted('55')).toBe(true)
+    expect(s.needsRecovery(root)).toEqual([])
+
+    s.resetPageScope()
+
+    expect(s.markAttempted('55')).toBe(true)
+    s.unmarkAttempted('55')
+    expect(s.needsRecovery(root)).toEqual(['55'])
+
+    s.addRecovered([video('v55', 'MP4', 'POST', '55')])
+    s.resetPageScope()
+    expect(s.needsRecovery(root)).toEqual([])
+  })
+
+  it('retains recovered-key provenance across resetPageScope and re-admits without double-counting', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    const recovered = video('vKey', 'MP4', 'POST', 't1')
+    s.addRecovered([recovered])
+    s.resetPageScope()
+    expect(s.count).toBe(0)
+
+    const teeDuplicate = video('99', 'MP4', 'POST', 't1')
+    expect(s.addDetected([teeDuplicate])).toEqual([recovered])
+    expect(s.count).toBe(1)
+    expect(s.values()).toEqual([recovered])
+    expect(s.valuesForTweet('t1')).toEqual([recovered])
+
+    expect(s.addDetected([teeDuplicate])).toEqual([])
+    expect(s.count).toBe(1)
+  })
+
+  it('clear() still wipes retained items, keys, post codes, recovered provenance, and attempts', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    s.registerPostCode('post1', 'CODE1')
+    s.addDetected([video('v1', 'MP4A', 'POSTA', 'post1', 0)])
+    s.addRecovered([video('vRec', 'MP4R', 'POSTR', 'post2', 0)])
+    s.markAttempted('post3')
+    s.resetPageScope()
+
+    s.clear()
+
+    expect(s.count).toBe(0)
+    expect(s.values()).toEqual([])
+    expect(s.get('v1')).toBeUndefined()
+    expect(s.resolve(postVideoKey('CODE1'))).toBeUndefined()
+    expect(s.resolve('MP4R')).toBeUndefined()
+    expect(s.postIdForCode('CODE1')).toBeUndefined()
+    expect(s.valuesForTweet('post1')).toEqual([])
+    expect(s.keysForTweet('post1')).toEqual([])
+    expect(s.markAttempted('post3')).toBe(true)
+    expect(s.addDetected([video('99', 'MP4R', 'POSTR', 'post2', 0)])).toHaveLength(1)
+  })
+})
+
+describe('bounded oldest-first retention', () => {
+  it('exports a positive default retention ceiling', () => {
+    expect(DEFAULT_MAX_RETAINED_ITEMS).toBeGreaterThan(0)
+  })
+
+  it('evicts oldest captured video and all of its keys and post code when exceeding maxRetainedItems', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const v1 = video('v1', 'MP41', 'POST1', 'post1', 0)
+    const v2 = video('v2', 'MP42', 'POST2', 'post2', 0)
+    const v3 = video('v3', 'MP43', 'POST3', 'post3', 0)
+
+    s.registerPostCode('post1', 'CODE1')
+    s.registerPostCode('post2', 'CODE2')
+    s.registerPostCode('post3', 'CODE3')
+    s.addDetected([v1, v2])
+    s.resetPageScope()
+    s.addDetected([v3])
+
+    expect(s.get('v1')).toBeUndefined()
+    expect(s.resolve('MP41')).toBeUndefined()
+    expect(s.resolve('POST1')).toBeUndefined()
+    expect(s.resolve(postVideoKey('CODE1'))).toBeUndefined()
+    expect(s.resolve(postVideoKeyIndexed('CODE1', 0))).toBeUndefined()
+    expect(s.resolve(postVideoKeyByDomSlot('CODE1', 0))).toBeUndefined()
+    expect(s.postIdForCode('CODE1')).toBeUndefined()
+    expect(s.valuesForTweet('post1')).toEqual([])
+    expect(s.keysForTweet('post1')).toEqual([])
+
+    expect(s.resolve(postVideoKey('CODE2'))).toEqual(v2)
+    expect(s.postIdForCode('CODE2')).toBe('post2')
+    expect(s.resolve(postVideoKey('CODE3'))).toEqual(v3)
+    expect(s.postIdForCode('CODE3')).toBe('post3')
+    expect(s.count).toBe(1)
+    expect(s.values()).toEqual([v3])
+  })
+
+  it('evicts oldest items during addRecovered and clears recoveredKeys so evicted media can be re-captured', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const r1 = video('r1', 'MP4R1', 'POSTR1', 'post1', 0)
+    const r2 = video('r2', 'MP4R2', 'POSTR2', 'post2', 0)
+    const r3 = video('r3', 'MP4R3', 'POSTR3', 'post3', 0)
+
+    s.addRecovered([r1, r2])
+    s.addRecovered([r3])
+
+    expect(s.get('r1')).toBeUndefined()
+    expect(s.resolve('MP4R1')).toBeUndefined()
+    expect(s.resolve('POSTR1')).toBeUndefined()
+    expect(s.count).toBe(2)
+    expect(s.values()).toEqual([r2, r3])
+
+    const recaught = video('tee-r1', 'MP4R1', 'POSTR1', 'post1', 0)
+    expect(s.addDetected([recaught])).toEqual([recaught])
+    expect(s.resolve('MP4R1')).toEqual(recaught)
+  })
+
+  it('keeps surviving carousel slides and post code intact during partial eviction, then cleans up when last slide evicts', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const v0 = video('v0', 'MP4A', 'POSTA', 'postC', 0)
+    const v1 = video('v1', 'MP4B', 'POSTB', 'postC', 1)
+    const p2 = photo('p2', 'KP2', 'postOther1')
+    const p3 = photo('p3', 'KP3', 'postOther2')
+
+    s.registerPostCode('postC', 'CODEC')
+    s.addDetected([v0, v1])
+    s.addDetected([p2])
+
+    expect(s.get('v0')).toBeUndefined()
+    expect(s.resolve('MP4A')).toBeUndefined()
+    expect(s.resolve(postVideoKeyIndexed('CODEC', 0))).toBeUndefined()
+    expect(s.resolve(postVideoKeyByDomSlot('CODEC', 0))).toBeUndefined()
+    expect(s.resolve(postVideoKeyIndexed('CODEC', 1))).toEqual(v1)
+    expect(s.resolve(postVideoKeyByDomSlot('CODEC', 1))).toEqual(v1)
+    expect(s.postIdForCode('CODEC')).toBe('postC')
+    expect(s.valuesForTweet('postC')).toEqual([v1])
+
+    s.addDetected([p3])
+
+    expect(s.get('v1')).toBeUndefined()
+    expect(s.resolve(postVideoKey('CODEC'))).toBeUndefined()
+    expect(s.resolve(postVideoKeyIndexed('CODEC', 1))).toBeUndefined()
+    expect(s.resolve(postVideoKeyByDomSlot('CODEC', 1))).toBeUndefined()
+    expect(s.postIdForCode('CODEC')).toBeUndefined()
+    expect(s.valuesForTweet('postC')).toEqual([])
+    expect(s.keysForTweet('postC')).toEqual([])
+  })
+
+  it('does not clobber a newer item when evicting an older item that shared its URL key or video slot', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const older = video('v-old', 'SHARED_MP4', 'SHARED_POST', 'postS', 0)
+    const newer = video('v-new', 'SHARED_MP4', 'SHARED_POST', 'postS', 0)
+    const third = photo('p3', 'K3', 'post3')
+
+    s.registerPostCode('postS', 'CODES')
+    s.addDetected([older])
+    s.addDetected([newer])
+    s.addDetected([third])
+
+    expect(s.get('v-old')).toBeUndefined()
+    expect(s.get('v-new')).toEqual(newer)
+    expect(s.resolve('SHARED_MP4')).toEqual(newer)
+    expect(s.resolve(postVideoKey('CODES'))).toEqual(newer)
+    expect(s.resolve(postVideoKeyIndexed('CODES', 0))).toEqual(newer)
+  })
+
+  it('caps codeToPostId oldest-first for both text-only and video posts', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const v1 = video('v1', 'MP41', 'POST1', 'postV', 0)
+    s.registerPostCode('postV', 'CODEV')
+    s.addDetected([v1])
+    s.registerPostCode('postText1', 'CODET1')
+    s.registerPostCode('postText2', 'CODET2')
+
+    expect(s.postIdForCode('CODEV')).toBeUndefined()
+    expect(s.resolve(postVideoKey('CODEV'))).toBeUndefined()
+    expect(s.resolve(postVideoKeyIndexed('CODEV', 0))).toBeUndefined()
+    expect(s.resolve(postVideoKeyByDomSlot('CODEV', 0))).toBeUndefined()
+    expect(s.postIdForCode('CODET1')).toBe('postText1')
+    expect(s.postIdForCode('CODET2')).toBe('postText2')
+
+    s.registerPostCode('postText3', 'CODET3')
+    expect(s.postIdForCode('CODET1')).toBeUndefined()
+    expect(s.postIdForCode('CODET2')).toBe('postText2')
+    expect(s.postIdForCode('CODET3')).toBe('postText3')
+  })
+
+  it('evicts oldest photo item cleanly including its URL key and post code', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 1 })
+    const p1 = photo('p1', 'KP1', 'postP1')
+    const p2 = photo('p2', 'KP2', 'postP2')
+    s.registerPostCode('postP1', 'CODEP1')
+    s.addDetected([p1])
+    s.addDetected([p2])
+
+    expect(s.get('p1')).toBeUndefined()
+    expect(s.resolve('KP1')).toBeUndefined()
+    expect(s.postIdForCode('CODEP1')).toBeUndefined()
+    expect(s.valuesForTweet('postP1')).toEqual([])
+    expect(s.keysForTweet('postP1')).toEqual([])
+    expect(s.resolve('KP2')).toEqual(p2)
   })
 })
