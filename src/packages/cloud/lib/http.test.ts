@@ -3,9 +3,11 @@ import { Effect } from 'effect'
 import {
   authHeader,
   CloudHttpError,
+  cloudHttpErrorToOutcome,
   errText,
   httpErr,
   httpFailure,
+  isCloudHttpError,
   isTransientHttp,
   RETRY_AFTER_CAP_MS,
   retryAfterMs,
@@ -248,5 +250,38 @@ describe('http helpers', () => {
     expect(withoutHeader.status).toBe(503)
     expect(withoutHeader.body).toBe('down')
     expect(withoutHeader.retryAfterMs).toBeUndefined()
+  })
+
+  it('isCloudHttpError narrows CloudHttpError instances and rejects other errors or strings', () => {
+    const httpError = new CloudHttpError({ provider: 'drive', status: 401, body: 'unauth' })
+    expect(isCloudHttpError(httpError)).toBe(true)
+    expect(isCloudHttpError(new Error('other'))).toBe(false)
+    expect(isCloudHttpError('drive HTTP 401')).toBe(false)
+  })
+
+  it('cloudHttpErrorToOutcome maps status, transient flag, and retryAfterMs', () => {
+    expect(
+      cloudHttpErrorToOutcome(
+        new CloudHttpError({
+          provider: 'drive',
+          status: 429,
+          body: 'slow',
+          retryAfterMs: 60_000,
+        }),
+      ),
+    ).toEqual({
+      kind: 'failure',
+      reason: 'drive HTTP 429: slow',
+      status: 429,
+      transient: true,
+      retryAfterMs: 60_000,
+    })
+    expect(
+      cloudHttpErrorToOutcome(new CloudHttpError({ provider: 'drive', status: 401, body: 'nope' })),
+    ).toEqual({
+      kind: 'failure',
+      reason: 'drive HTTP 401: nope',
+      status: 401,
+    })
   })
 })

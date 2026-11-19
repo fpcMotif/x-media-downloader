@@ -1,6 +1,17 @@
 import { Context, Effect, Layer, Option } from 'effect'
 import { streamInChunks } from './lib/chunk'
-import { authHeader, CloudHttpError, httpFailure, jsonAs, okJson, runUpload } from './lib/http'
+import {
+  authHeader,
+  CloudHttpError,
+  cloudHttpErrorToOutcome,
+  httpFailure,
+  isCloudHttpError,
+  jsonAs,
+  okJson,
+  runUpload,
+} from './lib/http'
+
+export { cloudHttpErrorToOutcome, isCloudHttpError }
 import { FetchService, type FetchError } from '@/packages/kernel/fetch-service'
 import { FolderCache } from './lib/folder-cache'
 import { SourceFetch } from './lib/source-fetch'

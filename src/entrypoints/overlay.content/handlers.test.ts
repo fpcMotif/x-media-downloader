@@ -1965,7 +1965,7 @@ describe('handleLocationChange and replayInlineData', () => {
 
   it('Instagram route change resets page scope while preserving hover and whole-post resolution and emits capture traces', () => {
     const store = makeDetectionStore({ mediaKeyFromUrl: instagramAdapter.mediaKeyFromUrl })
-    const reelVideo: MediaItem = {
+    const reelVideo = {
       id: 'ig-reel-1',
       platform: 'instagram',
       postId: '3929358061996940098',
@@ -1975,7 +1975,7 @@ describe('handleLocationChange and replayInlineData', () => {
       previewUrl: 'https://scontent.cdninstagram.com/v/t51.2885-15/POSTER1.jpg',
       ext: 'mp4',
       index: 0,
-    }
+    } satisfies MediaItem
     store.registerPostCode('3929358061996940098', 'DcV75F4ys05')
     store.addDetected([reelVideo])
     expect(store.count).toBe(1)
@@ -2167,7 +2167,7 @@ describe('handleLocationChange and replayInlineData', () => {
 
     try {
       const store = makeDetectionStore({ mediaKeyFromUrl: xAdapter.mediaKeyFromUrl })
-      const xPhoto: MediaItem = {
+      const xPhoto = {
         id: 'x-p1',
         platform: 'x',
         postId: '101',
@@ -2177,7 +2177,7 @@ describe('handleLocationChange and replayInlineData', () => {
         previewUrl: 'https://pbs.twimg.com/media/K1.jpg',
         ext: 'jpg',
         index: 0,
-      }
+      } satisfies MediaItem
       store.addDetected([xPhoto])
       expect(store.count).toBe(1)
 

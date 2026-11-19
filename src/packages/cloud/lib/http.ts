@@ -77,6 +77,17 @@ export class CloudHttpError extends Data.TaggedError('CloudHttpError')<{
   }
 }
 
+export const isCloudHttpError = (error: Error | string): error is CloudHttpError =>
+  error instanceof CloudHttpError
+
+export const cloudHttpErrorToOutcome = (error: CloudHttpError): UploadOutcome => ({
+  kind: 'failure',
+  reason: error.message,
+  status: error.status,
+  ...(isTransientHttp(error.status, error.body) ? { transient: true } : {}),
+  ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+})
+
 export const httpFailure = async (provider: string, res: Response): Promise<CloudHttpError> => {
   const wait = retryAfterMs(res.headers)
   return new CloudHttpError({
@@ -128,15 +139,7 @@ export const runUpload = <R>(
             .streamed(s.body, s.size, s.contentType)
             .pipe(Effect.map(({ outcome, bytes }) => (bytes === 0 ? EMPTY_SOURCE : outcome)))
     return yield* run.pipe(
-      Effect.catchTag('CloudHttpError', (e) =>
-        Effect.succeed<UploadOutcome>({
-          kind: 'failure',
-          reason: e.message,
-          status: e.status,
-          ...(isTransientHttp(e.status, e.body) ? { transient: true } : {}),
-          ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}),
-        }),
-      ),
+      Effect.catchTag('CloudHttpError', (e) => Effect.succeed(cloudHttpErrorToOutcome(e))),
       Effect.catchCause((cause) => {
         const squashed = Cause.squash(cause)
         const reason = squashed instanceof Error ? squashed : String(squashed)

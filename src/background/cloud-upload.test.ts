@@ -1279,13 +1279,13 @@ describe('drainUploadJobs — auth pause and Retry-After (#113)', () => {
     const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
     const uploadDropbox = vi.fn<CloudRuntimePort['uploadDropbox']>(async () => ok())
     const runtime = fakeRuntime({ refreshAccessToken, uploadDrive, uploadDropbox })
-    const bothSettings: Settings = {
+    const bothSettings = {
       ...connected({ [gd.expiry]: NOW - 1 }),
       [dx.clientId]: 'dropbox-client',
       [dx.accessToken]: 'dropbox-access',
       [dx.refreshToken]: 'dropbox-refresh',
       [dx.expiry]: NOW + 3_600_000,
-    }
+    } satisfies Settings
     const cu = makeCU({
       getSettings: async () => bothSettings,
       ledger,
@@ -1415,5 +1415,116 @@ describe('drainUploadJobs — auth pause and Retry-After (#113)', () => {
     expect(job.attempts).toBe(0)
     expect(job.nextAttemptAt).toBe(NOW + 2_500)
     expect(create).toHaveBeenCalledWith(cu.uploadAlarm, NOW + 2_500)
+  })
+
+  it('a 401 from resolveDriveRoot clears the cached access token and retries without burning attempts', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(1)))
+    let now = NOW
+    let currentSettings = connected()
+    let rootCalls = 0
+    const seenAuthHeaders: string[] = []
+    const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+      const endpoint = url instanceof URL ? url.href : url instanceof Request ? url.url : url
+      if (endpoint.includes('/drive/v3/files/root')) {
+        rootCalls += 1
+        seenAuthHeaders.push(new Headers(init?.headers).get('authorization') ?? '')
+        if (rootCalls === 1) return new Response('unauthorized', { status: 401 })
+        return new Response(JSON.stringify({ id: 'root-id' }), { status: 200 })
+      }
+      if (endpoint === PROVIDERS.gdrive.oauth.tokenEndpoint) {
+        return new Response(JSON.stringify({ access_token: 'fresh-access', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (endpoint === 'https://video.twimg.com/0.mp4') {
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'content-type': 'video/mp4', 'content-length': '3' },
+        })
+      }
+      if (endpoint.includes('/drive/v3/files?')) {
+        return new Response(JSON.stringify({ files: [{ id: 'folder-id' }] }), { status: 200 })
+      }
+      if (endpoint.includes('/upload/drive/v3/files')) {
+        return new Response(JSON.stringify({ id: 'uploaded-file-id' }), { status: 200 })
+      }
+      return new Response('unexpected', { status: 500 })
+    })
+    const cu = makeCloudUpload({
+      queueError: () => () => {},
+      getSettings: async () => currentSettings,
+      setSettings: async (patch) => {
+        currentSettings = { ...currentSettings, ...patch }
+        return currentSettings
+      },
+      fetchImpl,
+      getBackfillRecords: async () => [],
+      now: () => now,
+      ledger,
+      uploaded: fakeUploaded(),
+      alarms: fakeAlarms(),
+      badge: fakeBadge(),
+      authFlow: fakeAuthFlow(),
+      random: () => 1,
+    })
+
+    await cu.drainUploadJobs()
+
+    const after401 = decodeLedger(ledger.value)[0]!
+    expect(after401.status).toBe('failed')
+    expect(after401.attempts).toBe(0)
+    expect(currentSettings[gd.accessToken]).toBe('')
+    expect(currentSettings[gd.expiry]).toBe(0)
+    expect((await cu.cloudUploadStatus()).lastError).toBe(
+      'Authorization expired — reconnect the provider.',
+    )
+
+    now = after401.nextAttemptAt
+    await cu.drainUploadJobs()
+
+    const afterRetry = decodeLedger(ledger.value)[0]!
+    expect(afterRetry.status).toBe('succeeded')
+    expect(afterRetry.attempts).toBe(0)
+    expect(seenAuthHeaders).toEqual(['Bearer gdrive-access', 'Bearer fresh-access'])
+  })
+
+  it('a 429 from resolveDriveRoot honors Retry-After and retries as transient without burning attempts', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(1)))
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
+    const fetchImpl = vi.fn<typeof fetch>(async (url) => {
+      const endpoint = url instanceof URL ? url.href : url instanceof Request ? url.url : url
+      if (endpoint.includes('/drive/v3/files/root')) {
+        return new Response('rate limited', { status: 429, headers: { 'retry-after': '90' } })
+      }
+      return new Response('unexpected', { status: 500 })
+    })
+    const cu = makeCloudUpload({
+      queueError: () => () => {},
+      getSettings: async () => connected(),
+      setSettings: async () => connected(),
+      fetchImpl,
+      getBackfillRecords: async () => [],
+      now: () => NOW,
+      ledger,
+      uploaded: fakeUploaded(),
+      alarms,
+      badge: fakeBadge(),
+      authFlow: fakeAuthFlow(),
+      random: () => 0,
+    })
+
+    await cu.drainUploadJobs()
+
+    const job = decodeLedger(ledger.value)[0]!
+    expect(job.status).toBe('failed')
+    expect(job.attempts).toBe(0)
+    expect(job.nextAttemptAt).toBe(NOW + 90_000)
+    expect(create).toHaveBeenCalledWith(cu.uploadAlarm, NOW + 90_000)
+    expect((await cu.cloudUploadStatus()).lastError).toBe(
+      'Provider rate-limited the upload — retrying with backoff.',
+    )
   })
 })

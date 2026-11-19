@@ -768,53 +768,75 @@ describe('bounded oldest-first retention', () => {
     expect(s.resolve('MP4R1')).toEqual(recaught)
   })
 
-  it('keeps surviving carousel slides and post code intact during partial eviction, then cleans up when last slide evicts', () => {
+  it('evicts a 2-video carousel atomically as a whole post without synthesizing a bare post video key', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
     const v0 = video('v0', 'MP4A', 'POSTA', 'postC', 0)
     const v1 = video('v1', 'MP4B', 'POSTB', 'postC', 1)
     const p2 = photo('p2', 'KP2', 'postOther1')
-    const p3 = photo('p3', 'KP3', 'postOther2')
 
     s.registerPostCode('postC', 'CODEC')
     s.addDetected([v0, v1])
     s.addDetected([p2])
 
     expect(s.get('v0')).toBeUndefined()
-    expect(s.resolve('MP4A')).toBeUndefined()
-    expect(s.resolve(postVideoKeyIndexed('CODEC', 0))).toBeUndefined()
-    expect(s.resolve(postVideoKeyByDomSlot('CODEC', 0))).toBeUndefined()
-    expect(s.resolve(postVideoKeyIndexed('CODEC', 1))).toEqual(v1)
-    expect(s.resolve(postVideoKeyByDomSlot('CODEC', 1))).toEqual(v1)
-    expect(s.postIdForCode('CODEC')).toBe('postC')
-    expect(s.valuesForTweet('postC')).toEqual([v1])
-
-    s.addDetected([p3])
-
     expect(s.get('v1')).toBeUndefined()
+    expect(s.resolve('MP4A')).toBeUndefined()
+    expect(s.resolve('POSTA')).toBeUndefined()
+    expect(s.resolve('MP4B')).toBeUndefined()
+    expect(s.resolve('POSTB')).toBeUndefined()
     expect(s.resolve(postVideoKey('CODEC'))).toBeUndefined()
+    expect(s.resolve(postVideoKeyIndexed('CODEC', 0))).toBeUndefined()
     expect(s.resolve(postVideoKeyIndexed('CODEC', 1))).toBeUndefined()
+    expect(s.resolve(postVideoKeyByDomSlot('CODEC', 0))).toBeUndefined()
     expect(s.resolve(postVideoKeyByDomSlot('CODEC', 1))).toBeUndefined()
     expect(s.postIdForCode('CODEC')).toBeUndefined()
     expect(s.valuesForTweet('postC')).toEqual([])
     expect(s.keysForTweet('postC')).toEqual([])
+    expect(s.get('p2')).toEqual(p2)
+    expect(s.resolve('KP2')).toEqual(p2)
+    expect(s.count).toBe(1)
+    expect(s.values()).toEqual([p2])
   })
 
-  it('does not clobber a newer item when evicting an older item that shared its URL key or video slot', () => {
+  it('returns only surviving items when a single addDetected or addRecovered batch exceeds maxRetainedItems', () => {
+    const detectedStore = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const p1 = photo('p1', 'KP1', 'post1')
+    const p2 = photo('p2', 'KP2', 'post2')
+    const p3 = photo('p3', 'KP3', 'post3')
+
+    expect(detectedStore.addDetected([p1, p2, p3])).toEqual([p2, p3])
+    expect(detectedStore.get('p1')).toBeUndefined()
+    expect(detectedStore.values()).toEqual([p2, p3])
+
+    const recoveredStore = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const r1 = video('r1', 'MP4R1', 'POSTR1', 'post1', 0)
+    const r2 = video('r2', 'MP4R2', 'POSTR2', 'post2', 0)
+    const r3 = video('r3', 'MP4R3', 'POSTR3', 'post3', 0)
+
+    expect(recoveredStore.addRecovered([r1, r2, r3])).toEqual([r2, r3])
+    expect(recoveredStore.get('r1')).toBeUndefined()
+    expect(recoveredStore.values()).toEqual([r2, r3])
+  })
+
+  it('does not clobber a newer post when evicting an older post that shared its URL key', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
-    const older = video('v-old', 'SHARED_MP4', 'SHARED_POST', 'postS', 0)
-    const newer = video('v-new', 'SHARED_MP4', 'SHARED_POST', 'postS', 0)
+    const older = video('v-old', 'SHARED_MP4', 'SHARED_POST', 'postOld', 0)
+    const newer = video('v-new', 'SHARED_MP4', 'SHARED_POST', 'postNew', 0)
     const third = photo('p3', 'K3', 'post3')
 
-    s.registerPostCode('postS', 'CODES')
+    s.registerPostCode('postOld', 'CODE_OLD')
+    s.registerPostCode('postNew', 'CODE_NEW')
     s.addDetected([older])
     s.addDetected([newer])
     s.addDetected([third])
 
     expect(s.get('v-old')).toBeUndefined()
+    expect(s.postIdForCode('CODE_OLD')).toBeUndefined()
     expect(s.get('v-new')).toEqual(newer)
     expect(s.resolve('SHARED_MP4')).toEqual(newer)
-    expect(s.resolve(postVideoKey('CODES'))).toEqual(newer)
-    expect(s.resolve(postVideoKeyIndexed('CODES', 0))).toEqual(newer)
+    expect(s.resolve('SHARED_POST')).toEqual(newer)
+    expect(s.resolve(postVideoKey('CODE_NEW'))).toEqual(newer)
+    expect(s.resolve(postVideoKeyIndexed('CODE_NEW', 0))).toEqual(newer)
   })
 
   it('caps codeToPostId oldest-first for both text-only and video posts', () => {
