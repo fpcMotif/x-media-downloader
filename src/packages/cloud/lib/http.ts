@@ -44,6 +44,20 @@ export const jsonAs = <T>(res: Response): Promise<T> => res.json()
 export const httpErr = (provider: string, status: number, body: string): string =>
   `${provider} HTTP ${status}${body ? `: ${body.slice(0, 200)}` : ''}`
 
+export const RETRY_AFTER_CAP_MS = 15 * 60 * 1000
+const MS_PER_SECOND = 1000
+const DIGITS_ONLY = /^\d+$/
+const RATE_LIMIT_REASON = /userRateLimitExceeded|rateLimitExceeded|too_many_requests/
+
+export const retryAfterMs = (headers: Headers): number | undefined => {
+  const raw = headers.get('retry-after')
+  if (raw === null || !DIGITS_ONLY.test(raw.trim())) return undefined
+  return Math.min(Number(raw.trim()) * MS_PER_SECOND, RETRY_AFTER_CAP_MS)
+}
+
+export const isTransientHttp = (status: number, body: string): boolean =>
+  status === 429 || status >= 500 || (status === 403 && RATE_LIMIT_REASON.test(body))
+
 /**
  * A non-2xx response from a provider's upload API. Carries the numeric `status`
  * as a real field — not buried in a message string — so the upload-status
@@ -56,10 +70,21 @@ export class CloudHttpError extends Data.TaggedError('CloudHttpError')<{
   readonly provider: string
   readonly status: number
   readonly body: string
+  readonly retryAfterMs?: number
 }> {
   override get message(): string {
     return httpErr(this.provider, this.status, this.body)
   }
+}
+
+export const httpFailure = async (provider: string, res: Response): Promise<CloudHttpError> => {
+  const wait = retryAfterMs(res.headers)
+  return new CloudHttpError({
+    provider,
+    status: res.status,
+    body: await errText(res),
+    ...(wait !== undefined ? { retryAfterMs: wait } : {}),
+  })
 }
 
 /** The single 'empty source' failure outcome (the source had no bytes). */
@@ -104,7 +129,13 @@ export const runUpload = <R>(
             .pipe(Effect.map(({ outcome, bytes }) => (bytes === 0 ? EMPTY_SOURCE : outcome)))
     return yield* run.pipe(
       Effect.catchTag('CloudHttpError', (e) =>
-        Effect.succeed<UploadOutcome>({ kind: 'failure', reason: e.message, status: e.status }),
+        Effect.succeed<UploadOutcome>({
+          kind: 'failure',
+          reason: e.message,
+          status: e.status,
+          ...(isTransientHttp(e.status, e.body) ? { transient: true } : {}),
+          ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}),
+        }),
       ),
       Effect.catchCause((cause) => {
         const squashed = Cause.squash(cause)

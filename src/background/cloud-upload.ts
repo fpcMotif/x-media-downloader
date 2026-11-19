@@ -38,6 +38,7 @@ import {
   MAX_TERMINAL_JOBS,
   readyJobs,
   recordFailure,
+  releaseClaim,
   retry as retryUploadJob,
   summarize,
   toWireUploadJob,
@@ -207,6 +208,7 @@ export interface CloudUploadDeps {
   readonly onHistoryNotice?: (notice: CloudHistoryNotice) => void | Promise<void>
   /** The clock (default: `Date.now`). Injected so backoff/expiry assertions are deterministic. */
   readonly now?: () => number
+  readonly random?: () => number
   /** Jobs drained per pass before yielding to a fresh serialized task (default
    *  {@link MAX_DRAIN_JOBS_PER_PASS}). Injected only so the re-kick is testable without
    *  seeding a thousand jobs. */
@@ -220,6 +222,7 @@ const UPLOAD_ALARM = 'cloud-upload-drain'
 // large ledger can't monopolize the SW.
 const MAX_DRAIN_JOBS_PER_PASS = 1000
 const CONTROL_FETCH_TIMEOUT_MS = 60_000
+const AUTH_REVOKED = /invalid_grant/i
 
 // Single source of truth for the provider enumeration (schema/index.ts).
 const ALL_PROVIDERS: ReadonlyArray<CloudProviderId> = CLOUD_PROVIDERS
@@ -371,6 +374,8 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   // Resolve each side-effect seam to its live binding unless a test injected one.
   // Internal names avoid colliding with the `ledger`/`now` locals in the drain loop.
   const nowFn = deps.now ?? (() => Date.now())
+  const randomFn = deps.random ?? Math.random
+  const authPaused = new Set<CloudProviderId>()
   const writeSettingsImpl = deps.setSettings ?? setSettings
   const store = deps.ledger ?? defaultLedgerStore()
   const rt = deps.runtime ?? defaultRuntimePort(fetchImpl)
@@ -579,7 +584,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     const ledger = await readLedger()
     const now = nowFn()
     const due = ledger
-      .filter((j) => !isTerminal(j) && j.attempts < MAX_ATTEMPTS)
+      .filter((j) => !isTerminal(j) && j.attempts < MAX_ATTEMPTS && !authPaused.has(j.provider))
       .map((j) => j.nextAttemptAt)
       .filter((t) => t > now)
     if (due.length > 0) await alarms.create(UPLOAD_ALARM, Math.min(...due))
@@ -599,7 +604,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     for (let guard = 0; guard < maxDrainPerPass; guard += 1) {
       const now = nowFn()
       const ledger = await readLedger()
-      const job = readyJobs(ledger, now)[0]
+      const job = readyJobs(ledger, now).find((candidate) => !authPaused.has(candidate.provider))
       if (job === undefined) {
         if (capJobs(ledger) !== ledger) await updateLedger((current) => capJobs(current))
         ranOut = true
@@ -631,20 +636,46 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
       })
       if (!claimed || token === undefined) continue
 
-      let outcome: UploadOutcome
+      let accessToken = ''
+      let tokenFailure: string | null = null
       try {
-        const accessToken = await ensureAccessToken(settings, job.provider, now)
-        settings = await getSettings() // re-read after a possible token write
-        outcome = await dispatchToProvider(job, accessToken, settings)
+        accessToken = await ensureAccessToken(settings, job.provider, now)
       } catch (err) {
-        outcome = { kind: 'failure', reason: err instanceof Error ? err.message : String(err) }
+        const reason = err instanceof Error ? err.message : String(err)
+        if (AUTH_REVOKED.test(reason)) {
+          authPaused.add(job.provider)
+          await updateLedger(
+            (current) => releaseClaim(current, job.jobId, token!, nowFn(), reason).ledger,
+          )
+          lastUploadError = classifyUploadError(reason)
+          continue
+        }
+        tokenFailure = reason
+      }
+
+      let outcome: UploadOutcome
+      if (tokenFailure !== null) {
+        outcome = { kind: 'failure', reason: tokenFailure }
+      } else {
+        try {
+          settings = await getSettings() // re-read after a possible token write
+          outcome = await dispatchToProvider(job, accessToken, settings)
+        } catch (err) {
+          outcome = { kind: 'failure', reason: err instanceof Error ? err.message : String(err) }
+        }
+      }
+
+      if (outcome.kind === 'failure' && outcome.status === 401) {
+        await persistAccessToken(job.provider, '', 0)
+        settings = await getSettings()
+        outcome = { ...outcome, transient: true }
       }
 
       const tnow = nowFn()
       let settled: UploadJob | undefined
       let settledLedger: JobLedger = []
       await updateLedger((current) => {
-        const applied = applyUploadOutcome(current, job.jobId, token!, tnow, outcome)
+        const applied = applyUploadOutcome(current, job.jobId, token!, tnow, outcome, randomFn)
         settled = applied.settled
         settledLedger = capJobs(applied.ledger)
         return settledLedger
@@ -723,6 +754,8 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
         [f.expiry]: tokens.expiresAt,
         [f.account]: tokens.account ?? '',
       })
+      authPaused.delete(provider)
+      uploadQueue.push(() => drainUploadJobs())
       return {
         ok: true,
         detail: `Connected ${PROVIDERS[provider].label}.`,

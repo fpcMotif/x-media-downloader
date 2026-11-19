@@ -169,7 +169,9 @@ const postToken = (
     })
     if (!res.ok || json.error !== undefined)
       return yield* new OAuthError({
-        message: json.error_description ?? json.error ?? `token endpoint HTTP ${res.status}`,
+        message:
+          [json.error, json.error_description].filter((part) => part !== undefined).join(': ') ||
+          `token endpoint HTTP ${res.status}`,
         context: 'token-endpoint',
       })
     return json

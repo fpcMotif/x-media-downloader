@@ -11,11 +11,14 @@ import {
   idempotencyKeyFor,
   isClaimable,
   MAX_ATTEMPTS,
+  MAX_TRANSIENT_FAILURES,
   pruneTerminal,
   readyJobs,
   recordFailure,
   recordSourceGone,
   recordSuccess,
+  recordTransient,
+  releaseClaim,
   retry,
   summarize,
   toWireUploadJob,
@@ -304,6 +307,147 @@ describe('applyUploadOutcome', () => {
     const r = applyUploadOutcome(l, 'nope', 1, 0, { kind: 'failure', reason: 'x' })
     expect(r.settled).toBeUndefined()
     expect(r.ledger).toBe(l)
+  })
+
+  it('transient failure with retryAfterMs honours Retry-After and does not increment attempts', () => {
+    const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const now = 1_000
+    const r = applyUploadOutcome(
+      l,
+      id,
+      t,
+      now,
+      { kind: 'failure', reason: 'r', status: 429, transient: true, retryAfterMs: 120_000 },
+      () => 0,
+    )
+    expect(r.settled!.status).toBe('failed')
+    expect(r.settled!.attempts).toBe(0)
+    expect(r.settled!.transientFailures).toBe(1)
+    expect(r.settled!.nextAttemptAt).toBe(now + 120_000)
+  })
+
+  it('transient failure without retryAfterMs applies full jitter to backoff', () => {
+    const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const now = 1_000
+    const r = applyUploadOutcome(
+      l,
+      id,
+      t,
+      now,
+      { kind: 'failure', reason: 'r', status: 429, transient: true },
+      () => 0.5,
+    )
+    expect(r.settled!.status).toBe('failed')
+    expect(r.settled!.attempts).toBe(0)
+    expect(r.settled!.transientFailures).toBe(1)
+    expect(r.settled!.nextAttemptAt).toBe(now + 2_500)
+  })
+
+  it('counts the twenty-first consecutive transient failure as an ordinary failure', () => {
+    expect(MAX_TRANSIENT_FAILURES).toBe(20)
+    let l = enqueue([], spec('m1'), 0)
+    const id = l[0]!.jobId
+    let now = 0
+    for (let i = 1; i <= 20; i += 1) {
+      const c = claim(l, id, now)
+      expect(c.claimed).toBe(true)
+      l = applyUploadOutcome(
+        c.ledger,
+        id,
+        c.token!,
+        now,
+        { kind: 'failure', reason: `transient ${i}`, status: 503, transient: true },
+        () => 1,
+      ).ledger
+      expect(l[0]!.attempts).toBe(0)
+      expect(l[0]!.transientFailures).toBe(i)
+      now = l[0]!.nextAttemptAt
+    }
+    const c = claim(l, id, now)
+    expect(c.claimed).toBe(true)
+    const final = applyUploadOutcome(
+      c.ledger,
+      id,
+      c.token!,
+      now,
+      { kind: 'failure', reason: 'transient 21', status: 503, transient: true },
+      () => 1,
+    )
+    expect(final.settled!.status).toBe('failed')
+    expect(final.settled!.attempts).toBe(1)
+  })
+
+  it('non-transient failure applies jitter from random source', () => {
+    const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const now = 1_000
+    const r = applyUploadOutcome(l, id, t, now, { kind: 'failure', reason: 'boom' }, () => 0.5)
+    expect(r.settled!.status).toBe('failed')
+    expect(r.settled!.attempts).toBe(1)
+    expect(r.settled!.nextAttemptAt).toBe(now + Math.floor(0.5 * backoffMs(1)))
+  })
+})
+
+describe('releaseClaim and transientFailures cleanup', () => {
+  it('releaseClaim returns a claimed job to pending without consuming attempts', () => {
+    let l = enqueue([], spec('m1'), 0)
+    const id = l[0]!.jobId
+    const first = claim(l, id, 0)
+    l = recordFailure(first.ledger, id, first.token!, 0, 'first').ledger
+    const second = claim(l, id, l[0]!.nextAttemptAt)
+    expect(second.claimed).toBe(true)
+    const now = l[0]!.nextAttemptAt + 50
+    const released = releaseClaim(second.ledger, id, second.token!, now, 'invalid_grant')
+    expect(released.changed).toBe(true)
+    expect(released.ledger[0]).toMatchObject({
+      status: 'pending',
+      attempts: 1,
+      leaseUntil: null,
+      nextAttemptAt: now,
+      error: 'invalid_grant',
+    })
+  })
+
+  it('releaseClaim ignores a stale fencing token', () => {
+    const l0 = enqueue([], spec('m1'), 0)
+    const id = l0[0]!.jobId
+    const first = claim(l0, id, 0, 1_000)
+    const second = claim(first.ledger, id, 2_000, 1_000)
+    const stale = releaseClaim(second.ledger, id, first.token!, 2_500, 'invalid_grant')
+    expect(stale.changed).toBe(false)
+    expect(stale.ledger).toBe(second.ledger)
+  })
+
+  it('recordTransient uses unjittered backoff when wait is omitted', () => {
+    const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const res = recordTransient(l, id, t, 500, 'dropbox HTTP 429')
+    expect(res.changed).toBe(true)
+    expect(res.ledger[0]!.transientFailures).toBe(1)
+    expect(res.ledger[0]!.nextAttemptAt).toBe(500 + backoffMs(1))
+  })
+
+  it('recordSuccess, enqueue revive, and retry each clear transientFailures', () => {
+    const [claimed1, id, tok1] = claimFirst(enqueue([], spec('m1'), 0), 0)
+    const afterTransient = recordTransient(claimed1, id, tok1, 0, '429').ledger
+    expect(afterTransient[0]!.transientFailures).toBe(1)
+
+    const [claimed2, , tok2] = claimFirst(afterTransient, afterTransient[0]!.nextAttemptAt)
+    const succeeded = recordSuccess(claimed2, id, tok2, 10_000, { bytes: 10 }).ledger
+    expect('transientFailures' in succeeded[0]!).toBe(false)
+
+    const revived = enqueue(afterTransient, spec('m1'), 10_000)
+    expect('transientFailures' in revived[0]!).toBe(false)
+
+    const retried = retry(afterTransient, id, 10_000).ledger
+    expect('transientFailures' in retried[0]!).toBe(false)
+  })
+
+  it('decodeLedger decodes a persisted row that omits transientFailures', () => {
+    const legacy = enqueue([], spec('m1'), 0)
+    const raw = JSON.parse(JSON.stringify(legacy))
+    expect('transientFailures' in raw[0]).toBe(false)
+    const decoded = decodeLedger(raw)
+    expect(decoded).toEqual(legacy)
+    expect(decoded[0]!.transientFailures).toBeUndefined()
   })
 })
 

@@ -21,3 +21,7 @@ export interface BackoffPolicy {
 export function expBackoffMs(attempt: number, policy: BackoffPolicy): number {
   return Math.min(policy.capMs, policy.baseMs * 2 ** Math.max(0, attempt))
 }
+
+export function fullJitterMs(delayMs: number, random: () => number): number {
+  return Math.floor(random() * delayMs)
+}
