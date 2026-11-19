@@ -833,4 +833,68 @@ describe('settled sweep retry', () => {
     await c.releaseSettled('bookmark', ['T'], 7)
     expect(dispatchClear).not.toHaveBeenCalled()
   })
+
+  it('releaseSettled retries a post whose earlier release click failed in the same session', async () => {
+    let stored: JsonValue = {
+      'bookmark:T': { tweetId: 'T', scope: 'bookmark', state: 'downloaded', at: 1 },
+    }
+    let attempt = 0
+    const dispatchClear = vi.fn<ClearSessionDeps['dispatchClear']>(async () => {
+      attempt += 1
+      return [{ scope: 'bookmark', ok: attempt >= 2 }]
+    })
+    const { deps } = makeDeps({
+      dispatchClear,
+      worklistStorage: {
+        get: async () => stored,
+        set: async (value) => {
+          stored = value
+        },
+      },
+    })
+    const c = makeClearSession(deps)
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).toHaveBeenCalledTimes(1)
+    expect(isDownloaded(decodeWorklist(stored), 'T', 'bookmark')).toBe(true)
+
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(isCleared(decodeWorklist(stored), 'T', 'bookmark')).toBe(true))
+  })
+
+  it('releaseSettled retries a post after Clear after download is turned back on', async () => {
+    let clearOnSave = false
+    const { deps, dispatchClear } = makeDeps({
+      getSettings: async () => settings({ clearOnSave, autoUnbookmarkOnSave: true }),
+    })
+    const c = makeClearSession(deps)
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).not.toHaveBeenCalled()
+
+    clearOnSave = true
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).toHaveBeenCalledTimes(1)
+  })
+
+  it('releaseSettled skips a post whose release dispatch is still in flight', async () => {
+    let finishFirst:
+      | ((results: ReadonlyArray<{ scope: 'bookmark'; ok: boolean }>) => void)
+      | undefined
+    const dispatchClear = vi.fn<ClearSessionDeps['dispatchClear']>(
+      () =>
+        new Promise((resolve) => {
+          finishFirst = resolve
+        }),
+    )
+    const { deps } = makeDeps({ dispatchClear })
+    const c = makeClearSession(deps)
+    const first = c.releaseSettled('bookmark', ['T'], 7)
+    await vi.waitFor(() => expect(dispatchClear).toHaveBeenCalledTimes(1))
+
+    await c.releaseSettled('bookmark', ['T'], 7)
+    expect(dispatchClear).toHaveBeenCalledTimes(1)
+
+    finishFirst?.([{ scope: 'bookmark', ok: true }])
+    await first
+  })
 })

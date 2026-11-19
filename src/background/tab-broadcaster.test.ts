@@ -753,6 +753,91 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
       },
     ])
   })
+
+  it('stops polling immediately when an unmounted permalink probe carries retryAfterMs', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([], {
+      [RELEASE_TAB_ID]: {
+        mounted: false,
+        drainEligible: false,
+        results: [],
+        retryAfterMs: 60_000,
+      },
+    })
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.sent.filter((s) => s.tabId === RELEASE_TAB_ID)).toHaveLength(1)
+    expect(t.releasePoll()[0]?.detail).toContain('probes=1')
+    expect(t.releasePoll()[0]?.detail).toContain('reason=rate-limited')
+    expect(t.dispatch()[0]?.detail).toContain(`release=${RELEASE_TAB_ID} outcome=rate-limited`)
+  })
+
+  it('stops with rate-limited when a mounted permalink probe fails with retryAfterMs', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([], {
+      [RELEASE_TAB_ID]: {
+        mounted: true,
+        drainEligible: false,
+        results: [{ scope: 'bookmark', ok: false }],
+        retryAfterMs: 60_000,
+      },
+    })
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.sent.filter((s) => s.tabId === RELEASE_TAB_ID)).toHaveLength(1)
+    expect(t.releasePoll()[0]?.detail).toContain('reason=rate-limited')
+    expect(t.dispatch()[0]?.detail).toContain(`release=${RELEASE_TAB_ID} outcome=rate-limited`)
+  })
+
+  it('fails fast without navigating when a queued permalink leg runs after an earlier leg hit 429', async () => {
+    const t = traceSpy()
+    let resolveFirst: ((reply: JsonValue) => void) | undefined
+    const tabs = fakeTabs([], {
+      [RELEASE_TAB_ID]: (message) => {
+        if (message._tag === 'ClearTweetRequest' && message.tweetId === 't1') {
+          return new Promise<JsonValue>((resolve) => {
+            resolveFirst = resolve
+          })
+        }
+        return clearResp('like')
+      },
+    })
+    const broadcaster = makeTabBroadcaster(tabs, { trace: t.trace, clock: instantClock })
+
+    const p1 = broadcaster.sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+    const p2 = broadcaster.sendClearToTabs('t2', ['like'], undefined, undefined, pinned('like'))
+    await vi.waitFor(() => expect(resolveFirst).toBeDefined())
+    await tick()
+
+    resolveFirst?.({
+      mounted: true,
+      drainEligible: false,
+      results: [{ scope: 'bookmark', ok: false }],
+      retryAfterMs: 60_000,
+    })
+
+    await expect(p1).resolves.toEqual([{ scope: 'bookmark', ok: false }])
+    await expect(p2).resolves.toEqual([{ scope: 'like', ok: false }])
+    expect(tabs.navigated).toEqual(['https://x.com/i/web/status/t1'])
+    expect(tabs.sent).toHaveLength(1)
+    expect(t.releasePoll().find((l) => l.tweetId === 't2')?.detail).toContain(
+      'tab=none probes=0 threw=0 unmounted=0',
+    )
+    expect(t.releasePoll().find((l) => l.tweetId === 't2')?.detail).toContain('reason=rate-limited')
+    expect(t.dispatch().find((l) => l.tweetId === 't2')?.detail).toContain(
+      'release=none outcome=rate-limited',
+    )
+  })
 })
 
 const fakeSchedule = () => {

@@ -223,6 +223,7 @@ type ReleasePollReason =
   | 'page-error'
   | 'backoff'
   | 'probe-timeout'
+  | 'rate-limited'
 
 /** The page-state evidence an unmounted `ClearTweetResponse` carries (Part B). */
 type ReleasePageEvidence = NonNullable<ClearTweetResponse['page']>
@@ -233,6 +234,7 @@ type ReleasePageEvidence = NonNullable<ClearTweetResponse['page']>
 type ProbeResult =
   | { readonly kind: 'threw' }
   | { readonly kind: 'timed-out' }
+  | { readonly kind: 'rate-limited' }
   | { readonly kind: 'mounted'; readonly results: ReadonlyArray<ClearScopeResult> }
   | { readonly kind: 'unmounted'; readonly page: ReleasePageEvidence | undefined }
 
@@ -527,14 +529,22 @@ export const makeTabBroadcaster = (
       return () => clearTimeout(handle)
     })
 
-  const sendWithDeadline = (
+  const sendWithDeadline = async (
     tabId: number,
     message: Message | TabMessage,
-  ): Promise<JsonValue | undefined | typeof TAB_MESSAGE_TIMED_OUT> =>
-    new Promise((resolve, reject) => {
-      const cancel = schedule(() => resolve(TAB_MESSAGE_TIMED_OUT), TAB_MESSAGE_DEADLINE_MS)
-      tabs.sendTabMessage(tabId, message).finally(cancel).then(resolve, reject)
-    })
+  ): Promise<JsonValue | undefined | typeof TAB_MESSAGE_TIMED_OUT> => {
+    let cancel: (() => void) | undefined
+    try {
+      const deadline = new Promise<typeof TAB_MESSAGE_TIMED_OUT>((resolve) => {
+        cancel = schedule(() => resolve(TAB_MESSAGE_TIMED_OUT), TAB_MESSAGE_DEADLINE_MS)
+      })
+      const send = tabs.sendTabMessage(tabId, message)
+      void send.catch(() => {})
+      return await Promise.race([send, deadline])
+    } finally {
+      cancel?.()
+    }
+  }
 
   type ReleaseTabOutcome =
     | {
@@ -542,7 +552,7 @@ export const makeTabBroadcaster = (
         readonly tabId: number
         readonly results: ReadonlyArray<ClearScopeResult>
       }
-    | { readonly ok: false; readonly tabId: number | undefined }
+    | { readonly ok: false; readonly tabId: number | undefined; readonly rateLimited?: true }
 
   // One release at a time: several downloads can settle back-to-back, and two
   // concurrent navigations of the shared tab would race — the loser's clear would
@@ -558,6 +568,12 @@ export const makeTabBroadcaster = (
   // clears it immediately: the page recovered, so the next leg deserves a real try.
   let backoffUntil = 0
   let rateLimitedUntil = 0
+
+  const noteRateLimit = (retryAfterMs: number | undefined): boolean => {
+    if (retryAfterMs === undefined || retryAfterMs <= 0) return false
+    rateLimitedUntil = Math.max(rateLimitedUntil, clock.now() + retryAfterMs)
+    return true
+  }
 
   // The orphan table (module-scoped, not per-dispatch): a tab that keeps proving
   // itself dead is skipped from the immediate fan-out rather than probed on every
@@ -635,8 +651,12 @@ export const makeTabBroadcaster = (
       })
       if (reply === TAB_MESSAGE_TIMED_OUT) return { kind: 'timed-out' }
       const res = asClearTweetResponse(reply)
-      if (res?.retryAfterMs !== undefined && res.retryAfterMs > 0)
-        rateLimitedUntil = Math.max(rateLimitedUntil, clock.now() + res.retryAfterMs)
+      const attempted = res?.results.some((result) => !result.noop) === true
+      const allSucceeded = res?.results.every((result) => result.ok) === true
+      if (res?.mounted === true && attempted && allSucceeded) {
+        return { kind: 'mounted', results: res.results }
+      }
+      if (noteRateLimit(res?.retryAfterMs)) return { kind: 'rate-limited' }
       if (res?.mounted === true) return { kind: 'mounted', results: res.results }
       return { kind: 'unmounted', page: res?.page }
     } catch {
@@ -660,24 +680,39 @@ export const makeTabBroadcaster = (
     allLists: boolean | undefined,
     asPageScope: MembershipScope | undefined,
   ): Promise<ReleaseTabOutcome> => {
-    // 1. Breaker — fail fast, no navigation, while an earlier leg's error-block
-    // verdict is still in force.
-    if (clock.now() < backoffUntil) {
+    const tracePoll = (
+      reason: ReleasePollReason,
+      summary?: Omit<ReleasePollSummary, 'reason'>,
+    ): void => {
       trace(
         'clear-release-poll',
-        formatReleasePoll({
-          tabId: undefined,
-          probes: 0,
-          threw: 0,
-          unmounted: 0,
-          lastPage: undefined,
-          reloaded: false,
-          elapsedMs: 0,
-          maxProbeMs: 0,
-          reason: 'backoff',
-        }),
+        formatReleasePoll(
+          summary === undefined
+            ? {
+                tabId: undefined,
+                probes: 0,
+                threw: 0,
+                unmounted: 0,
+                lastPage: undefined,
+                reloaded: false,
+                elapsedMs: 0,
+                maxProbeMs: 0,
+                reason,
+              }
+            : { ...summary, reason },
+        ),
         tweetId,
       )
+    }
+
+    // 1. Breaker — fail fast, no navigation, while an earlier leg's error-block
+    // verdict is still in force.
+    if (clock.now() < rateLimitedUntil) {
+      tracePoll('rate-limited')
+      return { ok: false, tabId: undefined, rateLimited: true }
+    }
+    if (clock.now() < backoffUntil) {
+      tracePoll('backoff')
       return { ok: false, tabId: undefined }
     }
 
@@ -691,21 +726,7 @@ export const makeTabBroadcaster = (
         `phase=release-nav reason=${compactReason(error instanceof Error ? error : String(error))}`,
         tweetId,
       )
-      trace(
-        'clear-release-poll',
-        formatReleasePoll({
-          tabId: undefined,
-          probes: 0,
-          threw: 0,
-          unmounted: 0,
-          lastPage: undefined,
-          reloaded: false,
-          elapsedMs: 0,
-          maxProbeMs: 0,
-          reason: 'nav-failed',
-        }),
-        tweetId,
-      )
+      tracePoll('nav-failed')
       return { ok: false, tabId: undefined }
     }
 
@@ -720,6 +741,17 @@ export const makeTabBroadcaster = (
     let stuckSince: number | undefined
     let elapsed = 0
     let maxProbeMs = 0
+    const traceAttempt = (reason: ReleasePollReason, elapsedMs = elapsed): void =>
+      tracePoll(reason, {
+        tabId,
+        probes,
+        threw,
+        unmounted,
+        lastPage,
+        reloaded,
+        elapsedMs,
+        maxProbeMs,
+      })
     // oxlint-disable no-await-in-loop -- bounded readiness poll; the first mounted answer performs the clear
     while (elapsed < RELEASE_POLL_BUDGET_MS) {
       await clock.sleep(RELEASE_POLL_INTERVAL_MS)
@@ -730,42 +762,19 @@ export const makeTabBroadcaster = (
       maxProbeMs = Math.max(maxProbeMs, clock.now() - probeStartedAt)
 
       if (probe.kind === 'timed-out') {
-        trace(
-          'clear-release-poll',
-          formatReleasePoll({
-            tabId,
-            probes,
-            threw,
-            unmounted,
-            lastPage,
-            reloaded,
-            elapsedMs: clock.now() - start,
-            maxProbeMs,
-            reason: 'probe-timeout',
-          }),
-          tweetId,
-        )
+        traceAttempt('probe-timeout', clock.now() - start)
         return { ok: false, tabId }
+      }
+
+      if (probe.kind === 'rate-limited') {
+        traceAttempt('rate-limited')
+        return { ok: false, tabId, rateLimited: true }
       }
 
       if (probe.kind === 'threw') {
         threw++
         if (threw === probes && elapsed >= RELEASE_UNREACHABLE_MS) {
-          trace(
-            'clear-release-poll',
-            formatReleasePoll({
-              tabId,
-              probes,
-              threw,
-              unmounted,
-              lastPage,
-              reloaded,
-              elapsedMs: elapsed,
-              maxProbeMs,
-              reason: 'unreachable',
-            }),
-            tweetId,
-          )
+          traceAttempt('unreachable')
           return { ok: false, tabId }
         }
         continue
@@ -773,21 +782,7 @@ export const makeTabBroadcaster = (
 
       if (probe.kind === 'mounted') {
         backoffUntil = 0 // the page recovered — clear the breaker for the next leg
-        trace(
-          'clear-release-poll',
-          formatReleasePoll({
-            tabId,
-            probes,
-            threw,
-            unmounted,
-            lastPage,
-            reloaded,
-            elapsedMs: elapsed,
-            maxProbeMs,
-            reason: 'mounted',
-          }),
-          tweetId,
-        )
+        traceAttempt('mounted')
         return { ok: true, tabId, results: probe.results }
       }
 
@@ -809,21 +804,7 @@ export const makeTabBroadcaster = (
       }
       if (decision.action === 'backoff') {
         backoffUntil = clock.now() + RELEASE_BACKOFF_MS
-        trace(
-          'clear-release-poll',
-          formatReleasePoll({
-            tabId,
-            probes,
-            threw,
-            unmounted,
-            lastPage,
-            reloaded,
-            elapsedMs: elapsed,
-            maxProbeMs,
-            reason: 'page-error',
-          }),
-          tweetId,
-        )
+        traceAttempt('page-error')
         return { ok: false, tabId }
       }
       errorStreak = decision.errorStreak
@@ -833,21 +814,7 @@ export const makeTabBroadcaster = (
 
     // 4. Budget end.
     const reason: ReleasePollReason = unmounted > 0 ? 'exhausted' : 'unreachable'
-    trace(
-      'clear-release-poll',
-      formatReleasePoll({
-        tabId,
-        probes,
-        threw,
-        unmounted,
-        lastPage,
-        reloaded,
-        elapsedMs: elapsed,
-        maxProbeMs,
-        reason,
-      }),
-      tweetId,
-    )
+    traceAttempt(reason)
     return { ok: false, tabId }
   }
 
@@ -945,8 +912,7 @@ export const makeTabBroadcaster = (
           answered.push(`${id}:mounted`)
           return { kind: 'mounted', results: res.results }
         }
-        if (res?.retryAfterMs !== undefined && res.retryAfterMs > 0) {
-          rateLimitedUntil = Math.max(rateLimitedUntil, clock.now() + res.retryAfterMs)
+        if (noteRateLimit(res?.retryAfterMs)) {
           answered.push(`${id}:rate-limited`)
           return { kind: 'rate-limited' }
         }
@@ -1093,7 +1059,11 @@ export const makeTabBroadcaster = (
         traceDispatch('release-tab', false, released.tabId)
         return released.results
       }
-      traceDispatch('release-failed', true, released.tabId)
+      traceDispatch(
+        released.rateLimited === true ? 'rate-limited' : 'release-failed',
+        true,
+        released.tabId,
+      )
       return scopes.map((scope) => ({ scope, ok: false }))
     }
 

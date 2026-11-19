@@ -94,6 +94,15 @@ describe('release cluster copy', () => {
     )
   })
 
+  it('releasedListResult: rate-limited reports a paused partial run', () => {
+    expect(releasedListResult({ cleared: 0, reason: 'rate-limited' })).toBe(
+      'Paused after 0 posts — X rate-limited releases; try again later.',
+    )
+    expect(releasedListResult({ cleared: 5, reason: 'rate-limited' })).toBe(
+      'Paused after 5 posts — X rate-limited releases; try again later.',
+    )
+  })
+
   it('releasedListResult: null result treated as zero', () => {
     expect(releasedListResult(null)).toBe('No posts to release on this list.')
   })

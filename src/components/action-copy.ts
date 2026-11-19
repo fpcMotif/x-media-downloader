@@ -55,6 +55,8 @@ export const releasedListResult = (res: ReleaseListResult | null): string => {
   // that reads as "the list is done" and is the whole reason the abort is surfaced.
   if (res?.reason === 'scope-changed')
     return `Stopped after ${plural(n, 'post')} — you left that list.`
+  if (res?.reason === 'rate-limited')
+    return `Paused after ${plural(n, 'post')} — X rate-limited releases; try again later.`
   return n === 0
     ? 'No posts to release on this list.'
     : `Released ${plural(n, 'post')} across the list.`

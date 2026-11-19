@@ -43,6 +43,46 @@ function memoryStore(): DurableStore {
   }
 }
 
+const StatusCall = Schema.Struct({
+  args: Schema.Struct({ mediaIds: Schema.Array(Schema.String) }),
+})
+
+function makeBatchReconcileFixture(
+  onStatus: (mediaIds: ReadonlyArray<string>) => JsonValue,
+  store: DurableStore = memoryStore(),
+) {
+  const candidates = Array.from({ length: 150 }, (_, index) => ({
+    item: {
+      ...item.item,
+      id: `m${index}`,
+      url: `https://pbs.twimg.com/media/m${index}.jpg`,
+    },
+    filename: `twitter/m${index}.jpg`,
+    estimatedBytes: 4,
+  }))
+  const remote = makeRemoteUpload({
+    getSettings: async () => settings,
+    store,
+    onHistoryNotice: () => {},
+    fetchImpl: async (_url, init) => {
+      const body = String(init?.body)
+      if (body.includes('relay:status')) {
+        const parsed = Schema.decodeUnknownSync(StatusCall)(JSON.parse(body))
+        return Response.json({ status: 'success', value: onStatus(parsed.args.mediaIds) })
+      }
+      return Response.json({
+        status: 'success',
+        value: candidates.map((candidate) => ({
+          mediaId: candidate.item.id,
+          id: `job-${candidate.item.id}`,
+          created: true,
+        })),
+      })
+    },
+  })
+  return { candidates, remote }
+}
+
 beforeEach(() => vi.restoreAllMocks())
 
 describe('metadata-only queue acceptance', () => {
@@ -309,61 +349,19 @@ describe('metadata-only queue acceptance', () => {
   })
 
   it('reconcile batches status queries', async () => {
-    const StatusCall = Schema.Struct({
-      args: Schema.Struct({ mediaIds: Schema.Array(Schema.String) }),
-    })
-    const candidates = Array.from({ length: 150 }, (_, index) => ({
-      item: {
-        ...item.item,
-        id: `m${index}`,
-        url: `https://pbs.twimg.com/media/m${index}.jpg`,
-      },
-      filename: `twitter/m${index}.jpg`,
-      estimatedBytes: 4,
-    }))
-    const statusBodies: Array<string> = []
-    const remote = makeRemoteUpload({
-      getSettings: async () => settings,
-      store: memoryStore(),
-      onHistoryNotice: () => {},
-      fetchImpl: async (_url, init) => {
-        const body = String(init?.body)
-        if (body.includes('relay:status')) {
-          statusBodies.push(body)
-          return Response.json({ status: 'success', value: [] })
-        }
-        return Response.json({
-          status: 'success',
-          value: candidates.map((candidate) => ({
-            mediaId: candidate.item.id,
-            id: `job-${candidate.item.id}`,
-            created: true,
-          })),
-        })
-      },
+    const batches: Array<ReadonlyArray<string>> = []
+    const { candidates, remote } = makeBatchReconcileFixture((mediaIds) => {
+      batches.push(mediaIds)
+      return []
     })
     await remote.record(settings, candidates)
     await remote.reconcile()
-    expect(statusBodies).toHaveLength(2)
-    const firstBatch = Schema.decodeUnknownSync(StatusCall)(JSON.parse(statusBodies[0] ?? '{}'))
-    const secondBatch = Schema.decodeUnknownSync(StatusCall)(JSON.parse(statusBodies[1] ?? '{}'))
-    expect(firstBatch.args.mediaIds).toHaveLength(100)
-    expect(secondBatch.args.mediaIds).toHaveLength(50)
+    expect(batches).toHaveLength(2)
+    expect(batches[0]).toHaveLength(100)
+    expect(batches[1]).toHaveLength(50)
   })
 
   it('reconcile writes the store once per batch', async () => {
-    const StatusCall = Schema.Struct({
-      args: Schema.Struct({ mediaIds: Schema.Array(Schema.String) }),
-    })
-    const candidates = Array.from({ length: 150 }, (_, index) => ({
-      item: {
-        ...item.item,
-        id: `m${index}`,
-        url: `https://pbs.twimg.com/media/m${index}.jpg`,
-      },
-      filename: `twitter/m${index}.jpg`,
-      estimatedBytes: 4,
-    }))
     const baseStore = memoryStore()
     let sets = 0
     const store: DurableStore = {
@@ -373,33 +371,10 @@ describe('metadata-only queue acceptance', () => {
         await baseStore.set(next)
       },
     }
-    const remote = makeRemoteUpload({
-      getSettings: async () => settings,
+    const { candidates, remote } = makeBatchReconcileFixture(
+      (mediaIds) => mediaIds.map((mediaId) => ({ mediaId, status: 'completed', at: 300 })),
       store,
-      onHistoryNotice: () => {},
-      fetchImpl: async (_url, init) => {
-        const body = String(init?.body)
-        if (body.includes('relay:status')) {
-          const parsed = Schema.decodeUnknownSync(StatusCall)(JSON.parse(body))
-          return Response.json({
-            status: 'success',
-            value: parsed.args.mediaIds.map((mediaId) => ({
-              mediaId,
-              status: 'completed',
-              at: 300,
-            })),
-          })
-        }
-        return Response.json({
-          status: 'success',
-          value: candidates.map((candidate) => ({
-            mediaId: candidate.item.id,
-            id: `job-${candidate.item.id}`,
-            created: true,
-          })),
-        })
-      },
-    })
+    )
     await remote.record(settings, candidates)
     sets = 0
     await remote.reconcile()

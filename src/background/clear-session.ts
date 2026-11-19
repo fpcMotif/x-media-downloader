@@ -109,6 +109,9 @@ const enabledScopesFor = (entry: LedgerEntry, settings: Settings): Set<Scope> =>
 const isPrunable = (entry: LedgerEntry, enabled: ReadonlySet<Scope>): boolean =>
   [...entry.scopes].every((scope) => entry.clear[scope] === 'cleared' || !enabled.has(scope))
 
+const hasLiveWork = (entry: LedgerEntry): boolean =>
+  entry.inProgress.size > 0 || [...entry.scopes].some((scope) => entry.clear[scope] === 'clearing')
+
 const formatFailureDetail = (entry: LedgerEntry): string =>
   `origin=${entry.origin} scopes=${[...entry.scopes].join('+')} outcome=failed expected=${entry.expected.size} done=${entry.done.size} inFlight=${entry.inProgress.size} failed=${entry.failed.size}`
 
@@ -369,7 +372,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
       const ids: string[] = []
       for (const tweetId of tweetIds) {
         const existing = clearLedger.get(tweetId)
-        if (existing !== undefined && !isFullyCleared(existing)) continue
+        if (existing !== undefined && hasLiveWork(existing)) continue
         rememberOrigin(tweetId, {
           ...(originTabId === undefined ? {} : { tabId: originTabId }),
           release: { source: 'consented', scope },
@@ -394,10 +397,13 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
       }
       return ids
     })
-    await seeded.reduce(
-      (chain, tweetId) => chain.then(() => runClearAttempt(tweetId)),
-      Promise.resolve(),
-    )
+    const runNext = async (index: number): Promise<void> => {
+      const tweetId = seeded[index]
+      if (tweetId === undefined) return
+      await runClearAttempt(tweetId)
+      await runNext(index + 1)
+    }
+    await runNext(0)
   }
 
   /** A tweet with any permanently-failed media can never be Truly Complete, so it

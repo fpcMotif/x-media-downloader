@@ -810,4 +810,48 @@ describe('makeTweetClearer throttle gating', () => {
     expect(clickSpy).toHaveBeenCalledTimes(1)
     expect(sleeps).toEqual([200])
   })
+
+  it('traces reason=rate-limited when a click triggers a 429 witness error', async () => {
+    const art = tweet('1', BOOKMARKED)
+    document.body.append(art)
+    const throttle = makeReleaseThrottle({ now: () => 1_000 })
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const { clock, sleeps, onTick } = makeClock()
+    onTick((n) => {
+      if (n === 1) throttle.noteRateLimited()
+    })
+    const clearer = makeTweetClearer({
+      document,
+      clock,
+      trace,
+      throttle,
+      witness: { outcome: () => 'error' },
+    })
+
+    expect(await clearer.clearScope('1', 'bookmark', 'settle')).toBe(false)
+    expect(sleeps).toEqual([200])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![0]).toBe('clear-attempt-fail')
+    expect(trace.mock.calls[0]![1]).toContain('reason=rate-limited attempts=1')
+    expect(trace.mock.calls[0]![1]).not.toContain('reason=mutation-error')
+  })
+
+  it('refuses to click notInterested and traces reason=rate-limited while blocked', async () => {
+    const art = tweet('1', '<button data-testid="caret"></button>')
+    document.body.append(art)
+    const caret = art.querySelector('button')!
+    const clickSpy = vi.spyOn(caret, 'click')
+    const throttle = makeReleaseThrottle({ now: () => 1_000 })
+    throttle.noteRateLimited()
+    const trace = vi.fn<NonNullable<TweetClearerDeps['trace']>>()
+    const { clock, sleeps } = makeClock()
+    const clearer = makeTweetClearer({ document, clock, trace, throttle })
+
+    expect(await clearer.clearScope('1', 'notInterested', 'settle')).toBe(false)
+    expect(clickSpy).not.toHaveBeenCalled()
+    expect(sleeps).toEqual([])
+    expect(trace).toHaveBeenCalledTimes(1)
+    expect(trace.mock.calls[0]![0]).toBe('clear-attempt-fail')
+    expect(trace.mock.calls[0]![1]).toContain('scope=notInterested reason=rate-limited attempts=0')
+  })
 })

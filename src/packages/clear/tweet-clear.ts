@@ -213,6 +213,25 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
     )
   }
 
+  const blockedByThrottle = (
+    tweetId: string,
+    scope: ClearScope,
+    article: Element,
+    origin: ClearOrigin,
+  ): boolean => {
+    if (throttle === undefined || throttle.blockedForMs() <= 0) return false
+    traceAttemptFail({
+      tweetId,
+      scope,
+      reason: 'rate-limited',
+      attempts: 0,
+      article,
+      click: null,
+      origin,
+    })
+    return true
+  }
+
   /** The flip verdict, made production-visible — WHY we believe the post left the
    *  list, not just that we believe it. `classifyFlip` (shared with the manual-release
    *  path in the overlay's handlers, so the `arm=`/`reresolved=` vocabulary never forks)
@@ -292,7 +311,7 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
       traceAttemptFail({
         tweetId,
         scope,
-        reason: 'mutation-error',
+        reason: (throttle?.blockedForMs() ?? 0) > 0 ? 'rate-limited' : 'mutation-error',
         attempts,
         article,
         click: { target: targetKind, disabled },
@@ -434,7 +453,10 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
     // is `bookmark`, so they cannot run on the page under diagnosis, and its `log` lines
     // carry element text that has no business in a durable log. The `no-article` line
     // above is shared, and can carry `scope=notInterested`.
-    if (scope === 'notInterested') return clearNotInterested(article.value, tweetId)
+    if (scope === 'notInterested') {
+      if (blockedByThrottle(tweetId, scope, article.value, origin)) return false
+      return clearNotInterested(article.value, tweetId)
+    }
     if (!isMember(article.value, scope)) {
       const ac = alreadyCleared(article.value, scope)
       if (log)
@@ -475,18 +497,7 @@ export function makeTweetClearer(deps: TweetClearerDeps) {
       return false
     }
     /* v8 ignore stop */
-    if (throttle !== undefined && throttle.blockedForMs() > 0) {
-      traceAttemptFail({
-        tweetId,
-        scope,
-        reason: 'rate-limited',
-        attempts: 0,
-        article: article.value,
-        click: null,
-        origin,
-      })
-      return false
-    }
+    if (blockedByThrottle(tweetId, scope, article.value, origin)) return false
     const { target, targetKind, disabled } = resolveClickTarget(ctrl)
     if (log) log(scope, '→ clicking', CLEAR_TESTID[scope].active)
     // Captured IMMEDIATELY before the click — `witness.outcome`'s `sinceT` — so a
