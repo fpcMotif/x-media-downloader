@@ -330,7 +330,10 @@ describe('ledger maintenance', () => {
       ledger = recordSuccess(c.ledger, job.jobId, c.token!, 1, { bytes: 1 }).ledger
     }
     ledger = enqueue(ledger, spec('live'), 0)
-    const capped = capLedger(ledger, 2)
+    const remembered = new Set(
+      ledger.filter((j) => j.status === 'succeeded').map((j) => j.idempotencyKey),
+    )
+    const capped = capLedger(ledger, 2, remembered)
     expect(capped.filter((j) => j.status === 'succeeded')).toHaveLength(2)
     expect(capped.some((j) => j.mediaId === 'live')).toBe(true)
     // keeps the most recent terminal jobs (done3, done4), drops the oldest
@@ -340,6 +343,7 @@ describe('ledger maintenance', () => {
   it('capLedger is a no-op under the cap', () => {
     const [l, id, t] = claimFirst(enqueue([], spec('m1'), 0), 0)
     const done = recordSuccess(l, id, t, 1, { bytes: 1 }).ledger
+    expect(capLedger(done)).toBe(done)
     expect(capLedger(done, 50)).toBe(done)
   })
 
@@ -350,19 +354,20 @@ describe('ledger maintenance', () => {
       bytes: 1,
     }).ledger
     const mixed = enqueue(succeeded, { ...spec('cloud', 'dropbox'), cloudOnly: true }, 0)
-    expect(capLedger(mixed, 0)).toEqual(mixed)
+    const remembered = new Set(['cloud:gdrive', 'cloud:dropbox'])
+    expect(capLedger(mixed, 0, remembered)).toEqual(mixed)
     const second = claim(mixed, 'cloud:dropbox', 0)
     const complete = recordSuccess(second.ledger, 'cloud:dropbox', second.token!, 1, {
       bytes: 1,
     }).ledger
-    expect(cloudHistoryVerdict(capLedger(complete, 0), 'cloud', ['gdrive', 'dropbox'])).toBe(
-      'completed',
-    )
+    expect(
+      cloudHistoryVerdict(capLedger(complete, 0, remembered), 'cloud', ['gdrive', 'dropbox']),
+    ).toBe('completed')
     const acknowledged = [
       { ...complete[0]!, historyOutcome: 'completed' },
       { ...complete[1]!, historyOutcome: 'completed' },
     ] satisfies JobLedger
-    expect(capLedger(acknowledged, 0)).toEqual([])
+    expect(capLedger(acknowledged, 0, remembered)).toEqual([])
   })
 
   it('retains mixed terminal outcomes and failed history for later retries', () => {
@@ -383,6 +388,51 @@ describe('ledger maintenance', () => {
     expect(capLedger(failed, 0)).toEqual(failed)
   })
 
+  it('capLedger retains all dead rows even above maxTerminal', () => {
+    let ledger: JobLedger = []
+    for (let i = 0; i < 60; i += 1) {
+      ledger = enqueue(ledger, spec(`dead${i}`), 0)
+      const id = idempotencyKeyFor(`dead${i}`, 'gdrive')
+      let now = 0
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+        const c = claim(ledger, id, now)
+        ledger = recordFailure(c.ledger, id, c.token!, now, 'boom').ledger
+        now = ledger.find((j) => j.jobId === id)!.nextAttemptAt || now + 1
+      }
+    }
+    expect(capLedger(ledger, 5)).toHaveLength(60)
+  })
+
+  it('capLedger retains succeeded rows whose keys are not yet remembered', () => {
+    let ledger: JobLedger = []
+    for (let i = 0; i < 60; i += 1) {
+      const [c, id, token] = claimFirst(enqueue(ledger, spec(`ok${i}`), 0), 0)
+      ledger = recordSuccess(c, id, token, 1, { bytes: 1 }).ledger
+    }
+    expect(capLedger(ledger, 5)).toHaveLength(60)
+  })
+
+  it('capLedger prunes remembered succeeded rows down to the newest maxTerminal', () => {
+    let ledger: JobLedger = []
+    for (let i = 0; i < 60; i += 1) {
+      const [c, id, token] = claimFirst(enqueue(ledger, spec(`ok${i}`), 0), 0)
+      ledger = recordSuccess(c, id, token, 1, { bytes: 1 }).ledger
+    }
+    const remembered = new Set(ledger.map((j) => j.idempotencyKey))
+    const capped = capLedger(ledger, 5, remembered)
+    expect(capped.map((j) => j.mediaId)).toEqual(['ok55', 'ok56', 'ok57', 'ok58', 'ok59'])
+  })
+
+  it('capLedger prunes skipped rows down to the newest maxTerminal', () => {
+    let ledger: JobLedger = []
+    for (let i = 0; i < 60; i += 1) {
+      const [c, id, token] = claimFirst(enqueue(ledger, spec(`skip${i}`), 0), 0)
+      ledger = recordSourceGone(c, id, token, 'HTTP 410').ledger
+    }
+    const capped = capLedger(ledger, 5)
+    expect(capped.map((j) => j.mediaId)).toEqual(['skip55', 'skip56', 'skip57', 'skip58', 'skip59'])
+  })
+
   it('summarize counts by status', () => {
     let l = enqueue([], spec('a'), 0)
     l = enqueue(l, spec('b'), 0)
@@ -396,6 +446,13 @@ describe('ledger maintenance', () => {
     expect(decodeLedger(JSON.parse(JSON.stringify(l)))).toEqual(l)
     expect(decodeLedger('not a ledger')).toEqual([])
     expect(decodeLedger(null)).toEqual([])
+  })
+
+  it('decodeLedger keeps valid rows when one row is corrupt', () => {
+    const l = enqueue(enqueue([], spec('m1'), 0), spec('m2'), 0)
+    const raw = JSON.parse(JSON.stringify(l))
+    raw.splice(1, 0, { jobId: 42 })
+    expect(decodeLedger(raw)).toEqual(l)
   })
 })
 
@@ -563,5 +620,11 @@ describe('cloudHistoryVerdict', () => {
   it('stays queued while any enabled job is still live', () => {
     const drive = { ...enqueue([], spec('m1', 'gdrive'), 0)[0]!, status: 'pending' as const }
     expect(cloudHistoryVerdict([drive], 'm1', ['gdrive'])).toBeNull()
+  })
+
+  it('stays queued when no providers are enabled or an enabled provider has no job', () => {
+    const drive = { ...enqueue([], spec('m1', 'gdrive'), 0)[0]!, status: 'succeeded' as const }
+    expect(cloudHistoryVerdict([drive], 'm1', [])).toBeNull()
+    expect(cloudHistoryVerdict([drive], 'm1', ['gdrive', 'dropbox'])).toBeNull()
   })
 })

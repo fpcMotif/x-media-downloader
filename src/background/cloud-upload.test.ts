@@ -15,10 +15,12 @@ import { PROVIDERS } from '@/packages/cloud/provider'
 import {
   decodeLedger,
   enqueue,
+  idempotencyKeyFor,
   readyJobs,
   summarize,
   type JobLedger,
 } from '@/packages/cloud/upload-job'
+import { decodeUploadedKeys } from '@/packages/cloud/uploaded-set'
 import type { UploadOutcome, UploadTarget } from '@/packages/cloud/types'
 
 // The cloud-upload SHELL through its injected seams (ADR-0013/0017). The pure
@@ -95,6 +97,8 @@ function fakeLedger(initial: JsonValue = null, opts: { delay?: boolean } = {}) {
   return box
 }
 
+const fakeUploaded = (initial: JsonValue = null) => fakeLedger(initial)
+
 const ok = (bytes = 100): UploadOutcome => ({ kind: 'success', bytes, remotePath: target.path })
 
 const fakeRuntime = (over: Partial<CloudRuntimePort> = {}): CloudRuntimePort => ({
@@ -147,6 +151,7 @@ const makeCU = (over: Partial<CloudUploadDeps> = {}) =>
     getBackfillRecords: async () => [],
     now: () => NOW,
     ledger: fakeLedger(),
+    uploaded: fakeUploaded(),
     runtime: fakeRuntime(),
     alarms: fakeAlarms(),
     badge: fakeBadge(),
@@ -762,6 +767,36 @@ describe('backfillCloudUploads', () => {
       await cu.uploadQueue.run(async () => {})
     }
   })
+
+  it('backfill does not re-queue media whose succeeded rows were pruned', async () => {
+    const ledger = fakeLedger(null)
+    const uploaded = fakeUploaded()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
+    const records = Array.from({ length: 60 }, (_, i) => ({
+      requestId: `r${i}`,
+      filename: `alice/old-${i}.mp4`,
+      media: { url: `https://video.twimg.com/old-${i}.mp4`, handle: 'alice', ext: 'mp4' },
+    }))
+    const cu = makeCU({
+      ledger,
+      uploaded,
+      runtime,
+      getBackfillRecords: async () => records,
+    })
+    const first = await cu.backfillCloudUploads()
+    expect(first.ok).toBe(true)
+    expect(first.queued).toBe(60)
+    await cu.uploadQueue.run(async () => {})
+    expect(uploadDrive).toHaveBeenCalledTimes(60)
+    const succeededRows = decodeLedger(ledger.value).filter((j) => j.status === 'succeeded')
+    expect(succeededRows.length).toBeLessThanOrEqual(50)
+
+    const second = await cu.backfillCloudUploads()
+    await cu.uploadQueue.run(async () => {})
+    expect(second.queued).toBe(0)
+    expect(uploadDrive).toHaveBeenCalledTimes(60)
+  })
 })
 
 describe('resumeOnBoot', () => {
@@ -773,6 +808,37 @@ describe('resumeOnBoot', () => {
     cu.resumeOnBoot()
     await vi.waitFor(() => expect(decodeLedger(ledger.value)[0]?.status).toBe('succeeded'))
     expect(uploadDrive).toHaveBeenCalledTimes(1)
+  })
+
+  it('boot sweep remembers succeeded rows', async () => {
+    const idempotencyKey = idempotencyKeyFor('m0', 'gdrive')
+    const ledger = fakeLedger([
+      {
+        jobId: idempotencyKey,
+        idempotencyKey,
+        mediaId: 'm0',
+        provider: 'gdrive',
+        url: 'https://video.twimg.com/0.mp4',
+        target: {
+          path: target.path,
+          folder: target.folder,
+          filename: target.filename,
+          contentType: target.contentType,
+        },
+        status: 'succeeded',
+        attempts: 0,
+        nextAttemptAt: NOW,
+        leaseUntil: null,
+        leaseSeq: 0,
+        verifiedAt: NOW,
+        error: null,
+      },
+    ])
+    const uploaded = fakeUploaded()
+    const cu = makeCU({ ledger, uploaded })
+    cu.resumeOnBoot()
+    await cu.uploadQueue.run(async () => {})
+    expect(decodeUploadedKeys(uploaded.value)).toEqual([idempotencyKey])
   })
 })
 
@@ -960,6 +1026,39 @@ describe('recordCloudUploads — gating (no side effects)', () => {
     await vi.waitFor(() => expect(decodeLedger(ledger.value)).toHaveLength(1))
     expect(decodeLedger(ledger.value)[0]?.provider).toBe('gdrive')
     expect(runtime.uploadDropbox).not.toHaveBeenCalled()
+  })
+
+  it('skips remembered keys on repeat non-cloud-only enqueue after pruning', async () => {
+    const ledger = fakeLedger(null)
+    const uploaded = fakeUploaded([idempotencyKeyFor(item.item.id, 'gdrive')])
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
+    const cu = makeCU({ ledger, uploaded, runtime })
+    const accepted = await cu.recordCloudUploads(connected({ saveToDisk: true }), [item])
+    await cu.uploadQueue.run(async () => {})
+    expect(accepted).toEqual([])
+    expect(decodeLedger(ledger.value)).toEqual([])
+    expect(uploadDrive).not.toHaveBeenCalled()
+  })
+
+  it('still enqueues remembered keys for cloud-only saves', async () => {
+    const ledger = fakeLedger(null)
+    const uploaded = fakeUploaded([idempotencyKeyFor(item.item.id, 'gdrive')])
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
+    const cu = makeCU({
+      ledger,
+      uploaded,
+      runtime,
+      getSettings: async () => connected({ saveToDisk: false }),
+    })
+    const accepted = await cu.recordCloudUploads(connected({ saveToDisk: false }), [item])
+    expect(accepted).toEqual(['A'])
+    expect(decodeLedger(ledger.value)).toEqual([
+      expect.objectContaining({ mediaId: 'A', cloudOnly: true }),
+    ])
+    await cu.uploadQueue.run(async () => {})
+    expect(uploadDrive).toHaveBeenCalledTimes(1)
   })
 })
 

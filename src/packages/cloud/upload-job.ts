@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import { Option, Schema } from 'effect'
 import { type BackoffPolicy, expBackoffMs } from '@/packages/kernel/backoff'
 import { CLOUD_PROVIDERS, type JsonValue } from '@/packages/schema'
 import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
@@ -84,7 +84,6 @@ export const UploadJobSchema = Schema.Struct({
 })
 export type UploadJob = typeof UploadJobSchema.Type
 
-const LedgerSchema = Schema.Array(UploadJobSchema)
 export type JobLedger = ReadonlyArray<UploadJob>
 
 export interface UploadJobSpec {
@@ -151,13 +150,15 @@ const UPLOAD_BACKOFF = {
  */
 export const backoffMs = (attempts: number): number => expBackoffMs(attempts - 1, UPLOAD_BACKOFF)
 
+const decodeJob = Schema.decodeUnknownOption(UploadJobSchema)
+
 /** Decode a persisted ledger; fall back to empty on corrupt data (outbox idiom). */
 export function decodeLedger(raw: JsonValue): JobLedger {
-  try {
-    return Schema.decodeUnknownSync(LedgerSchema)(raw ?? [])
-  } catch {
-    return []
-  }
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((row) => {
+    const job = decodeJob(row)
+    return Option.isSome(job) ? [job.value] : []
+  })
 }
 
 const replaceJob = (ledger: JobLedger, job: UploadJob): JobLedger =>
@@ -226,15 +227,24 @@ export const readyJobs = (ledger: JobLedger, now: number): JobLedger =>
 /** Drop terminal/succeeded jobs to keep the persisted ledger bounded. */
 export const pruneTerminal = (ledger: JobLedger): JobLedger => ledger.filter((j) => !isTerminal(j))
 
+export const MAX_TERMINAL_JOBS = 50
+const NOTHING_REMEMBERED: ReadonlySet<string> = new Set()
+
 /** Retains unresolved cloud-only media and live jobs, plus the most-recent `maxTerminal` other terminals.
  *  Returns the same reference when nothing is dropped (cheap no-op). */
-export function capLedger(ledger: JobLedger, maxTerminal = 50): JobLedger {
+export function capLedger(
+  ledger: JobLedger,
+  maxTerminal: number = MAX_TERMINAL_JOBS,
+  remembered: ReadonlySet<string> = NOTHING_REMEMBERED,
+): JobLedger {
   const unresolved = new Set(
     ledger
       .filter((job) => job.cloudOnly && job.historyOutcome !== 'completed')
       .map((job) => job.mediaId),
   )
-  const removable = (job: UploadJob): boolean => isTerminal(job) && !unresolved.has(job.mediaId)
+  const prunable = (job: UploadJob): boolean =>
+    job.status === 'skipped' || (job.status === 'succeeded' && remembered.has(job.idempotencyKey))
+  const removable = (job: UploadJob): boolean => prunable(job) && !unresolved.has(job.mediaId)
   const terminalCount = ledger.reduce((n, j) => (removable(j) ? n + 1 : n), 0)
   if (terminalCount <= maxTerminal) return ledger
   let toDrop = terminalCount - maxTerminal
