@@ -716,6 +716,52 @@ describe('backfillCloudUploads', () => {
     await vi.waitFor(() => expect(runtime.uploadDrive).toHaveBeenCalledTimes(1))
     expect(runtime.uploadDropbox).not.toHaveBeenCalled()
   })
+
+  it('backfill replies while a drain is in flight', async () => {
+    const ledger = fakeLedger(null)
+    let releaseUpload: ((outcome: UploadOutcome) => void) | undefined
+    let calls = 0
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(() => {
+      calls += 1
+      if (calls === 1) {
+        return new Promise<UploadOutcome>((resolve) => {
+          releaseUpload = resolve
+        })
+      }
+      return Promise.resolve(ok())
+    })
+    const runtime = fakeRuntime({ uploadDrive })
+    const cu = makeCU({
+      ledger,
+      runtime,
+      getBackfillRecords: async () => [
+        {
+          requestId: 'r1',
+          filename: 'alice/old.mp4',
+          media: { url: 'https://video.twimg.com/old.mp4', handle: 'alice', ext: 'mp4' },
+        },
+      ],
+    })
+    await cu.recordCloudUploads(connected(), [
+      {
+        item: { id: 'm0', url: 'https://video.twimg.com/0.mp4', handle: 'alice', ext: 'mp4' },
+        filename: 'twitter/pic.jpg',
+      },
+    ])
+    await vi.waitFor(() => expect(uploadDrive).toHaveBeenCalledTimes(1))
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const blocked = new Promise<'blocked'>((resolve) => {
+        timer = setTimeout(() => resolve('blocked'), 200)
+      })
+      const result = await Promise.race([cu.backfillCloudUploads(), blocked])
+      expect(result).toEqual(expect.objectContaining({ ok: true, queued: 1 }))
+    } finally {
+      clearTimeout(timer)
+      releaseUpload?.(ok())
+      await cu.uploadQueue.run(async () => {})
+    }
+  })
 })
 
 describe('resumeOnBoot', () => {

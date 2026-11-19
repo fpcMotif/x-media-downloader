@@ -46,6 +46,7 @@ import { PROVIDERS, revokeViaRecipe } from '@/packages/cloud/provider'
 import { classifyUploadError, type CloudUploadStatus } from '@/packages/cloud/status'
 import { makeSerialQueue, type SerialQueue } from '@/packages/kernel/serial-queue'
 import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-store'
+import { withTotalTimeout } from '@/packages/kernel/fetch-timeout'
 import { isSyncConfigured } from './sync-config'
 import { makeRemoteUpload, type RemoteUploadPort, type RelaySetup } from './remote-upload'
 
@@ -214,6 +215,7 @@ const UPLOAD_ALARM = 'cloud-upload-drain'
 // serialized task (the `if (!ranOut)` re-kick below) — bounds one drain so a
 // large ledger can't monopolize the SW.
 const MAX_DRAIN_JOBS_PER_PASS = 1000
+const CONTROL_FETCH_TIMEOUT_MS = 60_000
 
 // Single source of truth for the provider enumeration (schema/index.ts).
 const ALL_PROVIDERS: ReadonlyArray<CloudProviderId> = CLOUD_PROVIDERS
@@ -356,6 +358,7 @@ const providerTokens = (s: Settings, p: CloudProviderId): ProviderTokens => {
 
 export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const { getSettings, fetchImpl } = deps
+  const controlFetch = withTotalTimeout(fetchImpl, CONTROL_FETCH_TIMEOUT_MS)
   // Resolve each side-effect seam to its live binding unless a test injected one.
   // Internal names avoid colliding with the `ledger`/`now` locals in the drain loop.
   const nowFn = deps.now ?? (() => Date.now())
@@ -395,7 +398,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     deps.remote ??
     makeRemoteUpload({
       getSettings,
-      fetchImpl,
+      fetchImpl: controlFetch,
       onHistoryNotice: notifyCloudHistory,
     })
 
@@ -711,7 +714,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     await revokeViaRecipe(
       PROVIDERS[provider].revoke,
       { accessToken: t.accessToken, refreshToken: t.refreshToken },
-      fetchImpl,
+      controlFetch,
     )
     const f = PROVIDERS[provider].fields
     // gdrive-ONLY: clearing folderId forces a fresh root-folder resolution on the
@@ -824,28 +827,20 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     // orders the work, so no hand-rolled Promise is needed. `.catch(() => 0)`
     // preserves never-reject behavior (an enqueue failure is surfaced via the
     // queue's onError observer), so the reply still lands.
-    const queued = await uploadQueue
-      .run(async () => {
-        const now = nowFn()
-        let added = 0
-        await updateLedger((current) => {
-          let next = current
-          const before = current.length
-          for (const r of records) {
-            const target = cloudTargetFor(r.media, r.filename)
-            for (const p of providers) {
-              next = enqueue(
-                next,
-                { mediaId: r.requestId, provider: p, url: r.media.url, target },
-                now,
-              )
-            }
-          }
-          added = next.length - before
-          return next
-        })
-        return added
-      })
+    const now = nowFn()
+    let added = 0
+    const queued = await updateLedger((current) => {
+      let next = current
+      for (const r of records) {
+        const target = cloudTargetFor(r.media, r.filename)
+        for (const p of providers) {
+          next = enqueue(next, { mediaId: r.requestId, provider: p, url: r.media.url, target }, now)
+        }
+      }
+      added = next.length - current.length
+      return next
+    })
+      .then(() => added)
       .catch(() => 0)
     uploadQueue.push(() => drainUploadJobs()) // drain in the background; don't block the reply
     return {

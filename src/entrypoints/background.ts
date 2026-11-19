@@ -50,7 +50,7 @@ import {
 import { makeSizeProbe } from '@/packages/download/size-probe'
 import { type BudgetRecord } from '@/packages/download/daily-budget'
 import { type SkipReason } from '@/packages/download/admission'
-import { bindFetch } from '@/packages/kernel/fetch'
+import { withTotalTimeout } from '@/packages/kernel/fetch-timeout'
 import {
   recordRetry,
   recordSample,
@@ -153,6 +153,11 @@ const ZERO_SNAPSHOT: MetricsSnapshot = {
 }
 
 const MAX_TRACE_EVENTS = 12
+const CONVEX_FETCH_TIMEOUT_MS = 60_000
+const SYNDICATION_FETCH_TIMEOUT_MS = 15_000
+const SIZE_PROBE_TIMEOUT_MS = 5_000
+const convexFetch = withTotalTimeout(fetch, CONVEX_FETCH_TIMEOUT_MS)
+const syndicationFetch = withTotalTimeout(fetch, SYNDICATION_FETCH_TIMEOUT_MS)
 
 // Live monitoring accumulator. In-SW memory: best-effort and resets on SW
 // recycle; the persisted snapshot is the popup's source of truth. Rehydrating
@@ -486,7 +491,7 @@ const persistRequestMeta = (): void => {
 
 // Cloud Sync outbox (ADR-0009) — metadata-only events drained FIFO; owns its
 // own queue + storage. `recordSync` mirrors state transitions (fire-and-forget).
-const syncOutbox = makeSyncOutbox({ queueError, fetchImpl: fetch })
+const syncOutbox = makeSyncOutbox({ queueError, fetchImpl: convexFetch })
 const { outboxQueue, recordSync, drainOutbox, runSyncConnectionTest } = syncOutbox
 
 // Browser jobs and experimental server receipts retain separate execution ownership.
@@ -557,7 +562,7 @@ async function recoverSyndicationBody(tweetId: string): Promise<string | null> {
   const url = syndicationUrl(tweetId)
   if (Option.isNone(url)) return null
   try {
-    const res = await fetch(url.value)
+    const res = await syndicationFetch(url.value)
     return res.ok ? await res.text() : null
   } catch {
     return null
@@ -634,7 +639,7 @@ const queryConvexSaved: QueryConvex = async (tweetIds) => {
   // the saved-index caller already treats as "fall back to the local index".
   return Effect.runPromise(
     queryDownloadedAmong(port, s.convexSyncSecret, tweetIds).pipe(
-      Effect.provide(makeFetchServiceLive(fetch)),
+      Effect.provide(makeFetchServiceLive(convexFetch)),
     ),
   )
 }
@@ -681,7 +686,7 @@ const budgetStore = makeDailyBudgetStore({
   now: () => Date.now(),
 })
 const budgetQueue = makeSerialQueue(queueError('budget'))
-const headFetch = bindFetch(fetch)
+const headFetch = withTotalTimeout(fetch, SIZE_PROBE_TIMEOUT_MS)
 const admissionGate = makeAdmissionGate({
   getSettings,
   savedMediaIndex,
@@ -700,7 +705,7 @@ const admissionGate = makeAdmissionGate({
 // its opt-in, fire-and-forget Convex mirror. Both default to their real adapters;
 // the seams exist so the merge-on-write and mirror gate are unit-tested.
 const captureDb = makeCaptureDb()
-const captureOutbox = makeCaptureOutbox()
+const captureOutbox = makeCaptureOutbox({ fetchImpl: convexFetch })
 
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
