@@ -297,13 +297,22 @@ export function makeDetectionStore(deps: {
     }
   }
 
+  const hasPageItem = (bucket: { readonly entries: Map<string, MediaItem> }): boolean => {
+    for (const id of bucket.entries.keys()) if (pageById.has(id)) return true
+    return false
+  }
+
   const evictOverflow = (): void => {
+    if (byId.size <= maxRetained) return
+    let offPage = 0
+    for (const id of byId.keys()) if (!pageById.has(id)) offPage++
     for (const [evictedPostId, bucket] of idsByPost) {
-      if (byId.size <= maxRetained) break
+      if (offPage <= maxRetained) break
+      if (hasPageItem(bucket)) continue
       idsByPost.delete(evictedPostId)
       for (const [id, item] of bucket.entries) {
         byId.delete(id)
-        pageById.delete(id)
+        offPage--
         for (const key of keysForItem(item, deps.mediaKeyFromUrl)) {
           if (byKey.get(key) === item) {
             deleteByKey(key)

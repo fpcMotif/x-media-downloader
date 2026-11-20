@@ -717,16 +717,48 @@ describe('bounded oldest-first retention', () => {
     expect(DEFAULT_MAX_RETAINED_ITEMS).toBeGreaterThan(0)
   })
 
+  it('never evicts items in the current page scope, however many the page holds', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const page = [1, 2, 3, 4, 5].map((n) => photo(`p${n}`, `KP${n}`, `post${n}`))
+
+    expect(s.addDetected(page.slice(0, 3))).toEqual(page.slice(0, 3))
+    expect(s.addDetected(page.slice(3))).toEqual(page.slice(3))
+
+    expect(s.count).toBe(5)
+    expect(s.values()).toEqual(page)
+    for (const item of page) {
+      expect(s.get(item.id)).toEqual(item)
+      expect(s.resolve(`K${item.id.toUpperCase()}`)).toEqual(item)
+    }
+  })
+
+  it('bounds only items retained from earlier routes, keeping the current page whole', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const earlier = [1, 2, 3].map((n) => photo(`old${n}`, `KOLD${n}`, `oldPost${n}`))
+    const current = [1, 2, 3].map((n) => photo(`new${n}`, `KNEW${n}`, `newPost${n}`))
+
+    s.addDetected(earlier)
+    s.resetPageScope()
+    expect(s.addDetected(current)).toEqual(current)
+
+    expect(s.values()).toEqual(current)
+    expect(s.get('old1')).toBeUndefined()
+    expect(s.resolve('KOLD1')).toBeUndefined()
+    expect(s.get('old2')).toEqual(earlier[1])
+    expect(s.get('old3')).toEqual(earlier[2])
+  })
+
   it('evicts oldest captured video and all of its keys and post code when exceeding maxRetainedItems', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
     const v1 = video('v1', 'MP41', 'POST1', 'post1', 0)
     const v2 = video('v2', 'MP42', 'POST2', 'post2', 0)
     const v3 = video('v3', 'MP43', 'POST3', 'post3', 0)
+    const earlierPhoto = photo('px', 'KPX', 'postX')
 
     s.registerPostCode('post1', 'CODE1')
     s.registerPostCode('post2', 'CODE2')
     s.registerPostCode('post3', 'CODE3')
-    s.addDetected([v1, v2])
+    s.addDetected([v1, v2, earlierPhoto])
     s.resetPageScope()
     s.addDetected([v3])
 
@@ -749,19 +781,21 @@ describe('bounded oldest-first retention', () => {
   })
 
   it('evicts oldest items during addRecovered and clears recoveredKeys so evicted media can be re-captured', () => {
-    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 1 })
     const r1 = video('r1', 'MP4R1', 'POSTR1', 'post1', 0)
     const r2 = video('r2', 'MP4R2', 'POSTR2', 'post2', 0)
     const r3 = video('r3', 'MP4R3', 'POSTR3', 'post3', 0)
 
     s.addRecovered([r1, r2])
+    s.resetPageScope()
     s.addRecovered([r3])
 
     expect(s.get('r1')).toBeUndefined()
     expect(s.resolve('MP4R1')).toBeUndefined()
     expect(s.resolve('POSTR1')).toBeUndefined()
-    expect(s.count).toBe(2)
-    expect(s.values()).toEqual([r2, r3])
+    expect(s.get('r2')).toEqual(r2)
+    expect(s.count).toBe(1)
+    expect(s.values()).toEqual([r3])
 
     const recaught = video('tee-r1', 'MP4R1', 'POSTR1', 'post1', 0)
     expect(s.addDetected([recaught])).toEqual([recaught])
@@ -769,13 +803,14 @@ describe('bounded oldest-first retention', () => {
   })
 
   it('evicts a 2-video carousel atomically as a whole post without synthesizing a bare post video key', () => {
-    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 1 })
     const v0 = video('v0', 'MP4A', 'POSTA', 'postC', 0)
     const v1 = video('v1', 'MP4B', 'POSTB', 'postC', 1)
     const p2 = photo('p2', 'KP2', 'postOther1')
 
     s.registerPostCode('postC', 'CODEC')
     s.addDetected([v0, v1])
+    s.resetPageScope()
     s.addDetected([p2])
 
     expect(s.get('v0')).toBeUndefined()
@@ -798,28 +833,28 @@ describe('bounded oldest-first retention', () => {
     expect(s.values()).toEqual([p2])
   })
 
-  it('returns only surviving items when a single addDetected or addRecovered batch exceeds maxRetainedItems', () => {
+  it('keeps and returns every item when a single addDetected or addRecovered batch exceeds maxRetainedItems', () => {
     const detectedStore = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
     const p1 = photo('p1', 'KP1', 'post1')
     const p2 = photo('p2', 'KP2', 'post2')
     const p3 = photo('p3', 'KP3', 'post3')
 
-    expect(detectedStore.addDetected([p1, p2, p3])).toEqual([p2, p3])
-    expect(detectedStore.get('p1')).toBeUndefined()
-    expect(detectedStore.values()).toEqual([p2, p3])
+    expect(detectedStore.addDetected([p1, p2, p3])).toEqual([p1, p2, p3])
+    expect(detectedStore.get('p1')).toEqual(p1)
+    expect(detectedStore.values()).toEqual([p1, p2, p3])
 
     const recoveredStore = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
     const r1 = video('r1', 'MP4R1', 'POSTR1', 'post1', 0)
     const r2 = video('r2', 'MP4R2', 'POSTR2', 'post2', 0)
     const r3 = video('r3', 'MP4R3', 'POSTR3', 'post3', 0)
 
-    expect(recoveredStore.addRecovered([r1, r2, r3])).toEqual([r2, r3])
-    expect(recoveredStore.get('r1')).toBeUndefined()
-    expect(recoveredStore.values()).toEqual([r2, r3])
+    expect(recoveredStore.addRecovered([r1, r2, r3])).toEqual([r1, r2, r3])
+    expect(recoveredStore.get('r1')).toEqual(r1)
+    expect(recoveredStore.values()).toEqual([r1, r2, r3])
   })
 
   it('does not clobber a newer post when evicting an older post that shared its URL key', () => {
-    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 2 })
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 1 })
     const older = video('v-old', 'SHARED_MP4', 'SHARED_POST', 'postOld', 0)
     const newer = video('v-new', 'SHARED_MP4', 'SHARED_POST', 'postNew', 0)
     const third = photo('p3', 'K3', 'post3')
@@ -828,6 +863,7 @@ describe('bounded oldest-first retention', () => {
     s.registerPostCode('postNew', 'CODE_NEW')
     s.addDetected([older])
     s.addDetected([newer])
+    s.resetPageScope()
     s.addDetected([third])
 
     expect(s.get('v-old')).toBeUndefined()
@@ -861,11 +897,12 @@ describe('bounded oldest-first retention', () => {
   })
 
   it('evicts oldest photo item cleanly including its URL key and post code', () => {
-    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 1 })
+    const s = makeDetectionStore({ mediaKeyFromUrl, maxRetainedItems: 0 })
     const p1 = photo('p1', 'KP1', 'postP1')
     const p2 = photo('p2', 'KP2', 'postP2')
     s.registerPostCode('postP1', 'CODEP1')
     s.addDetected([p1])
+    s.resetPageScope()
     s.addDetected([p2])
 
     expect(s.get('p1')).toBeUndefined()
