@@ -1,6 +1,6 @@
 import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import type { JsonValue, Settings } from '@/packages/schema'
+import type { Settings } from '@/packages/schema'
 import type { SyncEvent } from '@/packages/sync/events'
 import {
   append,
@@ -14,6 +14,7 @@ import { convexOriginPattern, makeConvexPromisePort } from '@/packages/sync/conv
 import { classifySyncError, describeSyncOk, type SyncStatus } from '@/packages/sync/status'
 import { makeSerialQueue, type SerialQueue } from '@/packages/kernel/serial-queue'
 import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-store'
+import { jsonStorageStore } from './json-store'
 import { isSyncConfigured } from './sync-config'
 import type { ConvexPort } from './convex-port'
 
@@ -93,10 +94,7 @@ const SYNC_ALARM = 'sync-outbox-drain'
  *
  * @see ADR-0005
  */
-const defaultOutboxStore = (): OutboxStorage => {
-  const item = storage.defineItem<JsonValue>('local:syncOutbox', { fallback: null })
-  return { get: () => item.getValue(), set: (value) => item.setValue(value) }
-}
+const defaultOutboxStore = (): OutboxStorage => jsonStorageStore('local:syncOutbox')
 
 /**
  * The live ephemeral status store: the `session:syncStatus` key.

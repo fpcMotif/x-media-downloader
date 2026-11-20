@@ -469,6 +469,14 @@ const decodeClearTweetResponse = Schema.decodeUnknownOption(ClearTweetResponse)
 const asClearTweetResponse = (value: JsonValue | undefined): ClearTweetResponse | undefined =>
   value === undefined ? undefined : Option.getOrUndefined(decodeClearTweetResponse(value))
 
+/** Returns true when the tab clicked at least one scope instead of skipping all as no-ops. */
+const attemptedAny = (res: ClearTweetResponse): boolean =>
+  res.results.some((result) => !result.noop)
+
+/** Returns true when a mounted tab attempted a scope and every scope succeeded. */
+const isFullyCleared = (res: ClearTweetResponse): boolean =>
+  res.mounted && attemptedAny(res) && res.results.every((result) => result.ok)
+
 export const makeTabBroadcaster = (
   tabs: TabsPort = defaultTabsPort(),
   deps: TabBroadcasterDeps = {},
@@ -648,9 +656,7 @@ export const makeTabBroadcaster = (
       })
       if (reply === TAB_MESSAGE_TIMED_OUT) return { kind: 'timed-out' }
       const res = asClearTweetResponse(reply)
-      const attempted = res?.results.some((result) => !result.noop) === true
-      const allSucceeded = res?.results.every((result) => result.ok) === true
-      if (res?.mounted === true && attempted && allSucceeded) {
+      if (res !== undefined && isFullyCleared(res)) {
         return { kind: 'mounted', results: res.results }
       }
       if (noteRateLimit(res?.retryAfterMs)) return { kind: 'rate-limited' }
@@ -903,9 +909,7 @@ export const makeTabBroadcaster = (
         }
         const res = asClearTweetResponse(reply)
         clearOrphanRecord(id)
-        const attempted = res?.results.some((result) => !result.noop) === true
-        const allSucceeded = res?.results.every((result) => result.ok) === true
-        if (res?.mounted && attempted && allSucceeded) {
+        if (res !== undefined && isFullyCleared(res)) {
           answered.push(`${id}:mounted`)
           return { kind: 'mounted', results: res.results }
         }
@@ -915,7 +919,7 @@ export const makeTabBroadcaster = (
         }
         answered.push(`${id}:${answerToken(res)}`)
         if (res?.mounted === true) sawDiscardedMounted = true
-        if (res?.mounted === true && attempted) break
+        if (res?.mounted === true && attemptedAny(res)) break
       } catch (error) {
         recordFanOutMiss(id, error instanceof Error ? error : String(error), answered, clearErrors)
       }

@@ -1,5 +1,5 @@
-import { storage } from 'wxt/utils/storage'
 import type { DownloadTraceEntry, JsonValue, Settings } from '@/packages/schema'
+import { jsonStorageStore } from './json-store'
 import {
   createEntry,
   hookScopes,
@@ -234,11 +234,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
   // write goes through one serialized chain (the outbox pattern). FUTURE: back this
   // with Convex sync as the state store — core/clear/worklist is storage-agnostic,
   // so the swap lives at this I/O boundary, not in the logic.
-  const sweepWorklistItem = storage.defineItem<JsonValue>('local:clearWorklist', { fallback: null })
-  const worklistStorage = deps.worklistStorage ?? {
-    get: () => sweepWorklistItem.getValue(),
-    set: (value: JsonValue) => sweepWorklistItem.setValue(value),
-  }
+  const worklistStorage = deps.worklistStorage ?? jsonStorageStore('local:clearWorklist')
   const worklistQueue = makeSerialQueue(deps.queueError('worklist'))
 
   /** Advance a swept tweet's durable state, PER SCOPE — the worklist tracks each

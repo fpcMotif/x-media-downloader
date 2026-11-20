@@ -81,6 +81,12 @@ export type PanelProps = {
   readonly reload: () => Promise<void>
 }
 
+/** The live value of the `<input>` that fired `e` — narrows `EventTarget | null`
+ *  instead of asserting it, since every caller binds this to a real
+ *  `HTMLInputElement`'s `onChange`. */
+export const inputValue = (e: Event): string =>
+  e.target instanceof HTMLInputElement ? e.target.value : ''
+
 /** The title + lede at the top of a panel's content column — R4 Foundations
  *  type scale (20px title, 13px muted lede): a quiet typographic document,
  *  not a dashboard hero. */

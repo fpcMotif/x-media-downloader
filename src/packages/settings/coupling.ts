@@ -8,16 +8,24 @@ export function dedupeToggleDelta(enabled: boolean): Partial<Settings> {
     : { preventDuplicateDownloads: false }
 }
 
-/** True when Cloud upload can actually receive bytes: master on, and at least
- *  one Cloud Provider both connected (client id + refresh token) and not paused. */
-export function hasLiveCloudDestination(settings: Settings): boolean {
-  if (!settings.cloudUploadEnabled) return false
-  const hasConvex =
+/** Returns true when the Convex-relayed Drive upload can receive bytes: the
+ *  relay is on and connected, Drive upload is on, and the deployment URL and
+ *  sync secret are both set. */
+export function hasLiveConvexDrive(settings: Settings): boolean {
+  return (
     settings.convexDriveEnabled &&
     settings.convexDriveConnected &&
     settings.gdriveUploadEnabled &&
     settings.convexUrl !== '' &&
     settings.convexSyncSecret !== ''
+  )
+}
+
+/** True when Cloud upload can actually receive bytes: master on, and at least
+ *  one Cloud Provider both connected (client id + refresh token) and not paused. */
+export function hasLiveCloudDestination(settings: Settings): boolean {
+  if (!settings.cloudUploadEnabled) return false
+  const hasConvex = hasLiveConvexDrive(settings)
   const gdrive =
     settings.gdriveClientId !== '' &&
     settings.gdriveRefreshToken !== '' &&

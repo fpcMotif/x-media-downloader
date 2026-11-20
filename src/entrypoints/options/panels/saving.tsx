@@ -24,7 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { PanelHeader, Section, type PanelProps } from '../ui'
+import { inputValue, PanelHeader, Section, type PanelProps } from '../ui'
 import { readyOr, useLoaded } from '@/components/use-loaded'
 import { offersGrantRequest, useOriginGrant } from '@/components/use-origin-grant'
 import { EraserIcon, iconSize } from '@/components/icons'
@@ -123,12 +123,6 @@ const toggleType = (
   type: MediaType,
   skip: boolean,
 ): MediaType[] => (skip ? [...skipTypes, type] : skipTypes.filter((t) => t !== type))
-
-/** The live value of the `<input>` that fired `e` — narrows `EventTarget | null`
- *  instead of asserting it, since every caller below binds this to a real
- *  `HTMLInputElement`'s `onChange`. */
-const inputValue = (e: Event): string =>
-  e.target instanceof HTMLInputElement ? e.target.value : ''
 
 /** The `<SelectItem>` values this panel's modifier picker actually renders — the
  *  `satisfies` clause fails to compile if the JSX below and `Settings['quickGrabModifier']`

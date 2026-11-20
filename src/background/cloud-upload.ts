@@ -1,6 +1,7 @@
-import { storage } from 'wxt/utils/storage'
-import { CLOUD_PROVIDERS, type JsonValue, type Settings } from '@/packages/schema'
+import { CLOUD_PROVIDERS, type Settings } from '@/packages/schema'
 import { setSettings } from '@/packages/settings'
+import { hasLiveConvexDrive } from '@/packages/settings/coupling'
+import { jsonStorageStore } from './json-store'
 import { Effect, Layer, ManagedRuntime, Result } from 'effect'
 import { makeConvexHttpPort } from '@/packages/sync/convex'
 import { makeCloudServicesLive } from '@/packages/cloud/cloud-services'
@@ -248,11 +249,6 @@ interface ProviderTokens {
   readonly account: string
 }
 
-const defaultJsonStore = (key: `local:${string}`): LedgerStore => {
-  const item = storage.defineItem<JsonValue>(key, { fallback: null })
-  return { get: () => item.getValue(), set: (value) => item.setValue(value) }
-}
-
 /** The live cloud runtime: one ManagedRuntime per SW life wiring FetchService
  *  (binds fetch once), SourceFetch (the SSRF-guarded twimg fetch), and a Ref FolderCache
  *  (handle → subfolder id) that persists across uploads. `provideMerge` keeps FetchService
@@ -392,7 +388,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   const applyUploadOutcome = makeOutcomeApplier(deps.random ?? Math.random)
   const authPaused = new Set<CloudProviderId>()
   const writeSettingsImpl = deps.setSettings ?? setSettings
-  const store = deps.ledger ?? defaultJsonStore('local:cloudUploadJobs')
+  const store = deps.ledger ?? jsonStorageStore('local:cloudUploadJobs')
   const rt = deps.runtime ?? defaultRuntimePort(fetchImpl)
   const alarms = deps.alarms ?? defaultAlarmPort()
   const badge = deps.badge ?? defaultBadgePort()
@@ -410,7 +406,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     storeQueue.run(async () => decodeLedger(await store.get()))
   const updateLedger = (update: (ledger: JobLedger) => JobLedger | Promise<JobLedger>) =>
     runSerializedRmw(storeQueue, store, decodeLedger, update)
-  const uploadedStore = deps.uploaded ?? defaultJsonStore('local:cloudUploadedKeys')
+  const uploadedStore = deps.uploaded ?? jsonStorageStore('local:cloudUploadedKeys')
   let uploadedKeys: ReadonlySet<string> | null = null
   const loadUploaded = async (): Promise<ReadonlySet<string>> => {
     if (uploadedKeys === null)
@@ -508,13 +504,7 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     if (items.length === 0) return []
     let serverAccepted: ReadonlyArray<string> = []
     let serverAttempted = false
-    if (
-      settings.convexDriveEnabled &&
-      settings.convexDriveConnected &&
-      settings.gdriveUploadEnabled &&
-      settings.convexUrl !== '' &&
-      settings.convexSyncSecret !== ''
-    ) {
+    if (hasLiveConvexDrive(settings)) {
       const existing = await readLedger()
       if (items.some(({ item }) => existing.some((job) => job.mediaId === item.id)))
         throw new Error('This media already belongs to the browser upload queue')
@@ -626,15 +616,13 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     settings: Settings,
     now: number,
   ): Promise<void> => {
-    let afterFailure: JobLedger = []
-    await updateLedger((current) => {
+    const afterFailure = await updateLedger((current) => {
       const c = claim(current, job.jobId, now)
       const failed =
         c.claimed && c.token !== undefined
           ? recordFailure(c.ledger, job.jobId, c.token, now, `${job.provider} disconnected`).ledger
           : c.ledger
-      afterFailure = capJobs(failed)
-      return afterFailure
+      return capJobs(failed)
     })
     lastUploadError = `${PROVIDERS[job.provider].label} is not connected.`
     await publishMovedJob(settings, afterFailure, job)
@@ -646,12 +634,10 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
     now: number,
   ): Promise<number | undefined> => {
     let leaseToken: number | undefined
-    let afterClaim: JobLedger = []
-    await updateLedger((current) => {
+    const afterClaim = await updateLedger((current) => {
       const c = claim(current, job.jobId, now)
       leaseToken = c.claimed ? c.token : undefined
-      afterClaim = capJobs(c.ledger)
-      return afterClaim
+      return capJobs(c.ledger)
     })
     if (leaseToken === undefined) await publishMovedJob(settings, afterClaim, job)
     return leaseToken
@@ -713,12 +699,10 @@ export const makeCloudUpload = (deps: CloudUploadDeps): CloudUpload => {
   ): Promise<void> => {
     const tnow = nowFn()
     let settled: UploadJob | undefined
-    let settledLedger: JobLedger = []
-    await updateLedger((current) => {
+    const settledLedger = await updateLedger((current) => {
       const applied = applyUploadOutcome(current, job.jobId, leaseToken, tnow, outcome)
       settled = applied.settled
-      settledLedger = capJobs(applied.ledger)
-      return settledLedger
+      return capJobs(applied.ledger)
     })
     if (settled !== undefined && settled.status === 'succeeded')
       await rememberKeys([settled.idempotencyKey])
