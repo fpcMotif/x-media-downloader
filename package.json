@@ -18,6 +18,7 @@
     "lint": "bun lint --no-script",
     "lint:ci": "bun lint --no-script --deny-warnings",
     "lint:boundaries": "bun scripts/lint-boundaries.ts",
+    "lint:absence": "bun scripts/lint-absence.ts",
     "lint:complexity": "bun lint --no-script -c .oxlintrc.complexity.json --no-type-aware",
     "fmt": "bun fmt --no-script src",
     "fmt:check": "bun fmt --no-script --check src",
@@ -32,7 +33,7 @@
     "env:check": "varlock load",
     "env:scan": "varlock scan",
     "visual:frameshift": "bun run scripts/frameshift-visual-qa.ts",
-    "check": "bun fmt --no-script --check src && bun lint --no-script --deny-warnings && varlock audit src backend && bun --bun wxt prepare && bun check --no-script && bun scripts/lint-boundaries.ts && vitest run",
+    "check": "bun fmt --no-script --check src && bun lint --no-script --deny-warnings && varlock audit src backend && bun --bun wxt prepare && bun check --no-script && bun scripts/lint-boundaries.ts && bun scripts/lint-absence.ts && vitest run",
     "parity:capture": "bun run scripts/parity.ts capture --config scripts/parity.config.json",
     "parity:compare": "bun run scripts/parity.ts compare --config scripts/parity.config.json"
   },
