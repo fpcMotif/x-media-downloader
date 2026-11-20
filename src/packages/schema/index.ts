@@ -140,12 +140,12 @@ export const Settings = Schema.Struct({
   // Browser OAuth uploads remain the default. The separate Convex experiment
   // applies only to explicitly selected Cloud-only Google Drive uploads.
   cloudUploadEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-  convexDriveEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  convexDriveEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   convexDriveConnected: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   // Local save gate (issue #95). Default on: the Download Strategy still writes
   // the file. Off is Cloud-only — bytes go only to enabled, connected Cloud
   // Providers. Coupling refuses off unless Cloud upload has a live destination.
-  saveToDisk: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  saveToDisk: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   // Per-provider upload pause (issue #95). Default on so a connected provider
   // keeps receiving jobs. Off pauses new UploadJobs without revoking tokens.
   gdriveUploadEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),

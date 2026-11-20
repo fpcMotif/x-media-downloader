@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
 import {
@@ -24,7 +25,7 @@ import type { SyncStatus } from '@/packages/sync/status'
 // precondition ladder, the recordSync gate, and clearOutbox.
 
 const NOW = 1_000_000
-const tick = () => new Promise<void>((r) => setTimeout(r, 0))
+const tick = () => sleep(0)
 const baseSettings: Settings = Schema.decodeUnknownSync(SettingsSchema)({})
 
 /** Settings with Cloud Sync configured (enabled + URL + secret + device id). */

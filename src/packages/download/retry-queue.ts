@@ -160,7 +160,7 @@ export function makeRetryQueue(deps: RetryQueueDeps): RetryQueue {
       filename,
       attempt: plan.nextAttempt,
       nextRetryAt: now + plan.delayMs,
-      ...(item ? { item } : {}),
+      ...(item && { item }),
     })
     syncMirror()
 

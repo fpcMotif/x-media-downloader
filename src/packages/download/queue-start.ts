@@ -1,4 +1,4 @@
-import { planClearSeed, type ClearSeedVerdict } from '@/packages/clear/seed'
+import { planClearSeed, type ClearSeedVerdict, type WithheldMedia } from '@/packages/clear/seed'
 import type { HistoryAction } from '@/packages/history/wiring'
 import type { MediaItem, Settings } from '@/packages/schema'
 import { queuedEvent, type SyncEvent } from '@/packages/sync/events'
@@ -12,7 +12,6 @@ export interface QueueStartUploadItem {
 
 export interface QueueStartEffects {
   readonly metrics: MetricsState
-  readonly resetCorrelation: boolean
   readonly syncEvents: ReadonlyArray<SyncEvent>
   readonly historyActions: ReadonlyArray<HistoryAction>
   readonly uploadItems: ReadonlyArray<QueueStartUploadItem>
@@ -32,6 +31,7 @@ export function decideQueueStart(input: {
     readonly tweetId: string
     readonly ids: ReadonlyArray<string>
   }>
+  readonly withheld?: ReadonlyArray<WithheldMedia>
   readonly originTabId?: number
 }): QueueStartEffects {
   const { metrics, requests, mediaById, settings, startedAt } = input
@@ -55,7 +55,6 @@ export function decideQueueStart(input: {
 
   return {
     metrics: nextMetrics,
-    resetCorrelation: fresh,
     syncEvents: mirrorable.map(({ item }) => queuedEvent(item, settings.cloudDeviceId, startedAt)),
     historyActions: mirrorable.map(({ request, item }) => ({
       kind: 'queued',
@@ -72,9 +71,10 @@ export function decideQueueStart(input: {
       requests,
       mediaById,
       settings,
-      ...(input.sweep ? { sweep: input.sweep } : {}),
-      ...(input.clearExpect ? { clearExpect: input.clearExpect } : {}),
-      ...(input.originTabId === undefined ? {} : { originTabId: input.originTabId }),
+      ...(input.sweep && { sweep: input.sweep }),
+      ...(input.clearExpect && { clearExpect: input.clearExpect }),
+      ...(input.withheld && { withheld: input.withheld }),
+      ...(input.originTabId !== undefined && { originTabId: input.originTabId }),
     }),
     persistSnapshot: true,
   }

@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, it, expect, vi } from 'vitest'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
 import {
@@ -15,7 +16,7 @@ import type { Message, TabMessage, JsonValue } from '@/packages/schema'
 // tried FIRST and the loop stops at the first MOUNTED tab, so a background list tab can
 // never win and un-bookmark a post meant only for its own feed's clear.
 
-const tick = () => new Promise<void>((r) => setTimeout(r, 0))
+const tick = () => sleep(0)
 
 const messageTag = (message: Message | TabMessage): string => message._tag
 
@@ -113,6 +114,7 @@ function fakeTabs(
 
 /** A mounted tab's ClearTweetResponse. */
 const clearResp = (...scopes: ReadonlyArray<'bookmark' | 'like' | 'notInterested'>) => ({
+  _tag: 'ClearTweetResponse',
   mounted: true,
   drainEligible: true,
   results: scopes.map((scope) => ({ scope, ok: true })),
@@ -126,6 +128,7 @@ const unmountedPage = (page: {
   ready: string
   error: boolean
 }) => ({
+  _tag: 'ClearTweetResponse',
   mounted: false,
   drainEligible: false,
   results: [],
@@ -137,6 +140,7 @@ const errorPage = unmountedPage({ articles: 0, cells: 0, ready: 'complete', erro
 const loadingPage = unmountedPage({ articles: 0, cells: 0, ready: 'loading', error: false })
 
 const unmounted = (drainEligible: boolean) => ({
+  _tag: 'ClearTweetResponse',
   mounted: false,
   drainEligible,
   results: [],
@@ -198,6 +202,7 @@ describe('sendClearToTabs — clear targeting', () => {
   it('falls through a wrong-list mounted noop to the matching list tab', async () => {
     const tabs = fakeTabs([1, 2], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: false,
         results: [{ scope: 'bookmark', ok: true, noop: true }],
@@ -266,6 +271,7 @@ describe('sendClearToTabs — clear targeting', () => {
   it('retries a mounted failed clear through the release tab instead of treating the attempt as terminal', async () => {
     const tabs = fakeTabs([1], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: true,
         results: [{ scope: 'bookmark', ok: false }],
@@ -291,6 +297,7 @@ describe('sendClearToTabs — clear targeting', () => {
   it('ends the fan-out after a mounted tab clicked and failed, escalating straight to the release tab', async () => {
     const tabs = fakeTabs([1, 2], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: true,
         results: [{ scope: 'bookmark', ok: false }],
@@ -316,6 +323,7 @@ describe('sendClearToTabs — clear targeting', () => {
     const t = traceSpy()
     const tabs = fakeTabs([1, 2], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: true,
         results: [{ scope: 'bookmark', ok: false }],
@@ -340,6 +348,7 @@ describe('sendClearToTabs — clear targeting', () => {
     const t = traceSpy()
     const tabs = fakeTabs([1, 2], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: true,
         results: [{ scope: 'bookmark', ok: false }],
@@ -382,6 +391,7 @@ describe('sendClearToTabs — clear targeting', () => {
   it('ends the fan-out after a partly failed mounted answer, escalating straight to the release tab', async () => {
     const tabs = fakeTabs([1, 2], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: true,
         results: [
@@ -437,6 +447,7 @@ describe('sendClearToTabs — clear targeting', () => {
             return new Promise((resolve) => {
               releaseFirst = () =>
                 resolve({
+                  _tag: 'ClearTweetResponse',
                   mounted: true,
                   drainEligible: false,
                   results: [{ scope: 'bookmark', ok: true }],
@@ -444,7 +455,12 @@ describe('sendClearToTabs — clear targeting', () => {
             })
           }
         }
-        return { mounted: true, drainEligible: false, results: [{ scope: 'like', ok: true }] }
+        return {
+          _tag: 'ClearTweetResponse',
+          mounted: true,
+          drainEligible: false,
+          results: [{ scope: 'like', ok: true }],
+        }
       },
     })
     const b = makeTabBroadcaster(tabs, { clock: instantClock })
@@ -583,6 +599,35 @@ describe('sendClearToTabs — clear targeting', () => {
 // `tabs=[]` throughout: these are about the LEG mechanics on top of `pinned()`, not
 // the fan-out that precedes it (already covered above) — an empty query list means
 // every message below is a release-tab probe.
+describe('release leg authorization', () => {
+  it('clicks nothing when the release was revoked while the leg waited', async () => {
+    const t = traceSpy()
+    const tabs = fakeTabs([], { [RELEASE_TAB_ID]: clearResp('bookmark') })
+
+    const res = await makeTabBroadcaster(tabs, {
+      trace: t.trace,
+      clock: instantClock,
+      releaseAuthorized: async () => false,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: false }])
+    expect(tabs.navigated).toEqual([])
+    expect(tabs.sent).toEqual([])
+  })
+
+  it('runs the leg when the release is still authorized', async () => {
+    const tabs = fakeTabs([], { [RELEASE_TAB_ID]: clearResp('bookmark') })
+
+    const res = await makeTabBroadcaster(tabs, {
+      clock: instantClock,
+      releaseAuthorized: async () => true,
+    }).sendClearToTabs('t1', ['bookmark'], undefined, undefined, pinned())
+
+    expect(res).toEqual([{ scope: 'bookmark', ok: true }])
+    expect(tabs.navigated).toHaveLength(1)
+  })
+})
+
 describe('releaseViaStatusTab — poll leg mechanics', () => {
   it('gives up unreachable once every probe has thrown for RELEASE_UNREACHABLE_MS, well short of the budget', async () => {
     const t = traceSpy()
@@ -758,6 +803,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
     const t = traceSpy()
     const tabs = fakeTabs([], {
       [RELEASE_TAB_ID]: {
+        _tag: 'ClearTweetResponse',
         mounted: false,
         drainEligible: false,
         results: [],
@@ -781,6 +827,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
     const t = traceSpy()
     const tabs = fakeTabs([], {
       [RELEASE_TAB_ID]: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: false,
         results: [{ scope: 'bookmark', ok: false }],
@@ -820,6 +867,7 @@ describe('releaseViaStatusTab — poll leg mechanics', () => {
     await tick()
 
     resolveFirst?.({
+      _tag: 'ClearTweetResponse',
       mounted: true,
       drainEligible: false,
       results: [{ scope: 'bookmark', ok: false }],
@@ -1075,6 +1123,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     const t = traceSpy()
     const tabs = fakeTabs([1, 2], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: true,
         results: [{ scope: 'bookmark', ok: true, noop: true }],
@@ -1118,11 +1167,13 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     ]
     const tabs = fakeTabs([1], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: false,
         drainEligible: true,
         results: immediateResults,
       },
       [RELEASE_TAB_ID]: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: false,
         results: releaseResults,
@@ -1236,6 +1287,7 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
     const t = traceSpy()
     const tabs = fakeTabs([1], {
       1: {
+        _tag: 'ClearTweetResponse',
         mounted: true,
         drainEligible: false,
         results: [{ scope: 'notInterested', ok: true, noop: true }],
@@ -1251,7 +1303,9 @@ describe('sendClearToTabs — clear-dispatch trace', () => {
 
   it('distinguishes a mounted answer that attempted nothing at all (mounted-empty)', async () => {
     const t = traceSpy()
-    const tabs = fakeTabs([1], { 1: { mounted: true, drainEligible: false, results: [] } })
+    const tabs = fakeTabs([1], {
+      1: { _tag: 'ClearTweetResponse', mounted: true, drainEligible: false, results: [] },
+    })
     await makeTabBroadcaster(tabs, { trace: t.trace }).sendClearToTabs('t1', ['notInterested'])
     expect(t.dispatch()[0]!.detail).toContain('answered=1:mounted-empty')
     expect(t.dispatch()[0]!.detail).toContain('outcome=noop-only fabricated=true')

@@ -189,7 +189,7 @@ export function snapshot(state: MetricsState, now: number): MetricsSnapshot {
     bytesTotal,
     throughputBps: bps,
     elapsedMs: now - state.startedAt,
-    ...(eta !== undefined ? { etaSeconds: eta } : {}),
+    ...(eta !== undefined && { etaSeconds: eta }),
   }
 }
 

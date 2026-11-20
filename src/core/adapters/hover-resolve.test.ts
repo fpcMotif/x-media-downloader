@@ -31,14 +31,14 @@ const rect = (left: number, top: number, width: number, height: number) => (): D
 /** Build a detached subtree and return its first element, typed by the caller
  *  (e.g. `el<HTMLImageElement>('<img>')`) — every call site's markup root tag
  *  matches the type parameter it asks for. */
-const el = <T extends Element = Element>(html: string): T => {
+function el(html: string): Element
+function el<T extends Element>(html: string, type: new () => T): T
+function el(html: string, type: new () => Element = Element): Element {
   const root = document.createElement('div')
   root.innerHTML = html
-  // SAFETY: T is a compile-time-only type parameter — there is no `instanceof T`
-  // to narrow with at runtime. Every call site's HTML literal is non-empty and its
-  // root tag matches the T it requests (e.g. `el<HTMLImageElement>('<img>')`), so
-  // `firstElementChild` is always both present and shaped like T.
-  return root.firstElementChild as T
+  const first = root.firstElementChild
+  if (!(first instanceof type)) throw new Error(`expected a ${type.name} root: ${html}`)
+  return first
 }
 
 // happy-dom only reflects inline `pointer-events` through getComputedStyle when
@@ -70,9 +70,7 @@ const fakeAdapter = (opts: {
   detectRenderedMedia: () => [],
   resolveHoverItem: () => null,
   canResolveHoverItem: () => false,
-  ...(opts.postKeyFromVideoElement
-    ? { postKeyFromVideoElement: opts.postKeyFromVideoElement }
-    : {}),
+  ...(opts.postKeyFromVideoElement && { postKeyFromVideoElement: opts.postKeyFromVideoElement }),
 })
 
 describe('isImageElement / isVideoElement', () => {
@@ -120,13 +118,13 @@ describe('nonInteractiveMediaAt', () => {
 
 describe('mediaAtPoint', () => {
   it('returns the topmost hoverable img in the stack', () => {
-    const top = el<HTMLImageElement>('<img>')
-    const below = el<HTMLImageElement>('<img>')
+    const top = el('<img>', HTMLImageElement)
+    const below = el('<img>', HTMLImageElement)
     expect(mediaAtPoint([top, below], 5, 5)).toBe(top)
   })
 
   it('finds a video directly in the stack', () => {
-    const video = el<HTMLVideoElement>('<video></video>')
+    const video = el('<video></video>', HTMLVideoElement)
     expect(mediaAtPoint([video], 5, 5)).toBe(video)
   })
 
@@ -149,13 +147,13 @@ describe('mediaAtPoint', () => {
   })
 
   it('vetoes when this extension XMD-OVERLAY host sits above the media', () => {
-    const img = el<HTMLImageElement>('<img>')
+    const img = el('<img>', HTMLImageElement)
     expect(mediaAtPoint([overlay(), img], 5, 5)).toBeNull()
   })
 
   it('vetoes when a modal layer above the media does not contain it', () => {
     const modal = el('<div aria-modal="true"></div>')
-    const img = el<HTMLImageElement>('<img>')
+    const img = el('<img>', HTMLImageElement)
     expect(mediaAtPoint([modal, img], 5, 5)).toBeNull()
   })
 
@@ -203,13 +201,13 @@ describe('videoAnchorAt', () => {
 
 describe('resolveHoverMedia', () => {
   it('returns the direct target hit first, ignoring the stack', () => {
-    const img = el<HTMLImageElement>('<img>')
+    const img = el('<img>', HTMLImageElement)
     expect(resolveHoverMedia(img, [], 5, 5)).toBe(img)
   })
 
   it('falls back to the topmost stack media when the target is not media', () => {
     const target = el('<div></div>')
-    const img = el<HTMLImageElement>('<img>')
+    const img = el('<img>', HTMLImageElement)
     expect(resolveHoverMedia(target, [img], 5, 5)).toBe(img)
   })
 
@@ -226,33 +224,33 @@ describe('resolveHoverMedia', () => {
 
 describe('previewSrcFromMedia', () => {
   it('uses the grabbable twimg poster for an X video', () => {
-    const video = el<HTMLVideoElement>('<video></video>')
+    const video = el('<video></video>', HTMLVideoElement)
     video.poster = 'https://pbs.twimg.com/media/ABC.jpg'
     expect(previewSrcFromMedia(video)).toBe('https://pbs.twimg.com/media/ABC.jpg')
   })
 
   it('falls back to the raw poster/currentSrc/src when no grabbable poster exists', () => {
-    const video = el<HTMLVideoElement>('<video src="blob:reel-123"></video>')
+    const video = el('<video src="blob:reel-123"></video>', HTMLVideoElement)
     expect(previewSrcFromMedia(video)).toBe('blob:reel-123')
   })
 
   it('uses currentSrc || src for a photo', () => {
-    const img = el<HTMLImageElement>('<img src="https://cdn.example/p.jpg">')
+    const img = el('<img src="https://cdn.example/p.jpg">', HTMLImageElement)
     expect(previewSrcFromMedia(img)).toBe('https://cdn.example/p.jpg')
   })
 
   it('falls through to src for a photo with no currentSrc', () => {
-    expect(previewSrcFromMedia(el<HTMLImageElement>('<img>'))).toBe('')
+    expect(previewSrcFromMedia(el('<img>', HTMLImageElement))).toBe('')
   })
 
   it('falls through to src for a video with no poster, currentSrc, or grabbable thumb', () => {
-    expect(previewSrcFromMedia(el<HTMLVideoElement>('<video></video>'))).toBe('')
+    expect(previewSrcFromMedia(el('<video></video>', HTMLVideoElement))).toBe('')
   })
 })
 
 describe('previewKeyFromMedia', () => {
   const anyImg = (): HTMLImageElement =>
-    el<HTMLImageElement>('<img src="https://cdn.example/p.jpg">')
+    el('<img src="https://cdn.example/p.jpg">', HTMLImageElement)
 
   it('returns null for null media', () => {
     expect(previewKeyFromMedia(fakeAdapter({}), null, '/anything')).toBeNull()
@@ -275,30 +273,30 @@ describe('previewKeyFromMedia', () => {
         return 'post:code:XYZ'
       },
     })
-    const video = el<HTMLVideoElement>('<video src="blob:v"></video>')
+    const video = el('<video src="blob:v"></video>', HTMLVideoElement)
     expect(previewKeyFromMedia(adapter, video, '/reels/XYZ/')).toBe('post:code:XYZ')
     expect(seenPathname).toBe('/reels/XYZ/')
   })
 
   it('returns null for a keyless video when the adapter has no postKeyFromVideoElement', () => {
-    const video = el<HTMLVideoElement>('<video src="blob:v"></video>')
+    const video = el('<video src="blob:v"></video>', HTMLVideoElement)
     expect(previewKeyFromMedia(fakeAdapter({}), video, '/x')).toBeNull()
   })
 })
 
 describe('mediaStillUnderPointer', () => {
   it('is true when the media is directly in the stack', () => {
-    const img = mount(el<HTMLImageElement>('<img>'))
+    const img = mount(el('<img>', HTMLImageElement))
     expect(mediaStillUnderPointer(img, [img], 0, 0)).toBe(true)
   })
 
   it('is false for a non-video not present in the stack', () => {
-    const img = el<HTMLImageElement>('<img>')
+    const img = el('<img>', HTMLImageElement)
     expect(mediaStillUnderPointer(img, [el('<div></div>')], 0, 0)).toBe(false)
   })
 
   it('is false for a video with no player container that is absent from the stack', () => {
-    const video = el<HTMLVideoElement>('<video></video>')
+    const video = el('<video></video>', HTMLVideoElement)
     expect(mediaStillUnderPointer(video, [el('<div></div>')], 0, 0)).toBe(false)
   })
 
@@ -352,7 +350,7 @@ describe('mediaStillUnderPointer', () => {
 // refuses, the SW log names WHICH rule failed instead of a bare boolean.
 describe('staleWhy', () => {
   it('is null while the media is still in the hit-test stack', () => {
-    const img = mount(el<HTMLImageElement>('<img>'))
+    const img = mount(el('<img>', HTMLImageElement))
     expect(staleWhy(img, [img], 0, 0)).toBeNull()
   })
 
@@ -393,8 +391,8 @@ describe('staleWhy', () => {
 describe('HoverMediaElement', () => {
   it('accepts both an img and a video', () => {
     const media: HoverMediaElement[] = [
-      el<HTMLImageElement>('<img>'),
-      el<HTMLVideoElement>('<video></video>'),
+      el('<img>', HTMLImageElement),
+      el('<video></video>', HTMLVideoElement),
     ]
     expect(media).toHaveLength(2)
   })

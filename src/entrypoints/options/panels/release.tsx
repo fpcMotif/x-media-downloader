@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import { CLEAR_AFTER_DOWNLOAD } from '@/packages/clear/copy'
@@ -6,7 +6,8 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ConfirmStrip } from '@/components/confirm-strip'
+import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
+import { useOwnedTimer } from '@/components/owned-timer'
 import { TURN_ON_RELEASE_LABEL, turnOnReleaseConfirm } from '@/components/action-copy'
 import { runDiagnosticsExport } from '@/components/diagnostics-export'
 import { Section, type PanelProps } from '../ui'
@@ -98,18 +99,12 @@ export function ReleasePanel({ settings, update }: PanelProps) {
   // One owned status-flash timer (mirrors ArchivePanel's `statusTimer`): a newer
   // flash cancels the older timer before rearming, and unmount cancels whatever
   // is pending.
-  const diagStatusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => {
-    return () => clearTimeout(diagStatusTimer.current)
-  }, [])
+  const diagStatusTimer = useOwnedTimer()
+  const turnOnStrip = useConfirmStrip()
 
   const flashDiagStatus = (msg: string): void => {
     setDiagStatus(msg)
-    clearTimeout(diagStatusTimer.current)
-    diagStatusTimer.current = setTimeout(() => {
-      setDiagStatus(null)
-      diagStatusTimer.current = undefined
-    }, 5000)
+    diagStatusTimer.arm(() => setDiagStatus(null), 5000)
   }
 
   return (
@@ -121,36 +116,35 @@ export function ReleasePanel({ settings, update }: PanelProps) {
         description="When on, each post is removed from its list (un-like on Likes, un-bookmark on Bookmarks) once its media truly lands. When off, the page actions just download."
       >
         <ConfirmStrip
+          control={turnOnStrip}
           sentence={turnOnReleaseConfirm}
           confirmLabel={TURN_ON_RELEASE_LABEL}
           kind="pre-committed"
           onConfirm={() => void update({ clearOnSave: true })}
         >
-          {(arm) => (
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
-                {settings.clearOnSave ? (
-                  <FieldDescription sx={styles.subToggleDesc}>
-                    <span aria-hidden="true" {...stylex.props(styles.dot)} />
-                    On — every page action also releases.
-                  </FieldDescription>
-                ) : (
-                  <FieldDescription>
-                    {CLEAR_AFTER_DOWNLOAD.description} Off by default.
-                  </FieldDescription>
-                )}
-              </FieldContent>
-              <Switch
-                id="clearOnSave"
-                checked={settings.clearOnSave}
-                onCheckedChange={(checked: boolean) => {
-                  if (checked) arm()
-                  else void update({ clearOnSave: false })
-                }}
-              />
-            </Field>
-          )}
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="clearOnSave">{CLEAR_AFTER_DOWNLOAD.label}</FieldLabel>
+              {settings.clearOnSave ? (
+                <FieldDescription sx={styles.subToggleDesc}>
+                  <span aria-hidden="true" {...stylex.props(styles.dot)} />
+                  On — every page action also releases.
+                </FieldDescription>
+              ) : (
+                <FieldDescription>
+                  {CLEAR_AFTER_DOWNLOAD.description} Off by default.
+                </FieldDescription>
+              )}
+            </FieldContent>
+            <Switch
+              id="clearOnSave"
+              checked={settings.clearOnSave}
+              onCheckedChange={(checked: boolean) => {
+                if (checked) turnOnStrip.arm()
+                else void update({ clearOnSave: false })
+              }}
+            />
+          </Field>
         </ConfirmStrip>
 
         {settings.clearOnSave && (

@@ -205,10 +205,12 @@ describe('exchangeCode', () => {
   // must keep seeing a secret-free body — hence "send it only when supplied".
   it('sends client_secret when the provider supplies one (Google)', async () => {
     let body = ''
-    const fetchImpl = (async (_url: string, init?: RequestInit) => {
-      body = String(init?.body)
+    const fetchImpl = fetchStub(async (_url, init) => {
+      const sent = init?.body
+      if (!isStringBody(sent)) throw new Error('expected string body')
+      body = sent
       return jsonResponse({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 })
-    }) as unknown as typeof fetch
+    })
 
     await runExchange(fetchImpl, {
       cfg: GDRIVE_OAUTH,
@@ -227,10 +229,12 @@ describe('exchangeCode', () => {
 
   it('omits client_secret when the supplied one is empty (never sends it blank)', async () => {
     let body = ''
-    const fetchImpl = (async (_url: string, init?: RequestInit) => {
-      body = String(init?.body)
+    const fetchImpl = fetchStub(async (_url, init) => {
+      const sent = init?.body
+      if (!isStringBody(sent)) throw new Error('expected string body')
+      body = sent
       return jsonResponse({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 })
-    }) as unknown as typeof fetch
+    })
 
     await runExchange(fetchImpl, {
       cfg: DROPBOX_OAUTH,
@@ -483,10 +487,12 @@ describe('refreshAccessToken', () => {
   // about an hour later — the worst shape of this bug to diagnose.
   it('sends client_secret on the refresh grant too', async () => {
     let body = ''
-    const fetchImpl = (async (_url: string, init?: RequestInit) => {
-      body = String(init?.body)
+    const fetchImpl = fetchStub(async (_url, init) => {
+      const sent = init?.body
+      if (!isStringBody(sent)) throw new Error('expected string body')
+      body = sent
       return jsonResponse({ access_token: 'AT2', expires_in: 3600 })
-    }) as unknown as typeof fetch
+    })
     await runRefresh(fetchImpl, {
       cfg: GDRIVE_OAUTH,
       clientId: 'cid',

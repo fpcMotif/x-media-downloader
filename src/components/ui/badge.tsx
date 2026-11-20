@@ -131,13 +131,7 @@ const variantStyles = stylex.create({
 })
 
 type BadgeVariant =
-  | 'default'
-  | 'secondary'
-  | 'destructive'
-  | 'outline'
-  | 'success'
-  | 'ghost'
-  | 'link'
+  'default' | 'secondary' | 'destructive' | 'outline' | 'success' | 'ghost' | 'link'
 
 function Badge({
   variant = 'default',

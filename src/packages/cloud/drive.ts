@@ -166,9 +166,7 @@ export const DriveUploaderLive = Layer.effect(
             ...authHeader(accessToken),
             'content-type': 'application/json; charset=UTF-8',
             'x-upload-content-type': meta.contentType,
-            ...(meta.totalBytes !== null
-              ? { 'x-upload-content-length': String(meta.totalBytes) }
-              : {}),
+            ...(meta.totalBytes !== null && { 'x-upload-content-length': String(meta.totalBytes) }),
           },
           body: JSON.stringify({ name: meta.name, parents: [meta.parentId] }),
         })

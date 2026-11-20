@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, it, expect, vi } from 'vitest'
 import { makeRemoteUpload } from './remote-upload'
 import { Schema } from 'effect'
@@ -16,6 +17,7 @@ import {
   decodeLedger,
   enqueue,
   idempotencyKeyFor,
+  MAX_ATTEMPTS,
   readyJobs,
   summarize,
   type JobLedger,
@@ -29,7 +31,7 @@ import type { UploadOutcome, UploadTarget } from '@/packages/cloud/types'
 // disconnect-mid-flight, the re-kick, backoff-wake gating, and the OAuth wiring.
 
 const NOW = 1_000_000
-const tick = () => new Promise<void>((r) => setTimeout(r, 0))
+const tick = () => sleep(0)
 const baseSettings: Settings = Schema.decodeUnknownSync(SettingsSchema)({})
 const gd = PROVIDERS.gdrive.fields
 
@@ -83,12 +85,12 @@ function fakeLedger(initial: JsonValue = null, opts: { delay?: boolean } = {}) {
     value: initial,
     gets: 0,
     sets: 0,
-    async get() {
+    get: async (): Promise<JsonValue> => {
       box.gets += 1
       if (opts.delay) await tick()
       return box.value
     },
-    async set(value: JsonValue) {
+    set: async (value: JsonValue): Promise<void> => {
       box.sets += 1
       if (opts.delay) await tick()
       box.value = value
@@ -178,7 +180,7 @@ it('routes experimental Cloud-only acceptance exclusively to Convex, including a
     store: fakeLedger(),
     onHistoryNotice: () => {},
     fetchImpl: async (url) => {
-      requests.push(String(url))
+      requests.push(url instanceof URL ? url.href : url instanceof Request ? url.url : url)
       return Response.json({ status: 'success', value: { id: 'server-id', created: true } })
     },
   })
@@ -206,6 +208,132 @@ it('routes experimental Cloud-only acceptance exclusively to Convex, including a
   expect(requests.every((url) => url.startsWith(settings.convexUrl))).toBe(true)
 })
 
+it('fails visibly, with no browser upload, when the Convex relay fails (ADR-0013)', async () => {
+  const settings = connected({
+    saveToDisk: false,
+    convexDriveEnabled: true,
+    convexDriveConnected: true,
+    convexUrl: 'https://test.convex.cloud',
+    convexSyncSecret: 'test-secret',
+    cloudDeviceId: 'device',
+  })
+  const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+  const runtime = fakeRuntime({ uploadDrive })
+  const ledger = fakeLedger()
+  const remote = makeRemoteUpload({
+    getSettings: async () => settings,
+    store: fakeLedger(),
+    onHistoryNotice: () => {},
+    fetchImpl: async () => {
+      throw new Error('Convex offline')
+    },
+  })
+  const cu = makeCU({ getSettings: async () => settings, remote, runtime, ledger })
+  const candidates = [
+    {
+      item: {
+        id: 'fallback-item',
+        url: 'https://pbs.twimg.com/media/test.jpg',
+        handle: 'alice',
+        ext: 'jpg',
+      },
+      filename: 'twitter/test.jpg',
+      estimatedBytes: 4,
+    },
+  ]
+  await expect(cu.recordCloudUploads(settings, candidates)).rejects.toThrow('Convex offline')
+  await cu.drainUploadJobs()
+  expect(decodeLedger(ledger.value)).toEqual([])
+  expect(uploadDrive).not.toHaveBeenCalled()
+})
+
+it('does not upload client-side when Convex relay fails if cloudUploadEnabled is false', async () => {
+  const settings = {
+    ...connected({
+      cloudUploadEnabled: false,
+      saveToDisk: false,
+      convexDriveEnabled: true,
+      convexDriveConnected: true,
+      convexUrl: 'https://test.convex.cloud',
+      convexSyncSecret: 'test-secret',
+      cloudDeviceId: 'device',
+    }),
+  }
+  const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+  const runtime = fakeRuntime({ uploadDrive })
+  const ledger = fakeLedger()
+  const remote = makeRemoteUpload({
+    getSettings: async () => settings,
+    store: fakeLedger(),
+    onHistoryNotice: () => {},
+    fetchImpl: async () => {
+      throw new Error('Convex offline')
+    },
+  })
+  const cu = makeCU({ getSettings: async () => settings, remote, runtime, ledger })
+  const candidates = [
+    {
+      item: {
+        id: 'no-client-item',
+        url: 'https://pbs.twimg.com/media/test.jpg',
+        handle: 'alice',
+        ext: 'jpg',
+      },
+      filename: 'twitter/test.jpg',
+      estimatedBytes: 4,
+    },
+  ]
+  await expect(cu.recordCloudUploads(settings, candidates)).rejects.toThrow(
+    'The backend Drive destination is disabled, paused, or disconnected',
+  )
+  await cu.drainUploadJobs()
+  expect(uploadDrive).not.toHaveBeenCalled()
+})
+
+it('uploads to Dropbox client-side while Convex relay handles Google Drive', async () => {
+  const settings = {
+    ...connected({
+      saveToDisk: false,
+      convexDriveEnabled: true,
+      convexDriveConnected: true,
+      convexUrl: 'https://test.convex.cloud',
+      convexSyncSecret: 'test-secret',
+      cloudDeviceId: 'device',
+    }),
+    [dx.clientId]: 'dropbox-client',
+    [dx.accessToken]: 'dropbox-access',
+    [dx.refreshToken]: 'dropbox-refresh',
+    [dx.expiry]: NOW + 3_600_000,
+    dropboxUploadEnabled: true,
+  }
+  const uploadDropbox = vi.fn<CloudRuntimePort['uploadDropbox']>(async () => ok())
+  const runtime = fakeRuntime({ uploadDropbox })
+  const ledger = fakeLedger()
+  const remote = makeRemoteUpload({
+    getSettings: async () => settings,
+    store: fakeLedger(),
+    onHistoryNotice: () => {},
+    fetchImpl: async () =>
+      Response.json({ status: 'success', value: { id: 'server-id', created: true } }),
+  })
+  const cu = makeCU({ getSettings: async () => settings, remote, runtime, ledger })
+  const candidates = [
+    {
+      item: {
+        id: 'multi-provider-item',
+        url: 'https://pbs.twimg.com/media/test.jpg',
+        handle: 'alice',
+        ext: 'jpg',
+      },
+      filename: 'twitter/test.jpg',
+      estimatedBytes: 4,
+    },
+  ]
+  expect(await cu.recordCloudUploads(settings, candidates)).toEqual(['multi-provider-item'])
+  await cu.drainUploadJobs()
+  expect(uploadDropbox).toHaveBeenCalled()
+})
+
 describe('cloudUploadStatus', () => {
   it('reports the ledger summary read through the store seam', async () => {
     const ledger = fakeLedger(seedJobs(3))
@@ -231,6 +359,64 @@ describe('drainUploadJobs — disconnect mid-flight', () => {
     expect(decodeLedger(ledger.value)[0]?.status).toBe('failed')
     expect(uploadDrive).not.toHaveBeenCalled()
     expect((await cu.cloudUploadStatus()).lastError).toBe('Google Drive is not connected.')
+  })
+})
+
+// A job can reach a terminal status inside `claim` itself, without an upload
+// attempt. The mirror and the Cloud-only history verdict must still hear of it.
+describe('drainUploadJobs — terminal without an upload attempt', () => {
+  const crashedOnLastAttempt = {
+    ...seedJobs(1)[0]!,
+    cloudOnly: true,
+    status: 'uploading' as const,
+    attempts: MAX_ATTEMPTS - 1,
+    leaseSeq: 4,
+    leaseUntil: NOW - 1,
+    nextAttemptAt: NOW - 1,
+  }
+  const mirrorOn = {
+    cloudSyncEnabled: true,
+    convexUrl: 'https://x.convex.cloud',
+    convexSyncSecret: 'sek',
+    cloudDeviceId: 'dev-1',
+  }
+
+  it('mirrors and reports a job that died of crash exhaustion', async () => {
+    const ledger = fakeLedger([crashedOnLastAttempt])
+    const mirrored: string[] = []
+    const mirror = vi.fn<CloudRuntimePort['mirror']>(async ({ jobs }) => {
+      for (const job of jobs) mirrored.push(`${job.requestId}:${job.status}`)
+    })
+    const notices: CloudHistoryNotice[] = []
+    const cu = makeCU({
+      ledger,
+      runtime: fakeRuntime({ mirror }),
+      getSettings: async () => connected({ ...mirrorOn, saveToDisk: false }),
+      onHistoryNotice: (n) => void notices.push(n),
+    })
+
+    await cu.drainUploadJobs()
+
+    expect(decodeLedger(ledger.value)[0]?.status).toBe('dead')
+    expect(mirrored).toEqual(['m0:dead'])
+    expect(notices).toEqual([{ mediaId: 'm0', kind: 'failed', at: NOW }])
+  })
+
+  it('mirrors a job failed because its provider is disconnected', async () => {
+    const ledger = fakeLedger(seedJobs(1))
+    const mirrored: string[] = []
+    const mirror = vi.fn<CloudRuntimePort['mirror']>(async ({ jobs }) => {
+      for (const job of jobs) mirrored.push(`${job.requestId}:${job.status}`)
+    })
+    const cu = makeCU({
+      ledger,
+      runtime: fakeRuntime({ mirror }),
+      getSettings: async () => connected({ ...mirrorOn, [gd.refreshToken]: '' }),
+    })
+
+    await cu.drainUploadJobs()
+
+    expect(mirrored).toEqual(['m0:failed'])
   })
 })
 
@@ -611,13 +797,13 @@ describe('serialized upload queue', () => {
     // the second enqueue would read the ledger before the first wrote it and clobber it.
     const ledger = fakeLedger(null, { delay: true })
     const cu = makeCU({ ledger, runtime: fakeRuntime() })
-    cu.recordCloudUploads(connected(), [
+    void cu.recordCloudUploads(connected(), [
       {
         item: { id: 'A', url: 'https://video.twimg.com/a.mp4', handle: 'alice', ext: 'mp4' },
         filename: 'alice/a.mp4',
       },
     ])
-    cu.recordCloudUploads(connected(), [
+    void cu.recordCloudUploads(connected(), [
       {
         item: { id: 'B', url: 'https://video.twimg.com/b.mp4', handle: 'bob', ext: 'mp4' },
         filename: 'bob/b.mp4',
@@ -635,7 +821,7 @@ describe('serialized upload queue', () => {
     // folder `twitter`, basename `123_0.mp4` — regardless of the media's author handle.
     const ledger = fakeLedger(null)
     const cu = makeCU({ ledger, runtime: fakeRuntime() })
-    cu.recordCloudUploads(connected(), [
+    void cu.recordCloudUploads(connected(), [
       {
         item: { id: 'X', url: 'https://video.twimg.com/x.mp4', handle: 'alice', ext: 'mp4' },
         filename: 'twitter/123_0.mp4',
@@ -1032,7 +1218,9 @@ describe('recordCloudUploads — gating (no side effects)', () => {
     const ledger = fakeLedger()
     const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
     const runtime = fakeRuntime({ uploadDrive })
-    makeCU({ ledger, runtime }).recordCloudUploads(connected({ cloudUploadEnabled: false }), [item])
+    void makeCU({ ledger, runtime }).recordCloudUploads(connected({ cloudUploadEnabled: false }), [
+      item,
+    ])
     await tick()
     expect(ledger.gets).toBe(0)
     expect(ledger.sets).toBe(0)
@@ -1041,21 +1229,21 @@ describe('recordCloudUploads — gating (no side effects)', () => {
 
   it('does nothing for an empty item batch', async () => {
     const ledger = fakeLedger()
-    makeCU({ ledger }).recordCloudUploads(connected(), [])
+    void makeCU({ ledger }).recordCloudUploads(connected(), [])
     await tick()
     expect(ledger.sets).toBe(0)
   })
 
   it('does nothing when no provider is connected', async () => {
     const ledger = fakeLedger()
-    makeCU({ ledger }).recordCloudUploads(connected({ [gd.refreshToken]: '' }), [item])
+    void makeCU({ ledger }).recordCloudUploads(connected({ [gd.refreshToken]: '' }), [item])
     await tick()
     expect(ledger.sets).toBe(0)
   })
 
   it('does nothing when every connected provider is paused', async () => {
     const ledger = fakeLedger()
-    makeCU({ ledger }).recordCloudUploads(connected({ gdriveUploadEnabled: false }), [item])
+    void makeCU({ ledger }).recordCloudUploads(connected({ gdriveUploadEnabled: false }), [item])
     await tick()
     expect(ledger.sets).toBe(0)
   })
@@ -1071,7 +1259,7 @@ describe('recordCloudUploads — gating (no side effects)', () => {
     }
     const ledger = fakeLedger()
     const runtime = fakeRuntime()
-    makeCU({ ledger, runtime }).recordCloudUploads(both, [item])
+    void makeCU({ ledger, runtime }).recordCloudUploads(both, [item])
     await vi.waitFor(() => expect(decodeLedger(ledger.value)).toHaveLength(1))
     expect(decodeLedger(ledger.value)[0]?.provider).toBe('gdrive')
     expect(runtime.uploadDropbox).not.toHaveBeenCalled()
@@ -1176,11 +1364,11 @@ const toLedgerJson = (jobs: JobLedger): JsonValue =>
     leaseSeq: job.leaseSeq,
     verifiedAt: job.verifiedAt,
     error: job.error,
-    ...(job.cloudOnly !== undefined ? { cloudOnly: job.cloudOnly } : {}),
-    ...(job.historyOutcome !== undefined ? { historyOutcome: job.historyOutcome } : {}),
-    ...(job.remoteId !== undefined ? { remoteId: job.remoteId } : {}),
-    ...(job.bytes !== undefined ? { bytes: job.bytes } : {}),
-    ...(job.transientFailures !== undefined ? { transientFailures: job.transientFailures } : {}),
+    ...(job.cloudOnly !== undefined && { cloudOnly: job.cloudOnly }),
+    ...(job.historyOutcome !== undefined && { historyOutcome: job.historyOutcome }),
+    ...(job.remoteId !== undefined && { remoteId: job.remoteId }),
+    ...(job.bytes !== undefined && { bytes: job.bytes }),
+    ...(job.transientFailures !== undefined && { transientFailures: job.transientFailures }),
   }))
 
 describe('drainUploadJobs — auth pause and Retry-After (#113)', () => {

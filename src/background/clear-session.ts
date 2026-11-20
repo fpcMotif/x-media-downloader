@@ -149,6 +149,10 @@ export interface ClearSession {
   ) => Promise<void>
   /** The manual monitor reset bounds the in-memory clear ledger too. */
   readonly reset: () => Promise<void>
+  /** Returns whether the release dispatched for this tweet may still click. False
+   *  once "Clear after download" or a claimed scope is switched off, after a
+   *  `reset`, and for a tweet with no dispatch in flight. */
+  readonly releaseStillAuthorized: (tweetId: string) => Promise<boolean>
 }
 
 export interface ClearSessionDeps {
@@ -205,6 +209,8 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
   const clearQueue = makeSerialQueue(deps.queueError('clear'))
   const settleCancels = new Set<() => void>()
   const clearOriginTab = new Map<string, ClearOrigin>()
+  // Claimed attempts whose dispatch has not returned yet, keyed by tweetId.
+  const dispatching = new Map<string, ClearAttempt>()
   let generation = 0
   const CLEAR_ORIGIN_TAB_CAP = 512
 
@@ -300,7 +306,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
       tweetId,
       claimed,
       allLists: settings.clearAllListsOnSave,
-      ...(origin?.tabId === undefined ? {} : { preferTabId: origin.tabId }),
+      ...(origin?.tabId !== undefined && { preferTabId: origin.tabId }),
       // No origin record (a seed that named no tab and consented to no list) fails the
       // permalink leg CLOSED — it clicks nothing rather than guessing a list.
       release: origin?.release ?? { source: 'none' },
@@ -340,10 +346,27 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     if (isPrunable(after, attempt.enabled)) clearLedger.delete(attempt.tweetId)
   }
 
+  const releaseStillAuthorized = async (tweetId: string): Promise<boolean> => {
+    const attempt = dispatching.get(tweetId)
+    const revoked = (reason: string): false => {
+      trace('clear-release-revoked', { tweetId, detail: `reason=${reason}` })
+      return false
+    }
+    if (attempt === undefined) return revoked('no-dispatch')
+    if (attempt.generation !== generation) return revoked('reset')
+    const settings = await getSettings()
+    if (!settings.clearOnSave) return revoked('clear-off')
+    const entry = clearLedger.get(tweetId)
+    if (entry === undefined) return revoked('no-entry')
+    const enabled = enabledScopesFor(entry, settings)
+    return attempt.claimed.every((scope) => enabled.has(scope)) || revoked('scope-off')
+  }
+
   const runClearAttempt = async (tweetId: string): Promise<void> => {
     const settings = await getSettings()
     const attempt = await clearQueue.run(async () => prepareClearAttempt(tweetId, settings))
     if (attempt === undefined) return
+    dispatching.set(tweetId, attempt)
     let results: ReadonlyArray<ClearScopeResult>
     try {
       results = await dispatchClear(
@@ -360,6 +383,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
       })
       results = attempt.claimed.map((scope) => ({ scope, ok: false }))
     }
+    if (dispatching.get(tweetId) === attempt) dispatching.delete(tweetId)
     await clearQueue.run(async () => resolveClearAttempt(attempt, results))
   }
 
@@ -374,7 +398,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
         const existing = clearLedger.get(tweetId)
         if (existing !== undefined && hasLiveWork(existing)) continue
         rememberOrigin(tweetId, {
-          ...(originTabId === undefined ? {} : { tabId: originTabId }),
+          ...(originTabId !== undefined && { tabId: originTabId }),
           release: { source: 'consented', scope },
         })
         const fresh = createEntry({
@@ -503,6 +527,10 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
       trace('clear-skip', {
         detail: `${verdict.unclearableCount} tweet(s) without a numeric status id — not DOM-clearable (v1)`,
       })
+    if (verdict.partialCount > 0)
+      trace('clear-skip', {
+        detail: `${verdict.partialCount} tweet(s) with media that was not saved — a partial post is never cleared`,
+      })
     // PIN the release leg's page scope HERE, once, while the user's consent is still
     // true of the world — and never again. Two sources, in order: the list the user
     // literally pressed Release on (a sweep), else the origin tab's list scope read
@@ -524,7 +552,7 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
       for (const [tweetId, ids] of verdict.byTweet) {
         if (verdict.originTabId !== undefined || release.source !== 'none')
           rememberOrigin(tweetId, {
-            ...(verdict.originTabId === undefined ? {} : { tabId: verdict.originTabId }),
+            ...(verdict.originTabId !== undefined && { tabId: verdict.originTabId }),
             release,
           })
         // Merge into a live entry rather than overwrite: a second download of
@@ -632,5 +660,6 @@ export const makeClearSession = (deps: ClearSessionDeps): ClearSession => {
     enqueueSweep,
     releaseSettled,
     reset,
+    releaseStillAuthorized,
   }
 }

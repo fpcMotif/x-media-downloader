@@ -1,0 +1,44 @@
+amends "package://github.com/jdx/hk/releases/download/v2.12.0/hk@2.12.0#/Config.pkl"
+
+local source = List("src/**/*.{ts,tsx,js,jsx,mjs,css,json}")
+local lintable = List("**/*.{ts,tsx,js,jsx,mjs}")
+local skipped = List(".agents/**", ".claude/**", "backend/**", "study/**", "src/components/ui/**", "tools/anti-slop/**")
+
+local linters = new Mapping<String, Step> {
+    ["bun-fmt"] {
+        glob = source
+        check = "bun fmt --no-script --check {{files}}"
+        fix = "bun fmt --no-script {{files}}"
+    }
+    ["bun-lint"] {
+        glob = lintable
+        exclude = skipped
+        check = "bun lint --no-script --deny-warnings {{files}}"
+        fix = "bun lint --no-script --fix {{files}}"
+    }
+    ["bun-check"] {
+        glob = List("**/*.{ts,tsx}")
+        exclude = List("backend/**")
+        check = "bun check --no-script"
+    }
+    ["complexity"] {
+        glob = lintable
+        exclude = skipped
+        check = "bun lint --no-script -c .oxlintrc.complexity.json --no-type-aware {{files}}"
+    }
+}
+
+hooks {
+    ["pre-commit"] {
+        fix = true
+        stash = "git"
+        steps = linters
+    }
+    ["check"] {
+        steps = linters
+    }
+    ["fix"] {
+        fix = true
+        steps = linters
+    }
+}

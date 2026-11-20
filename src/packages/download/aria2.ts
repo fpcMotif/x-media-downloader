@@ -65,7 +65,7 @@ export function buildAria2Options(req: SaveRequest, opts: Aria2Options): Aria2Ad
     out: req.filename,
     split: String(opts.split),
     'max-connection-per-server': String(opts.split),
-    ...(opts.dir ? { dir: opts.dir } : {}),
+    ...(opts.dir && { dir: opts.dir }),
   }
 }
 
@@ -147,7 +147,7 @@ export function makeAria2RpcPort(cfg: {
             message: isJsonString(message)
               ? message
               : `aria2 error ${isJsonNumber(code) ? code : '?'}`,
-            ...(isJsonNumber(code) ? { code } : {}),
+            ...(isJsonNumber(code) && { code }),
           })
         }
         if (!isJsonString(body.result))

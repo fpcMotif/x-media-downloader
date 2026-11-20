@@ -1,16 +1,14 @@
-import { Context, Effect, Layer, Schema } from 'effect'
+import { Cause, Context, Effect, Layer, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import {
-  Settings as SettingsSchema,
-  type JsonValue,
-  type Settings,
-} from '@/packages/schema'
+import { Settings as SettingsSchema, type JsonValue, type Settings } from '@/packages/schema'
 import { destinationLostDelta } from './coupling'
 import { normalizeFilenameTemplate } from './lib/template-migration'
 
 const defaults: Settings = Schema.decodeUnknownSync(SettingsSchema)({})
 
 const item = storage.defineItem<JsonValue>('local:settings', { fallback: {} })
+
+const isRelayAck = Schema.is(Schema.Struct({ ok: Schema.Literal(true) }))
 
 /** Decode stored settings; fall back to defaults on a SchemaError (corrupt data).
  *  Also heals a persisted LEGACY DEFAULT `filenameTemplate` (any default this
@@ -65,7 +63,7 @@ export const SettingsServiceLive = Layer.succeed(SettingsService, {
             connected: next.convexDriveConnected,
           }),
         )
-        if (!reply || typeof reply !== 'object' || !('ok' in reply) || reply.ok !== true)
+        if (!isRelayAck(reply))
           return yield* Effect.die(
             new Error('Backend relay control was not acknowledged; settings unchanged'),
           )
@@ -80,10 +78,16 @@ const provide = <A, E>(eff: Effect.Effect<A, E, SettingsService>): Promise<A> =>
 
 /** Promise helpers for UI contexts (popup) — thin wrappers over the service. */
 export const getSettings = (): Promise<Settings> =>
-  provide(Effect.flatMap(SettingsService, (s) => s.get)).catch((err: unknown) => {
-    console.warn('[XMD] getSettings failed, falling back to defaults:', err)
-    return defaults
-  })
+  provide(
+    Effect.flatMap(SettingsService, (s) => s.get).pipe(
+      Effect.catchCause((cause) =>
+        Effect.sync(() => {
+          console.warn('[XMD] getSettings failed, falling back to defaults:', Cause.squash(cause))
+          return defaults
+        }),
+      ),
+    ),
+  )
 export const setSettings = (patch: Partial<Settings>): Promise<Settings> =>
   provide(Effect.flatMap(SettingsService, (s) => s.set(patch)))
 

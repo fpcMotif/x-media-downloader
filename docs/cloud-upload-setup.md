@@ -139,8 +139,8 @@ Use a personal test deployment and an isolated Drive folder, not a production li
 5. Deploy the backend after reviewing its schema and function changes.
 6. Configure the extension's Convex URL and matching sync secret, then grant that origin's permission.
 7. In Options → Sync, select **Check deployment setup**.
-8. Enable Cloud upload and Drive Upload, and pause Dropbox uploads if connected.
-9. Enable **Use Convex for Cloud-only Drive uploads**. This also enables Download History and disables disk saving.
+8. Enable Cloud upload and Drive Upload. A connected Dropbox destination can stay on; it keeps uploading from the browser.
+9. Enable **Use Convex for Drive uploads**. This also enables Download History and turns disk saving off. You can turn disk saving back on afterwards.
 
 | Deployment variable | Purpose |
 | --- | --- |

@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
 import { Schema } from 'effect'
@@ -84,7 +85,7 @@ const fireSettleWindow = async (
   const n = clock.calls.length
   clock.calls.forEach(({ fn }) => fn())
   await vi.waitFor(() => expect(settleProbe).toHaveBeenCalledTimes(n))
-  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  await sleep(0)
 }
 
 /** Seed a tweet's media as one batch, then record each complete with its OWN
@@ -99,6 +100,7 @@ const seedAndComplete = async (
     scopes: ['bookmark'],
     origin: 'hook',
     unclearableCount: 0,
+    partialCount: 0,
   })
   for (const m of media) c.recordComplete('T', m.id, m.downloadId)
 }
@@ -144,6 +146,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
       originTabId: 9,
     })
     c.recordComplete('T', 'm0', 123)
@@ -163,6 +166,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
     })
     c.recordComplete('T', 'm0', 123)
     expect(clock.calls).toHaveLength(1)
@@ -202,6 +206,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark'],
       origin: 'sweep',
       unclearableCount: 0,
+      partialCount: 0,
     })
     trace.mockClear()
 
@@ -235,6 +240,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
     })
 
     c.recordComplete('T', 'm0', 123)
@@ -265,6 +271,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
     })
     c.recordComplete('T1', 'm1', 1)
     c.recordComplete('T2', 'm2', 2)
@@ -364,6 +371,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark', 'like'],
       origin: 'sweep',
       unclearableCount: 0,
+      partialCount: 0,
     })
     c.recordComplete('T', 'm0', 123)
     await fireSettleWindow(clock, settleProbe)
@@ -387,6 +395,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark'],
       origin: 'sweep',
       unclearableCount: 0,
+      partialCount: 0,
     })
     c.recordComplete('T', 'm0', 123)
     await fireSettleWindow(clock, settleProbe)
@@ -411,6 +420,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark'],
       origin: 'sweep',
       unclearableCount: 0,
+      partialCount: 0,
     })
     c.recordComplete('T', 'm0', 123)
     await fireSettleWindow(clock, settleProbe)
@@ -439,6 +449,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
       scopes: ['bookmark'],
       origin: 'sweep',
       unclearableCount: 0,
+      partialCount: 0,
     })
     c.recordComplete('T', 'm0', 123)
     await fireSettleWindow(clock, settleProbe)
@@ -471,6 +482,7 @@ describe('Settle Port gate (irreversible Clear)', () => {
           scopes: ['bookmark'],
           origin: 'hook',
           unclearableCount: 0,
+          partialCount: 0,
         })
         c.recordComplete('T', 'm0', 123)
 
@@ -517,6 +529,7 @@ describe('release scope pin', () => {
       scopes: ['bookmark'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
       originTabId: 4,
     })
     // The user moves that same tab from Bookmarks to Likes while the download runs —
@@ -542,6 +555,7 @@ describe('release scope pin', () => {
       scopes: ['bookmark'],
       origin: 'sweep',
       unclearableCount: 0,
+      partialCount: 0,
       originTabId: 4,
       consentedScope: 'bookmark',
     })
@@ -569,6 +583,7 @@ describe('release scope pin', () => {
       scopes: ['like'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
       originTabId: 4,
     })
     expect(linesFor(trace, 'clear-seeded')).toEqual([
@@ -586,6 +601,7 @@ describe('release scope pin', () => {
       scopes: ['bookmark'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
       originTabId: 4, // a profile/timeline tab: resolveOriginScope answers undefined
     })
     c.recordComplete('T', 'm0', 123)
@@ -604,6 +620,73 @@ describe('release scope pin', () => {
 // production those all looked identical in the exported diagnostics log — a verified
 // settle followed by silence — so "Release did nothing" could not be told apart from
 // "Release was deliberately skipped". These pin the stage + reason that separates them.
+// A claimed release can wait behind other release legs. The claim-time checks
+// are stale by the time the leg runs, so the leg asks again.
+describe('release authorization while a dispatch is queued', () => {
+  beforeEach(() => {
+    fakeBrowser.reset()
+  })
+
+  const sessionWithHeldDispatch = (initial: Settings) => {
+    let current = initial
+    const authorizedDuringDispatch: boolean[] = []
+    let beforeLeg: () => void | Promise<void> = () => {}
+    const { deps, settleProbe, clock } = makeDeps({
+      getSettings: async () => current,
+      dispatchClear: vi.fn<ClearSessionDeps['dispatchClear']>(async (tweetId) => {
+        await beforeLeg()
+        authorizedDuringDispatch.push(await session.releaseStillAuthorized(tweetId))
+        return mountedFlip
+      }),
+    })
+    const session = makeClearSession(deps)
+    return {
+      session,
+      settleProbe,
+      clock,
+      authorizedDuringDispatch,
+      setSettings: (next: Settings) => {
+        current = next
+      },
+      onBeforeLeg: (fn: () => void | Promise<void>) => {
+        beforeLeg = fn
+      },
+    }
+  }
+
+  it('stays authorized while nothing changed', async () => {
+    const h = sessionWithHeldDispatch(CLEAR_ON)
+    await downloadAndSettle(h.session, h.clock, h.settleProbe)
+    expect(h.authorizedDuringDispatch).toEqual([true])
+  })
+
+  it('is revoked when "Clear after download" is turned off before the leg runs', async () => {
+    const h = sessionWithHeldDispatch(CLEAR_ON)
+    h.onBeforeLeg(() => h.setSettings(settings({ clearOnSave: false, autoUnbookmarkOnSave: true })))
+    await downloadAndSettle(h.session, h.clock, h.settleProbe)
+    expect(h.authorizedDuringDispatch).toEqual([false])
+  })
+
+  it('is revoked when the claimed scope is turned off before the leg runs', async () => {
+    const h = sessionWithHeldDispatch(CLEAR_ON)
+    h.onBeforeLeg(() => h.setSettings(settings({ clearOnSave: true, autoUnbookmarkOnSave: false })))
+    await downloadAndSettle(h.session, h.clock, h.settleProbe)
+    expect(h.authorizedDuringDispatch).toEqual([false])
+  })
+
+  it('is revoked by a monitor reset before the leg runs', async () => {
+    const h = sessionWithHeldDispatch(CLEAR_ON)
+    h.onBeforeLeg(() => h.session.reset())
+    await downloadAndSettle(h.session, h.clock, h.settleProbe)
+    expect(h.authorizedDuringDispatch).toEqual([false])
+  })
+
+  it('is not authorized for a tweet with no dispatch in flight', async () => {
+    const { deps } = makeDeps()
+    expect(await makeClearSession(deps).releaseStillAuthorized('T')).toBe(false)
+  })
+})
+
 describe('Release diagnostics', () => {
   beforeEach(() => {
     fakeBrowser.reset()
@@ -649,6 +732,7 @@ describe('Release diagnostics', () => {
       scopes: ['bookmark'],
       origin: 'hook',
       unclearableCount: 0,
+      partialCount: 0,
     })
     c.recordComplete('T', 'm0', 123) // arms a settle window, never fired
     await c.reset()
@@ -878,8 +962,7 @@ describe('settled sweep retry', () => {
 
   it('releaseSettled skips a post whose release dispatch is still in flight', async () => {
     let finishFirst:
-      | ((results: ReadonlyArray<{ scope: 'bookmark'; ok: boolean }>) => void)
-      | undefined
+      ((results: ReadonlyArray<{ scope: 'bookmark'; ok: boolean }>) => void) | undefined
     const dispatchClear = vi.fn<ClearSessionDeps['dispatchClear']>(
       () =>
         new Promise((resolve) => {

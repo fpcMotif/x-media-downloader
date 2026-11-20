@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, it, expect, vi } from 'vitest'
 import { Schema } from 'effect'
 import { makeCaptureOutbox, type LedgerStorage } from './capture-outbox'
@@ -68,7 +69,7 @@ function captureTweetId(value: JsonValue): string {
   return value.tweetId
 }
 
-const tick = () => new Promise<void>((r) => setTimeout(r, 0))
+const tick = () => sleep(0)
 const records = [mk('1'), mk('2')]
 
 describe('makeCaptureOutbox — ADR-0018 gate (default OFF, separate from media sync)', () => {
@@ -174,6 +175,33 @@ describe('makeCaptureOutbox — drain', () => {
 
     // The mirror failed, but the enqueued events remain ready — nothing was lost.
     expect(readyJobs(decodeLedger(ledger.value), 1000)).toHaveLength(2)
+  })
+
+  it('clear drops queued events so an erased Tweet is never mirrored later', async () => {
+    const ledger = fakeLedger()
+    let online = false
+    const mutation = vi.fn<(name: string, args: JsonObject) => Promise<JsonValue>>(async () => {
+      if (!online) throw new Error('503')
+      return {}
+    })
+    const outbox = makeCaptureOutbox({
+      getSettings: async () => cfg(),
+      ledger,
+      connect: () => ({ mutation }),
+      now: () => 1000,
+    })
+    outbox.mirrorCaptures(records)
+    await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
+    await tick()
+
+    await outbox.clear()
+    online = true
+    outbox.mirrorCaptures([mk('3')])
+    await vi.waitFor(() => expect(mutation).toHaveBeenCalledTimes(2))
+
+    const { captures } = mutation.mock.calls[1]![1]
+    if (!Array.isArray(captures)) throw new Error('expected captures to be an array')
+    expect(captures.map(captureTweetId)).toEqual(['3'])
   })
 
   it('serializes interleaved mirror batches so neither capture is lost', async () => {

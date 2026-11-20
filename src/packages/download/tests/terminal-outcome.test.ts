@@ -138,9 +138,34 @@ describe('decideTerminalOutcome', () => {
     expect(fx.budgetBump).toBeNull()
   })
 
+  it('takes the Tweet from the tracked transfer when the caller has none (boot recovery)', () => {
+    // After a worker restart the request meta is gone; only the durable
+    // Transfer Tracker entry still knows which Tweet the media belongs to.
+    const fx = decideTerminalOutcome({
+      state: { transfers: trackerWith('m-boot'), metrics: null },
+      id: 'm-boot',
+      outcome: 'complete',
+      now: NOW,
+      deviceId: DEVICE,
+      context: { downloadId: 7 },
+    })
+
+    expect(fx.clearNotice).toEqual({
+      outcome: 'complete',
+      tweetId: 't1',
+      requestId: 'm-boot',
+      downloadId: 7,
+    })
+    expect(fx.postSavedMark).toEqual({ tweetId: 't1' })
+    expect(fx.budgetBump).toEqual({ bytes: 0, count: 1 })
+  })
+
   it('without a Tweet emits no Clear, post-Saved, or budget intent', () => {
     const fx = decideTerminalOutcome({
-      state: stateWith('m-no-post'),
+      state: {
+        transfers: trackTransfer(emptyTracker, { id: 'm-no-post', downloadId: 7, startedAt: 0 }),
+        metrics: metrics(),
+      },
       id: 'm-no-post',
       outcome: 'complete',
       now: NOW,

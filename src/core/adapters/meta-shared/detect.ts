@@ -84,8 +84,8 @@ export function detectMediaItems(json: JsonValue, platform: Platform): MediaItem
         url: m.url,
         ext: extFromUrl(m.url, m.kind === 'video' ? 'mp4' : 'jpg'),
         index,
-        ...(m.width !== undefined ? { width: m.width } : {}),
-        ...(m.height !== undefined ? { height: m.height } : {}),
+        ...(m.width !== undefined && { width: m.width }),
+        ...(m.height !== undefined && { height: m.height }),
       })
     })
     if (import.meta.env.DEV && out.length > mediaBefore)

@@ -25,7 +25,7 @@ but the post-decision bookkeeping around it is duplicated nearly line-for-line a
 `background.ts` has zero tests. A new `PendingInterruptRetry` field, or a change to the backoff/attempt
 bookkeeping, can silently miss one of the three copies with nothing to catch it.
 
-Separately, `CONTEXT.md:81–84`'s Clock Port glossary entry currently claims an injected clock shared by
+Separately, `GLOSSARY.md:81–84`'s Clock Port glossary entry currently claims an injected clock shared by
 Retry and Settle. Verified false: both use raw `setTimeout` today. Retry's timers live in
 `retryTimeouts` (a plain `Map<string, ReturnType<typeof setTimeout>>`, background.ts:133) driven by
 literal `setTimeout(() => void fireInterruptRetry(id), plan.delayMs)` calls at lines 556, 603, and 627.
@@ -60,7 +60,7 @@ Settle's confirm-window timer is also a raw `setTimeout` at
    into `background.ts` as a dep.
 
 3. **The applier computes `attempt` internally and calls `planInterruptRetry` itself** — it is the
-   Retry Scheduler shell per `CONTEXT.md`'s glossary entry, not just a bookkeeping tail bolted onto
+   Retry Scheduler shell per `GLOSSARY.md`'s glossary entry, not just a bookkeeping tail bolted onto
    call sites that already decided. Both current call sites compute
    `interruptAttemptById.get(id) ?? 0` identically (background.ts:541 inside the catch, and :575 in
    `scheduleInterruptRetry`) immediately before calling `planInterruptRetry` — that duplicated
@@ -103,7 +103,7 @@ Settle's confirm-window timer is also a raw `setTimeout` at
    `clear-coordinator.ts:273`). `retry-plan.ts` becomes the first `src/background` module on the
    injected-clock idiom.
 
-6. **`CONTEXT.md`'s Clock Port entry (lines 81–84) is corrected NOW**, in this docs pass, to describe
+6. **`GLOSSARY.md`'s Clock Port entry (lines 81–84) is corrected NOW**, in this docs pass, to describe
    reality (both Retry and Settle use raw `setTimeout` today — no shared injected clock exists yet).
    After this handoff's implementation lands, update the entry again to say: Retry schedules via its
    own injected clock; Settle still raw. **Follow-on candidate, explicitly queued, NOT in this
@@ -212,7 +212,7 @@ applier's own re-entry hook so `retry-plan.ts` never imports `fireInterruptRetry
    `admission-gate.ts`/`clear-coordinator.ts`, both of which carry their own dedicated test files).
    → verify: `bun run test:coverage` stays green (100% over `src/core` + `src/lib` unaffected by this
    change; confirm no regression).
-7. Update `CONTEXT.md:81–84`'s Clock Port entry per decision 6 (raw `setTimeout` → Retry now uses its
+7. Update `GLOSSARY.md:81–84`'s Clock Port entry per decision 6 (raw `setTimeout` → Retry now uses its
    injected clock; Settle still raw; note the queued follow-on).
    → verify: read the entry back, confirm it names `src/background/retry-plan.ts` and no longer
    claims a *shared* clock.
@@ -227,7 +227,7 @@ applier's own re-entry hook so `retry-plan.ts` never imports `fireInterruptRetry
   `scheduleInterruptRetry`, plus `rehydrateInterruptRetries`; delete `retryTimeouts` +
   `clearRetryTimeout`; construct `makeRetryPlanApplier` alongside the other `make*` collaborators,
   near where `clearCoordinator`/`cloudUpload`/`syncOutbox` are constructed, lines ~239–329)
-- `CONTEXT.md` — edit (Clock Port glossary entry, lines 81–84)
+- `GLOSSARY.md` — edit (Clock Port glossary entry, lines 81–84)
 
 ## Test plan
 

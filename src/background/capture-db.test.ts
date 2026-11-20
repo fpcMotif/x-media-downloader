@@ -129,6 +129,35 @@ describe('makeCaptureDb', () => {
     expect((await db.conversation('c1')).map((r) => r.tweetId).toSorted()).toEqual(['1', '2'])
   })
 
+  it('folds duplicate sightings in one batch before the store reads its pre-batch rows', async () => {
+    // The IndexedDB adapter issues every read before any write lands, so two
+    // sightings of one Tweet in a batch would both merge against the old row.
+    const seen: TweetRecord[][] = []
+    const store = fakeStore()
+    const snapshotStore: CaptureStore = {
+      ...store,
+      async upsert(records, merge) {
+        seen.push([...records])
+        const before = new Map(store.rows)
+        for (const incoming of records) {
+          const existing = before.get(incoming.tweetId)
+          const winner = merge(existing, incoming)
+          if (winner !== existing) store.rows.set(incoming.tweetId, winner)
+        }
+      },
+    }
+    const db = makeCaptureDb({ store: snapshotStore })
+
+    await db.putRecords([
+      mk('1', { source: 'tweetDetail', sourceRank: 3, text: 'rich' }),
+      mk('1', { source: 'timeline', sourceRank: 1, text: 'thin', capturedAt: 2000 }),
+      mk('2'),
+    ])
+
+    expect(seen[0]?.map((r) => r.tweetId)).toEqual(['1', '2'])
+    expect((await db.allRecords()).find((r) => r.tweetId === '1')?.text).toBe('rich')
+  })
+
   it('clear empties the store', async () => {
     const db = makeCaptureDb({ store: fakeStore() })
 

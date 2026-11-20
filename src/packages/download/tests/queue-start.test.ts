@@ -7,6 +7,7 @@ import { Settings, type MediaItem } from '@/packages/schema'
 import type { SaveRequest } from '../strategy'
 
 const settings = Schema.decodeUnknownSync(Settings)({
+  saveToDisk: true,
   clearOnSave: true,
   autoUnbookmarkOnSave: true,
   cloudDeviceId: 'device-1',
@@ -41,7 +42,6 @@ describe('decideQueueStart', () => {
     })
 
     expect(effects.metrics.total).toBe(2)
-    expect(effects.resetCorrelation).toBe(true)
     expect(effects.syncEvents.map((event) => event.requestId)).toEqual(['m1'])
     expect(effects.historyActions).toEqual([
       { kind: 'queued', item, filename: 'm1.jpg', at: 1_000 },
@@ -94,7 +94,6 @@ describe('decideQueueStart', () => {
     expect(effects.metrics.total).toBe(2)
     expect(effects.metrics.startedAt).toBe(500)
     expect(effects.metrics.concurrencyCap).toBe(3)
-    expect(effects.resetCorrelation).toBe(false)
   })
 
   it.each([
@@ -124,8 +123,8 @@ describe('decideQueueStart', () => {
       mediaById,
       settings: input.settings,
       startedAt: 1_000,
-      ...(input.sweep ? { sweep: input.sweep } : {}),
-      ...(input.clearExpect ? { clearExpect: input.clearExpect } : {}),
+      ...(input.sweep && { sweep: input.sweep }),
+      ...(input.clearExpect && { clearExpect: input.clearExpect }),
     })
 
     expect(effects.clearSeed).toEqual(
@@ -133,8 +132,8 @@ describe('decideQueueStart', () => {
         requests,
         mediaById,
         settings: input.settings,
-        ...(input.sweep ? { sweep: input.sweep } : {}),
-        ...(input.clearExpect ? { clearExpect: input.clearExpect } : {}),
+        ...(input.sweep && { sweep: input.sweep }),
+        ...(input.clearExpect && { clearExpect: input.clearExpect }),
       }),
     )
   })

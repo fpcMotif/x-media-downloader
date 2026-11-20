@@ -33,7 +33,7 @@ No Convex/backend change is required. The reconciliation is achieved on the clie
 | Backend change | **None.** Reuse `media_state`'s shape; don't modify `backend/`. |
 | Source of truth | **Local store is authoritative locally**; Convex `media_state` is its opt-in remote mirror. |
 
-## 4. Domain language (additions to `CONTEXT.md`, grill pass)
+## 4. Domain language (additions to `GLOSSARY.md`, grill pass)
 - **Download Record** — one durable, local record of a Save Request's outcome: `requestId`, the original media `url` (link), `filename`, `status` (`queued`/`completed`/`failed`), provenance (`tweetId`, `handle`, `type`, `ext`, `index`), `bytesReceived?`, `bytesTotal?`, `queuedAt`, `finishedAt?`. The local-first twin of a Convex `media_state` row.
 - **Download Store / History** — the durable, bounded collection of Download Records in `storage.local`, keyed by `requestId`. Survives SW recycle and browser restart (unlike the Monitor Snapshot).
 
@@ -81,4 +81,4 @@ A new **"Download history"** `<Section>` (durable), distinct from the live **Dow
 
 ## 12. Sequencing
 - **Step 0 — DONE:** `main` merged into PR #3's branch; `bun run check` (180 tests) + `bun run build` green.
-- **Next (on approval):** implementation plan → `/tdd` builds §5 → §7 → §8 in red-green order → `/grill-with-docs` updates `CONTEXT.md` (Download Record / Download Store) and writes the new ADR.
+- **Next (on approval):** implementation plan → `/tdd` builds §5 → §7 → §8 in red-green order → `/grill-with-docs` updates `GLOSSARY.md` (Download Record / Download Store) and writes the new ADR.

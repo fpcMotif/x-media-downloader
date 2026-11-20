@@ -86,7 +86,7 @@ export interface PageScopeReset {
 }
 
 /**
- * The page's Detected Media Set (CONTEXT.md): every Media Item found on the
+ * The page's Detected Media Set (GLOSSARY.md): every Media Item found on the
  * current page plus how each was obtained, behind one object. Owns the dual index
  * — by `id` (the download/count identity) and by media key (hover resolution) —
  * the recovered-key provenance, and the per-tweet recovery-attempt guard, so the
@@ -115,6 +115,9 @@ export interface DetectionStore {
   markAttempted(tweetId: string): boolean
   /** Release a recovery claim so a transient failure can retry. */
   unmarkAttempted(tweetId: string): void
+  /** Whether the claim from `markAttempted` still stands. `clear()` drops every
+   *  claim, so a reply fetched before a navigation no longer holds one. */
+  holdsRecoveryClaim(tweetId: string): boolean
   /** The Media Item a hovered media key resolves to. */
   resolve(key: string): MediaItem | undefined
   /** Read-only media-key → item index, for the hover resolvers that take a Map. */
@@ -156,8 +159,14 @@ export interface DetectionStore {
   resetPageScope(): PageScopeReset
 }
 
-const removeFromPostIndex = <C extends { readonly size: number; delete(key: string): boolean }>(
-  index: Map<string, { readonly postId: string; readonly entries: C }>,
+const removeFromPostIndex = (
+  index: Map<
+    string,
+    {
+      readonly postId: string
+      readonly entries: { readonly size: number; delete(key: string): boolean }
+    }
+  >,
   postId: string | undefined,
   member: string,
 ): void => {
@@ -404,6 +413,7 @@ export function makeDetectionStore(deps: {
     unmarkAttempted: (tweetId) => {
       attempted.delete(tweetId)
     },
+    holdsRecoveryClaim: (tweetId) => attempted.has(tweetId),
     resolve: (key) => byKey.get(key),
     keyIndex: () => byKey,
     get: (id) => byId.get(id),

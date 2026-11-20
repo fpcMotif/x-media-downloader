@@ -1,4 +1,4 @@
-import type { JSX } from 'preact'
+import type { SVGAttributes } from 'preact'
 import * as stylex from '@stylexjs/stylex'
 import type { StyleXStyles } from '@stylexjs/stylex'
 import { badgeSvg, svgHost, svgSize3, svgSize35, svgSize4 } from '@/theme/markers.stylex'
@@ -12,7 +12,7 @@ import { badgeSvg, svgHost, svgSize3, svgSize35, svgSize4 } from '@/theme/marker
 // settings sidebar/section headers entirely — structure comes from hairlines
 // and type, not iconography. Only glyphs still doing functional work on a
 // button or badge belong here; keep this list to that set.
-type IconProps = Omit<JSX.SVGAttributes<SVGSVGElement>, 'className' | 'class'> & {
+type IconProps = Omit<SVGAttributes<SVGSVGElement>, 'className' | 'class'> & {
   readonly sx?: StyleXStyles
 }
 

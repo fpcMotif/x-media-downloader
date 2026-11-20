@@ -37,7 +37,9 @@ export function makeAdmissionGate(deps: {
 }): AdmissionGate {
   const admit: AdmissionGate['admit'] = async (items) => {
     const settings = await deps.getSettings()
-    const ownership = await Promise.all(items.map((item) => deps.remoteOwns?.(item.id) ?? false))
+    const ownership = await Promise.all(
+      items.map(async (item) => (await deps.remoteOwns?.(item.id)) ?? false),
+    )
     const remoteOwned = new Set(items.filter((_, index) => ownership[index]).map((item) => item.id))
     const filter: FilterSettings = {
       preventDuplicateDownloads: settings.preventDuplicateDownloads,
@@ -82,10 +84,15 @@ export function makeAdmissionGate(deps: {
           for (;;) {
             const target = targets[cursor++]
             if (target === undefined) return
-            const probe = remoteExecution ? deps.remoteSizeProbe : deps.sizeProbe
+            const probe =
+              remoteExecution && deps.remoteSizeProbe ? deps.remoteSizeProbe : deps.sizeProbe
             if (!probe) throw new Error('Remote size admission is unavailable')
             const bytes = await probe.probe(target.url)
-            if (remoteExecution && (bytes === null || !Number.isSafeInteger(bytes) || bytes <= 0))
+            if (
+              remoteExecution &&
+              deps.remoteSizeProbe &&
+              (bytes === null || !Number.isSafeInteger(bytes) || bytes <= 0)
+            )
               throw new Error('Remote source size is unavailable; no job was submitted')
             sizeById.set(target.id, bytes)
           }

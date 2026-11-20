@@ -1,6 +1,6 @@
 /**
  * Keyboard Navigation ("vim-like" post traversal for Threads/Instagram) — the
- * pure focus state machine. Mirrors the CONTEXT.md components-by-responsibility
+ * pure focus state machine. Mirrors the GLOSSARY.md components-by-responsibility
  * split: this module owns ONLY the decision "which post is focused after this
  * move, given what is currently mounted"; the DOM snapshot production lives in
  * `core/adapters/meta-shared/nav-dom.ts`, the effectful wiring (focus ring,

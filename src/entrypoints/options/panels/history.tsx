@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import type { DownloadRecord } from '@/packages/history/record'
 import { Badge } from '@/components/ui/badge'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
-import { ConfirmStrip } from '@/components/confirm-strip'
+import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
+import { readyOr, useLoaded } from '@/components/use-loaded'
 import {
   groupByAuthor,
   formatRecord,
@@ -78,16 +78,16 @@ const styles = stylex.create({
   },
 })
 
-export function HistoryPanel({ settings, update }: PanelProps) {
-  const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
+const EMPTY_HISTORY = [] satisfies ReadonlyArray<DownloadRecord>
 
-  useEffect(() => {
-    void fetchHistory().then(setHistory)
-  }, [])
+export function HistoryPanel({ settings, update }: PanelProps) {
+  const historyLoad = useLoaded(fetchHistory)
+  const history = readyOr(historyLoad.state, EMPTY_HISTORY)
+  const eraseStrip = useConfirmStrip()
 
   const eraseHistory = async (): Promise<void> => {
     await browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' }).catch(() => {})
-    setHistory([])
+    historyLoad.setValue(EMPTY_HISTORY)
   }
 
   return (
@@ -149,16 +149,15 @@ export function HistoryPanel({ settings, update }: PanelProps) {
               </div>
             ))}
             <ConfirmStrip
+              control={eraseStrip}
               sentence={confirmEraseHistoryCopy(history.length)}
               confirmLabel="Erase history"
               kind="one-shot"
               onConfirm={() => void eraseHistory()}
             >
-              {(arm) => (
-                <button type="button" {...stylex.props(styles.eraseButton)} onClick={arm}>
-                  Erase history…
-                </button>
-              )}
+              <button type="button" {...stylex.props(styles.eraseButton)} onClick={eraseStrip.arm}>
+                Erase history…
+              </button>
             </ConfirmStrip>
           </>
         ) : (

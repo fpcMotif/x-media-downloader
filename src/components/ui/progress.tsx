@@ -29,9 +29,9 @@ const styles = stylex.create({
   indicator: {
     height: '100%',
     backgroundColor: tokens['--primary'],
-    transitionProperty: 'all',
-    transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
-    transitionDuration: '0.15s',
+    transitionProperty: 'width',
+    transitionTimingFunction: 'var(--xmd-ease)',
+    transitionDuration: '0.6s',
   },
 })
 

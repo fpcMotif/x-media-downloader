@@ -20,7 +20,7 @@ export function planConvexEnvSeed(
     convexUrl: env.url,
     convexSyncSecret: env.secret,
     cloudSyncEnabled: true,
-    ...(settings.cloudDeviceId === '' ? { cloudDeviceId: genId() } : {}),
+    ...(settings.cloudDeviceId === '' && { cloudDeviceId: genId() }),
   }
 }
 
@@ -37,12 +37,10 @@ export function planCloudEnvSeed(
   },
 ): Partial<Settings> | null {
   const patch: Partial<Settings> = {
-    ...(env.gdriveClientId && settings.gdriveClientId === ''
-      ? { gdriveClientId: env.gdriveClientId }
-      : {}),
-    ...(env.dropboxAppKey && settings.dropboxClientId === ''
-      ? { dropboxClientId: env.dropboxAppKey }
-      : {}),
+    ...(env.gdriveClientId &&
+      settings.gdriveClientId === '' && { gdriveClientId: env.gdriveClientId }),
+    ...(env.dropboxAppKey &&
+      settings.dropboxClientId === '' && { dropboxClientId: env.dropboxAppKey }),
   }
   return Object.keys(patch).length > 0 ? patch : null
 }

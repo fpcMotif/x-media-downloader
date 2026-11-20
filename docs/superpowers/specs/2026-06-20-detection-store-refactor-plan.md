@@ -102,7 +102,7 @@ The smells it targets:
      video + a photo and confirms the badge shows the REAL terminal outcome
      (ADR-0014 path intact).
 4. Write `docs/adr/0016-media-key-identity.md`: media-key choice, the cross-tweet
-   collapse + last-writer-filename trade-off, consequences. (CONTEXT.md **Media
+   collapse + last-writer-filename trade-off, consequences. (GLOSSARY.md **Media
    Key** / **Detected Media Set** terms already landed in this session.)
 - M3 done: `bun run check` green; `/verify` on
   https://x.com/ooaoau/status/2068286123399676218 shows correct count, working
@@ -120,4 +120,4 @@ The smells it targets:
 
 ## Definition of done
 All three milestones' "done" gates pass, including the two `/verify` runs, and
-ADR-0016 + the CONTEXT.md terms are in place.
+ADR-0016 + the GLOSSARY.md terms are in place.

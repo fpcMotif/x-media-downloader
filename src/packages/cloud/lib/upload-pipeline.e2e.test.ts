@@ -86,9 +86,9 @@ function makeTwimgFetch(opts: {
     const body = opts.body ?? new Uint8Array(1024)
     const headers = {
       'content-type': 'image/jpeg',
-      ...(opts.contentLength !== null
-        ? { 'content-length': String(opts.contentLength ?? body.length) }
-        : {}),
+      ...(opts.contentLength !== null && {
+        'content-length': String(opts.contentLength ?? body.length),
+      }),
     }
     return new Response(body, { status, headers })
   })
@@ -175,7 +175,7 @@ async function drainOnce(ledger: JobLedger, upload: Upload, now: number): Promis
     if (outcome.kind === 'success') {
       next = recordSuccess(next, job.jobId, c.token!, now, {
         bytes: outcome.bytes,
-        ...(outcome.remoteId !== undefined ? { remoteId: outcome.remoteId } : {}),
+        ...(outcome.remoteId !== undefined && { remoteId: outcome.remoteId }),
       }).ledger
     } else if (outcome.kind === 'sourceGone') {
       next = recordSourceGone(next, job.jobId, c.token!, outcome.reason).ledger

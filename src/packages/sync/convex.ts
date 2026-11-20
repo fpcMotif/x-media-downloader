@@ -50,10 +50,7 @@ export class ConvexMalformedError extends Data.TaggedError('ConvexMalformedError
 
 /** The failure channel of {@link ConvexPort.mutation} / {@link ConvexPort.query}. */
 export type ConvexMutationError =
-  | ConvexHttpError
-  | ConvexFunctionError
-  | ConvexMalformedError
-  | FetchError
+  ConvexHttpError | ConvexFunctionError | ConvexMalformedError | FetchError
 
 export interface ConvexPort {
   readonly mutation: (
@@ -106,11 +103,7 @@ export function makeConvexHttpPort(cfg: {
   // Shared request+parse for both endpoints so `mutation` and `query` can never
   // drift in how they POST the envelope or classify a failure. `endpoint` is the
   // path after `/api` (`mutation` vs `query`).
-  const call = (
-    endpoint: 'mutation' | 'query' | 'action',
-    path: string,
-    args: JsonObject,
-  ) =>
+  const call = (endpoint: 'mutation' | 'query' | 'action', path: string, args: JsonObject) =>
     Effect.gen(function* () {
       const http = yield* FetchService
       const res = yield* http.fetch(`${base}/api/${endpoint}`, {

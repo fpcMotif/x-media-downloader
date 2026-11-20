@@ -29,7 +29,7 @@ the spec + ADR-0016):
 ## Confirmed design surfaces (lift into real code)
 
 - `reduce(entry, action)` pure reducer; actions `Complete | Settle | Fail | LateInterrupt
-| ClaimClear | ResolveClear`.
+  | ClaimClear | ResolveClear`.
 - `tryClaim(entry, scope) → {entry, won}` is the atomic compare-and-set the hook and the
   drain both call — only one wins (scenario 6). This is the single-writer guard the spec
   §4.6 needs.

@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-const source = readFileSync('src/entrypoints/options/panels/release.tsx', 'utf8')
+const source = readFileSync(fileURLToPath(import.meta.resolve('./release.tsx')), 'utf8')
 
 describe('Release panel: tier + verb system (Stage redesign)', () => {
   it('carries the destructive "Account" tier badge on its header', () => {

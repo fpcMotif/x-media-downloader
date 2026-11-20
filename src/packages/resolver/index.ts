@@ -79,7 +79,7 @@ export function resolveTweetMedia(tweet: RawTweet): MediaItem[] {
       previewUrl: m.media_url_https,
       ext: extFromUrl(variant.value.url, 'mp4'),
       index: out.length,
-      ...(variant.value.bitrate !== undefined ? { bitrate: variant.value.bitrate } : {}),
+      ...(variant.value.bitrate !== undefined && { bitrate: variant.value.bitrate }),
     })
   })
   return out

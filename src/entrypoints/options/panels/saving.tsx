@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'preact/hooks'
 import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import * as stylex from '@stylexjs/stylex'
@@ -26,6 +25,8 @@ import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { PanelHeader, Section, type PanelProps } from '../ui'
+import { readyOr, useLoaded } from '@/components/use-loaded'
+import { offersGrantRequest, useOriginGrant } from '@/components/use-origin-grant'
 import { EraserIcon, iconSize } from '@/components/icons'
 
 const styles = stylex.create({
@@ -100,9 +101,14 @@ const styles = stylex.create({
 
 // Moved intact from filters.tsx (the "Daily budget" section reads/resets this
 // same `local:` storage item — nothing about its shape changes here).
+const EMPTY_USAGE = { day: '', bytes: 0, count: 0 } satisfies BudgetRecord
+
 const budgetItem = storage.defineItem<BudgetRecord>('local:daily-budget', {
-  fallback: { day: '', bytes: 0, count: 0 },
+  fallback: EMPTY_USAGE,
 })
+
+const loadUsage = async (): Promise<BudgetRecord> =>
+  freshRecord(await budgetItem.getValue(), Date.now())
 
 const TYPE_FILTERS: ReadonlyArray<{ value: MediaType; label: string }> = [
   { value: 'photo', label: 'Photos' },
@@ -146,43 +152,23 @@ const isDownloadStrategy = (value: string): value is Settings['downloadStrategy'
  *  three answer "how does media get onto my disk", so they collapse into one
  *  scrollable, hairline-sectioned panel instead of three nav items. */
 export function SavingPanel({ settings, update }: PanelProps) {
-  const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
-  const [usage, setUsage] = useState<BudgetRecord | null>(null)
+  const usageLoad = useLoaded(loadUsage)
 
   const strategy = settings.downloadStrategy
   const rpcUrl = settings.aria2RpcUrl
-  useEffect(() => {
-    if (strategy !== 'aria2') return
-    const pattern = aria2OriginPattern(rpcUrl)
-    if (Option.isNone(pattern)) {
-      setAria2Granted(null)
-      return
-    }
-    void browser.permissions.contains({ origins: [pattern.value] }).then(setAria2Granted)
-  }, [strategy, rpcUrl])
-
-  const requestAria2Access = async (): Promise<void> => {
-    const pattern = aria2OriginPattern(settings.aria2RpcUrl)
-    if (Option.isNone(pattern)) return
-    setAria2Granted(await browser.permissions.request({ origins: [pattern.value] }))
-  }
+  const aria2Access = useOriginGrant(
+    strategy === 'aria2' ? aria2OriginPattern(rpcUrl) : Option.none(),
+  )
 
   const activeMode = DOWNLOAD_MODES.find((option) => option.value === settings.downloadStrategy)
 
-  const refreshUsage = async (): Promise<void> => {
-    const stored = await budgetItem.getValue()
-    setUsage(freshRecord(stored, Date.now()))
-  }
-  useEffect(() => {
-    void refreshUsage()
-  }, [])
-
   const resetToday = async (): Promise<void> => {
     await budgetItem.setValue(freshRecord(null, Date.now()))
-    await refreshUsage()
+    usageLoad.reload()
   }
 
-  const usedMB = usage ? Math.round((usage.bytes / 1_000_000) * 10) / 10 : 0
+  const usage = readyOr(usageLoad.state, EMPTY_USAGE)
+  const usedMB = Math.round((usage.bytes / 1_000_000) * 10) / 10
 
   return (
     <>
@@ -356,10 +342,10 @@ export function SavingPanel({ settings, update }: PanelProps) {
       >
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="saveToDisk">Save to this computer</FieldLabel>
+            <FieldLabel htmlFor="saveToDisk">Download offline</FieldLabel>
             <FieldDescription>
-              Off sends new grabs only to your enabled cloud destinations — the Download mode below
-              then never writes a file
+              When off, new grabs default to the download server (via Convex). Turn on to download
+              offline to this computer
             </FieldDescription>
           </FieldContent>
           {/* The off position needs a live Cloud destination (issue #95); turning
@@ -368,7 +354,11 @@ export function SavingPanel({ settings, update }: PanelProps) {
           <Switch
             id="saveToDisk"
             checked={settings.saveToDisk}
-            disabled={settings.saveToDisk && !hasLiveCloudDestination(settings)}
+            disabled={
+              settings.saveToDisk &&
+              !settings.convexDriveEnabled &&
+              !hasLiveCloudDestination(settings)
+            }
             onCheckedChange={(checked: boolean) =>
               void update(saveToDiskToggleDelta(checked, settings))
             }
@@ -439,12 +429,12 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 onChange={(e: Event) => void update({ aria2Dir: inputValue(e) })}
               />
             </Field>
-            {aria2Granted === false && (
-              <Button type="button" sx={styles.minH10} onClick={() => void requestAria2Access()}>
+            {offersGrantRequest(aria2Access.grant) && (
+              <Button type="button" sx={styles.minH10} onClick={() => void aria2Access.request()}>
                 Grant localhost access
               </Button>
             )}
-            {aria2Granted === true && (
+            {aria2Access.grant === 'granted' && (
               <p {...stylex.props(styles.successText)}>localhost access granted</p>
             )}
           </div>
@@ -574,7 +564,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
           <FieldContent>
             <FieldLabel>Used today</FieldLabel>
             <FieldDescription sx={styles.descMonoNums}>
-              {usedMB} MB · {usage?.count ?? 0} files
+              {usedMB} MB · {usage.count} files
             </FieldDescription>
           </FieldContent>
           <Button

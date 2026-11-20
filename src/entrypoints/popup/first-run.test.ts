@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
 import { MAX_TEACHING_OPENS, markDone, recordOpen, shouldShowIntro } from './first-run'
@@ -45,7 +46,7 @@ describe('storage-backed state', () => {
 
 describe('storage key', () => {
   it('lives outside the Settings schema, under its own local: key', () => {
-    const source = readFileSync('src/entrypoints/popup/first-run.ts', 'utf8')
+    const source = readFileSync(fileURLToPath(import.meta.resolve('./first-run.ts')), 'utf8')
     expect(source).toContain("storage.defineItem<FirstRunState>('local:xmd-popup-intro'")
   })
 })

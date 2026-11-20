@@ -36,6 +36,9 @@ export interface CaptureOutbox {
    *  Fire-and-forget — the `CaptureTweets` reply never blocks on, or fails because
    *  of, the mirror. */
   mirrorCaptures(records: ReadonlyArray<TweetRecord>): void
+  /** Drop every queued event. Ordered after any mirror already running, so an
+   *  erased harvest is not sent by a later drain. */
+  clear(): Promise<void>
 }
 
 export function makeCaptureOutbox(
@@ -111,6 +114,10 @@ export function makeCaptureOutbox(
         await drain(settings)
       })
     },
+    clear: () =>
+      queue.run(async () => {
+        await runSerializedRmw(storeQueue, ledger, decodeLedger, () => [])
+      }),
   }
 }
 

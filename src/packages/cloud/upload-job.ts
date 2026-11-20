@@ -64,8 +64,8 @@ export const UploadJobSchema = Schema.Struct({
   idempotencyKey: Schema.String,
   /** The local download request id (= media item id). */
   mediaId: Schema.String,
-  cloudOnly: Schema.optional(Schema.Boolean),
-  historyOutcome: Schema.optional(Schema.Literals(['completed', 'failed'])),
+  cloudOnly: Schema.optionalKey(Schema.Boolean),
+  historyOutcome: Schema.optionalKey(Schema.Literals(['completed', 'failed'])),
   provider: CloudProvider,
   /** twimg source URL — fetched only via the SSRF guard at drain time. */
   url: Schema.String,
@@ -191,8 +191,10 @@ export function enqueue(ledger: JobLedger, spec: UploadJobSpec, now: number): Jo
   const existing = ledger.find((j) => j.idempotencyKey === idempotencyKey)
   if (existing !== undefined) {
     if (existing.status === 'succeeded' || existing.status === 'uploading') return ledger
+    const { cloudOnly: _previousMode, ...kept } = clearTransientFailures(existing)
     const revived: UploadJob = {
-      ...clearTransientFailures(existing),
+      ...kept,
+      ...(spec.cloudOnly && { cloudOnly: true }),
       url: spec.url,
       target: spec.target,
       status: 'pending',
@@ -207,7 +209,7 @@ export function enqueue(ledger: JobLedger, spec: UploadJobSpec, now: number): Jo
     jobId: idempotencyKey,
     idempotencyKey,
     mediaId: spec.mediaId,
-    ...(spec.cloudOnly ? { cloudOnly: true } : {}),
+    ...(spec.cloudOnly && { cloudOnly: true }),
     provider: spec.provider,
     url: spec.url,
     target: spec.target,
@@ -339,7 +341,7 @@ export function recordSuccess(
     verifiedAt: now,
     error: null,
     bytes: result.bytes,
-    ...(result.remoteId !== undefined ? { remoteId: result.remoteId } : {}),
+    ...(result.remoteId !== undefined && { remoteId: result.remoteId }),
   }))
 }
 
@@ -391,9 +393,28 @@ export function recordFailure(
   token: number,
   now: number,
   reason: string,
-  wait: FailureWait = {},
 ): TransitionResult {
-  return onHeldLease(ledger, jobId, token, (job) => failJob(job, now, reason, wait))
+  return onHeldLease(ledger, jobId, token, (job) => failJob(job, now, reason, {}))
+}
+
+const transientJob = (
+  job: UploadJob,
+  now: number,
+  reason: string,
+  wait: FailureWait,
+): UploadJob => {
+  const count = (job.transientFailures ?? 0) + 1
+  if (count > MAX_TRANSIENT_FAILURES) {
+    return failJob(job, now, reason, wait)
+  }
+  return {
+    ...job,
+    status: 'failed',
+    transientFailures: count,
+    leaseUntil: null,
+    nextAttemptAt: now + failureDelayMs(count, wait),
+    error: reason,
+  }
 }
 
 export function recordTransient(
@@ -402,22 +423,8 @@ export function recordTransient(
   token: number,
   now: number,
   reason: string,
-  wait: FailureWait = {},
 ): TransitionResult {
-  return onHeldLease(ledger, jobId, token, (job) => {
-    const count = (job.transientFailures ?? 0) + 1
-    if (count > MAX_TRANSIENT_FAILURES) {
-      return failJob(job, now, reason, wait)
-    }
-    return {
-      ...job,
-      status: 'failed',
-      transientFailures: count,
-      leaseUntil: null,
-      nextAttemptAt: now + failureDelayMs(count, wait),
-      error: reason,
-    }
-  })
+  return onHeldLease(ledger, jobId, token, (job) => transientJob(job, now, reason, {}))
 }
 
 /** uploading → skipped: the source URL is gone (twimg 403/410). Honest — never a fake save. */
@@ -439,34 +446,31 @@ export function recordSourceGone(
  *  settled job so the caller stops re-finding it. Same CAS-lease semantics as the
  *  underlying transitions (stale token ⇒ ledger unchanged, `settled` reflects the
  *  stored job as-is). */
-export function applyUploadOutcome(
-  ledger: JobLedger,
-  jobId: string,
-  token: number,
-  now: number,
-  outcome: UploadOutcome,
-  random: () => number = NO_JITTER,
-) {
-  let next: JobLedger
-  if (outcome.kind === 'success') {
-    next = recordSuccess(ledger, jobId, token, now, {
-      bytes: outcome.bytes,
-      ...(outcome.remoteId !== undefined ? { remoteId: outcome.remoteId } : {}),
-    }).ledger
-  } else if (outcome.kind === 'sourceGone') {
-    next = recordSourceGone(ledger, jobId, token, outcome.reason).ledger
-  } else {
-    const wait: FailureWait = {
-      ...(outcome.retryAfterMs !== undefined ? { retryAfterMs: outcome.retryAfterMs } : {}),
-      random,
+export const makeOutcomeApplier =
+  (random: () => number = NO_JITTER) =>
+  (ledger: JobLedger, jobId: string, token: number, now: number, outcome: UploadOutcome) => {
+    let next: JobLedger
+    if (outcome.kind === 'success') {
+      next = recordSuccess(ledger, jobId, token, now, {
+        bytes: outcome.bytes,
+        ...(outcome.remoteId !== undefined && { remoteId: outcome.remoteId }),
+      }).ledger
+    } else if (outcome.kind === 'sourceGone') {
+      next = recordSourceGone(ledger, jobId, token, outcome.reason).ledger
+    } else {
+      const wait: FailureWait = {
+        ...(outcome.retryAfterMs !== undefined && { retryAfterMs: outcome.retryAfterMs }),
+        random,
+      }
+      const settle = outcome.transient === true ? transientJob : failJob
+      next = onHeldLease(ledger, jobId, token, (job) =>
+        settle(job, now, outcome.reason, wait),
+      ).ledger
     }
-    next =
-      outcome.transient === true
-        ? recordTransient(ledger, jobId, token, now, outcome.reason, wait).ledger
-        : recordFailure(ledger, jobId, token, now, outcome.reason, wait).ledger
+    return { ledger: next, settled: next.find((j) => j.jobId === jobId) }
   }
-  return { ledger: next, settled: next.find((j) => j.jobId === jobId) }
-}
+
+export const applyUploadOutcome = makeOutcomeApplier()
 
 /** Operator escape: move a `dead`/`failed` job back to `pending`. */
 export function retry(ledger: JobLedger, jobId: string, now: number): TransitionResult {
@@ -553,7 +557,7 @@ export function toWireUploadJob(job: UploadJob, deviceId: string, now: number): 
     attempts: job.attempts,
     at: now,
     remotePath: job.target.path,
-    ...(job.bytes !== undefined ? { bytes: job.bytes } : {}),
-    ...(job.error !== null ? { error: job.error } : {}),
+    ...(job.bytes !== undefined && { bytes: job.bytes }),
+    ...(job.error !== null && { error: job.error }),
   }
 }

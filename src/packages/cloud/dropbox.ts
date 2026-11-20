@@ -52,7 +52,7 @@ const dropboxSuccess = (
   kind: 'success',
   bytes: meta.size ?? fallbackBytes,
   remotePath: meta.path_display ?? path,
-  ...(meta.id !== undefined ? { remoteId: meta.id } : {}),
+  ...(meta.id !== undefined && { remoteId: meta.id }),
 })
 
 const targetPath = (input: UploadInput): string => `/${input.target.path.replace(/^\/+/, '')}`

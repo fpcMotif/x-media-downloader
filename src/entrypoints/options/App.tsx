@@ -1,10 +1,12 @@
 import type { ComponentType } from 'preact'
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import { getSettings, setSettings } from '@/packages/settings'
 import type { Settings } from '@/packages/schema'
 import { tokens } from '@/theme/tokens.stylex'
 import { CheckIcon, iconSize } from '@/components/icons'
+import { useOwnedTimer } from '@/components/owned-timer'
+import { useLoaded } from '@/components/use-loaded'
 import { Badge } from '@/components/ui/badge'
 import type { PanelProps } from './ui'
 import { SavingPanel } from './panels/saving'
@@ -19,6 +21,15 @@ const SM = '@media (width >= 40rem)'
 const HOVER = '@media (hover: hover)'
 const RING_FOCUS_VISIBLE =
   '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+
+const NAV_TRANSITION =
+  'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, scale'
+const NAV_PRESS_SCALE = 0.98
+const TOAST_EXIT_MS = 150
+
+const panelEnter = stylex.keyframes({
+  '0%': { opacity: 0, transform: 'translate3d(0, 0.25rem, 0)' },
+})
 
 const styles = stylex.create({
   // xmd-options-root flex flex-col sm:flex-row min-h-screen w-full bg-background
@@ -48,6 +59,9 @@ const styles = stylex.create({
     gap: '2rem',
     paddingInline: { default: '1rem', [SM]: '2.5rem' },
     paddingBlock: { default: '1.5rem', [SM]: '3rem' },
+    animationName: panelEnter,
+    animationDuration: '0.22s',
+    animationTimingFunction: 'var(--xmd-ease)',
   },
   // pointer-events-none fixed right-5 bottom-5 transition-[opacity,transform]
   // ease-[var(--xmd-ease)] — no data-slot, so the utility's own timing wins.
@@ -69,7 +83,7 @@ const styles = stylex.create({
   toastHidden: {
     translate: '0 0.25rem',
     opacity: 0,
-    transitionDuration: '0.15s',
+    transitionDuration: `${TOAST_EXIT_MS}ms`,
   },
   // flex items-center gap-1.5 rounded-[var(--xmd-radius-3)] border border-border
   // bg-background px-3 py-1.5 text-[13px] font-medium text-success
@@ -176,12 +190,12 @@ const styles = stylex.create({
     paddingInline: '0.5rem',
     textAlign: 'left',
     fontSize: '13px',
-    transitionProperty:
-      'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to',
-    transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
-    transitionDuration: '0.15s',
+    transitionProperty: NAV_TRANSITION,
+    transitionTimingFunction: 'var(--xmd-ease)',
+    transitionDuration: '0.16s',
     outlineStyle: 'none',
     boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    scale: { default: null, ':active': NAV_PRESS_SCALE },
   },
   // active === 'about' ? font-semibold text-primary
   aboutActive: {
@@ -204,12 +218,12 @@ const styles = stylex.create({
     paddingInline: '0.75rem',
     textAlign: 'left',
     fontSize: '13px',
-    transitionProperty:
-      'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to',
-    transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
-    transitionDuration: '0.15s',
+    transitionProperty: NAV_TRANSITION,
+    transitionTimingFunction: 'var(--xmd-ease)',
+    transitionDuration: '0.16s',
     outlineStyle: 'none',
     boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    scale: { default: null, ':active': NAV_PRESS_SCALE },
   },
   // isActive: bg-primary/[0.09] font-semibold text-primary
   navItemActive: {
@@ -284,12 +298,12 @@ const isHashAlias = (hash: string): hash is keyof typeof HASH_ALIASES =>
   Object.hasOwn(HASH_ALIASES, hash)
 
 export function App() {
-  const [settings, setSettingsState] = useState<Settings | null>(null)
+  const settingsLoad = useLoaded(getSettings)
   const [section, setSection] = useState<SectionId>('saving')
   const [saved, setSaved] = useState(false)
+  const [toastShown, setToastShown] = useState(false)
 
   useEffect(() => {
-    void getSettings().then(setSettingsState)
     const handleHash = () => {
       const hash = location.hash.replace(/^#/, '')
       const target = isHashAlias(hash) ? HASH_ALIASES[hash] : hash
@@ -307,26 +321,24 @@ export function App() {
   const select = (id: SectionId): void => {
     setSection(id)
     history.replaceState(null, '', `#${id}`)
+    window.scrollTo(0, 0)
   }
 
   // One owned "Saved" feedback timer: a newer save cancels the older timer
   // before rearming, and unmount cancels whatever is pending.
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => {
-    return () => clearTimeout(savedTimer.current)
-  }, [])
+  const savedTimer = useOwnedTimer()
 
   const update = async (patch: Partial<Settings>): Promise<void> => {
-    setSettingsState(await setSettings(patch))
+    settingsLoad.setValue(await setSettings(patch))
     setSaved(true)
-    clearTimeout(savedTimer.current)
-    savedTimer.current = setTimeout(() => {
-      setSaved(false)
-      savedTimer.current = undefined
+    setToastShown(true)
+    savedTimer.arm(() => {
+      setToastShown(false)
+      savedTimer.arm(() => setSaved(false), TOAST_EXIT_MS)
     }, 1400)
   }
   const reload = async (): Promise<void> => {
-    setSettingsState(await getSettings())
+    settingsLoad.setValue(await getSettings())
   }
 
   const active: Section = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
@@ -337,15 +349,17 @@ export function App() {
       <SettingsSidebar sections={SECTIONS} active={section} onSelect={select} />
 
       <main {...stylex.props(styles.main)}>
-        <div {...stylex.props(styles.content)}>
-          {settings ? <ActivePanel settings={settings} update={update} reload={reload} /> : null}
+        <div key={section} {...stylex.props(styles.content)}>
+          {settingsLoad.state._tag === 'Ready' ? (
+            <ActivePanel settings={settingsLoad.state.value} update={update} reload={reload} />
+          ) : null}
         </div>
       </main>
 
       <output
         aria-live="polite"
         aria-atomic="true"
-        {...stylex.props(styles.toast, saved ? styles.toastShown : styles.toastHidden)}
+        {...stylex.props(styles.toast, toastShown ? styles.toastShown : styles.toastHidden)}
       >
         {saved && (
           <span {...stylex.props(styles.toastInner)}>

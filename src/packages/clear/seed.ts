@@ -43,12 +43,51 @@ export type ClearSeedVerdict =
       readonly scopes: Scope[]
       readonly origin: 'sweep' | 'hook'
       readonly unclearableCount: number
+      /** Tweets left out because one of their media was withheld unsaved. */
+      readonly partialCount: number
       readonly originTabId?: number
       /** The list the user pressed Release on, carried straight through from the sweep
        *  request — the `consented` source of the release pin above. Absent for the
        *  auto-hook, which never names a list: its pin is resolved from `originTabId`. */
       readonly consentedScope?: MembershipScope
     }
+
+/**
+ * A media item the caller asked for that this batch does not download.
+ *
+ * - `not-saved` — nothing will write it to disk (an admission skip other than
+ *   "already saved", or a rejected URL or id). Its tweet is partial.
+ * - `in-flight` — an earlier batch is still downloading it. Its terminal
+ *   outcome still arrives, so the tweet must wait for it.
+ */
+export interface WithheldMedia {
+  readonly tweetId: string
+  readonly id: string
+  readonly cause: 'not-saved' | 'in-flight'
+}
+
+/**
+ * Lists the media of one download request that the batch will not download.
+ *
+ * @param input.items Every item the caller asked for, before any rejection.
+ * @param input.admitted The items admission let through.
+ * @param input.alreadySavedIds Ids admission skipped because they are already saved.
+ */
+export function collectWithheldMedia(input: {
+  readonly items: ReadonlyArray<MediaItem>
+  readonly admitted: ReadonlyArray<MediaItem>
+  readonly alreadySavedIds: ReadonlySet<string>
+  readonly isInFlight: (id: string) => boolean
+}): WithheldMedia[] {
+  const admittedIds = new Set(input.admitted.map((item) => item.id))
+  const notSaved = input.items
+    .filter((item) => !admittedIds.has(item.id) && !input.alreadySavedIds.has(item.id))
+    .map((item): WithheldMedia => ({ tweetId: item.postId, id: item.id, cause: 'not-saved' }))
+  const inFlight = input.admitted
+    .filter((item) => input.isInFlight(item.id))
+    .map((item): WithheldMedia => ({ tweetId: item.postId, id: item.id, cause: 'in-flight' }))
+  return [...notSaved, ...inFlight]
+}
 
 /**
  * Which scopes to clear + whether to seed at all, for one download batch.
@@ -65,10 +104,12 @@ export function planClearSeed(input: {
     readonly tweetId: string
     readonly ids: ReadonlyArray<string>
   }>
+  readonly withheld?: ReadonlyArray<WithheldMedia>
   readonly settings: Settings
   readonly originTabId?: number
 }): ClearSeedVerdict {
   const { requests, mediaById, sweep, clearExpect, settings, originTabId } = input
+  const withheld = input.withheld ?? []
 
   const scopes = resolveClearScopes(sweep, settings)
   const origin: 'sweep' | 'hook' = sweep ? 'sweep' : 'hook'
@@ -90,14 +131,32 @@ export function planClearSeed(input: {
     if (cur !== undefined) byTweet.set(e.tweetId, [...new Set([...cur, ...e.ids])])
   }
 
+  // A tweet whose other media an earlier batch is still downloading must wait
+  // for them too. That batch's ledger entry is gone after a worker restart, so
+  // this batch's ids alone would mark the tweet Truly Complete too early.
+  for (const w of withheld) {
+    if (w.cause !== 'in-flight') continue
+    const cur = byTweet.get(w.tweetId)
+    if (cur !== undefined && !cur.includes(w.id)) byTweet.set(w.tweetId, [...cur, w.id])
+  }
+
+  // A partial tweet is never cleared: one unsaved media item withholds the whole tweet.
+  let partialCount = 0
+  for (const tweetId of new Set(
+    withheld.filter((w) => w.cause === 'not-saved').map((w) => w.tweetId),
+  )) {
+    if (byTweet.delete(tweetId)) partialCount += 1
+  }
+
   return {
     decision: 'seed',
     byTweet,
     scopes,
     origin,
     unclearableCount,
-    ...(originTabId === undefined ? {} : { originTabId }),
-    ...(consentedScope === undefined ? {} : { consentedScope }),
+    partialCount,
+    ...(originTabId !== undefined && { originTabId }),
+    ...(consentedScope !== undefined && { consentedScope }),
   }
 }
 

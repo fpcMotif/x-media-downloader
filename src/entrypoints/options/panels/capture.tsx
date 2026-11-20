@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, Section, type PanelProps } from '../ui'
-import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
+import {
+  EMPTY_CAPTURE_SUMMARY,
+  fetchCaptureSummary,
+  type CaptureSummary,
+} from '@/components/capture-export'
+import { readyOr, useLoaded } from '@/components/use-loaded'
 import { plural } from '@/components/capture-copy'
 
 const HOVER = '@media (hover: hover)'
@@ -63,14 +67,12 @@ const styles = stylex.create({
   },
 })
 
-export function CapturePanel({ settings, update }: PanelProps) {
-  const [summary, setSummary] = useState<CaptureSummary | null>(null)
+const loadCaptureCounts = (): Promise<CaptureSummary> => fetchCaptureSummary(0)
 
+export function CapturePanel({ settings, update }: PanelProps) {
   // Counts only (limit 0) — browsing and exporting the archive itself now lives
   // on its own page; this panel only needs the numbers for its link-out.
-  useEffect(() => {
-    void fetchCaptureSummary(0).then(setSummary)
-  }, [])
+  const summary = readyOr(useLoaded(loadCaptureCounts).state, EMPTY_CAPTURE_SUMMARY)
 
   const syncConfigured = settings.convexUrl !== '' && settings.convexSyncSecret !== ''
 
@@ -141,8 +143,7 @@ export function CapturePanel({ settings, update }: PanelProps) {
       <Section title="Archive" description="Everything captured so far, on this device.">
         <a href="#archive" {...stylex.props(styles.archiveLink)}>
           <span {...stylex.props(styles.archiveCounts)}>
-            {plural(summary?.tweets ?? 0, 'tweet')} ·{' '}
-            {plural(summary?.conversations ?? 0, 'conversation')}
+            {plural(summary.tweets, 'tweet')} · {plural(summary.conversations, 'conversation')}
           </span>
           <span {...stylex.props(styles.archiveCta)}>Open archive ›</span>
         </a>

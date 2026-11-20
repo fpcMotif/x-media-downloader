@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, it, expect, vi } from 'vitest'
 import { makeSerialQueue } from '../serial-queue'
 
@@ -12,7 +13,7 @@ const deferred = <T = void>() => {
 }
 
 // Flush the micro/macrotask queues so the promise chain settles.
-const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+const tick = (): Promise<void> => sleep(0)
 
 describe('makeSerialQueue', () => {
   it('runs pushed tasks in FIFO order', async () => {

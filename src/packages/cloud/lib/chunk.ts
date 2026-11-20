@@ -40,23 +40,21 @@ export async function streamInChunks(
     for (;;) {
       // oxlint-disable-next-line no-await-in-loop -- stream reads are inherently sequential
       const { value, done } = await reader.read()
-      if (value !== undefined && value.length > 0) {
-        total += value.length
-        let taken = 0
-        while (taken < value.length) {
-          filling ??= new Uint8Array(size)
-          const take = Math.min(size - filled, value.length - taken)
-          filling.set(value.subarray(taken, taken + take), filled)
-          filled += take
-          taken += take
-          if (filled === size) {
-            // oxlint-disable-next-line no-await-in-loop -- chunk sinks must run in offset order
-            if (held !== null) await emit(held, false)
-            held = filling
-            filling = null
-            filled = 0
-          }
-        }
+      const bytes = value ?? new Uint8Array(0)
+      total += bytes.length
+      let taken = 0
+      while (taken < bytes.length) {
+        filling ??= new Uint8Array(size)
+        const take = Math.min(size - filled, bytes.length - taken)
+        filling.set(bytes.subarray(taken, taken + take), filled)
+        filled += take
+        taken += take
+        if (filled < size) continue
+        // oxlint-disable-next-line no-await-in-loop -- chunk sinks must run in offset order
+        if (held !== null) await emit(held, false)
+        held = filling
+        filling = null
+        filled = 0
       }
       if (done) break
     }

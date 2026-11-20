@@ -83,7 +83,7 @@ export function buildAuthUrl(
  *
  * @throws OAuthError on provider rejection, CSRF state mismatch, or missing code.
  */
-export function parseAuthRedirect(redirectUrl: string, expectedState: string): { code: string } {
+export function parseAuthRedirect(redirectUrl: string, expectedState: string) {
   let u: URL
   try {
     u = new URL(redirectUrl)
@@ -230,7 +230,7 @@ export function exchangeCode(input: {
       accessToken,
       refreshToken: json.refresh_token,
       expiresAt: input.now + (json.expires_in ?? 3600) * 1000,
-      ...(account !== undefined ? { account } : {}),
+      ...(account !== undefined && { account }),
     }
   })
 }

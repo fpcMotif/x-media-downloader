@@ -44,8 +44,8 @@ const toCandidate = (v: JsonObject & { readonly url: string }): MetaMediaCandida
   const height = v['height']
   return {
     url: v.url,
-    ...(isJsonNumber(width) ? { width } : {}),
-    ...(isJsonNumber(height) ? { height } : {}),
+    ...(isJsonNumber(width) && { width }),
+    ...(isJsonNumber(height) && { height }),
   }
 }
 
@@ -74,8 +74,8 @@ const candidatesOf = (v: JsonValue | undefined): MetaMediaCandidate[] =>
 const nodeFromCandidate = (kind: 'photo' | 'video', c: MetaMediaCandidate): MetaMediaNode => ({
   kind,
   url: c.url,
-  ...(c.width !== undefined ? { width: c.width } : {}),
-  ...(c.height !== undefined ? { height: c.height } : {}),
+  ...(c.width !== undefined && { width: c.width }),
+  ...(c.height !== undefined && { height: c.height }),
 })
 
 /**

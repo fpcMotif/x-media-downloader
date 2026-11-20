@@ -12,9 +12,9 @@ const sourceResponse = (
 ): Response => {
   const headers = {
     'content-type': 'video/mp4',
-    ...(opts.contentLength !== null
-      ? { 'content-length': String(opts.contentLength ?? bytes.length) }
-      : {}),
+    ...(opts.contentLength !== null && {
+      'content-length': String(opts.contentLength ?? bytes.length),
+    }),
   }
   return new Response(opts.status && opts.status >= 400 ? null : bytes, {
     status: opts.status ?? 200,

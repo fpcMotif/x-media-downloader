@@ -45,6 +45,6 @@ export function applyOutcome(
     ...record,
     status: kind,
     finishedAt: at,
-    ...(bytes !== undefined ? { bytesReceived: bytes.received, bytesTotal: bytes.total } : {}),
+    ...(bytes !== undefined && { bytesReceived: bytes.received, bytesTotal: bytes.total }),
   }
 }

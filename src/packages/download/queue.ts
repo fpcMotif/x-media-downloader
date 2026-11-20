@@ -45,7 +45,7 @@ export function makeDownloadQueueCore(opts: {
   // Fetched strategy, the aria2 RPC) is what was missing. The transfer-level
   // backoff for an interrupted browser download still lives in interrupt-retry.
   const retrySchedule = Schedule.exponential(`${retryBaseMs} millis`, 2).pipe(
-    Schedule.both(Schedule.recurs(retries)),
+    Schedule.upTo({ times: retries }),
   )
   return {
     enqueue: (requests) =>

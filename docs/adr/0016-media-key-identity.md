@@ -27,7 +27,7 @@ identity the single thing left to fix.
 
 ## Decision
 
-**Identify every Media Item by its Media Key** (CONTEXT.md): the basename of the
+**Identify every Media Item by its Media Key** (GLOSSARY.md): the basename of the
 **resolved url** (the `/media/` photo or the chosen MP4), the same value
 `mediaKeyFromUrl` derives for hover matching.
 

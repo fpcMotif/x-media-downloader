@@ -150,6 +150,20 @@ describe('makeDetectionStore — behavior-preserving (M2 characterization)', () 
     expect(s.markAttempted('t9')).toBe(true)
   })
 
+  // A recovery reply that lands after an SPA navigation must not re-add the
+  // previous page's media: `clear()` drops the claim the reply was fetched under.
+  it('holdsRecoveryClaim is false once clear() or unmarkAttempted drops the claim', () => {
+    const s = makeDetectionStore({ mediaKeyFromUrl })
+    expect(s.holdsRecoveryClaim('t9')).toBe(false)
+    s.markAttempted('t9')
+    expect(s.holdsRecoveryClaim('t9')).toBe(true)
+    s.clear()
+    expect(s.holdsRecoveryClaim('t9')).toBe(false)
+    s.markAttempted('t9')
+    s.unmarkAttempted('t9')
+    expect(s.holdsRecoveryClaim('t9')).toBe(false)
+  })
+
   it('valuesForTweet filters by tweetId', () => {
     const s = makeDetectionStore({ mediaKeyFromUrl })
     s.addDetected([photo('a', 'KA', 't1'), photo('b', 'KB', 't2'), photo('c', 'KC', 't1')])
