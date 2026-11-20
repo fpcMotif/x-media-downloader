@@ -162,6 +162,12 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   const cloudOn = settings.cloudSyncEnabled
   const convexUrl = settings.convexUrl
   const convexSecret = settings.convexSyncSecret
+  const configKey = `${convexUrl}\n${convexSecret}`
+  const [syncStatusKey, setSyncStatusKey] = useState(configKey)
+  if (syncStatusKey !== configKey) {
+    setSyncStatusKey(configKey)
+    setSyncStatus(null)
+  }
   useEffect(() => {
     if (!cloudOn || convexUrl === '') return
     const pattern = convexOriginPattern(convexUrl)
@@ -181,9 +187,6 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
       .then((s) => setSyncStatus(Option.getOrNull(decodeSyncStatus(s))))
       .catch(() => {})
   }, [cloudOn])
-  useEffect(() => {
-    setSyncStatus(null)
-  }, [convexUrl, convexSecret])
 
   const uploadOn = settings.cloudUploadEnabled
   useEffect(() => {
