@@ -8,8 +8,7 @@
  * settings source, ledger storage, Convex transport, and clock are injected so the
  * gate and drain are testable without IndexedDB, wxt storage, or the network.
  */
-import { storage } from 'wxt/utils/storage'
-import type { JsonValue, Settings } from '@/packages/schema'
+import type { Settings } from '@/packages/schema'
 import { getSettings } from '@/packages/settings'
 import type { TweetRecord } from '@/packages/capture/record'
 import {
@@ -24,6 +23,7 @@ import {
 import { makeConvexPromisePort } from '@/packages/sync/convex'
 import { makeSerialQueue } from '@/packages/kernel/serial-queue'
 import { runSerializedRmw, type DurableStore } from '@/packages/kernel/durable-store'
+import { jsonStorageStore } from './json-store'
 import { isSyncConfigured } from './sync-config'
 import type { ConvexPort } from './convex-port'
 
@@ -134,8 +134,7 @@ const toWireCapture = (
 /** Default ledger: the durable `local:captureOutbox` key, capped on the reducer so
  *  a prolonged offline can't grow it without bound. */
 function defaultLedger(): LedgerStorage {
-  const item = storage.defineItem<JsonValue>('local:captureOutbox', { fallback: null })
-  return { get: () => item.getValue(), set: (value) => item.setValue(value) }
+  return jsonStorageStore('local:captureOutbox')
 }
 
 /** Default transport: the shared Promise airlock (core/sync/convex.ts) over the bound

@@ -1,9 +1,10 @@
 import { Effect, Schema } from 'effect'
-import { storage } from 'wxt/utils/storage'
 import type { JsonValue, Settings } from '@/packages/schema'
 import { ConvexFunctionError, makeConvexHttpPort } from '@/packages/sync/convex'
 import { makeFetchServiceLive } from '@/packages/kernel/fetch-service'
 import { makeSerialQueue } from '@/packages/kernel/serial-queue'
+import { errorReason } from '@/packages/kernel/error'
+import { jsonStorageStore } from './json-store'
 import type { DurableStore } from '@/packages/kernel/durable-store'
 import { guessMime } from '@/packages/cloud/types'
 import type { UploadSummary } from '@/packages/cloud/upload-job'
@@ -80,11 +81,7 @@ export function makeRemoteUpload(deps: {
   readonly onHistoryNotice: (notice: CloudHistoryNotice) => void | Promise<void>
   readonly store?: DurableStore
 }): RemoteUploadPort {
-  const item = storage.defineItem<JsonValue>('local:convexDriveReceipts', { fallback: null })
-  const store: DurableStore = deps.store ?? {
-    get: () => item.getValue(),
-    set: (value) => item.setValue(value),
-  }
+  const store = deps.store ?? jsonStorageStore('local:convexDriveReceipts')
   const queue = makeSerialQueue(() => {})
   const read = async (): Promise<ReadonlyArray<Receipt>> => {
     const raw = await store.get()
@@ -366,7 +363,7 @@ export function makeRemoteUpload(deps: {
           )
           await applyStatuses(batch, statuses)
         } catch (error) {
-          failures.push(error instanceof Error ? error.message : String(error))
+          failures.push(errorReason(error instanceof Error ? error : String(error)))
         }
         await reconcileBatch(index + 1)
       }

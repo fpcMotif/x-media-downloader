@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { PanelHeader, Section, type PanelProps } from '../ui'
+import { inputValue, PanelHeader, Section, type PanelProps } from '../ui'
 import { offersGrantRequest, useOriginGrant } from '@/components/use-origin-grant'
 
 const styles = stylex.create({
@@ -104,9 +104,6 @@ const replyDetail = (reply: Option.Option<{ readonly detail: string }>): string 
     onNone: () => 'The extension background did not respond.',
     onSome: (r) => r.detail,
   })
-
-const inputValue = (e: Event): string =>
-  e.target instanceof HTMLInputElement ? e.target.value : ''
 
 const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
