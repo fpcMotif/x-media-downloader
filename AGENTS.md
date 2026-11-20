@@ -4,11 +4,12 @@ Packages are deep modules — see [src/packages/README.md](./src/packages/README
 
 ## Checks
 
-`bun run check` is the gate: oxfmt, oxlint (type-aware), varlock audit, tsgo, depcruise, vitest.
+`bun run check` is the gate: oxfmt, oxlint (type-aware), varlock audit, tsgo, lint-boundaries, lint-absence, vitest.
 
 - `bun run lint` — oxlint with type-aware rules. Needs `oxlint-tsgolint`.
 - `bun run lint:complexity` — advisory cyclomatic-complexity report (max 15). Also runs on every commit via prek; it warns, it never blocks.
 - `bun run lint:boundaries` — [scripts/lint-boundaries.ts](./scripts/lint-boundaries.ts), which enforces the deep-module rule above. It replaced dependency-cruiser, which resolves through the `typescript` compiler API, refuses >= 7, and so cruised **zero** modules on this repo while still exiting 0 — a green check that parsed nothing and hid four real violations. If you ever change the checker, prove it still fails on a deliberate violation before trusting a pass.
+- `bun run lint:absence` — [scripts/lint-absence.ts](./scripts/lint-absence.ts), a ratchet on `| null` and `| undefined` unions under `src`. A type should say what absence means with an Effect `Option`, a `_tag` union, or a named literal. Each top-level folder's count must equal its number in [scripts/absence-budget.json](./scripts/absence-budget.json): a new union fails the gate, and so does a removed one until you lower the budget. `--files <folder>` ranks that folder's files by count.
 - Package manager is **bun**. Never npm/npx.
 
 ## Never game a lint rule
