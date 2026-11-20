@@ -667,6 +667,8 @@ function usePageAction<R>(config: {
 
 const openOptions = (): void => void browser.runtime.openOptionsPage()
 
+// limit 3: enough for the popup's own trimmed recent-conversation disclosure
+// (CaptureQuickActions) without paying for the full archive-browser payload.
 const loadPopupSummary = (): Promise<CaptureSummary> => fetchCaptureSummary(3)
 
 const openOptionsSection = (hash: string): void =>

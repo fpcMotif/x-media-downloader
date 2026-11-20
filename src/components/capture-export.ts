@@ -107,8 +107,8 @@ export const fetchCaptureSummary = (limit?: number): Promise<CaptureSummary> =>
     .then((s: CaptureSummary | null | undefined) => {
       // `browser.runtime.sendMessage`'s reply types as `any`, so this is a plain
       // annotation, not a cast. The background's `CaptureSummaryRequest` handler
-      // always answers `{ tweets, conversations, recent }` via `sendResponse`, or
-      // the channel dies and `.catch` below already covers that with `null`.
+      // always answers `{ tweets, conversations, recent }` via `sendResponse`. A dead
+      // channel or an empty reply rejects the promise, and `useLoaded` reports `Failed`.
       if (s === null || s === undefined)
         throw new Error('The extension worker returned no capture summary.')
       return s

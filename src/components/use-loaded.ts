@@ -27,6 +27,10 @@ export const runLoad = async <T>(
 export const readyOr = <T>(state: Loaded<T>, fallback: T): T =>
   state._tag === 'Ready' ? state.value : fallback
 
+/** Runs `stableLoad` on mount and on every `reload()`, and ignores a result that
+ *  arrives after unmount or after a newer run started.
+ *  @param stableLoad Must keep one identity for the component's lifetime. Pass a
+ *  module-level function; an inline arrow restarts the load on every render. */
 export function useLoaded<T>(stableLoad: () => Promise<T>): LoadedHandle<T> {
   const [state, setState] = useState<Loaded<T>>({ _tag: 'Loading' })
   const [reloadCount, setReloadCount] = useState(0)
