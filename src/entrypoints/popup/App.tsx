@@ -16,7 +16,12 @@ import { type OwnedTimer, useOwnedTimer } from '@/components/owned-timer'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { LayersIcon, CheckIcon, ChevronDownIcon, iconSize } from '@/components/icons'
-import { fetchCaptureSummary, type CaptureSummary } from '@/components/capture-export'
+import {
+  EMPTY_CAPTURE_SUMMARY,
+  fetchCaptureSummary,
+  type CaptureSummary,
+} from '@/components/capture-export'
+import { type Loaded, readyOr, useLoaded } from '@/components/use-loaded'
 import { plural } from '@/components/capture-copy'
 import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
 import {
@@ -662,6 +667,8 @@ function usePageAction<R>(config: {
 
 const openOptions = (): void => void browser.runtime.openOptionsPage()
 
+const loadPopupSummary = (): Promise<CaptureSummary> => fetchCaptureSummary(3)
+
 const openOptionsSection = (hash: string): void =>
   void browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}#${hash}` })
 
@@ -672,13 +679,13 @@ const openCaptureArchive = (): void => openOptionsSection('capture')
 const openReleaseSettings = (): void => openOptionsSection('release')
 
 /** Compute whether a release action is viable given the current settings. */
-function canRelease(settings: Settings | null, sweepScope?: { scope: Scope }): boolean {
-  if (settings === null) return false
+function canRelease(settingsLoad: Loaded<Settings>, sweepScope?: { scope: Scope }): boolean {
+  if (settingsLoad._tag !== 'Ready') return false
   const decision = planClearSeed({
     requests: [],
     mediaById: new Map(),
     ...(sweepScope && { sweep: sweepScope }),
-    settings,
+    settings: settingsLoad.value,
   }).decision
   return decision === 'seed'
 }
@@ -700,9 +707,9 @@ function getActiveMonitor(metrics: MetricsSnapshot | null): MetricsSnapshot | nu
 }
 
 /** Determine if the first-run intro should be displayed. */
-function shouldShowFirstRunIntro(introState: FirstRunState | null, ctx: TabContext): boolean {
-  if (introState === null || !isXContext(ctx)) return false
-  return shouldShowIntro(introState)
+function shouldShowFirstRunIntro(intro: Loaded<FirstRunState>, ctx: TabContext): boolean {
+  if (intro._tag !== 'Ready' || !isXContext(ctx)) return false
+  return shouldShowIntro(intro.value)
 }
 
 /**
@@ -729,9 +736,12 @@ function isMetaContextValue(ctx: TabContext): boolean {
 }
 
 /** Compute the sweep-scope-adjusted release logic. */
-function getWillClearSweep(settings: Settings | null, scope: MembershipScope | undefined): boolean {
-  if (scope === undefined) return canRelease(settings)
-  return canRelease(settings, { scope })
+function getWillClearSweep(
+  settingsLoad: Loaded<Settings>,
+  scope: MembershipScope | undefined,
+): boolean {
+  if (scope === undefined) return canRelease(settingsLoad)
+  return canRelease(settingsLoad, { scope })
 }
 
 // ── Zone 1 — Context strip (§2.2, §2.3) ──
@@ -1103,10 +1113,10 @@ function PreferencesZone({
   ctx: TabContext
   settings: Settings
   update: (patch: Partial<Settings>) => Promise<void>
-  captureSummary: CaptureSummary | null
+  captureSummary: CaptureSummary
 }) {
   const isMetaContext = ctx === 'instagram' || ctx === 'threads'
-  const tweets = captureSummary?.tweets ?? 0
+  const tweets = captureSummary.tweets
   const turnOnStrip = useConfirmStrip()
 
   return (
@@ -1249,7 +1259,7 @@ const armStatusClear = (timer: OwnedTimer, m: string | null, clear: () => void):
 }
 
 export function App() {
-  const [settings, setSettingsState] = useState<Settings | null>(null)
+  const settingsLoad = useLoaded(getSettings)
   const [saved, setSaved] = useState(false)
   const [toastShown, setToastShown] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
@@ -1266,8 +1276,8 @@ export function App() {
   // its own slot on start via `config.setMsg(null)`).
   const downloadMsgTimer = useOwnedTimer()
   const releaseMsgTimer = useOwnedTimer()
-  const [captureSummary, setCaptureSummary] = useState<CaptureSummary | null>(null)
-  const [introState, setIntroState] = useState<FirstRunState | null>(null)
+  const summaryLoad = useLoaded(loadPopupSummary)
+  const introLoad = useLoaded(recordOpen)
 
   // Whether the last Stage download action completed without hitting an
   // actionable error (page unreachable / no active tab) — read right after
@@ -1295,9 +1305,8 @@ export function App() {
   // list scope and releases even with all hook toggles off (seed.test.ts pins
   // that asymmetry). Computed before the loading early-return so the action
   // hooks below (which must run unconditionally) can close over it.
-  const willClear = canRelease(settings)
-  const willClearSweep = getWillClearSweep(settings, scope)
-  const aria2Caveat = settings?.clearOnSave === true && settings.downloadStrategy === 'aria2'
+  const willClear = canRelease(settingsLoad.state)
+  const willClearSweep = getWillClearSweep(settingsLoad.state, scope)
 
   // The reply is terminal (it settles after the background answers), so `busy` — the
   // "Queuing…" label — now covers the real hand-off, and the status line reports what
@@ -1342,10 +1351,6 @@ export function App() {
   })
 
   useEffect(() => {
-    void getSettings().then(setSettingsState)
-  }, [])
-
-  useEffect(() => {
     void (async () => {
       try {
         const tabs = await browser.tabs.query({
@@ -1366,16 +1371,6 @@ export function App() {
         /* permission unavailable; the action stays disabled */
       }
     })()
-  }, [])
-
-  useEffect(() => {
-    // limit 3: enough for the popup's own trimmed recent-conversation disclosure
-    // (CaptureQuickActions) without paying for the full archive-browser payload.
-    void fetchCaptureSummary(3).then(setCaptureSummary)
-  }, [])
-
-  useEffect(() => {
-    void recordOpen().then(setIntroState)
   }, [])
 
   useEffect(() => {
@@ -1420,20 +1415,23 @@ export function App() {
   const monitor = getActiveMonitor(metrics)
   const shownMonitor = useLingeringValue(monitor)
 
-  if (!settings) {
+  if (settingsLoad.state._tag !== 'Ready') {
     return (
       <div {...stylex.props(styles.popup, styles.loading)} data-xmd-popup="loading">
         Loading...
       </div>
     )
   }
+  const settings = settingsLoad.state.value
+  const captureSummary = readyOr(summaryLoad.state, EMPTY_CAPTURE_SUMMARY)
+  const aria2Caveat = settings.clearOnSave && settings.downloadStrategy === 'aria2'
 
   const onXTab = tabAdapter?.platform === 'x'
   const onListPage = ctx === 'x-list'
   const isMetaContext = isMetaContextValue(ctx)
 
   const update = async (patch: Partial<Settings>): Promise<void> => {
-    setSettingsState(await setSettings(patch))
+    settingsLoad.setValue(await setSettings(patch))
     setSaved(true)
     setToastShown(true)
     savedTimer.arm(() => {
@@ -1442,7 +1440,7 @@ export function App() {
     }, 1200)
   }
 
-  const dismissFirstRun = (): void => void markDone().then(setIntroState)
+  const dismissFirstRun = (): void => void markDone().then(introLoad.setValue)
 
   const lastDownloadOk = (): boolean => downloadOkRef.current
   const runDrain = (): void =>
@@ -1464,7 +1462,7 @@ export function App() {
   // own concern at all (a manual "Release the whole list…" pass, say).
   const releaseSummary = metrics?.releaseDiagnostics ?? null
 
-  const showFirstRun = shouldShowFirstRunIntro(introState, ctx)
+  const showFirstRun = shouldShowFirstRunIntro(introLoad.state, ctx)
   const mod = modifierLabel(settings.quickGrabModifier)
   const mod2 = secondModifierLabel(settings.quickGrabModifier)
 
@@ -1518,7 +1516,7 @@ export function App() {
       {!isMetaContext && (
         <CaptureQuickActions
           summary={captureSummary}
-          onCleared={() => setCaptureSummary({ tweets: 0, conversations: 0, recent: [] })}
+          onCleared={() => summaryLoad.setValue(EMPTY_CAPTURE_SUMMARY)}
         />
       )}
 

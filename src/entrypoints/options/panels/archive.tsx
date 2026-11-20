@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'preact/hooks'
+import type { JSX } from 'preact'
+import { useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import { Button } from '@/components/ui/button'
@@ -7,11 +8,13 @@ import { FieldDescription } from '@/components/ui/field'
 import { PanelHeader, Section } from '../ui'
 import { EraserIcon, iconSize } from '@/components/icons'
 import {
+  EMPTY_CAPTURE_SUMMARY,
   fetchCaptureSummary,
   runCaptureExport,
   type CaptureExportKind,
   type CaptureSummary,
 } from '@/components/capture-export'
+import { readyOr, useLoaded } from '@/components/use-loaded'
 import { plural, fmtDay, confirmEraseArchiveCopy } from '@/components/capture-copy'
 import { runCaptureErase } from '@/components/capture-erase'
 import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
@@ -116,10 +119,13 @@ const styles = stylex.create({
   },
 })
 
+const loadArchiveSummary = (): Promise<CaptureSummary> => fetchCaptureSummary(ARCHIVE_FETCH_LIMIT)
+
 // Takes no PanelProps — the archive is a pure data browser, not a setting; it
 // only talks to the extension worker for its own summary/export/erase messages.
 export function ArchivePanel() {
-  const [summary, setSummary] = useState<CaptureSummary | null>(null)
+  const summaryLoad = useLoaded(loadArchiveSummary)
+  const summary = readyOr(summaryLoad.state, EMPTY_CAPTURE_SUMMARY)
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [visible, setVisible] = useState(PAGE_SIZE)
@@ -127,9 +133,6 @@ export function ArchivePanel() {
   // rearming, and unmount cancels whatever is pending.
   const statusTimer = useOwnedTimer()
   const eraseStrip = useConfirmStrip()
-
-  const refreshSummary = (): void => void fetchCaptureSummary(ARCHIVE_FETCH_LIMIT).then(setSummary)
-  useEffect(refreshSummary, [])
 
   const flashStatus = (msg: string): void => {
     setStatusMsg(msg)
@@ -142,17 +145,17 @@ export function ArchivePanel() {
   }
 
   const eraseArchive = async (): Promise<void> => {
-    const outcome = await runCaptureErase(summary?.tweets ?? 0)
+    const outcome = await runCaptureErase(summary.tweets)
     if (outcome.ok) {
-      setSummary({ tweets: 0, conversations: 0, recent: [] })
+      summaryLoad.setValue(EMPTY_CAPTURE_SUMMARY)
       setQuery('')
       setVisible(PAGE_SIZE)
     }
     flashStatus(outcome.detail)
   }
 
-  const loaded = summary?.recent ?? []
-  const conversations = summary?.conversations ?? 0
+  const loaded = summary.recent
+  const conversations = summary.conversations
 
   const needle = query.trim().toLowerCase()
   const matches =
@@ -161,6 +164,66 @@ export function ArchivePanel() {
       : loaded.filter((c) => `@${c.rootHandle} ${c.rootText}`.toLowerCase().includes(needle))
   const shown = matches.slice(0, visible)
   const remaining = matches.length - shown.length
+
+  const conversationList = (): JSX.Element => {
+    if (summaryLoad.state._tag === 'Loading') return <FieldDescription>Loading…</FieldDescription>
+    if (summaryLoad.state._tag === 'Failed') {
+      return <FieldDescription>Could not load the archive. Reload this page.</FieldDescription>
+    }
+    if (shown.length > 0) {
+      return (
+        <ol {...stylex.props(styles.list)} data-xmd-divide="" aria-label="Captured conversations">
+          {shown.map((c) => (
+            <li key={c.conversationId} {...stylex.props(styles.row)}>
+              <div {...stylex.props(styles.infoCol)}>
+                <span {...stylex.props(styles.truncate)}>
+                  <span {...stylex.props(styles.handle)}>@{c.rootHandle}</span>
+                  <span {...stylex.props(styles.metaInline)}>
+                    {' '}
+                    · {plural(c.count, 'tweet')} · {fmtDay(c.lastAt)}
+                  </span>
+                </span>
+                <span {...stylex.props(styles.rootTextTruncate)}>{c.rootText}</span>
+              </div>
+              <div {...stylex.props(styles.actionsRow)}>
+                <button
+                  type="button"
+                  aria-label={`Export conversation by @${c.rootHandle} as JSON`}
+                  {...stylex.props(styles.linkFocus, styles.linkPrimary)}
+                  onClick={() => void doExport('tree', c.conversationId)}
+                >
+                  JSON
+                </button>
+                <span aria-hidden="true" {...stylex.props(styles.dotSeparator)}>
+                  ·
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Export conversation by @${c.rootHandle} as Markdown`}
+                  {...stylex.props(styles.linkFocus, styles.linkPrimary)}
+                  onClick={() => void doExport('markdown', c.conversationId)}
+                >
+                  Markdown
+                </button>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )
+    }
+    if (loaded.length > 0) {
+      return (
+        <FieldDescription sx={styles.textPretty}>
+          No conversations match “{query.trim()}”.
+        </FieldDescription>
+      )
+    }
+    return (
+      <FieldDescription sx={styles.textPretty}>
+        Nothing captured yet. Turn on Capture tweets and browse X.
+      </FieldDescription>
+    )
+  }
 
   return (
     <>
@@ -178,7 +241,7 @@ export function ArchivePanel() {
             variant="ghost"
             size="sm"
             sx={styles.minH10}
-            onClick={refreshSummary}
+            onClick={summaryLoad.reload}
           >
             Refresh
           </Button>
@@ -199,59 +262,11 @@ export function ArchivePanel() {
             sx={styles.searchInput}
           />
           <span {...stylex.props(styles.countLabel)}>
-            {plural(summary?.tweets ?? 0, 'tweet')} · {plural(conversations, 'conversation')}
+            {plural(summary.tweets, 'tweet')} · {plural(conversations, 'conversation')}
           </span>
         </div>
 
-        {summary === null ? (
-          <FieldDescription>Loading…</FieldDescription>
-        ) : shown.length > 0 ? (
-          <ol {...stylex.props(styles.list)} data-xmd-divide="" aria-label="Captured conversations">
-            {shown.map((c) => (
-              <li key={c.conversationId} {...stylex.props(styles.row)}>
-                <div {...stylex.props(styles.infoCol)}>
-                  <span {...stylex.props(styles.truncate)}>
-                    <span {...stylex.props(styles.handle)}>@{c.rootHandle}</span>
-                    <span {...stylex.props(styles.metaInline)}>
-                      {' '}
-                      · {plural(c.count, 'tweet')} · {fmtDay(c.lastAt)}
-                    </span>
-                  </span>
-                  <span {...stylex.props(styles.rootTextTruncate)}>{c.rootText}</span>
-                </div>
-                <div {...stylex.props(styles.actionsRow)}>
-                  <button
-                    type="button"
-                    aria-label={`Export conversation by @${c.rootHandle} as JSON`}
-                    {...stylex.props(styles.linkFocus, styles.linkPrimary)}
-                    onClick={() => void doExport('tree', c.conversationId)}
-                  >
-                    JSON
-                  </button>
-                  <span aria-hidden="true" {...stylex.props(styles.dotSeparator)}>
-                    ·
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={`Export conversation by @${c.rootHandle} as Markdown`}
-                    {...stylex.props(styles.linkFocus, styles.linkPrimary)}
-                    onClick={() => void doExport('markdown', c.conversationId)}
-                  >
-                    Markdown
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ol>
-        ) : loaded.length > 0 ? (
-          <FieldDescription sx={styles.textPretty}>
-            No conversations match “{query.trim()}”.
-          </FieldDescription>
-        ) : (
-          <FieldDescription sx={styles.textPretty}>
-            Nothing captured yet. Turn on Capture tweets and browse X.
-          </FieldDescription>
-        )}
+        {conversationList()}
 
         {remaining > 0 && (
           <Button
@@ -285,7 +300,7 @@ export function ArchivePanel() {
 
         <ConfirmStrip
           control={eraseStrip}
-          sentence={confirmEraseArchiveCopy(summary?.tweets ?? 0)}
+          sentence={confirmEraseArchiveCopy(summary.tweets)}
           confirmLabel="Erase the archive"
           kind="one-shot"
           onConfirm={() => void eraseArchive()}

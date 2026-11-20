@@ -175,7 +175,7 @@ const styles = stylex.create({
 })
 
 interface CaptureQuickActionsProps {
-  readonly summary: CaptureSummary | null
+  readonly summary: CaptureSummary
   /** Called after a successful erase so the parent can zero its own captureSummary
    *  state (mirrors the reset the Archive settings panel does locally). */
   readonly onCleared: () => void
@@ -197,7 +197,7 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
 
   const shownStatusMsg = useLingeringValue(statusMsg)
 
-  const tweets = summary?.tweets ?? 0
+  const tweets = summary.tweets
   // A successful erase zeroes the parent's captureSummary synchronously in
   // the same batch that sets statusMsg below — an early return on tweets===0
   // alone would unmount this block before its own flash ever painted. Stay
@@ -233,7 +233,7 @@ export function CaptureQuickActions({ summary, onCleared }: CaptureQuickActionsP
     flashStatus(outcome.detail)
   }
 
-  const recent = (summary?.recent ?? []).slice(0, RECENT_LIMIT)
+  const recent = summary.recent.slice(0, RECENT_LIMIT)
 
   return (
     <div {...stylex.props(styles.root)}>

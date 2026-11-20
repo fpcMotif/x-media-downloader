@@ -6,6 +6,7 @@ import type { Settings } from '@/packages/schema'
 import { tokens } from '@/theme/tokens.stylex'
 import { CheckIcon, iconSize } from '@/components/icons'
 import { useOwnedTimer } from '@/components/owned-timer'
+import { useLoaded } from '@/components/use-loaded'
 import { Badge } from '@/components/ui/badge'
 import type { PanelProps } from './ui'
 import { SavingPanel } from './panels/saving'
@@ -297,13 +298,12 @@ const isHashAlias = (hash: string): hash is keyof typeof HASH_ALIASES =>
   Object.hasOwn(HASH_ALIASES, hash)
 
 export function App() {
-  const [settings, setSettingsState] = useState<Settings | null>(null)
+  const settingsLoad = useLoaded(getSettings)
   const [section, setSection] = useState<SectionId>('saving')
   const [saved, setSaved] = useState(false)
   const [toastShown, setToastShown] = useState(false)
 
   useEffect(() => {
-    void getSettings().then(setSettingsState)
     const handleHash = () => {
       const hash = location.hash.replace(/^#/, '')
       const target = isHashAlias(hash) ? HASH_ALIASES[hash] : hash
@@ -329,7 +329,7 @@ export function App() {
   const savedTimer = useOwnedTimer()
 
   const update = async (patch: Partial<Settings>): Promise<void> => {
-    setSettingsState(await setSettings(patch))
+    settingsLoad.setValue(await setSettings(patch))
     setSaved(true)
     setToastShown(true)
     savedTimer.arm(() => {
@@ -338,7 +338,7 @@ export function App() {
     }, 1400)
   }
   const reload = async (): Promise<void> => {
-    setSettingsState(await getSettings())
+    settingsLoad.setValue(await getSettings())
   }
 
   const active: Section = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
@@ -350,7 +350,9 @@ export function App() {
 
       <main {...stylex.props(styles.main)}>
         <div key={section} {...stylex.props(styles.content)}>
-          {settings ? <ActivePanel settings={settings} update={update} reload={reload} /> : null}
+          {settingsLoad.state._tag === 'Ready' ? (
+            <ActivePanel settings={settingsLoad.state.value} update={update} reload={reload} />
+          ) : null}
         </div>
       </main>
 

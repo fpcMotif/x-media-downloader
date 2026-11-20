@@ -26,6 +26,7 @@ import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { PanelHeader, Section, type PanelProps } from '../ui'
+import { readyOr, useLoaded } from '@/components/use-loaded'
 import { EraserIcon, iconSize } from '@/components/icons'
 
 const styles = stylex.create({
@@ -100,9 +101,14 @@ const styles = stylex.create({
 
 // Moved intact from filters.tsx (the "Daily budget" section reads/resets this
 // same `local:` storage item — nothing about its shape changes here).
+const EMPTY_USAGE = { day: '', bytes: 0, count: 0 } satisfies BudgetRecord
+
 const budgetItem = storage.defineItem<BudgetRecord>('local:daily-budget', {
-  fallback: { day: '', bytes: 0, count: 0 },
+  fallback: EMPTY_USAGE,
 })
+
+const loadUsage = async (): Promise<BudgetRecord> =>
+  freshRecord(await budgetItem.getValue(), Date.now())
 
 const TYPE_FILTERS: ReadonlyArray<{ value: MediaType; label: string }> = [
   { value: 'photo', label: 'Photos' },
@@ -147,7 +153,7 @@ const isDownloadStrategy = (value: string): value is Settings['downloadStrategy'
  *  scrollable, hairline-sectioned panel instead of three nav items. */
 export function SavingPanel({ settings, update }: PanelProps) {
   const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
-  const [usage, setUsage] = useState<BudgetRecord | null>(null)
+  const usageLoad = useLoaded(loadUsage)
 
   const strategy = settings.downloadStrategy
   const rpcUrl = settings.aria2RpcUrl
@@ -169,20 +175,13 @@ export function SavingPanel({ settings, update }: PanelProps) {
 
   const activeMode = DOWNLOAD_MODES.find((option) => option.value === settings.downloadStrategy)
 
-  const refreshUsage = async (): Promise<void> => {
-    const stored = await budgetItem.getValue()
-    setUsage(freshRecord(stored, Date.now()))
-  }
-  useEffect(() => {
-    void refreshUsage()
-  }, [])
-
   const resetToday = async (): Promise<void> => {
     await budgetItem.setValue(freshRecord(null, Date.now()))
-    await refreshUsage()
+    usageLoad.reload()
   }
 
-  const usedMB = usage ? Math.round((usage.bytes / 1_000_000) * 10) / 10 : 0
+  const usage = readyOr(usageLoad.state, EMPTY_USAGE)
+  const usedMB = Math.round((usage.bytes / 1_000_000) * 10) / 10
 
   return (
     <>
@@ -578,7 +577,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
           <FieldContent>
             <FieldLabel>Used today</FieldLabel>
             <FieldDescription sx={styles.descMonoNums}>
-              {usedMB} MB · {usage?.count ?? 0} files
+              {usedMB} MB · {usage.count} files
             </FieldDescription>
           </FieldContent>
           <Button

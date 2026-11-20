@@ -89,20 +89,27 @@ export interface CaptureSummary {
   }>
 }
 
+export const EMPTY_CAPTURE_SUMMARY = {
+  tweets: 0,
+  conversations: 0,
+  recent: [],
+} satisfies CaptureSummary
+
 /** `limit` caps the `recent` list: 0 = counts only (popup), omitted = background
  *  default, large = the options archive browser. */
-export const fetchCaptureSummary = (limit?: number): Promise<CaptureSummary | null> =>
+export const fetchCaptureSummary = (limit?: number): Promise<CaptureSummary> =>
   browser.runtime
     .sendMessage(
       limit === undefined
         ? { _tag: 'CaptureSummaryRequest' }
         : { _tag: 'CaptureSummaryRequest', limit },
     )
-    .then((s: CaptureSummary | null) => {
+    .then((s: CaptureSummary | null | undefined) => {
       // `browser.runtime.sendMessage`'s reply types as `any`, so this is a plain
       // annotation, not a cast. The background's `CaptureSummaryRequest` handler
       // always answers `{ tweets, conversations, recent }` via `sendResponse`, or
       // the channel dies and `.catch` below already covers that with `null`.
-      return s ?? null
+      if (s === null || s === undefined)
+        throw new Error('The extension worker returned no capture summary.')
+      return s
     })
-    .catch(() => null)

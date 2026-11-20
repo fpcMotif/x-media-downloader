@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import type { DownloadRecord } from '@/packages/history/record'
@@ -6,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
 import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
+import { readyOr, useLoaded } from '@/components/use-loaded'
 import {
   groupByAuthor,
   formatRecord,
@@ -78,17 +78,16 @@ const styles = stylex.create({
   },
 })
 
-export function HistoryPanel({ settings, update }: PanelProps) {
-  const [history, setHistory] = useState<ReadonlyArray<DownloadRecord>>([])
-  const eraseStrip = useConfirmStrip()
+const EMPTY_HISTORY = [] satisfies ReadonlyArray<DownloadRecord>
 
-  useEffect(() => {
-    void fetchHistory().then(setHistory)
-  }, [])
+export function HistoryPanel({ settings, update }: PanelProps) {
+  const historyLoad = useLoaded(fetchHistory)
+  const history = readyOr(historyLoad.state, EMPTY_HISTORY)
+  const eraseStrip = useConfirmStrip()
 
   const eraseHistory = async (): Promise<void> => {
     await browser.runtime.sendMessage({ _tag: 'ClearHistoryRequest' }).catch(() => {})
-    setHistory([])
+    historyLoad.setValue(EMPTY_HISTORY)
   }
 
   return (
