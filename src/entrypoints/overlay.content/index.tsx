@@ -62,6 +62,7 @@ import {
   settleLauncher,
   type LauncherPhase,
 } from '@/packages/overlay/launcher'
+import { sameOverlaySettings, type OverlaySettings } from '@/packages/overlay/settings-view'
 import { getSettings, watchSettings } from '@/packages/settings'
 import { idlePostHotkey, postHotkeyKey } from '../../core/post-hotkey'
 import { fireCurrentPost, wholePostItemsFor, type PostGrabDeps } from './post-grab'
@@ -84,9 +85,12 @@ import { Option } from 'effect'
 import {
   clearMountedTweet,
   dispatchOverlayMessage,
+  handleLocationChange,
   isString,
   releaseRunDetail,
   releaseTerminalStage,
+  isOnlySavedChipMutation,
+  replayInlineData,
   sweepSavedStatus,
   savedStatusVisible,
   type HandlerDeps,
@@ -104,14 +108,12 @@ import { makeReleaseThrottle, noteReleaseReply } from '@/packages/clear/throttle
 import { makeHiddenAwareSleep } from '@/packages/clear/hidden-sleep'
 import { makeReleaseRecheck, type FreshTimelineMembership } from '@/packages/clear/recheck'
 import { timelineTweetIds } from '../../core/adapters/x/walk'
-import { inlineDataPayloads } from '../../core/adapters/meta-shared/inline-data'
 import type {
   CaptureTweets,
   JsonValue,
   MediaItem,
   QueueUpdate,
   RecoverTweetMediaResponse,
-  Settings,
   SavedStatusResponse,
 } from '@/packages/schema'
 
@@ -1041,15 +1043,20 @@ export default defineContentScript({
      *  everywhere else, so every later read (the debounced sweep, the observer's
      *  reschedules, applySettings) still sees the live `location`. */
     let savedStatusCommittedPath: string | null = null
+    const savedStatusUnsavedUntil = new Map<string, number>()
     const savedStatusIsActive = (): boolean =>
       savedStatusAlive &&
       adapter.platform === 'x' &&
+      document.visibilityState === 'visible' &&
       savedStatusVisible(savedStatusCommittedPath ?? location.pathname, savedStatusOn)
     const savedStatusLifecycle = makeSavedStatusLifecycle({
       isActive: savedStatusIsActive,
       root: document.body,
       delayMs: SAVED_SWEEP_DEBOUNCE_MS,
-      makeObserver: (notify) => new MutationObserver(notify),
+      makeObserver: (notify) =>
+        new MutationObserver((records) => {
+          if (!isOnlySavedChipMutation(records)) notify()
+        }),
       clock: {
         after: (ms, run) => {
           const t = setTimeout(run, ms)
@@ -1061,6 +1068,7 @@ export default defineContentScript({
           document,
           inScope: savedStatusIsActive,
           requestSavedStatus,
+          unsavedUntil: savedStatusUnsavedUntil,
         }),
     })
 
@@ -1535,7 +1543,10 @@ export default defineContentScript({
     // Settings reach open tabs live (popup writes → storage watch). Any change
     // disarms an active grab: a swapped modifier would otherwise never see its
     // keyup, leaving grab mode stuck on.
-    const applySettings = (s: Settings): void => {
+    let appliedSettings: OverlaySettings | null = null
+    const applySettings = (s: OverlaySettings): void => {
+      if (appliedSettings !== null && sameOverlaySettings(appliedSettings, s)) return
+      appliedSettings = s
       qgEnabled = s.quickGrabEnabled
       qgModifier = s.quickGrabModifier
       badgeEnabled = s.downloadBadgeEnabled
@@ -1975,23 +1986,17 @@ export default defineContentScript({
     // route changes after this are already teed live, so this is a one-shot,
     // not a MutationObserver. Instagram/Threads-only: X embeds no media JSON in
     // document scripts, so there is nothing to replay there.
-    if (adapter.platform === 'instagram' || adapter.platform === 'threads') {
-      const inlineBodies = inlineDataPayloads(document.scripts)
-      if (import.meta.env.DEV)
-        console.debug(
-          `[XMD] inline-data replay · ${adapter.platform} · ${inlineBodies.length} candidate script(s)`,
-        )
-      for (const body of inlineBodies) {
-        document.dispatchEvent(
-          new CustomEvent('xmd:media-response', { detail: { path: 'inline:document', body } }),
-        )
-      }
-    }
+    replayInlineData({
+      platform: adapter.platform,
+      document,
+      storeCount: () => store.count,
+    })
 
     // Don't lose a sub-debounce batch when the tab is navigated away or unloaded.
     ctx.addEventListener(window, 'pagehide', flushCaptures)
     ctx.addEventListener(document, 'visibilitychange', () => {
       if (document.visibilityState === 'hidden') flushCaptures()
+      savedStatusLifecycle.sync()
     })
 
     // Quick Grab hover tracking: hold the configured modifier and hover a real
@@ -2207,40 +2212,61 @@ export default defineContentScript({
     })
 
     ctx.addEventListener(window, 'wxt:locationchange', (event) => {
-      // A pre-navigation sample must not re-arm UI against detached DOM.
-      mouseHitTest.clear()
-      releaseAll()
-      resetBadge()
-      focusHover(null, null)
-      clearMetaFocusedPost()
       // "Download this page" must never inherit media detected on a previous SPA
       // route. Without this reset, visiting Tweet Detail/Likes before Bookmarks
       // makes Release enqueue those stale posts against the Bookmarks drain.
-      store.clear()
-      // An armed 5s probe that wakes up here would query the NEW timeline for a post
-      // released off the OLD one, find nothing mounted, and write `clear-recheck
-      // state=absent` about a page that no longer exists — noise evicting real evidence
-      // from the capped diagnostics ring. This is the navigation half of `cancelAll`'s
-      // contract; the teardown half is in `ctx.onInvalidated` below.
-      releaseRecheck.cancelAll()
-      settleRenderedScan()
-      // `sync()` is the ONE synchronous route reader here — everything above is
-      // route-independent, and settleRenderedScan defers its scans to rAF. WXT
-      // fires this event from inside the Navigation API `navigate` event, BEFORE
-      // the URL commits, so an unpinned read evaluates the OLD route: a
-      // /likes → /home hop takes savedStatusIsActive()'s inactive branch and the
-      // observer is never attached. `showSavedStatus` defaults ON, so that is the
-      // DEFAULT path — only a later applySettings re-armed it. Pin the committed
-      // path across the call and drop it in `finally`: `sync()` is fully
-      // synchronous (it arms the observer and starts a timer, nothing more), so
-      // the debounced sweep that fires later still reads the live `location`.
-      savedStatusCommittedPath = event.newUrl.pathname
-      try {
-        savedStatusLifecycle.sync()
-      } finally {
-        savedStatusCommittedPath = null
-      }
-      rerender()
+      handleLocationChange(
+        {
+          platform: adapter.platform,
+          document,
+          store,
+          clearMouseHitTest: () => {
+            // A pre-navigation sample must not re-arm UI against detached DOM.
+            mouseHitTest.clear()
+          },
+          releaseAll,
+          resetBadge,
+          clearHover: () => focusHover(null, null),
+          clearMetaFocusedPost,
+          traceCapture: (stage, detail) =>
+            postEvent({
+              _tag: 'DownloadTraceEvent',
+              source: 'capture',
+              stage,
+              t: Date.now(),
+              detail,
+            }),
+          cancelReleaseRecheck: () => {
+            // An armed 5s probe that wakes up here would query the NEW timeline for a post
+            // released off the OLD one, find nothing mounted, and write `clear-recheck
+            // state=absent` about a page that no longer exists — noise evicting real evidence
+            // from the capped diagnostics ring. This is the navigation half of `cancelAll`'s
+            // contract; the teardown half is in `ctx.onInvalidated` below.
+            releaseRecheck.cancelAll()
+          },
+          settleRenderedScan,
+          syncSavedStatus: (newPathname) => {
+            // `sync()` is the ONE synchronous route reader here — everything above is
+            // route-independent, and settleRenderedScan defers its scans to rAF. WXT
+            // fires this event from inside the Navigation API `navigate` event, BEFORE
+            // the URL commits, so an unpinned read evaluates the OLD route: a
+            // /likes → /home hop takes savedStatusIsActive()'s inactive branch and the
+            // observer is never attached. `showSavedStatus` defaults ON, so that is the
+            // DEFAULT path — only a later applySettings re-armed it. Pin the committed
+            // path across the call and drop it in `finally`: `sync()` is fully
+            // synchronous (it arms the observer and starts a timer, nothing more), so
+            // the debounced sweep that fires later still reads the live `location`.
+            savedStatusCommittedPath = newPathname
+            try {
+              savedStatusLifecycle.sync()
+            } finally {
+              savedStatusCommittedPath = null
+            }
+          },
+          rerender,
+        },
+        event.newUrl.pathname,
+      )
     })
 
     // The handlers' door onto `sendTracked`: it forwards the drain's `ReleaseRun`

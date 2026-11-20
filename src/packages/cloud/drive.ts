@@ -1,6 +1,17 @@
 import { Context, Effect, Layer, Option } from 'effect'
 import { streamInChunks } from './lib/chunk'
-import { authHeader, CloudHttpError, errText, jsonAs, okJson, runUpload } from './lib/http'
+import {
+  authHeader,
+  CloudHttpError,
+  cloudHttpErrorToOutcome,
+  httpFailure,
+  isCloudHttpError,
+  jsonAs,
+  okJson,
+  runUpload,
+} from './lib/http'
+
+export { cloudHttpErrorToOutcome, isCloudHttpError }
 import { FetchService, type FetchError } from '@/packages/kernel/fetch-service'
 import { FolderCache } from './lib/folder-cache'
 import { SourceFetch } from './lib/source-fetch'
@@ -36,9 +47,7 @@ export interface DriveArgs {
 
 /** Read the error body, then fail with a tagged Drive HTTP error. */
 const driveFail = (res: Response): Effect.Effect<never, CloudHttpError> =>
-  Effect.promise(() => errText(res)).pipe(
-    Effect.flatMap((body) => new CloudHttpError({ provider: 'drive', status: res.status, body })),
-  )
+  Effect.promise(() => httpFailure('drive', res)).pipe(Effect.flatMap(Effect.fail))
 
 export class DriveUploader extends Context.Service<
   DriveUploader,
@@ -184,19 +193,10 @@ export const DriveUploaderLive = Layer.effect(
               if (chunk.length > 0) reqInit.body = chunk
               const res = await doFetch(sessionUrl, reqInit)
               if (info.isLast) {
-                if (res.status !== 200 && res.status !== 201)
-                  throw new CloudHttpError({
-                    provider: 'drive',
-                    status: res.status,
-                    body: await errText(res),
-                  })
+                if (res.status !== 200 && res.status !== 201) throw await httpFailure('drive', res)
                 fileId = (await jsonAs<{ id?: string }>(res)).id ?? null
               } else if (res.status !== 308) {
-                throw new CloudHttpError({
-                  provider: 'drive',
-                  status: res.status,
-                  body: await errText(res),
-                })
+                throw await httpFailure('drive', res)
               }
             }),
           catch: (e) =>

@@ -69,6 +69,8 @@ export type UploadOutcome =
       /** Provider HTTP status when the failure was a `CloudHttpError` — lets the
        *  popup classifier dispatch structurally instead of regexing `reason`. */
       readonly status?: number
+      readonly retryAfterMs?: number
+      readonly transient?: boolean
     }
 
 /** A provider-agnostic byte sink. The Drive/Dropbox adapters each satisfy this

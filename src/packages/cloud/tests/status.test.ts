@@ -64,6 +64,15 @@ describe('classifyUploadError', () => {
   it('falls back to the message rules for a status it does not special-case (404)', () => {
     expect(classifyUploadError('source HTTP 404', 404)).toMatch(/link expired/)
   })
+
+  it.each([
+    ['drive HTTP 403: {"error":{"errors":[{"reason":"storageQuotaExceeded"}]}}', /storage is full/],
+    ['drive HTTP 403: {"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}', /rate-limited/],
+    ['drive HTTP 403: {"error":{"errors":[{"reason":"rateLimitExceeded"}]}}', /rate-limited/],
+    ['drive HTTP 403: insufficientScopes', /re-grant access/],
+  ])('classifies Drive 403 %j by body reason before falling back to access', (reason, expected) => {
+    expect(classifyUploadError(reason, 403)).toMatch(expected)
+  })
 })
 
 describe('describeUploadSummary', () => {

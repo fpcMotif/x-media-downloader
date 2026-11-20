@@ -76,6 +76,15 @@ export function postVideoKeyByDomSlot(code: string, domSlot: number): string {
   return `post:code:${code}:slot:${domSlot}`
 }
 
+export const DEFAULT_MAX_RETAINED_ITEMS = 500
+
+export interface PageScopeReset {
+  readonly resetItems: number
+  readonly retainedItems: number
+  readonly retainedKeys: number
+  readonly retainedCodes: number
+}
+
 /**
  * The page's Detected Media Set (CONTEXT.md): every Media Item found on the
  * current page plus how each was obtained, behind one object. Owns the dual index
@@ -144,21 +153,18 @@ export interface DetectionStore {
   readonly count: number
   /** Drop everything — items, keys, recovered-key provenance, and attempts. */
   clear(): void
+  resetPageScope(): PageScopeReset
 }
 
-const indexAdd = (index: Map<string, Set<string>>, postId: string, member: string): void => {
-  let set = index.get(postId)
-  if (!set) {
-    set = new Set()
-    index.set(postId, set)
-  }
-  set.add(member)
-}
-const indexRemove = (index: Map<string, Set<string>>, postId: string, member: string): void => {
-  const set = index.get(postId)
-  if (!set) return
-  set.delete(member)
-  if (set.size === 0) index.delete(postId)
+const removeFromPostIndex = <C extends { readonly size: number; delete(key: string): boolean }>(
+  index: Map<string, { readonly postId: string; readonly entries: C }>,
+  postId: string | undefined,
+  member: string,
+): void => {
+  const bucket = postId !== undefined ? index.get(postId) : undefined
+  if (!bucket) return
+  bucket.entries.delete(member)
+  if (bucket.entries.size === 0) index.delete(bucket.postId)
 }
 
 export function makeDetectionStore(deps: {
@@ -171,10 +177,13 @@ export function makeDetectionStore(deps: {
     detectedKeys: ReadonlySet<string>,
     attemptedTweetIds: ReadonlySet<string>,
   ) => string[]
+  readonly maxRetainedItems?: number
 }): DetectionStore {
+  const maxRetained = deps.maxRetainedItems ?? DEFAULT_MAX_RETAINED_ITEMS
   const byId = new Map<string, MediaItem>()
+  const pageById = new Map<string, MediaItem>()
   const byKey = new Map<string, MediaItem>()
-  const recoveredKeys = new Set<string>()
+  const recoveredByKey = new Map<string, MediaItem>()
   const attempted = new Set<string>()
   // Secondary indices so valuesForTweet/keysForTweet don't scan the whole
   // detected set per call — postId -> the ids/keys currently attributed to
@@ -185,24 +194,46 @@ export function makeDetectionStore(deps: {
   // key from one item to another). Set (not array) so an id/key already
   // indexed under its own current postId is a no-op re-add, not a reorder —
   // insertion order is preserved to match the old scan-and-filter order.
-  const idsByPost = new Map<string, Set<string>>()
-  const keysByPost = new Map<string, Set<string>>()
+  const idsByPost = new Map<
+    string,
+    { readonly postId: string; readonly entries: Map<string, MediaItem> }
+  >()
+  const keysByPost = new Map<string, { readonly postId: string; readonly entries: Set<string> }>()
 
   const setById = (id: string, item: MediaItem): void => {
     const prev = byId.get(id)
-    if (prev && prev.postId !== item.postId) indexRemove(idsByPost, prev.postId, id)
+    removeFromPostIndex(
+      idsByPost,
+      prev && prev.postId !== item.postId ? prev.postId : undefined,
+      id,
+    )
     byId.set(id, item)
-    indexAdd(idsByPost, item.postId, id)
+    pageById.set(id, item)
+    let bucket = idsByPost.get(item.postId)
+    if (!bucket) {
+      bucket = { postId: item.postId, entries: new Map() }
+      idsByPost.set(item.postId, bucket)
+    }
+    bucket.entries.set(id, item)
   }
   const setByKey = (key: string, item: MediaItem): void => {
     const prev = byKey.get(key)
-    if (prev && prev.postId !== item.postId) indexRemove(keysByPost, prev.postId, key)
+    removeFromPostIndex(
+      keysByPost,
+      prev && prev.postId !== item.postId ? prev.postId : undefined,
+      key,
+    )
     byKey.set(key, item)
-    indexAdd(keysByPost, item.postId, key)
+    let bucket = keysByPost.get(item.postId)
+    if (!bucket) {
+      bucket = { postId: item.postId, entries: new Set() }
+      keysByPost.set(item.postId, bucket)
+    }
+    bucket.entries.add(key)
   }
   const deleteByKey = (key: string): void => {
     const prev = byKey.get(key)
-    if (prev) indexRemove(keysByPost, prev.postId, key)
+    removeFromPostIndex(keysByPost, prev?.postId, key)
     byKey.delete(key)
   }
   // Video MediaItems seen so far, grouped by postId, keyed by each video's OWN
@@ -221,8 +252,10 @@ export function makeDetectionStore(deps: {
 
   const syncPostVideoKey = (postId: string): void => {
     const videos = videosByPost.get(postId)
-    const count = videos?.size ?? 0
-    const single = count === 1 ? [...videos!.values()][0]! : null
+    let single: MediaItem | null = null
+    if (videos && videos.size === 1) {
+      for (const video of videos.values()) single = video
+    }
     const codesForPost = [...codeToPostId].filter(([, p]) => p === postId).map(([c]) => c)
 
     for (const code of codesForPost) {
@@ -250,7 +283,50 @@ export function makeDetectionStore(deps: {
       }
       nextIndices.add(index)
     }
-    registeredIndicesByPost.set(postId, nextIndices)
+    if (nextIndices.size > 0) registeredIndicesByPost.set(postId, nextIndices)
+    else registeredIndicesByPost.delete(postId)
+  }
+
+  const deleteCodeKeys = (code: string, postId: string): void => {
+    deleteByKey(postVideoKey(code))
+    const indices = registeredIndicesByPost.get(postId)
+    if (!indices) return
+    for (const index of indices) {
+      deleteByKey(postVideoKeyIndexed(code, index))
+      deleteByKey(postVideoKeyByDomSlot(code, index))
+    }
+  }
+
+  const hasPageItem = (bucket: { readonly entries: Map<string, MediaItem> }): boolean => {
+    for (const id of bucket.entries.keys()) if (pageById.has(id)) return true
+    return false
+  }
+
+  const evictOverflow = (): void => {
+    if (byId.size <= maxRetained) return
+    let offPage = 0
+    for (const id of byId.keys()) if (!pageById.has(id)) offPage++
+    for (const [evictedPostId, bucket] of idsByPost) {
+      if (offPage <= maxRetained) break
+      if (hasPageItem(bucket)) continue
+      idsByPost.delete(evictedPostId)
+      for (const [id, item] of bucket.entries) {
+        byId.delete(id)
+        offPage--
+        for (const key of keysForItem(item, deps.mediaKeyFromUrl)) {
+          if (byKey.get(key) === item) {
+            deleteByKey(key)
+            recoveredByKey.delete(key)
+          }
+        }
+      }
+      if (videosByPost.delete(evictedPostId)) {
+        syncPostVideoKey(evictedPostId)
+      }
+      for (const [code, postId] of codeToPostId) {
+        if (postId === evictedPostId) codeToPostId.delete(code)
+      }
+    }
   }
 
   const addDetected = (items: ReadonlyArray<MediaItem>): MediaItem[] => {
@@ -260,8 +336,19 @@ export function makeDetectionStore(deps: {
       const keys = keysForItem(item, deps.mediaKeyFromUrl)
       // A video the tee re-surfaces after we recovered it (different id scheme)
       // would otherwise be counted twice — suppress by recovered key.
-      if (keys.some((k) => recoveredKeys.has(k))) continue
-      if (!byId.has(item.id)) added.push(item)
+      let existing: MediaItem | undefined
+      for (const key of keys) {
+        existing = recoveredByKey.get(key)
+        if (existing !== undefined) break
+      }
+      if (existing !== undefined) {
+        if (!pageById.has(existing.id)) {
+          pageById.set(existing.id, existing)
+          added.push(existing)
+        }
+        continue
+      }
+      if (!pageById.has(item.id)) added.push(item)
       setById(item.id, item)
       for (const key of keys) setByKey(key, item)
       if (item.type === 'video') {
@@ -275,11 +362,13 @@ export function makeDetectionStore(deps: {
       }
     }
     for (const postId of touchedPosts) syncPostVideoKey(postId)
-    if (import.meta.env.DEV && added.length > 0)
+    evictOverflow()
+    const surviving = added.filter((item) => byId.has(item.id))
+    if (import.meta.env.DEV && surviving.length > 0)
       console.debug(
-        `[XMD] store.addDetected · ${items.length} in → ${added.length} new (deduped ${items.length - added.length}) · total=${byId.size} keys=${byKey.size}`,
+        `[XMD] store.addDetected · ${items.length} in → ${surviving.length} new (deduped ${items.length - surviving.length}) · total=${byId.size} keys=${byKey.size}`,
       )
-    return added
+    return surviving
   }
 
   const addRecovered = (items: ReadonlyArray<MediaItem>): MediaItem[] => {
@@ -295,10 +384,11 @@ export function makeDetectionStore(deps: {
       setById(item.id, item)
       for (const key of keys) {
         setByKey(key, item)
-        recoveredKeys.add(key)
+        recoveredByKey.set(key, item)
       }
     }
-    return added
+    evictOverflow()
+    return added.filter((item) => byId.has(item.id))
   }
 
   return {
@@ -317,40 +407,51 @@ export function makeDetectionStore(deps: {
     resolve: (key) => byKey.get(key),
     keyIndex: () => byKey,
     get: (id) => byId.get(id),
-    values: () => [...byId.values()],
+    values: () => [...pageById.values()],
     valuesForTweet: (tweetId) => {
-      const ids = idsByPost.get(tweetId)
-      if (!ids) return []
-      const out: MediaItem[] = []
-      for (const id of ids) {
-        const item = byId.get(id)
-        if (item) out.push(item)
-      }
-      return out
+      const bucket = idsByPost.get(tweetId)
+      return bucket ? [...bucket.entries.values()] : []
     },
     keysForTweet: (tweetId) => {
-      const keys = keysByPost.get(tweetId)
-      return keys ? [...keys] : []
+      const bucket = keysByPost.get(tweetId)
+      return bucket ? [...bucket.entries] : []
     },
     registerPostCode: (postId, code) => {
       codeToPostId.set(code, postId)
       syncPostVideoKey(postId) // re-sync NOW in case the video(s) were already
       // added before the code linkage arrived (order-independent)
+      for (const [oldCode, oldPostId] of codeToPostId) {
+        if (codeToPostId.size <= maxRetained) break
+        codeToPostId.delete(oldCode)
+        deleteCodeKeys(oldCode, oldPostId)
+      }
     },
     postIdForCode: (code) => codeToPostId.get(code),
     get count() {
-      return byId.size
+      return pageById.size
     },
     clear: () => {
       byId.clear()
+      pageById.clear()
       byKey.clear()
-      recoveredKeys.clear()
+      recoveredByKey.clear()
       attempted.clear()
       videosByPost.clear()
       codeToPostId.clear()
       registeredIndicesByPost.clear()
       idsByPost.clear()
       keysByPost.clear()
+    },
+    resetPageScope: () => {
+      const summary: PageScopeReset = {
+        resetItems: pageById.size,
+        retainedItems: byId.size,
+        retainedKeys: byKey.size,
+        retainedCodes: codeToPostId.size,
+      }
+      pageById.clear()
+      attempted.clear()
+      return summary
     },
   }
 }

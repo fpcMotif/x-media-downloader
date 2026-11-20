@@ -223,19 +223,21 @@ export default defineContentScript({
         if (isTrackedUrl(reqUrl)) {
           if (import.meta.env.DEV)
             console.debug(`[XMD] tee fetch intercept · ${adapter.platform} · ${reqUrl}`)
-          void promise.then((res) => {
-            if (res.ok) {
-              void readTeeBody(res)
-                .then((body) => {
-                  if (body !== null) emit(new URL(reqUrl, location.origin).pathname, body)
-                })
-                .catch(() => {})
-            } else if (import.meta.env.DEV) {
-              console.debug(
-                `[XMD] tee fetch non-ok · ${adapter.platform} · status=${res.status} · ${reqUrl}`,
-              )
-            }
-          })
+          void promise
+            .then((res) => {
+              if (res.ok) {
+                void readTeeBody(res)
+                  .then((body) => {
+                    if (body !== null) emit(new URL(reqUrl, location.origin).pathname, body)
+                  })
+                  .catch(() => {})
+              } else if (import.meta.env.DEV) {
+                console.debug(
+                  `[XMD] tee fetch non-ok · ${adapter.platform} · status=${res.status} · ${reqUrl}`,
+                )
+              }
+            })
+            .catch(() => {})
         }
         if (isMutationUrl(reqUrl)) {
           const requestBody = isStringInitBody(init?.body) ? init.body : null

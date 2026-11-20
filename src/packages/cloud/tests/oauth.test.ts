@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { Effect } from 'effect'
+import { Effect, ManagedRuntime } from 'effect'
 import {
   base64UrlEncode,
   buildAuthUrl,
@@ -513,6 +513,30 @@ describe('refreshAccessToken', () => {
     await expect(
       runRefresh(fetchImpl, { cfg: GDRIVE_OAUTH, clientId: 'cid', refreshToken: 'RT', now: 0 }),
     ).rejects.toThrow(/no access_token/)
+  })
+
+  it('keeps both the error code and description on refresh rejection', async () => {
+    const fetchImpl = fetchStub(async () =>
+      jsonResponse(
+        { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' },
+        false,
+        400,
+      ),
+    )
+    const runtime = ManagedRuntime.make(makeFetchServiceLive(fetchImpl))
+    let caught: Error | undefined
+    try {
+      await runtime.runPromise(
+        refreshAccessToken({ cfg: GDRIVE_OAUTH, clientId: 'cid', refreshToken: 'RT', now: 0 }),
+      )
+    } catch (err) {
+      if (err instanceof Error) caught = err
+    } finally {
+      await runtime.dispose()
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect(caught?.message).toMatch(/invalid_grant/i)
+    expect(caught?.message).toContain('Token has been expired or revoked.')
   })
 })
 

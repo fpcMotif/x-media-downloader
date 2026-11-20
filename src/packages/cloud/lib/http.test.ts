@@ -1,6 +1,18 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Effect } from 'effect'
-import { authHeader, CloudHttpError, errText, httpErr, runUpload } from './http'
+import {
+  authHeader,
+  CloudHttpError,
+  cloudHttpErrorToOutcome,
+  errText,
+  httpErr,
+  httpFailure,
+  isCloudHttpError,
+  isTransientHttp,
+  RETRY_AFTER_CAP_MS,
+  retryAfterMs,
+  runUpload,
+} from './http'
 import { FetchError } from '@/packages/kernel/fetch-service'
 import type { ParsedSource } from './source'
 import { SIMPLE_MAX_BYTES, type UploadOutcome } from '../types'
@@ -137,6 +149,34 @@ describe('runUpload — template method', () => {
     const outcome = await Effect.runPromise(runUpload(okSource({ size: null }), s))
     expect(outcome).toEqual({ kind: 'failure', reason: 'sink exploded' })
   })
+
+  it('maps a non-Error defect via catchCause', async () => {
+    const s = sinks({ streamed: () => Effect.die('string defect') })
+    const outcome = await Effect.runPromise(runUpload(okSource({ size: null }), s))
+    expect(outcome).toEqual({ kind: 'failure', reason: 'string defect' })
+  })
+
+  it('marks a 429 CloudHttpError as transient and forwards retryAfterMs', async () => {
+    const s = sinks({
+      simple: () =>
+        Effect.fail(
+          new CloudHttpError({
+            provider: 'dropbox',
+            status: 429,
+            body: 'slow down',
+            retryAfterMs: 30_000,
+          }),
+        ),
+    })
+    const outcome = await Effect.runPromise(runUpload(okSource({ size: 3 }), s))
+    expect(outcome).toEqual({
+      kind: 'failure',
+      reason: 'dropbox HTTP 429: slow down',
+      status: 429,
+      transient: true,
+      retryAfterMs: 30_000,
+    })
+  })
 })
 
 describe('http helpers', () => {
@@ -158,5 +198,90 @@ describe('http helpers', () => {
 
   it('errText returns the response body text', async () => {
     expect(await errText(new Response('boom'))).toBe('boom')
+  })
+
+  it('retryAfterMs parses numeric seconds into milliseconds', () => {
+    expect(retryAfterMs(new Headers({ 'retry-after': '30' }))).toBe(30_000)
+  })
+
+  it('retryAfterMs returns undefined when missing, HTTP date, negative, or non-numeric', () => {
+    expect(retryAfterMs(new Headers())).toBeUndefined()
+    expect(
+      retryAfterMs(new Headers({ 'retry-after': 'Wed, 21 Oct 2015 07:28:00 GMT' })),
+    ).toBeUndefined()
+    expect(retryAfterMs(new Headers({ 'retry-after': '-5' }))).toBeUndefined()
+    expect(retryAfterMs(new Headers({ 'retry-after': 'abc' }))).toBeUndefined()
+  })
+
+  it('retryAfterMs caps huge values at RETRY_AFTER_CAP_MS', () => {
+    expect(retryAfterMs(new Headers({ 'retry-after': '99999' }))).toBe(RETRY_AFTER_CAP_MS)
+  })
+
+  it('isTransientHttp treats 429 and 5xx as transient', () => {
+    expect(isTransientHttp(429, '')).toBe(true)
+    expect(isTransientHttp(503, '')).toBe(true)
+  })
+
+  it('isTransientHttp treats Drive 403 rate limit reasons as transient', () => {
+    expect(isTransientHttp(403, '{"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}')).toBe(
+      true,
+    )
+    expect(isTransientHttp(403, '{"error":{"errors":[{"reason":"rateLimitExceeded"}]}}')).toBe(true)
+  })
+
+  it('isTransientHttp treats quota exceeded, 400, and 0 as non-transient', () => {
+    expect(isTransientHttp(403, '{"error":{"errors":[{"reason":"storageQuotaExceeded"}]}}')).toBe(
+      false,
+    )
+    expect(isTransientHttp(400, '')).toBe(false)
+    expect(isTransientHttp(0, '')).toBe(false)
+  })
+
+  it('httpFailure attaches retryAfterMs only when the response carries Retry-After', async () => {
+    const withHeader = await httpFailure(
+      'dropbox',
+      new Response('slow down', { status: 429, headers: { 'retry-after': '45' } }),
+    )
+    expect(withHeader.status).toBe(429)
+    expect(withHeader.body).toBe('slow down')
+    expect(withHeader.retryAfterMs).toBe(45_000)
+
+    const withoutHeader = await httpFailure('drive', new Response('down', { status: 503 }))
+    expect(withoutHeader.status).toBe(503)
+    expect(withoutHeader.body).toBe('down')
+    expect(withoutHeader.retryAfterMs).toBeUndefined()
+  })
+
+  it('isCloudHttpError narrows CloudHttpError instances and rejects other errors or strings', () => {
+    const httpError = new CloudHttpError({ provider: 'drive', status: 401, body: 'unauth' })
+    expect(isCloudHttpError(httpError)).toBe(true)
+    expect(isCloudHttpError(new Error('other'))).toBe(false)
+    expect(isCloudHttpError('drive HTTP 401')).toBe(false)
+  })
+
+  it('cloudHttpErrorToOutcome maps status, transient flag, and retryAfterMs', () => {
+    expect(
+      cloudHttpErrorToOutcome(
+        new CloudHttpError({
+          provider: 'drive',
+          status: 429,
+          body: 'slow',
+          retryAfterMs: 60_000,
+        }),
+      ),
+    ).toEqual({
+      kind: 'failure',
+      reason: 'drive HTTP 429: slow',
+      status: 429,
+      transient: true,
+      retryAfterMs: 60_000,
+    })
+    expect(
+      cloudHttpErrorToOutcome(new CloudHttpError({ provider: 'drive', status: 401, body: 'nope' })),
+    ).toEqual({
+      kind: 'failure',
+      reason: 'drive HTTP 401: nope',
+      status: 401,
+    })
   })
 })

@@ -22,6 +22,9 @@ const SERVER = 'Provider error — retrying shortly.'
 const LINK = 'The media link expired before it could be uploaded.'
 const STORAGE = 'Provider storage is full.'
 
+const RATE_PATTERN = /HTTP 429|rateLimit|too_many_requests/i
+const STORAGE_PATTERN = /insufficient.*storage|quotaExceeded|storageQuota/i
+
 /** Error-message rules in priority order; the first matching regex wins. The
  *  regexes are compiled once here rather than per `classifyUploadError` call.
  *  These cover the error sources that genuinely arrive as text — the source-fetch
@@ -31,19 +34,23 @@ const STORAGE = 'Provider storage is full.'
 const UPLOAD_ERROR_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/HTTP 401|invalid_grant|unauthorized|no refresh_token/i, AUTH],
   [/HTTP 403|insufficient|insufficientScopes|access_denied/i, ACCESS],
-  [/HTTP 429|rateLimit|too_many_requests/i, RATE],
+  [RATE_PATTERN, RATE],
   [/HTTP 5\d\d/, SERVER],
   [/source HTTP|sourceGone|link/i, LINK],
-  [/insufficient.*storage|quotaExceeded|storageQuota/i, STORAGE],
+  [STORAGE_PATTERN, STORAGE],
 ]
 
 /** Structural dispatch on a provider HTTP status (carried by `CloudHttpError`),
  *  mirroring the message rules' precedence (auth > access > rate > server). A
  *  status the rules don't special-case (e.g. 400/404) returns null, so the
  *  message still decides. */
-function classifyStatus(status: number): string | null {
+function classifyStatus(status: number, reason: string): string | null {
   if (status === 401) return AUTH
-  if (status === 403) return ACCESS
+  if (status === 403) {
+    if (STORAGE_PATTERN.test(reason)) return STORAGE
+    if (RATE_PATTERN.test(reason)) return RATE
+    return ACCESS
+  }
   if (status === 429) return RATE
   if (status >= 500) return SERVER
   return null
@@ -54,7 +61,7 @@ function classifyStatus(status: number): string | null {
  *  rules for the text-only error sources. */
 export function classifyUploadError(reason: string, status?: number): string {
   if (status !== undefined) {
-    const byStatus = classifyStatus(status)
+    const byStatus = classifyStatus(status, reason)
     if (byStatus !== null) return byStatus
   }
   for (const [pattern, message] of UPLOAD_ERROR_RULES) {

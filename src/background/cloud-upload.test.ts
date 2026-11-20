@@ -15,10 +15,12 @@ import { PROVIDERS } from '@/packages/cloud/provider'
 import {
   decodeLedger,
   enqueue,
+  idempotencyKeyFor,
   readyJobs,
   summarize,
   type JobLedger,
 } from '@/packages/cloud/upload-job'
+import { decodeUploadedKeys } from '@/packages/cloud/uploaded-set'
 import type { UploadOutcome, UploadTarget } from '@/packages/cloud/types'
 
 // The cloud-upload SHELL through its injected seams (ADR-0013/0017). The pure
@@ -95,6 +97,8 @@ function fakeLedger(initial: JsonValue = null, opts: { delay?: boolean } = {}) {
   return box
 }
 
+const fakeUploaded = (initial: JsonValue = null) => fakeLedger(initial)
+
 const ok = (bytes = 100): UploadOutcome => ({ kind: 'success', bytes, remotePath: target.path })
 
 const fakeRuntime = (over: Partial<CloudRuntimePort> = {}): CloudRuntimePort => ({
@@ -147,11 +151,13 @@ const makeCU = (over: Partial<CloudUploadDeps> = {}) =>
     getBackfillRecords: async () => [],
     now: () => NOW,
     ledger: fakeLedger(),
+    uploaded: fakeUploaded(),
     runtime: fakeRuntime(),
     alarms: fakeAlarms(),
     badge: fakeBadge(),
     authFlow: fakeAuthFlow(),
     setSettings: async () => connected(),
+    random: () => 1,
     ...over,
   })
 
@@ -764,6 +770,82 @@ describe('backfillCloudUploads', () => {
     await vi.waitFor(() => expect(runtime.uploadDrive).toHaveBeenCalledTimes(1))
     expect(runtime.uploadDropbox).not.toHaveBeenCalled()
   })
+
+  it('backfill replies while a drain is in flight', async () => {
+    const ledger = fakeLedger(null)
+    let releaseUpload: ((outcome: UploadOutcome) => void) | undefined
+    let calls = 0
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(() => {
+      calls += 1
+      if (calls === 1) {
+        return new Promise<UploadOutcome>((resolve) => {
+          releaseUpload = resolve
+        })
+      }
+      return Promise.resolve(ok())
+    })
+    const runtime = fakeRuntime({ uploadDrive })
+    const cu = makeCU({
+      ledger,
+      runtime,
+      getBackfillRecords: async () => [
+        {
+          requestId: 'r1',
+          filename: 'alice/old.mp4',
+          media: { url: 'https://video.twimg.com/old.mp4', handle: 'alice', ext: 'mp4' },
+        },
+      ],
+    })
+    await cu.recordCloudUploads(connected(), [
+      {
+        item: { id: 'm0', url: 'https://video.twimg.com/0.mp4', handle: 'alice', ext: 'mp4' },
+        filename: 'twitter/pic.jpg',
+      },
+    ])
+    await vi.waitFor(() => expect(uploadDrive).toHaveBeenCalledTimes(1))
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const blocked = new Promise<'blocked'>((resolve) => {
+        timer = setTimeout(() => resolve('blocked'), 200)
+      })
+      const result = await Promise.race([cu.backfillCloudUploads(), blocked])
+      expect(result).toEqual(expect.objectContaining({ ok: true, queued: 1 }))
+    } finally {
+      clearTimeout(timer)
+      releaseUpload?.(ok())
+      await cu.uploadQueue.run(async () => {})
+    }
+  })
+
+  it('backfill does not re-queue media whose succeeded rows were pruned', async () => {
+    const ledger = fakeLedger(null)
+    const uploaded = fakeUploaded()
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
+    const records = Array.from({ length: 60 }, (_, i) => ({
+      requestId: `r${i}`,
+      filename: `alice/old-${i}.mp4`,
+      media: { url: `https://video.twimg.com/old-${i}.mp4`, handle: 'alice', ext: 'mp4' },
+    }))
+    const cu = makeCU({
+      ledger,
+      uploaded,
+      runtime,
+      getBackfillRecords: async () => records,
+    })
+    const first = await cu.backfillCloudUploads()
+    expect(first.ok).toBe(true)
+    expect(first.queued).toBe(60)
+    await cu.uploadQueue.run(async () => {})
+    expect(uploadDrive).toHaveBeenCalledTimes(60)
+    const succeededRows = decodeLedger(ledger.value).filter((j) => j.status === 'succeeded')
+    expect(succeededRows.length).toBeLessThanOrEqual(50)
+
+    const second = await cu.backfillCloudUploads()
+    await cu.uploadQueue.run(async () => {})
+    expect(second.queued).toBe(0)
+    expect(uploadDrive).toHaveBeenCalledTimes(60)
+  })
 })
 
 describe('resumeOnBoot', () => {
@@ -775,6 +857,37 @@ describe('resumeOnBoot', () => {
     cu.resumeOnBoot()
     await vi.waitFor(() => expect(decodeLedger(ledger.value)[0]?.status).toBe('succeeded'))
     expect(uploadDrive).toHaveBeenCalledTimes(1)
+  })
+
+  it('boot sweep remembers succeeded rows', async () => {
+    const idempotencyKey = idempotencyKeyFor('m0', 'gdrive')
+    const ledger = fakeLedger([
+      {
+        jobId: idempotencyKey,
+        idempotencyKey,
+        mediaId: 'm0',
+        provider: 'gdrive',
+        url: 'https://video.twimg.com/0.mp4',
+        target: {
+          path: target.path,
+          folder: target.folder,
+          filename: target.filename,
+          contentType: target.contentType,
+        },
+        status: 'succeeded',
+        attempts: 0,
+        nextAttemptAt: NOW,
+        leaseUntil: null,
+        leaseSeq: 0,
+        verifiedAt: NOW,
+        error: null,
+      },
+    ])
+    const uploaded = fakeUploaded()
+    const cu = makeCU({ ledger, uploaded })
+    cu.resumeOnBoot()
+    await cu.uploadQueue.run(async () => {})
+    expect(decodeUploadedKeys(uploaded.value)).toEqual([idempotencyKey])
   })
 })
 
@@ -963,6 +1076,39 @@ describe('recordCloudUploads — gating (no side effects)', () => {
     expect(decodeLedger(ledger.value)[0]?.provider).toBe('gdrive')
     expect(runtime.uploadDropbox).not.toHaveBeenCalled()
   })
+
+  it('skips remembered keys on repeat non-cloud-only enqueue after pruning', async () => {
+    const ledger = fakeLedger(null)
+    const uploaded = fakeUploaded([idempotencyKeyFor(item.item.id, 'gdrive')])
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
+    const cu = makeCU({ ledger, uploaded, runtime })
+    const accepted = await cu.recordCloudUploads(connected({ saveToDisk: true }), [item])
+    await cu.uploadQueue.run(async () => {})
+    expect(accepted).toEqual([])
+    expect(decodeLedger(ledger.value)).toEqual([])
+    expect(uploadDrive).not.toHaveBeenCalled()
+  })
+
+  it('still enqueues remembered keys for cloud-only saves', async () => {
+    const ledger = fakeLedger(null)
+    const uploaded = fakeUploaded([idempotencyKeyFor(item.item.id, 'gdrive')])
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ uploadDrive })
+    const cu = makeCU({
+      ledger,
+      uploaded,
+      runtime,
+      getSettings: async () => connected({ saveToDisk: false }),
+    })
+    const accepted = await cu.recordCloudUploads(connected({ saveToDisk: false }), [item])
+    expect(accepted).toEqual(['A'])
+    expect(decodeLedger(ledger.value)).toEqual([
+      expect.objectContaining({ mediaId: 'A', cloudOnly: true }),
+    ])
+    await cu.uploadQueue.run(async () => {})
+    expect(uploadDrive).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('drainUploadJobs — exhausted claim', () => {
@@ -1007,5 +1153,426 @@ describe('badge', () => {
     await cu.drainUploadJobs()
     expect(set).toHaveBeenCalledWith('1')
     expect(setColor).toHaveBeenCalledWith('#dc2626')
+  })
+})
+
+const toLedgerJson = (jobs: JobLedger): JsonValue =>
+  jobs.map((job) => ({
+    jobId: job.jobId,
+    idempotencyKey: job.idempotencyKey,
+    mediaId: job.mediaId,
+    provider: job.provider,
+    url: job.url,
+    target: {
+      path: job.target.path,
+      folder: job.target.folder,
+      filename: job.target.filename,
+      contentType: job.target.contentType,
+    },
+    status: job.status,
+    attempts: job.attempts,
+    nextAttemptAt: job.nextAttemptAt,
+    leaseUntil: job.leaseUntil,
+    leaseSeq: job.leaseSeq,
+    verifiedAt: job.verifiedAt,
+    error: job.error,
+    ...(job.cloudOnly !== undefined ? { cloudOnly: job.cloudOnly } : {}),
+    ...(job.historyOutcome !== undefined ? { historyOutcome: job.historyOutcome } : {}),
+    ...(job.remoteId !== undefined ? { remoteId: job.remoteId } : {}),
+    ...(job.bytes !== undefined ? { bytes: job.bytes } : {}),
+    ...(job.transientFailures !== undefined ? { transientFailures: job.transientFailures } : {}),
+  }))
+
+describe('drainUploadJobs — auth pause and Retry-After (#113)', () => {
+  it('pauses a provider whose refresh token is revoked', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(3)))
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
+    const refreshAccessToken = vi.fn<CloudRuntimePort['refreshAccessToken']>(async () => {
+      throw new Error('invalid_grant: Token has been expired or revoked.')
+    })
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ refreshAccessToken, uploadDrive })
+    const cu = makeCU({
+      getSettings: async () => connected({ [gd.expiry]: NOW - 1 }),
+      ledger,
+      runtime,
+      alarms,
+    })
+
+    await cu.drainUploadJobs()
+
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1)
+    expect(uploadDrive).not.toHaveBeenCalled()
+    const jobs = decodeLedger(ledger.value)
+    expect(jobs).toHaveLength(3)
+    for (const job of jobs) {
+      expect(job.status).toBe('pending')
+      expect(job.attempts).toBe(0)
+    }
+    expect((await cu.cloudUploadStatus()).lastError).toBe(
+      'Authorization expired — reconnect the provider.',
+    )
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('does not arm an alarm for a paused provider even when it has a future-backoff job', async () => {
+    const seeded = seedJobs(2)
+    const futureJob = {
+      ...seeded[1]!,
+      status: 'failed' as const,
+      attempts: 1,
+      nextAttemptAt: NOW + 30_000,
+    }
+    const ledger = fakeLedger(toLedgerJson([seeded[0]!, futureJob]))
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
+    const runtime = fakeRuntime({
+      refreshAccessToken: vi.fn<CloudRuntimePort['refreshAccessToken']>(async () => {
+        throw new Error('invalid_grant: Token has been expired or revoked.')
+      }),
+    })
+    const cu = makeCU({
+      getSettings: async () => connected({ [gd.expiry]: NOW - 1 }),
+      ledger,
+      runtime,
+      alarms,
+    })
+
+    await cu.drainUploadJobs()
+
+    expect(create).not.toHaveBeenCalled()
+    expect(clear).toHaveBeenCalledWith(cu.uploadAlarm)
+  })
+
+  it('records an ordinary failure without pausing when token refresh fails transiently', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(1)))
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({
+      refreshAccessToken: vi.fn<CloudRuntimePort['refreshAccessToken']>(async () => {
+        throw new Error('token endpoint HTTP 503')
+      }),
+      uploadDrive,
+    })
+    const cu = makeCU({
+      getSettings: async () => connected({ [gd.expiry]: NOW - 1 }),
+      ledger,
+      runtime,
+      alarms,
+    })
+
+    await cu.drainUploadJobs()
+
+    expect(uploadDrive).not.toHaveBeenCalled()
+    const job = decodeLedger(ledger.value)[0]!
+    expect(job.status).toBe('failed')
+    expect(job.attempts).toBe(1)
+    expect(create).toHaveBeenCalledWith(cu.uploadAlarm, NOW + 5_000)
+  })
+
+  it('resumes a paused provider after reconnect', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(3)))
+    let currentSettings = connected({ [gd.expiry]: NOW - 1 })
+    let revoked = true
+    const refreshAccessToken = vi.fn<CloudRuntimePort['refreshAccessToken']>(async () => {
+      if (revoked) throw new Error('invalid_grant: Token has been expired or revoked.')
+      return { accessToken: 'fresh-access', expiresAt: NOW + 3_600_000 }
+    })
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const runtime = fakeRuntime({ refreshAccessToken, uploadDrive })
+    const cu = makeCU({
+      getSettings: async () => currentSettings,
+      setSettings: async (patch) => {
+        currentSettings = { ...currentSettings, ...patch }
+        return currentSettings
+      },
+      ledger,
+      runtime,
+    })
+
+    await cu.drainUploadJobs()
+    expect(decodeLedger(ledger.value).every((j) => j.status === 'pending')).toBe(true)
+
+    revoked = false
+    const res = await cu.runOAuthConnect('gdrive', 'gdrive-client')
+    expect(res.ok).toBe(true)
+    await cu.uploadQueue.run(async () => {})
+
+    const jobs = decodeLedger(ledger.value)
+    expect(jobs).toHaveLength(3)
+    expect(jobs.every((j) => j.status === 'succeeded')).toBe(true)
+    expect(uploadDrive).toHaveBeenCalledTimes(3)
+  })
+
+  it('a paused provider does not block another provider', async () => {
+    let seeded = enqueue(
+      [],
+      { mediaId: 'd0', provider: 'gdrive', url: 'https://video.twimg.com/d0.mp4', target },
+      NOW,
+    )
+    seeded = enqueue(
+      seeded,
+      { mediaId: 'b0', provider: 'dropbox', url: 'https://video.twimg.com/b0.mp4', target },
+      NOW,
+    )
+    const ledger = fakeLedger(toLedgerJson(seeded))
+    const refreshAccessToken = vi.fn<CloudRuntimePort['refreshAccessToken']>(async () => {
+      throw new Error('invalid_grant: Token has been expired or revoked.')
+    })
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => ok())
+    const uploadDropbox = vi.fn<CloudRuntimePort['uploadDropbox']>(async () => ok())
+    const runtime = fakeRuntime({ refreshAccessToken, uploadDrive, uploadDropbox })
+    const bothSettings = {
+      ...connected({ [gd.expiry]: NOW - 1 }),
+      [dx.clientId]: 'dropbox-client',
+      [dx.accessToken]: 'dropbox-access',
+      [dx.refreshToken]: 'dropbox-refresh',
+      [dx.expiry]: NOW + 3_600_000,
+    } satisfies Settings
+    const cu = makeCU({
+      getSettings: async () => bothSettings,
+      ledger,
+      runtime,
+    })
+
+    await cu.drainUploadJobs()
+
+    const jobs = decodeLedger(ledger.value)
+    const driveJob = jobs.find((j) => j.provider === 'gdrive')
+    const dropboxJob = jobs.find((j) => j.provider === 'dropbox')
+    expect(driveJob?.status).toBe('pending')
+    expect(driveJob?.attempts).toBe(0)
+    expect(dropboxJob?.status).toBe('succeeded')
+    expect(uploadDrive).not.toHaveBeenCalled()
+    expect(uploadDropbox).toHaveBeenCalledTimes(1)
+  })
+
+  it('a 401 upload forces a token refresh, not a pause', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(1)))
+    let now = NOW
+    let currentSettings = connected()
+    let calls = 0
+    const uploadDrive = vi.fn<CloudRuntimePort['uploadDrive']>(async () => {
+      calls += 1
+      if (calls === 1) return { kind: 'failure', reason: 'gdrive HTTP 401', status: 401 }
+      return ok()
+    })
+    const refreshAccessToken = vi.fn<CloudRuntimePort['refreshAccessToken']>(async () => ({
+      accessToken: 'fresh-access',
+      expiresAt: now + 3_600_000,
+    }))
+    const runtime = fakeRuntime({ uploadDrive, refreshAccessToken })
+    const cu = makeCU({
+      now: () => now,
+      getSettings: async () => currentSettings,
+      setSettings: async (patch) => {
+        currentSettings = { ...currentSettings, ...patch }
+        return currentSettings
+      },
+      ledger,
+      runtime,
+    })
+
+    await cu.drainUploadJobs()
+    const after401 = decodeLedger(ledger.value)[0]!
+    expect(after401.status).toBe('failed')
+    expect(after401.attempts).toBe(0)
+    expect(currentSettings[gd.accessToken]).toBe('')
+
+    now = after401.nextAttemptAt
+    await cu.drainUploadJobs()
+
+    const afterRetry = decodeLedger(ledger.value)[0]!
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1)
+    expect(afterRetry.status).toBe('succeeded')
+    expect(afterRetry.attempts).toBe(0)
+    expect(uploadDrive).toHaveBeenLastCalledWith(
+      expect.objectContaining({ accessToken: 'fresh-access' }),
+      expect.anything(),
+    )
+  })
+
+  it('a rate-limited upload waits for Retry-After', async () => {
+    const ledger = fakeLedger(
+      toLedgerJson(
+        enqueue(
+          [],
+          { mediaId: 'r0', provider: 'dropbox', url: 'https://video.twimg.com/r0.mp4', target },
+          NOW,
+        ),
+      ),
+    )
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
+    const runtime = fakeRuntime({
+      uploadDropbox: vi.fn<CloudRuntimePort['uploadDropbox']>(async () => ({
+        kind: 'failure',
+        reason: 'dropbox HTTP 429',
+        status: 429,
+        transient: true,
+        retryAfterMs: 120_000,
+      })),
+    })
+    const cu = makeCU({
+      getSettings: async () => connectedDropbox(),
+      ledger,
+      runtime,
+      alarms,
+      random: () => 0,
+    })
+
+    await cu.drainUploadJobs()
+
+    const job = decodeLedger(ledger.value)[0]!
+    expect(job.status).toBe('failed')
+    expect(job.attempts).toBe(0)
+    expect(job.nextAttemptAt).toBe(NOW + 120_000)
+    expect(create).toHaveBeenCalledWith(cu.uploadAlarm, NOW + 120_000)
+  })
+
+  it('forwards the injected random source to jitter backoff delays', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(1)))
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
+    const runtime = fakeRuntime({
+      uploadDrive: vi.fn<CloudRuntimePort['uploadDrive']>(async () => ({
+        kind: 'failure',
+        reason: 'drive HTTP 503',
+        status: 503,
+        transient: true,
+      })),
+    })
+    const cu = makeCU({
+      ledger,
+      runtime,
+      alarms,
+      random: () => 0.5,
+    })
+
+    await cu.drainUploadJobs()
+
+    const job = decodeLedger(ledger.value)[0]!
+    expect(job.status).toBe('failed')
+    expect(job.attempts).toBe(0)
+    expect(job.nextAttemptAt).toBe(NOW + 2_500)
+    expect(create).toHaveBeenCalledWith(cu.uploadAlarm, NOW + 2_500)
+  })
+
+  it('a 401 from resolveDriveRoot clears the cached access token and retries without burning attempts', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(1)))
+    let now = NOW
+    let currentSettings = connected()
+    let rootCalls = 0
+    const seenAuthHeaders: string[] = []
+    const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+      const endpoint = url instanceof URL ? url.href : url instanceof Request ? url.url : url
+      if (endpoint.includes('/drive/v3/files/root')) {
+        rootCalls += 1
+        seenAuthHeaders.push(new Headers(init?.headers).get('authorization') ?? '')
+        if (rootCalls === 1) return new Response('unauthorized', { status: 401 })
+        return new Response(JSON.stringify({ id: 'root-id' }), { status: 200 })
+      }
+      if (endpoint === PROVIDERS.gdrive.oauth.tokenEndpoint) {
+        return new Response(JSON.stringify({ access_token: 'fresh-access', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (endpoint === 'https://video.twimg.com/0.mp4') {
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'content-type': 'video/mp4', 'content-length': '3' },
+        })
+      }
+      if (endpoint.includes('/drive/v3/files?')) {
+        return new Response(JSON.stringify({ files: [{ id: 'folder-id' }] }), { status: 200 })
+      }
+      if (endpoint.includes('/upload/drive/v3/files')) {
+        return new Response(JSON.stringify({ id: 'uploaded-file-id' }), { status: 200 })
+      }
+      return new Response('unexpected', { status: 500 })
+    })
+    const cu = makeCloudUpload({
+      queueError: () => () => {},
+      getSettings: async () => currentSettings,
+      setSettings: async (patch) => {
+        currentSettings = { ...currentSettings, ...patch }
+        return currentSettings
+      },
+      fetchImpl,
+      getBackfillRecords: async () => [],
+      now: () => now,
+      ledger,
+      uploaded: fakeUploaded(),
+      alarms: fakeAlarms(),
+      badge: fakeBadge(),
+      authFlow: fakeAuthFlow(),
+      random: () => 1,
+    })
+
+    await cu.drainUploadJobs()
+
+    const after401 = decodeLedger(ledger.value)[0]!
+    expect(after401.status).toBe('failed')
+    expect(after401.attempts).toBe(0)
+    expect(currentSettings[gd.accessToken]).toBe('')
+    expect(currentSettings[gd.expiry]).toBe(0)
+    expect((await cu.cloudUploadStatus()).lastError).toBe(
+      'Authorization expired — reconnect the provider.',
+    )
+
+    now = after401.nextAttemptAt
+    await cu.drainUploadJobs()
+
+    const afterRetry = decodeLedger(ledger.value)[0]!
+    expect(afterRetry.status).toBe('succeeded')
+    expect(afterRetry.attempts).toBe(0)
+    expect(seenAuthHeaders).toEqual(['Bearer gdrive-access', 'Bearer fresh-access'])
+  })
+
+  it('a 429 from resolveDriveRoot honors Retry-After and retries as transient without burning attempts', async () => {
+    const ledger = fakeLedger(toLedgerJson(seedJobs(1)))
+    const create = vi.fn<AlarmPort['create']>(async () => {})
+    const clear = vi.fn<AlarmPort['clear']>(async () => {})
+    const alarms: AlarmPort = { create, clear }
+    const fetchImpl = vi.fn<typeof fetch>(async (url) => {
+      const endpoint = url instanceof URL ? url.href : url instanceof Request ? url.url : url
+      if (endpoint.includes('/drive/v3/files/root')) {
+        return new Response('rate limited', { status: 429, headers: { 'retry-after': '90' } })
+      }
+      return new Response('unexpected', { status: 500 })
+    })
+    const cu = makeCloudUpload({
+      queueError: () => () => {},
+      getSettings: async () => connected(),
+      setSettings: async () => connected(),
+      fetchImpl,
+      getBackfillRecords: async () => [],
+      now: () => NOW,
+      ledger,
+      uploaded: fakeUploaded(),
+      alarms,
+      badge: fakeBadge(),
+      authFlow: fakeAuthFlow(),
+      random: () => 0,
+    })
+
+    await cu.drainUploadJobs()
+
+    const job = decodeLedger(ledger.value)[0]!
+    expect(job.status).toBe('failed')
+    expect(job.attempts).toBe(0)
+    expect(job.nextAttemptAt).toBe(NOW + 90_000)
+    expect(create).toHaveBeenCalledWith(cu.uploadAlarm, NOW + 90_000)
+    expect((await cu.cloudUploadStatus()).lastError).toBe(
+      'Provider rate-limited the upload — retrying with backoff.',
+    )
   })
 })

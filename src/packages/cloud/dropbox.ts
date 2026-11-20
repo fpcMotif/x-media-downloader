@@ -1,6 +1,6 @@
 import { Context, Effect, Layer } from 'effect'
 import { streamInChunks } from './lib/chunk'
-import { authHeader, CloudHttpError, errText, jsonAs, okJson, runUpload } from './lib/http'
+import { authHeader, CloudHttpError, httpFailure, jsonAs, okJson, runUpload } from './lib/http'
 import { FetchService } from '@/packages/kernel/fetch-service'
 import { SourceFetch } from './lib/source-fetch'
 import { parseSource } from './lib/source'
@@ -59,9 +59,7 @@ const targetPath = (input: UploadInput): string => `/${input.target.path.replace
 
 /** Read the error body, then fail with a tagged Dropbox HTTP error. */
 const dropboxFail = (res: Response): Effect.Effect<never, CloudHttpError> =>
-  Effect.promise(() => errText(res)).pipe(
-    Effect.flatMap((body) => new CloudHttpError({ provider: 'dropbox', status: res.status, body })),
-  )
+  Effect.promise(() => httpFailure('dropbox', res)).pipe(Effect.flatMap(Effect.fail))
 
 export class DropboxUploader extends Context.Service<
   DropboxUploader,
@@ -134,12 +132,7 @@ export const DropboxUploaderLive = Layer.effect(
                 { close: info.isLast },
                 chunk,
               )
-              if (!res.ok)
-                throw new CloudHttpError({
-                  provider: 'dropbox',
-                  status: res.status,
-                  body: await errText(res),
-                })
+              if (!res.ok) throw await httpFailure('dropbox', res)
               sessionId = (await jsonAs<{ session_id: string }>(res)).session_id
               cursorOffset = chunk.length
               startedClosed = info.isLast
@@ -153,12 +146,7 @@ export const DropboxUploaderLive = Layer.effect(
                 { cursor, commit: commitInfo(path) },
                 chunk,
               )
-              if (!res.ok)
-                throw new CloudHttpError({
-                  provider: 'dropbox',
-                  status: res.status,
-                  body: await errText(res),
-                })
+              if (!res.ok) throw await httpFailure('dropbox', res)
               meta = await jsonAs<FileMetadata>(res)
               cursorOffset += chunk.length
               return
@@ -169,12 +157,7 @@ export const DropboxUploaderLive = Layer.effect(
               { cursor, close: false },
               chunk,
             )
-            if (!res.ok)
-              throw new CloudHttpError({
-                provider: 'dropbox',
-                status: res.status,
-                body: await errText(res),
-              })
+            if (!res.ok) throw await httpFailure('dropbox', res)
             cursorOffset += chunk.length
           })
 
@@ -186,12 +169,7 @@ export const DropboxUploaderLive = Layer.effect(
               { cursor: { session_id: sessionId, offset: cursorOffset }, commit: commitInfo(path) },
               new Uint8Array(0),
             )
-            if (!res.ok)
-              throw new CloudHttpError({
-                provider: 'dropbox',
-                status: res.status,
-                body: await errText(res),
-              })
+            if (!res.ok) throw await httpFailure('dropbox', res)
             meta = await jsonAs<FileMetadata>(res)
           }
           /* v8 ignore next -- streamInChunks always emits a final chunk, so meta is set */

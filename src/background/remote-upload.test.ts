@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Schema } from 'effect'
-import { Settings, type MediaItem } from '@/packages/schema'
+import { Settings, type JsonValue, type MediaItem } from '@/packages/schema'
 import type { DurableStore } from '@/packages/kernel/durable-store'
 import { decideQueueStart } from '@/packages/download/queue-start'
 import { localDay } from '@/packages/download/daily-budget'

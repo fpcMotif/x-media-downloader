@@ -1,5 +1,5 @@
-import { Schema } from 'effect'
-import { type BackoffPolicy, expBackoffMs } from '@/packages/kernel/backoff'
+import { Option, Schema } from 'effect'
+import { type BackoffPolicy, expBackoffMs, fullJitterMs } from '@/packages/kernel/backoff'
 import { CLOUD_PROVIDERS, type JsonValue } from '@/packages/schema'
 import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
 
@@ -24,6 +24,7 @@ import type { CloudProviderId, UploadOutcome, UploadTarget } from './types'
  */
 
 export const MAX_ATTEMPTS = 5
+export const MAX_TRANSIENT_FAILURES = 20
 export const BACKOFF_BASE_MS = 5_000
 export const BACKOFF_CAP_MS = 300_000
 // Lease TTL, sized to the MV3 idle service-worker cap (~5 min). Within one SW
@@ -81,10 +82,10 @@ export const UploadJobSchema = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   remoteId: Schema.optionalKey(Schema.String),
   bytes: Schema.optionalKey(Schema.Number),
+  transientFailures: Schema.optionalKey(Schema.Number),
 })
 export type UploadJob = typeof UploadJobSchema.Type
 
-const LedgerSchema = Schema.Array(UploadJobSchema)
 export type JobLedger = ReadonlyArray<UploadJob>
 
 export interface UploadJobSpec {
@@ -151,17 +152,25 @@ const UPLOAD_BACKOFF = {
  */
 export const backoffMs = (attempts: number): number => expBackoffMs(attempts - 1, UPLOAD_BACKOFF)
 
+const decodeJob = Schema.decodeUnknownOption(UploadJobSchema)
+
 /** Decode a persisted ledger; fall back to empty on corrupt data (outbox idiom). */
 export function decodeLedger(raw: JsonValue): JobLedger {
-  try {
-    return Schema.decodeUnknownSync(LedgerSchema)(raw ?? [])
-  } catch {
-    return []
-  }
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((row) => {
+    const job = decodeJob(row)
+    return Option.isSome(job) ? [job.value] : []
+  })
 }
 
 const replaceJob = (ledger: JobLedger, job: UploadJob): JobLedger =>
   ledger.map((j) => (j.jobId === job.jobId ? job : j))
+
+const clearTransientFailures = (job: UploadJob): UploadJob => {
+  const { transientFailures, ...rest } = job
+  void transientFailures
+  return rest
+}
 
 /**
  * Append one job per (mediaId, provider), or REFRESH an existing one. Keyed by
@@ -183,7 +192,7 @@ export function enqueue(ledger: JobLedger, spec: UploadJobSpec, now: number): Jo
   if (existing !== undefined) {
     if (existing.status === 'succeeded' || existing.status === 'uploading') return ledger
     const revived: UploadJob = {
-      ...existing,
+      ...clearTransientFailures(existing),
       url: spec.url,
       target: spec.target,
       status: 'pending',
@@ -226,15 +235,24 @@ export const readyJobs = (ledger: JobLedger, now: number): JobLedger =>
 /** Drop terminal/succeeded jobs to keep the persisted ledger bounded. */
 export const pruneTerminal = (ledger: JobLedger): JobLedger => ledger.filter((j) => !isTerminal(j))
 
+export const MAX_TERMINAL_JOBS = 50
+const NOTHING_REMEMBERED: ReadonlySet<string> = new Set()
+
 /** Retains unresolved cloud-only media and live jobs, plus the most-recent `maxTerminal` other terminals.
  *  Returns the same reference when nothing is dropped (cheap no-op). */
-export function capLedger(ledger: JobLedger, maxTerminal = 50): JobLedger {
+export function capLedger(
+  ledger: JobLedger,
+  maxTerminal: number = MAX_TERMINAL_JOBS,
+  remembered: ReadonlySet<string> = NOTHING_REMEMBERED,
+): JobLedger {
   const unresolved = new Set(
     ledger
       .filter((job) => job.cloudOnly && job.historyOutcome !== 'completed')
       .map((job) => job.mediaId),
   )
-  const removable = (job: UploadJob): boolean => isTerminal(job) && !unresolved.has(job.mediaId)
+  const prunable = (job: UploadJob): boolean =>
+    job.status === 'skipped' || (job.status === 'succeeded' && remembered.has(job.idempotencyKey))
+  const removable = (job: UploadJob): boolean => prunable(job) && !unresolved.has(job.mediaId)
   const terminalCount = ledger.reduce((n, j) => (removable(j) ? n + 1 : n), 0)
   if (terminalCount <= maxTerminal) return ledger
   let toDrop = terminalCount - maxTerminal
@@ -315,13 +333,54 @@ export function recordSuccess(
   result: { readonly bytes: number; readonly remoteId?: string },
 ): TransitionResult {
   return onHeldLease(ledger, jobId, token, (job) => ({
-    ...job,
+    ...clearTransientFailures(job),
     status: 'succeeded',
     leaseUntil: null,
     verifiedAt: now,
     error: null,
     bytes: result.bytes,
     ...(result.remoteId !== undefined ? { remoteId: result.remoteId } : {}),
+  }))
+}
+
+const NO_JITTER = (): number => 1
+
+export interface FailureWait {
+  readonly retryAfterMs?: number
+  readonly random?: () => number
+}
+
+const failureDelayMs = (step: number, wait: FailureWait): number =>
+  Math.max(wait.retryAfterMs ?? 0, fullJitterMs(backoffMs(step), wait.random ?? NO_JITTER))
+
+const failJob = (job: UploadJob, now: number, reason: string, wait: FailureWait): UploadJob => {
+  const attempts = job.attempts + 1
+  if (attempts >= MAX_ATTEMPTS) {
+    return { ...job, status: 'dead', attempts, leaseUntil: null, error: reason }
+  }
+  return {
+    ...job,
+    status: 'failed',
+    attempts,
+    leaseUntil: null,
+    nextAttemptAt: now + failureDelayMs(attempts, wait),
+    error: reason,
+  }
+}
+
+export function releaseClaim(
+  ledger: JobLedger,
+  jobId: string,
+  token: number,
+  now: number,
+  reason: string,
+): TransitionResult {
+  return onHeldLease(ledger, jobId, token, (job) => ({
+    ...job,
+    status: 'pending',
+    leaseUntil: null,
+    nextAttemptAt: now,
+    error: reason,
   }))
 }
 
@@ -332,18 +391,30 @@ export function recordFailure(
   token: number,
   now: number,
   reason: string,
+  wait: FailureWait = {},
+): TransitionResult {
+  return onHeldLease(ledger, jobId, token, (job) => failJob(job, now, reason, wait))
+}
+
+export function recordTransient(
+  ledger: JobLedger,
+  jobId: string,
+  token: number,
+  now: number,
+  reason: string,
+  wait: FailureWait = {},
 ): TransitionResult {
   return onHeldLease(ledger, jobId, token, (job) => {
-    const attempts = job.attempts + 1
-    if (attempts >= MAX_ATTEMPTS) {
-      return { ...job, status: 'dead', attempts, leaseUntil: null, error: reason }
+    const count = (job.transientFailures ?? 0) + 1
+    if (count > MAX_TRANSIENT_FAILURES) {
+      return failJob(job, now, reason, wait)
     }
     return {
       ...job,
       status: 'failed',
-      attempts,
+      transientFailures: count,
       leaseUntil: null,
-      nextAttemptAt: now + backoffMs(attempts),
+      nextAttemptAt: now + failureDelayMs(count, wait),
       error: reason,
     }
   })
@@ -374,6 +445,7 @@ export function applyUploadOutcome(
   token: number,
   now: number,
   outcome: UploadOutcome,
+  random: () => number = NO_JITTER,
 ) {
   let next: JobLedger
   if (outcome.kind === 'success') {
@@ -384,7 +456,14 @@ export function applyUploadOutcome(
   } else if (outcome.kind === 'sourceGone') {
     next = recordSourceGone(ledger, jobId, token, outcome.reason).ledger
   } else {
-    next = recordFailure(ledger, jobId, token, now, outcome.reason).ledger
+    const wait: FailureWait = {
+      ...(outcome.retryAfterMs !== undefined ? { retryAfterMs: outcome.retryAfterMs } : {}),
+      random,
+    }
+    next =
+      outcome.transient === true
+        ? recordTransient(ledger, jobId, token, now, outcome.reason, wait).ledger
+        : recordFailure(ledger, jobId, token, now, outcome.reason, wait).ledger
   }
   return { ledger: next, settled: next.find((j) => j.jobId === jobId) }
 }
@@ -396,7 +475,7 @@ export function retry(ledger: JobLedger, jobId: string, now: number): Transition
     return { ledger, changed: false }
   }
   const reset: UploadJob = {
-    ...job,
+    ...clearTransientFailures(job),
     status: 'pending',
     attempts: 0,
     nextAttemptAt: now,
