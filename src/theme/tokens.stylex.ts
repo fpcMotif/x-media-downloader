@@ -13,7 +13,7 @@ export const tokens = stylex.defineVars({
   // Brand ramp. "Instrument, not dashboard": structure comes from hairlines,
   // not cards — the lines sit at 7-8% so a divider reads as a seam.
   '--xmd-bg': {
-    default: 'oklch(0.982 0.004 var(--xmd-hue-neutral))',
+    default: 'oklch(0.966 0.005 var(--xmd-hue-neutral))',
     [DARK]: 'oklch(0.145 0.006 var(--xmd-hue-neutral))',
   },
   '--xmd-surface': {
@@ -21,7 +21,7 @@ export const tokens = stylex.defineVars({
     [DARK]: 'oklch(0.19 0.008 var(--xmd-hue-neutral))',
   },
   '--xmd-surface-raised': {
-    default: 'oklch(0.962 0.006 var(--xmd-hue-neutral))',
+    default: 'oklch(0.945 0.006 var(--xmd-hue-neutral))',
     [DARK]: 'oklch(0.24 0.01 var(--xmd-hue-neutral))',
   },
   '--xmd-ink': {
@@ -66,6 +66,11 @@ export const tokens = stylex.defineVars({
     [DARK]: '0 8px 14px -12px oklch(0 0 0 / 0.9)',
   },
   // Concentric radii (R4 Foundations): 12 outer → 10 → 8 → 6 innermost.
+  '--xmd-highlight': { default: 'oklch(1 0 0 / 0.2)', [DARK]: 'oklch(1 0 0 / 0.24)' },
+  '--xmd-segment': {
+    default: 'oklch(1 0 0)',
+    [DARK]: 'oklch(0.36 0.012 var(--xmd-hue-neutral))',
+  },
   '--xmd-radius-1': '12px',
   '--xmd-radius-2': '10px',
   '--xmd-radius-3': '8px',
@@ -118,9 +123,9 @@ export const tokens = stylex.defineVars({
 
   // Tailwind's theme layer: the font stacks the preflight reset resolves.
   '--font-sans':
-    'ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"',
+    '"Geist Variable", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"',
   '--font-mono':
-    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    '"Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
   '--default-font-family': 'var(--font-sans)',
   '--default-mono-font-family': 'var(--font-mono)',
   // Tailwind's text-size line-heights, kept as the same `calc()` fractions

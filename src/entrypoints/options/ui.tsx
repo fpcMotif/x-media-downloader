@@ -13,33 +13,31 @@ const styles = stylex.create({
   },
   // text-xl font-semibold tracking-tight text-balance
   title: {
-    fontSize: '1.25rem',
-    lineHeight: tokens['--text-xl--line-height'],
+    fontSize: '1.625rem',
+    lineHeight: 1.2,
     fontWeight: 600,
-    letterSpacing: '-0.025em',
+    letterSpacing: '-0.022em',
     textWrap: 'balance',
   },
   // text-[13px] leading-relaxed text-muted-foreground text-pretty
   description: {
-    fontSize: '13px',
-    lineHeight: 1.625,
+    fontSize: '0.875rem',
+    lineHeight: 1.55,
     color: tokens['--muted-foreground'],
     textWrap: 'pretty',
   },
   // border-t border-border pt-6
   section: {
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
-    paddingTop: '1.5rem',
+    minWidth: 0,
   },
   // mb-4 flex items-start justify-between gap-3
   titleRow: {
-    marginBottom: '1rem',
+    marginBottom: '0.75rem',
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'flex-end',
     justifyContent: 'space-between',
     gap: '0.75rem',
+    paddingInline: '0.25rem',
   },
   // grid gap-1 min-w-0
   titleColumn: {
@@ -49,14 +47,15 @@ const styles = stylex.create({
   },
   // text-sm font-semibold
   sectionTitle: {
-    fontSize: '0.875rem',
-    lineHeight: tokens['--text-sm--line-height'],
+    fontSize: '0.9375rem',
+    lineHeight: 1.35,
     fontWeight: 600,
+    letterSpacing: '-0.01em',
   },
   // text-[13px] leading-snug text-muted-foreground text-pretty
   sectionDescription: {
     fontSize: '13px',
-    lineHeight: 1.375,
+    lineHeight: 1.45,
     color: tokens['--muted-foreground'],
     textWrap: 'pretty',
   },
@@ -69,6 +68,13 @@ const styles = stylex.create({
   // *:py-4 utilities become data-xmd-divide/data-xmd-rows (spec §6).
   rows: {
     gap: 0,
+    borderStyle: 'solid',
+    borderWidth: '1px',
+    borderColor: tokens['--border'],
+    borderRadius: tokens['--xmd-radius-1'],
+    backgroundColor: tokens['--xmd-surface'],
+    boxShadow: tokens['--xmd-shadow-1'],
+    paddingInline: '1.125rem',
   },
 })
 
