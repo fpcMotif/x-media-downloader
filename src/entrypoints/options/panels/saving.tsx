@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'preact/hooks'
 import { Option } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import * as stylex from '@stylexjs/stylex'
@@ -27,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { PanelHeader, Section, type PanelProps } from '../ui'
 import { readyOr, useLoaded } from '@/components/use-loaded'
+import { offersGrantRequest, useOriginGrant } from '@/components/use-origin-grant'
 import { EraserIcon, iconSize } from '@/components/icons'
 
 const styles = stylex.create({
@@ -152,26 +152,13 @@ const isDownloadStrategy = (value: string): value is Settings['downloadStrategy'
  *  three answer "how does media get onto my disk", so they collapse into one
  *  scrollable, hairline-sectioned panel instead of three nav items. */
 export function SavingPanel({ settings, update }: PanelProps) {
-  const [aria2Granted, setAria2Granted] = useState<boolean | null>(null)
   const usageLoad = useLoaded(loadUsage)
 
   const strategy = settings.downloadStrategy
   const rpcUrl = settings.aria2RpcUrl
-  useEffect(() => {
-    if (strategy !== 'aria2') return
-    const pattern = aria2OriginPattern(rpcUrl)
-    if (Option.isNone(pattern)) {
-      setAria2Granted(null)
-      return
-    }
-    void browser.permissions.contains({ origins: [pattern.value] }).then(setAria2Granted)
-  }, [strategy, rpcUrl])
-
-  const requestAria2Access = async (): Promise<void> => {
-    const pattern = aria2OriginPattern(settings.aria2RpcUrl)
-    if (Option.isNone(pattern)) return
-    setAria2Granted(await browser.permissions.request({ origins: [pattern.value] }))
-  }
+  const aria2Access = useOriginGrant(
+    strategy === 'aria2' ? aria2OriginPattern(rpcUrl) : Option.none(),
+  )
 
   const activeMode = DOWNLOAD_MODES.find((option) => option.value === settings.downloadStrategy)
 
@@ -442,12 +429,12 @@ export function SavingPanel({ settings, update }: PanelProps) {
                 onChange={(e: Event) => void update({ aria2Dir: inputValue(e) })}
               />
             </Field>
-            {aria2Granted === false && (
-              <Button type="button" sx={styles.minH10} onClick={() => void requestAria2Access()}>
+            {offersGrantRequest(aria2Access.grant) && (
+              <Button type="button" sx={styles.minH10} onClick={() => void aria2Access.request()}>
                 Grant localhost access
               </Button>
             )}
-            {aria2Granted === true && (
+            {aria2Access.grant === 'granted' && (
               <p {...stylex.props(styles.successText)}>localhost access granted</p>
             )}
           </div>

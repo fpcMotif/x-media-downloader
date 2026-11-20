@@ -13,6 +13,7 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { PanelHeader, Section, type PanelProps } from '../ui'
+import { offersGrantRequest, useOriginGrant } from '@/components/use-origin-grant'
 
 const styles = stylex.create({
   // Shared 'min-h-10' override used by every options action Button below.
@@ -112,11 +113,10 @@ const retryUploads = async (): Promise<void> => {
 }
 
 export function SyncPanel({ settings, update, reload }: PanelProps) {
-  const [convexGranted, setConvexGranted] = useState<boolean | null>(null)
   const [testingSync, setTestingSync] = useState(false)
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [cloudStatus, setCloudStatus] = useState<CloudUploadStatus | null>(null)
-  const [connecting, setConnecting] = useState<CloudProviderId | null>(null)
+  const [connecting, setConnecting] = useState<CloudProviderId | 'none'>('none')
   const [connectMsg, setConnectMsg] = useState('')
   const [relaySetup, setRelaySetup] = useState<typeof RelaySetup.Type | null>(null)
   const [checkingRelay, setCheckingRelay] = useState(false)
@@ -168,15 +168,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
     setSyncStatusKey(configKey)
     setSyncStatus(null)
   }
-  useEffect(() => {
-    if (!cloudOn || convexUrl === '') return
-    const pattern = convexOriginPattern(convexUrl)
-    if (Option.isNone(pattern)) {
-      setConvexGranted(null)
-      return
-    }
-    void browser.permissions.contains({ origins: [pattern.value] }).then(setConvexGranted)
-  }, [cloudOn, convexUrl])
+  const convexAccess = useOriginGrant(cloudOn ? convexOriginPattern(convexUrl) : Option.none())
   useEffect(() => {
     if (!cloudOn) {
       setSyncStatus(null)
@@ -204,12 +196,6 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
     const handle = setInterval(poll, 2000)
     return () => clearInterval(handle)
   }, [uploadOn])
-
-  const requestConvexAccess = async (): Promise<void> => {
-    const pattern = convexOriginPattern(settings.convexUrl)
-    if (Option.isNone(pattern)) return
-    setConvexGranted(await browser.permissions.request({ origins: [pattern.value] }))
-  }
 
   const testConvexConnection = async (): Promise<void> => {
     setTestingSync(true)
@@ -249,7 +235,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
       await reload()
       setConnectMsg(replyDetail(res))
     } finally {
-      setConnecting(null)
+      setConnecting('none')
     }
   }
 
@@ -343,18 +329,18 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               >
                 {testingSync ? 'Testing…' : 'Test connection'}
               </Button>
-              {convexGranted === false && (
+              {offersGrantRequest(convexAccess.grant) && (
                 <Button
                   type="button"
                   variant="secondary"
                   size="sm"
                   sx={styles.minH10}
-                  onClick={() => void requestConvexAccess()}
+                  onClick={() => void convexAccess.request()}
                 >
                   Grant access
                 </Button>
               )}
-              {convexGranted === true && (
+              {convexAccess.grant === 'granted' && (
                 <span {...stylex.props(styles.grantedText)}>access granted</span>
               )}
             </div>
