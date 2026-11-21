@@ -13,7 +13,7 @@ export const tokens = stylex.defineVars({
   // Brand ramp. "Instrument, not dashboard": structure comes from hairlines,
   // not cards — the lines sit at 7-8% so a divider reads as a seam.
   '--xmd-bg': {
-    default: 'oklch(0.966 0.005 var(--xmd-hue-neutral))',
+    default: 'oklch(0.972 0.005 var(--xmd-hue-neutral))',
     [DARK]: 'oklch(0.145 0.006 var(--xmd-hue-neutral))',
   },
   '--xmd-surface': {
@@ -66,11 +66,6 @@ export const tokens = stylex.defineVars({
     [DARK]: '0 8px 14px -12px oklch(0 0 0 / 0.9)',
   },
   // Concentric radii (R4 Foundations): 12 outer → 10 → 8 → 6 innermost.
-  '--xmd-highlight': { default: 'oklch(1 0 0 / 0.2)', [DARK]: 'oklch(1 0 0 / 0.24)' },
-  '--xmd-segment': {
-    default: 'oklch(1 0 0)',
-    [DARK]: 'oklch(0.36 0.012 var(--xmd-hue-neutral))',
-  },
   '--xmd-radius-1': '12px',
   '--xmd-radius-2': '10px',
   '--xmd-radius-3': '8px',

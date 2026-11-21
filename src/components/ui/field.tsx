@@ -190,8 +190,8 @@ function FieldTitle({ sx, ...props }: React.ComponentProps<'div'> & { sx?: Sx })
 const descriptionStyles = stylex.create({
   description: {
     textAlign: 'left',
-    fontSize: '0.875rem',
-    lineHeight: 1.5,
+    fontSize: '0.8125rem',
+    lineHeight: 1.45,
     fontWeight: 400,
     color: tokens['--muted-foreground'],
     marginTop: { default: null, ':nth-last-child(2)': '-0.25rem', ':last-child': 0 },

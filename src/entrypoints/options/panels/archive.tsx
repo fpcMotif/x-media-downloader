@@ -37,7 +37,7 @@ const styles = stylex.create({
   searchInput: { minWidth: '12rem', flex: 1 },
   countLabel: {
     flexShrink: 0,
-    fontFamily: tokens['--font-mono'],
+    fontFamily: tokens['--font-sans'],
     fontSize: '0.75rem',
     lineHeight: tokens['--text-xs--line-height'],
     fontVariantNumeric: 'tabular-nums',
@@ -59,7 +59,7 @@ const styles = stylex.create({
   truncate: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   handle: { fontWeight: 500 },
   metaInline: {
-    fontFamily: tokens['--font-mono'],
+    fontFamily: tokens['--font-sans'],
     fontVariantNumeric: 'tabular-nums',
     color: tokens['--muted-foreground'],
   },
@@ -105,7 +105,7 @@ const styles = stylex.create({
   textPretty: { textWrap: 'pretty' },
   monoNums: { fontFamily: tokens['--font-mono'], fontVariantNumeric: 'tabular-nums' },
   monoNumsPretty: {
-    fontFamily: tokens['--font-mono'],
+    fontFamily: tokens['--font-sans'],
     fontVariantNumeric: 'tabular-nums',
     textWrap: 'pretty',
   },

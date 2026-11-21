@@ -15,24 +15,24 @@ const styles = stylex.create({
   title: {
     fontSize: '1.625rem',
     lineHeight: 1.2,
-    fontWeight: 600,
-    letterSpacing: '-0.022em',
+    fontWeight: 650,
+    letterSpacing: '-0.03em',
     textWrap: 'balance',
   },
   // text-[13px] leading-relaxed text-muted-foreground text-pretty
   description: {
     fontSize: '0.875rem',
-    lineHeight: 1.55,
+    lineHeight: 1.5,
     color: tokens['--muted-foreground'],
     textWrap: 'pretty',
   },
   // border-t border-border pt-6
   section: {
-    minWidth: 0,
+    display: 'grid',
+    gap: '0.75rem',
   },
   // mb-4 flex items-start justify-between gap-3
   titleRow: {
-    marginBottom: '0.75rem',
     display: 'flex',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
@@ -48,9 +48,9 @@ const styles = stylex.create({
   // text-sm font-semibold
   sectionTitle: {
     fontSize: '0.9375rem',
-    lineHeight: 1.35,
+    lineHeight: 1.3,
     fontWeight: 600,
-    letterSpacing: '-0.01em',
+    letterSpacing: '-0.012em',
   },
   // text-[13px] leading-snug text-muted-foreground text-pretty
   sectionDescription: {
@@ -68,13 +68,10 @@ const styles = stylex.create({
   // *:py-4 utilities become data-xmd-divide/data-xmd-rows (spec §6).
   rows: {
     gap: 0,
-    borderStyle: 'solid',
-    borderWidth: '1px',
-    borderColor: tokens['--border'],
     borderRadius: tokens['--xmd-radius-1'],
-    backgroundColor: tokens['--xmd-surface'],
-    boxShadow: tokens['--xmd-shadow-1'],
-    paddingInline: '1.125rem',
+    backgroundColor: tokens['--card'],
+    boxShadow: '0 0 0 1px var(--border), var(--xmd-shadow-1)',
+    paddingInline: '1.25rem',
   },
 })
 

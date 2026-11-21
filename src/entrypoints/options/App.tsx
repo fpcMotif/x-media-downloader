@@ -42,6 +42,7 @@ const styles = stylex.create({
     flexDirection: { default: 'column', [SM]: 'row' },
     minHeight: '100vh',
     width: '100%',
+    justifyContent: { default: null, [SM]: 'center' },
     backgroundColor: tokens['--xmd-bg'],
     color: tokens['--foreground'],
   },
@@ -49,6 +50,7 @@ const styles = stylex.create({
   main: {
     minWidth: 0,
     flex: 1,
+    maxWidth: { default: null, [SM]: '46rem' },
   },
   // mx-auto flex max-w-2xl flex-col gap-8 px-4 sm:px-10 py-6 sm:py-12
   content: {
@@ -59,6 +61,8 @@ const styles = stylex.create({
     gap: '2.25rem',
     paddingInline: { default: '1rem', [SM]: '2.5rem' },
     paddingBlock: { default: '1.5rem', [SM]: '3.5rem' },
+    fontFamily: tokens['--font-sans'],
+    letterSpacing: '-0.006em',
     animationName: panelEnter,
     animationDuration: '0.22s',
     animationTimingFunction: 'var(--xmd-ease)',
@@ -109,23 +113,22 @@ const styles = stylex.create({
     top: 0,
     display: 'flex',
     height: { default: null, [SM]: '100vh' },
-    width: { default: '100%', [SM]: '232px' },
+    width: { default: '100%', [SM]: '236px' },
     flexShrink: 0,
     flexDirection: 'column',
     gap: '0.125rem',
-    backgroundColor: tokens['--xmd-surface'],
     borderBottomStyle: 'solid',
     borderBottomWidth: { default: '1px', [SM]: 0 },
     // borderRightStyle: 'solid' is not declared — the preflight `border: 0 solid`
     // shorthand already establishes it on every element, unconditionally.
-    borderRightWidth: { default: null, [SM]: '1px' },
+    borderRightWidth: { default: null, [SM]: 0 },
     borderColor: tokens['--border'],
     paddingInline: '0.75rem',
-    paddingBlock: { default: '1rem', [SM]: '1.25rem' },
+    paddingBlock: { default: '1rem', [SM]: '3.5rem' },
   },
   // px-2 pb-4
   brandBlock: {
-    paddingInline: '0.5rem',
+    paddingInline: '0.75rem',
     paddingBottom: '1.25rem',
   },
   // block text-sm leading-tight font-semibold tracking-tight
@@ -133,25 +136,27 @@ const styles = stylex.create({
     display: 'block',
     fontSize: '0.9375rem',
     lineHeight: 1.25,
-    fontWeight: 600,
-    letterSpacing: '-0.015em',
+    fontWeight: 650,
+    letterSpacing: '-0.02em',
   },
   // mt-0.5 block font-mono text-[11px] leading-tight text-muted-foreground
   brandVersion: {
-    marginTop: '0.125rem',
+    marginTop: '0.25rem',
     display: 'block',
-    fontFamily: tokens['--font-mono'],
-    fontSize: '11px',
+    fontSize: '12px',
     lineHeight: 1.25,
-    color: tokens['--muted-foreground'],
+    fontVariantNumeric: 'tabular-nums',
+    color: tokens['--xmd-faint'],
   },
   // px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground
   navLabel: {
-    paddingInline: '0.5rem',
+    paddingInline: '0.75rem',
     paddingTop: '0.5rem',
     paddingBottom: '0.375rem',
-    fontSize: '0.75rem',
-    fontWeight: 500,
+    fontSize: '11px',
+    fontWeight: 600,
+    letterSpacing: '0.06em',
+    textTransform: 'uppercase',
     color: tokens['--xmd-faint'],
   },
   // mb-4 flex flex-col gap-0.5
@@ -183,10 +188,10 @@ const styles = stylex.create({
   // outline-none focus-visible:ring-3 focus-visible:ring-ring/50
   aboutBase: {
     display: 'flex',
-    minHeight: '2.5rem',
+    minHeight: '2.25rem',
     alignItems: 'center',
     borderRadius: tokens['--xmd-radius-3'],
-    paddingInline: '0.625rem',
+    paddingInline: '0.75rem',
     textAlign: 'left',
     fontSize: '0.875rem',
     transitionProperty: NAV_TRANSITION,
@@ -210,6 +215,7 @@ const styles = stylex.create({
   // rounded-[var(--xmd-radius-3)] px-3 text-left text-[13px] transition-colors
   // outline-none focus-visible:ring-3 focus-visible:ring-ring/50
   navItemBase: {
+    position: 'relative',
     display: 'flex',
     minHeight: '2.25rem',
     alignItems: 'center',
@@ -226,12 +232,19 @@ const styles = stylex.create({
   },
   // isActive: bg-primary/[0.09] font-semibold text-primary
   navItemActive: {
-    backgroundColor: tokens['--muted'],
+    backgroundColor: tokens['--card'],
+    boxShadow: '0 0 0 1px var(--border), var(--xmd-shadow-1)',
     fontWeight: 600,
     color: tokens['--foreground'],
-    boxShadow: {
-      default: 'inset 2px 0 0 var(--primary)',
-      ':focus-visible': RING_FOCUS_VISIBLE,
+    '::before': {
+      content: '""',
+      position: 'absolute',
+      left: '-0.75rem',
+      top: '0.5rem',
+      bottom: '0.5rem',
+      width: '3px',
+      borderRadius: '0 3px 3px 0',
+      backgroundColor: tokens['--primary'],
     },
   },
   // !isActive: font-medium text-foreground/80 hover:bg-muted hover:text-foreground
@@ -391,7 +404,9 @@ function SettingsSidebar({
     <aside {...stylex.props(styles.aside)}>
       <div {...stylex.props(styles.brandBlock)}>
         <span {...stylex.props(styles.brandName)}>X Media Downloader</span>
-        <span {...stylex.props(styles.brandVersion)}>v1.0 · local</span>
+        <span {...stylex.props(styles.brandVersion)}>
+          v{browser.runtime.getManifest().version} · local
+        </span>
       </div>
 
       <p id="settings-nav-label" {...stylex.props(styles.navLabel)}>

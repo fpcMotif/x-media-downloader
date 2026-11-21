@@ -81,6 +81,16 @@ export function EraserIcon({ sx, ...props }: IconProps) {
   )
 }
 
+export function DownloadIcon({ sx, ...props }: IconProps) {
+  return (
+    <svg {...base} {...stylex.props(styles.base, sx)} {...props}>
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M5 21h14" />
+    </svg>
+  )
+}
+
 export function LayersIcon({ sx, ...props }: IconProps) {
   return (
     <svg {...base} {...stylex.props(styles.base, sx)} {...props}>

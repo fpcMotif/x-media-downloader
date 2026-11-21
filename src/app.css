@@ -15,8 +15,8 @@
 /* Cross-surface brand primitives (ease curve, hue anchors) — shared with the
    overlay content script's stylesheet. Vite inlines this at build time. */
 @import './theme/tokens.css';
-@import '@fontsource-variable/geist/wght.css';
-@import '@fontsource-variable/geist-mono/wght.css';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
 
 /* 1. Base reset — Tailwind v4 preflight, byte-for-byte as it compiled, plus the
    repo's `* { @apply border-border outline-ring/50 }` rule at the end. Kept in

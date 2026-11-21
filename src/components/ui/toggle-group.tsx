@@ -189,4 +189,34 @@ function ToggleGroupItem({
   )
 }
 
-export { ToggleGroup, ToggleGroupItem }
+const SEGMENT_RAISED = '0 0 0 1px var(--border), var(--xmd-shadow-1)'
+
+const segmented = stylex.create({
+  track: {
+    width: '100%',
+    borderRadius: tokens['--xmd-radius-2'],
+    backgroundColor: 'color-mix(in oklab, var(--foreground) 6%, transparent)',
+    padding: '3px',
+  },
+  item: {
+    flex: 1,
+    borderRadius: '7px',
+    fontSize: '13px',
+    lineHeight: null,
+    color: { default: tokens['--muted-foreground'], '[data-pressed]': tokens['--foreground'] },
+    backgroundColor: {
+      default: 'transparent',
+      '@media (hover: hover)': {
+        ':hover': 'color-mix(in oklab, var(--foreground) 5%, transparent)',
+      },
+      '[data-pressed]': tokens['--card'],
+    },
+    boxShadow: {
+      default: null,
+      '[data-pressed]': SEGMENT_RAISED,
+      ':focus-visible': `${SEGMENT_RAISED}, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent)`,
+    },
+  },
+})
+
+export { ToggleGroup, ToggleGroupItem, segmented }
