@@ -3,8 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>X Media Downloader</title>
     <style>
+      :root {
+        color-scheme: light dark;
+      }
+
       html,
       body,
       #app {
@@ -12,7 +17,7 @@
         min-width: 380px;
         min-height: 360px;
         margin: 0;
-        background: #f8f9fb;
+        background: light-dark(#f8f9fb, #0b0c0f);
       }
 
       .xmd-boot-fallback {
@@ -21,7 +26,7 @@
         min-height: 360px;
         display: grid;
         place-items: center;
-        color: #687386;
+        color: light-dark(#687386, #a3abb8);
         font:
           13px/1.35 system-ui,
           -apple-system,

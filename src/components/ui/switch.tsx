@@ -10,6 +10,7 @@ import type { StyleXStyles } from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 
 const DARK = '@media (prefers-color-scheme: dark)'
+const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 
 // Base UI drives switch state through bare `data-checked` / `data-unchecked`
 // attributes (on both Root and Thumb) rather than Radix's `data-[state=…]`.
@@ -94,7 +95,7 @@ const styles = stylex.create({
     boxShadow: '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 0px currentcolor, 0 0 #0000',
     // data-slot="switch-thumb" override (spec §3), same as the root.
     transitionProperty: 'transform, translate, scale, rotate',
-    transitionDuration: '0.15s',
+    transitionDuration: { default: '0.15s', [REDUCED_MOTION]: '0s' },
     transitionTimingFunction: 'var(--xmd-ease)',
     translate: {
       default: null,

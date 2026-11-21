@@ -10,6 +10,7 @@ import { svgHost, svgSize3, svgSize35, svgSize4 } from '@/theme/markers.stylex'
 
 const HOVER = '@media (hover: hover)'
 const DARK = '@media (prefers-color-scheme: dark)'
+const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 
 // data-slot="button" carries an unlayered app.css rule that beats every
 // transition-* utility: transition-duration 160ms / var(--xmd-ease) (spec §3).
@@ -36,7 +37,10 @@ const styles = stylex.create({
     lineHeight: tokens['--text-sm--line-height'],
     fontWeight: 500,
     whiteSpace: 'nowrap',
-    transitionProperty: 'color, background-color, border-color, box-shadow, transform, scale',
+    transitionProperty: {
+      default: 'color, background-color, border-color, box-shadow, transform, scale',
+      [REDUCED_MOTION]: 'color, background-color, border-color, box-shadow',
+    },
     transitionDuration: '0.16s',
     transitionTimingFunction: 'var(--xmd-ease)',
     outlineStyle: 'none',

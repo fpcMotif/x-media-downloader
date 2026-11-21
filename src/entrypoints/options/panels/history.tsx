@@ -94,16 +94,13 @@ export function HistoryPanel({ settings, update }: PanelProps) {
     <>
       <PanelHeader
         title="History"
-        description="A durable local record of every download — original link and status. Local only; never deletes files."
+        description="A local record of each download. Erasing it never deletes files."
       />
 
-      <Section title="Download history" description="Survives restarts. Independent of Cloud Sync.">
+      <Section title="Download history">
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel htmlFor="downloadHistoryEnabled">Keep download history</FieldLabel>
-            <FieldDescription>
-              Persist each download's link, status, and provenance
-            </FieldDescription>
           </FieldContent>
           <Switch
             id="downloadHistoryEnabled"
@@ -161,9 +158,11 @@ export function HistoryPanel({ settings, update }: PanelProps) {
             </ConfirmStrip>
           </>
         ) : (
-          <FieldDescription sx={styles.emptyDescription}>
-            {historyEmptyLabel(settings.downloadHistoryEnabled, history.length)}
-          </FieldDescription>
+          settings.downloadHistoryEnabled && (
+            <FieldDescription sx={styles.emptyDescription}>
+              {historyEmptyLabel(settings.downloadHistoryEnabled, history.length)}
+            </FieldDescription>
+          )
         )}
       </Section>
     </>

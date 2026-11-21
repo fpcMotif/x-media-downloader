@@ -114,6 +114,7 @@ const isDownloadStrategy = (value: string): value is Settings['downloadStrategy'
 // written as the literal custom-property reference throughout, matching the
 // ground-truth CSS's `ease-[var(--xmd-ease)]` utility.
 const HOVER = '@media (hover: hover)'
+const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 const XMD_EASE = 'var(--xmd-ease)'
 const BUTTON_TRANSITION_DURATION = '0.16s'
 const TRANSITION_COLORS =
@@ -533,7 +534,7 @@ const styles = stylex.create({
     flexShrink: 0,
     transitionProperty: 'rotate',
     transitionTimingFunction: XMD_EASE,
-    transitionDuration: '0.26s',
+    transitionDuration: { default: '0.26s', [REDUCED_MOTION]: '0s' },
   },
   chevronCollapsed: { rotate: '-90deg' },
   chevronExpanded: { rotate: '0deg' },
@@ -609,6 +610,17 @@ const styles = stylex.create({
   // ── "Saved" toast ──
   // No `data-slot="button"` here either — the toast keeps its own
   // transition-[opacity,transform] timing, not the button override.
+  srOnly: {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    padding: 0,
+    margin: '-1px',
+    overflow: 'hidden',
+    clipPath: 'inset(50%)',
+    whiteSpace: 'nowrap',
+    borderWidth: 0,
+  },
   toastOutput: {
     pointerEvents: 'none',
     position: 'fixed',
@@ -620,7 +632,7 @@ const styles = stylex.create({
   },
   toastSaved: { translate: '0 0', opacity: 1, transitionDuration: '0.2s' },
   toastNotSaved: {
-    translate: '0 0.25rem',
+    translate: { default: '0 0.25rem', [REDUCED_MOTION]: '0 0' },
     opacity: 0,
     transitionDuration: `${TOAST_EXIT_MS}ms`,
   },
@@ -724,7 +736,7 @@ const openOptionsSection = (hash: string): void =>
 // openOptionsPage can't carry a hash, so it always lands on Saving; the
 // capture/release cards deep-link straight to their panel instead (the
 // options app reads location.hash on mount to select the section).
-const openCaptureArchive = (): void => openOptionsSection('capture')
+const openCaptureArchive = (): void => openOptionsSection('archive')
 const openReleaseSettings = (): void => openOptionsSection('release')
 
 /** Compute whether a release action is viable given the current settings. */
@@ -847,7 +859,7 @@ function MonitorZone({ metrics, onReset }: { metrics: MetricsSnapshot; onReset: 
     .join(' · ')
 
   return (
-    <section aria-label="Download monitor" {...stylex.props(styles.monitorSection)}>
+    <section {...stylex.props(styles.monitorSection)}>
       <div {...stylex.props(styles.monitorHeaderRow)}>
         <div {...stylex.props(styles.monitorCountGroup)}>
           <span {...stylex.props(styles.monitorCount)}>
@@ -891,10 +903,7 @@ function ReleaseSummaryZone({
 }) {
   const hasMismatch = summary.serverRejects + summary.reAddFingerprints + summary.reappearances > 0
   return (
-    <section
-      aria-label="Release diagnostics summary"
-      {...stylex.props(styles.releaseSummarySection)}
-    >
+    <section {...stylex.props(styles.releaseSummarySection)}>
       <p
         {...stylex.props(
           styles.releaseSummaryLine,
@@ -939,7 +948,7 @@ function StageZone({
 
   if (ctx === 'x' || ctx === 'x-list') {
     return (
-      <section aria-label="Stage" {...stylex.props(styles.borderedSectionGap2)}>
+      <section {...stylex.props(styles.borderedSectionGap2)}>
         <button
           type="button"
           data-slot="button"
@@ -992,7 +1001,7 @@ function StageZone({
 
   if (ctx === 'instagram' || ctx === 'threads') {
     return (
-      <section aria-label="Stage" {...stylex.props(styles.stageSectionMeta)}>
+      <section {...stylex.props(styles.stageSectionMeta)}>
         <p {...stylex.props(styles.metaHintText)}>{hoverGrabLine(mod)}</p>
         <p {...stylex.props(styles.metaHintText)}>{wholePostLine(mod, mod2)}</p>
       </section>
@@ -1000,7 +1009,7 @@ function StageZone({
   }
 
   return (
-    <section aria-label="Stage" {...stylex.props(styles.stageSectionUnsupported)}>
+    <section {...stylex.props(styles.stageSectionUnsupported)}>
       <p {...stylex.props(styles.unsupportedHeadline)}>
         Open X, Instagram, or Threads to use this extension.
       </p>
@@ -1067,7 +1076,7 @@ function ReleaseCluster({
   const releaseListStrip = useConfirmStrip()
 
   return (
-    <section aria-label="Release" {...stylex.props(styles.borderedSectionGap2)}>
+    <section {...stylex.props(styles.borderedSectionGap2)}>
       <span {...stylex.props(styles.sectionLabel)}>Release without downloading</span>
 
       {onListPage ? (
@@ -1188,8 +1197,8 @@ function PreferencesZone({
             <ToggleGroupItem
               key={option.value}
               value={option.value}
-              aria-label={`Download mode: ${option.label}`}
               title={option.hint}
+              aria-description={option.hint}
               sx={[segmented.item, styles.toggleGroupItemSx]}
             >
               {option.label}
@@ -1516,7 +1525,8 @@ export function App() {
   const mod2 = secondModifierLabel(settings.quickGrabModifier)
 
   return (
-    <div {...stylex.props(styles.popup)} data-xmd-popup="ready">
+    <main {...stylex.props(styles.popup)} data-xmd-popup="ready">
+      <h1 {...stylex.props(styles.srOnly)}>X Media Downloader</h1>
       <ContextStrip ctx={ctx} scope={scope} />
 
       <Collapse open={showFirstRun}>
@@ -1583,6 +1593,6 @@ export function App() {
           </span>
         )}
       </output>
-    </div>
+    </main>
   )
 }

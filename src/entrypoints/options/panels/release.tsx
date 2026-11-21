@@ -10,26 +10,9 @@ import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
 import { useOwnedTimer } from '@/components/owned-timer'
 import { TURN_ON_RELEASE_LABEL, turnOnReleaseConfirm } from '@/components/action-copy'
 import { runDiagnosticsExport } from '@/components/diagnostics-export'
-import { Section, type PanelProps } from '../ui'
+import { PanelHeader, Section, type PanelProps } from '../ui'
 
 const styles = stylex.create({
-  header: { display: 'grid', gap: '0.375rem', paddingBottom: '0.25rem' },
-  h1: {
-    display: 'flex',
-    alignItems: 'center',
-    fontSize: '1.25rem',
-    lineHeight: tokens['--text-xl--line-height'],
-    fontWeight: 600,
-    letterSpacing: '-0.025em',
-    textWrap: 'balance',
-  },
-  badgeMargin: { marginLeft: '0.375rem' },
-  lede: {
-    fontSize: '13px',
-    lineHeight: 1.625,
-    color: tokens['--muted-foreground'],
-    textWrap: 'pretty',
-  },
   // 'flex items-center gap-1.5 text-[11px]' — the text-size utility strips the
   // base's leading-normal (tailwind-merge's font-size ↔ leading conflict), so
   // the line-height is inherited.
@@ -72,28 +55,6 @@ const styles = stylex.create({
   },
 })
 
-// Renders its own header (rather than the shared `PanelHeader`) only so the
-// red "Account" tier tag can sit inline after the <h1> — `PanelHeader`'s
-// `title` prop is typed `string`, and ui.tsx is untouched by this redesign
-// (spec §5.3 "Never touched"). Markup below mirrors PanelHeader's classes
-// exactly so the two headers are visually identical apart from the badge.
-function ReleaseHeader() {
-  return (
-    <header {...stylex.props(styles.header)}>
-      <h1 {...stylex.props(styles.h1)}>
-        Release
-        <Badge variant="destructive" sx={styles.badgeMargin}>
-          Account
-        </Badge>
-      </h1>
-      <p {...stylex.props(styles.lede)}>
-        Treat Bookmarks, Likes, and For You as a worklist that empties itself as media is saved.
-        Releasing changes your X account and can't be undone by this extension — off by default.
-      </p>
-    </header>
-  )
-}
-
 export function ReleasePanel({ settings, update }: PanelProps) {
   const [diagStatus, setDiagStatus] = useState<string | null>(null)
   // One owned status-flash timer (mirrors ArchivePanel's `statusTimer`): a newer
@@ -109,12 +70,13 @@ export function ReleasePanel({ settings, update }: PanelProps) {
 
   return (
     <>
-      <ReleaseHeader />
+      <PanelHeader
+        title="Release"
+        badge={<Badge variant="destructive">Account</Badge>}
+        description="Empties Bookmarks, Likes and For You as you save. This changes your X account, and the extension can't undo it."
+      />
 
-      <Section
-        title="Release after download"
-        description="When on, each post is removed from its list (un-like on Likes, un-bookmark on Bookmarks) once its media truly lands. When off, the page actions just download."
-      >
+      <Section title="Worklist">
         <ConfirmStrip
           control={turnOnStrip}
           sentence={turnOnReleaseConfirm}
@@ -131,9 +93,7 @@ export function ReleasePanel({ settings, update }: PanelProps) {
                   On — every page action also releases.
                 </FieldDescription>
               ) : (
-                <FieldDescription>
-                  {CLEAR_AFTER_DOWNLOAD.description} Off by default.
-                </FieldDescription>
+                <FieldDescription>{CLEAR_AFTER_DOWNLOAD.description}</FieldDescription>
               )}
             </FieldContent>
             <Switch
@@ -154,7 +114,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="autoUnbookmarkOnSave">Un-bookmark</FieldLabel>
-                <FieldDescription>Remove from Bookmarks when complete</FieldDescription>
               </FieldContent>
               <Switch
                 id="autoUnbookmarkOnSave"
@@ -167,7 +126,6 @@ export function ReleasePanel({ settings, update }: PanelProps) {
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="autoUnlikeOnSave">Un-like</FieldLabel>
-                <FieldDescription>Remove from Likes when complete</FieldDescription>
               </FieldContent>
               <Switch
                 id="autoUnlikeOnSave"
@@ -179,8 +137,7 @@ export function ReleasePanel({ settings, update }: PanelProps) {
               <FieldContent>
                 <FieldLabel htmlFor="autoNotInterestedOnSave">Not interested (For You)</FieldLabel>
                 <FieldDescription>
-                  On the For You timeline, fire X’s “Not interested in this post” when complete — it
-                  leaves the feed and trains X to show you less like it.
+                  For You only. Also tells X to show less like it.
                 </FieldDescription>
               </FieldContent>
               <Switch
@@ -195,9 +152,8 @@ export function ReleasePanel({ settings, update }: PanelProps) {
               <FieldContent>
                 <FieldLabel htmlFor="clearAllListsOnSave">Release from every list</FieldLabel>
                 <FieldDescription>
-                  Remove a finished post from every list it’s in, not just the page you’re on —
-                  un-like a bookmarked post, un-bookmark a liked one. “Not interested” still only
-                  fires on For You. Off by default — it’s the most aggressive option.
+                  Also un-likes bookmarked posts and un-bookmarks liked ones. The most aggressive
+                  option.
                 </FieldDescription>
               </FieldContent>
               <Switch
@@ -212,39 +168,18 @@ export function ReleasePanel({ settings, update }: PanelProps) {
         )}
 
         <FieldDescription sx={styles.textPretty}>
-          Run the worklist from the toolbar popup on an X Likes or Bookmarks tab — “Download this
-          page” or “One by one”. This setting only decides whether those actions also release.
+          Applies to “Download this page” and “One by one” in the popup.
         </FieldDescription>
       </Section>
 
-      <Section
-        title="Release from the popup"
-        description="Two rows in the toolbar popup release immediately, without downloading anything first. They appear only on X tabs."
-      >
-        <p {...stylex.props(styles.lede)}>
-          Release this page… — releases every post currently rendered on the page. Asks you to
-          confirm.
-        </p>
-        <p {...stylex.props(styles.lede)}>
-          Release the whole list… — scrolls the entire Likes or Bookmarks list and releases
-          everything in it. The single most destructive control in the extension; asks you to type
-          RELEASE first.
-        </p>
-      </Section>
-
-      <Section
-        title="Diagnostics"
-        description="Export the Release diagnostics log (stages, timings, ids only — no post content) as JSONL."
-      >
+      <Section title="Diagnostics" collapsed>
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel htmlFor="releaseMutationDiagnosticsEnabled">
               Observe bookmark/like mutations
             </FieldLabel>
             <FieldDescription>
-              Records whether each un-bookmark/un-like actually succeeded on X's server (status,
-              errors) and flags any bookmark/like that fires mid-Release. Read-only — never clicks
-              or changes what Release does. Off by default.
+              Logs whether each un-bookmark or un-like succeeded. Read-only.
             </FieldDescription>
           </FieldContent>
           <Switch

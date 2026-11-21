@@ -23,7 +23,7 @@ describe('settings sidebar is text-only (R4: no icon tiles anywhere in Settings)
     // Each id's group is asserted directly (rather than checking that some
     // "SETTINGS_IDS"/"LIBRARY_IDS" constant exists) so the test still catches
     // a mis-grouped section regardless of how the grouping is implemented.
-    const settingsIds = ['saving', 'release', 'capture', 'sync']
+    const settingsIds = ['saving', 'browsing', 'sync', 'release']
     const libraryIds = ['archive', 'history']
     for (const id of settingsIds) expect(sectionGroup(id)).toBe('settings')
     for (const id of libraryIds) expect(sectionGroup(id)).toBe('library')
@@ -31,9 +31,27 @@ describe('settings sidebar is text-only (R4: no icon tiles anywhere in Settings)
   })
 
   it('no longer carries the old 9-section ids (General/Downloads/Filters/Clearing/Cloud absorbed or renamed)', () => {
-    for (const staleId of ['general', 'downloads', 'filters', 'clearing', 'cloud', 'worklist']) {
+    for (const staleId of [
+      'general',
+      'downloads',
+      'filters',
+      'clearing',
+      'cloud',
+      'worklist',
+      'capture',
+    ]) {
       expect(sectionGroup(staleId)).toBeUndefined()
     }
+  })
+})
+
+describe('settings sidebar order puts the account-changing Release panel last', () => {
+  it('lists Downloads, Browsing, Sync, then Release', () => {
+    const order = ['saving', 'browsing', 'sync', 'release'].map((id) =>
+      appSource.indexOf(`id: '${id}'`),
+    )
+    expect(order.every((idx) => idx > -1)).toBe(true)
+    expect(order.toSorted((a, b) => a - b)).toEqual(order)
   })
 })
 
@@ -52,6 +70,7 @@ describe('hash aliases (§3.2 — add-only, every old deep-link must still resol
       ['downloads', 'saving'],
       ['filters', 'saving'],
       ['cloud', 'sync'],
+      ['capture', 'archive'],
     ]
     for (const [from, to] of pairs) {
       expect(appSource).toMatch(new RegExp(`${from}:\\s*'${to}'`))

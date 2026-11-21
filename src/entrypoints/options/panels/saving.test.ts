@@ -4,7 +4,12 @@ import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { Settings } from '@/packages/schema'
 
-const source = readFileSync(fileURLToPath(import.meta.resolve('./saving.tsx')), 'utf8')
+const read = (file: string): string =>
+  readFileSync(fileURLToPath(import.meta.resolve(file)), 'utf8')
+const source = read('./saving.tsx')
+const browsingSource = read('./browsing.tsx')
+const syncSource = read('./sync.tsx')
+const settingsPanels = source + browsingSource + syncSource
 
 // Every Field/row the three absorbed panels (General, Downloads, Filters)
 // used to render must still be reachable somewhere in the merged panel — the
@@ -39,24 +44,15 @@ const SETTINGS_KEYS = [
   'showSavedStatus',
 ] as const
 
-describe('Saving panel: nothing dropped from General + Downloads + Filters', () => {
+describe('Downloads, Browsing and Sync panels: nothing dropped from General + Downloads + Filters', () => {
   it('carries every settings field the three merged panels used to render', () => {
     for (const key of SETTINGS_KEYS) {
-      expect(source, `missing "${key}"`).toContain(key)
+      expect(settingsPanels, `missing "${key}"`).toContain(key)
     }
   })
 
-  it('orders its 8 sections On-page controls → Files & naming → Speed → Download mode → Duplicates → Media filters → Daily budget → Advanced', () => {
-    const titles = [
-      'On-page controls',
-      'Files & naming',
-      'Speed',
-      'Download mode',
-      'Duplicates',
-      'Media filters',
-      'Daily budget',
-      'Advanced',
-    ]
+  it('orders the Downloads sections Files → Download mode → Limits', () => {
+    const titles = ['Files', 'Download mode', 'Limits']
     let cursor = -1
     for (const title of titles) {
       const idx = source.indexOf(`title="${title}"`)
@@ -65,8 +61,12 @@ describe('Saving panel: nothing dropped from General + Downloads + Filters', () 
     }
   })
 
-  it('merges under one PanelHeader titled Saving', () => {
-    expect(source).toContain('title="Saving"')
+  it('folds the rarely used limits away by default', () => {
+    expect(source).toContain('title="Limits" collapsed')
+  })
+
+  it('titles the panel Downloads', () => {
+    expect(source).toContain('title="Downloads"')
     expect(source).toContain('SavingPanel')
   })
 
@@ -81,7 +81,9 @@ describe('Saving panel: nothing dropped from General + Downloads + Filters', () 
     expect(source).toContain('Grant localhost access')
     expect(source).toContain('Reset today')
     // Both buttons carry the shared StyleX minHeight override; button.tsx itself is untouched.
-    expect(source.match(/minHeight: '2\.5rem'/g)?.length).toBeGreaterThanOrEqual(2)
+    expect(source).toContain("minH10: { minHeight: '2.5rem' }")
+    expect(source).toContain('sx={styles.minH10} onClick={() => void aria2Access.request()}')
+    expect(source).toContain('sx={[styles.minH10, styles.selfStart]}')
   })
 })
 
@@ -89,18 +91,18 @@ describe('Saving panel: nothing dropped from General + Downloads + Filters', () 
 // page" describe block, which read `panels/general.tsx` directly — that file
 // no longer exists (absorbed into Saving, §3.3). Spec §6.1: "General-panel
 // assertions move to saving.test.ts (the file they grep no longer exists)."
-describe('settings controls live on the options page (General → Saving)', () => {
+describe('settings controls live on the options page (General → Browsing)', () => {
   it('hosts the download badge toggle alongside the Quick Grab controls', () => {
-    expect(source).toContain('checked={settings.quickGrabEnabled}')
-    expect(source).toContain('id="downloadBadgeEnabled"')
-    expect(source).toContain('Show download badge on media')
-    expect(source).toContain('checked={settings.downloadBadgeEnabled}')
-    expect(source).toContain('downloadBadgeEnabled: checked')
+    expect(browsingSource).toContain('checked={settings.quickGrabEnabled}')
+    expect(browsingSource).toContain('id="downloadBadgeEnabled"')
+    expect(browsingSource).toContain('Download badge')
+    expect(browsingSource).toContain('checked={settings.downloadBadgeEnabled}')
+    expect(browsingSource).toContain('downloadBadgeEnabled: checked')
   })
 
   it('renders the badge toggle on under default settings', () => {
     const defaults = Schema.decodeUnknownSync(Settings)({})
     expect(defaults.downloadBadgeEnabled).toBe(true)
-    expect(source).toContain('checked={settings.downloadBadgeEnabled}')
+    expect(browsingSource).toContain('checked={settings.downloadBadgeEnabled}')
   })
 })

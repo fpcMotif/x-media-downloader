@@ -27,7 +27,7 @@ describe('Release panel: tier + verb system (Stage redesign)', () => {
 
   it('keeps the trailing hint text after the grouped sub-toggles', () => {
     const lastToggleIdx = source.indexOf('clearAllListsOnSave')
-    const hintIdx = source.indexOf('Run the worklist from the toolbar popup')
+    const hintIdx = source.indexOf('in the popup.')
     expect(lastToggleIdx).toBeGreaterThan(-1)
     expect(hintIdx).toBeGreaterThan(lastToggleIdx)
   })
@@ -38,24 +38,21 @@ describe('Release panel: tier + verb system (Stage redesign)', () => {
     expect(source).not.toMatch(/\bconfirm\(/)
   })
 
-  it('documents the popup-only release rows, including the typed-word gate', () => {
-    const docIdx = source.indexOf('Release from the popup')
-    expect(docIdx).toBeGreaterThan(-1)
-    expect(source.indexOf('Release the whole list', docIdx)).toBeGreaterThan(docIdx)
-    expect(source.indexOf('RELEASE', docIdx)).toBeGreaterThan(docIdx)
+  it('states in the header that Release changes the X account and cannot be undone', () => {
+    expect(source).toContain('This changes your X account')
+    expect(source).toContain("can't undo it")
   })
 
   it('never binds a keyboard accelerator to a destructive control', () => {
     expect(source).not.toContain('accesskey')
   })
 
-  it('offers the mutation-observation toggle inside the Diagnostics section, off by default, above the export button', () => {
-    const sectionIdx = source.indexOf('title="Diagnostics"')
+  it('offers the mutation-observation toggle inside the folded Diagnostics section, above the export button', () => {
+    const sectionIdx = source.indexOf('title="Diagnostics" collapsed')
     const toggleIdx = source.indexOf('id="releaseMutationDiagnosticsEnabled"')
     const exportIdx = source.indexOf('Export diagnostics')
     expect(sectionIdx).toBeGreaterThan(-1)
     expect(toggleIdx).toBeGreaterThan(sectionIdx)
     expect(exportIdx).toBeGreaterThan(toggleIdx)
-    expect(source).toContain('Off by default')
   })
 })
