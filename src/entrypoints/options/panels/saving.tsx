@@ -6,20 +6,8 @@ import type { MediaType, Settings } from '@/packages/schema'
 import { aria2OriginPattern } from '@/packages/download/aria2'
 import { DOWNLOAD_MODES } from '@/packages/download/strategy'
 import { freshRecord, type BudgetRecord } from '@/packages/download/daily-budget'
-import {
-  dedupeToggleDelta,
-  hasLiveCloudDestination,
-  saveToDiskToggleDelta,
-} from '@/packages/settings/coupling'
+import { dedupeToggleDelta } from '@/packages/settings/coupling'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
@@ -30,9 +18,6 @@ import { offersGrantRequest, useOriginGrant } from '@/components/use-origin-gran
 import { EraserIcon, iconSize } from '@/components/icons'
 
 const styles = stylex.create({
-  // SelectTrigger 'w-44 min-h-10' — width replaces the base w-fit, minHeight
-  // adds to the size's own height.
-  selectTriggerWide: { width: '11rem', minHeight: '2.5rem' },
   // FieldDescription 'font-mono text-xs' — a later text-size utility also
   // strips the base's leading-normal (tailwind-merge's font-size ↔ leading
   // conflict), so the line-height is text-xs's own.
@@ -94,6 +79,13 @@ const styles = stylex.create({
     textWrap: 'pretty',
     color: tokens['--muted-foreground'],
   },
+  typesTrack: { width: '16rem', flexShrink: 0 },
+  pairRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    color: tokens['--muted-foreground'],
+  },
 })
 
 // Moved intact from filters.tsx (the "Daily budget" section reads/resets this
@@ -115,24 +107,8 @@ const TYPE_FILTERS: ReadonlyArray<{ value: MediaType; label: string }> = [
 
 const clampNonNegative = (raw: string): number => Math.max(0, Math.floor(Number(raw) || 0))
 
-const toggleType = (
-  skipTypes: ReadonlyArray<MediaType>,
-  type: MediaType,
-  skip: boolean,
-): MediaType[] => (skip ? [...skipTypes, type] : skipTypes.filter((t) => t !== type))
-
-/** The `<SelectItem>` values this panel's modifier picker actually renders — the
- *  `satisfies` clause fails to compile if the JSX below and `Settings['quickGrabModifier']`
- *  ever drift apart. */
-const QUICK_GRAB_MODIFIERS = ['alt', 'shift', 'ctrl', 'meta'] as const satisfies ReadonlyArray<
-  Settings['quickGrabModifier']
->
-// SAFETY: widening the literal tuple to `readonly string[]` only relaxes the search
-// parameter's type for the runtime membership check below — this predicate's own
-// `value is Settings['quickGrabModifier']` return annotation is what supplies the
-// narrowing, not the cast.
-const isQuickGrabModifier = (value: string): value is Settings['quickGrabModifier'] =>
-  (QUICK_GRAB_MODIFIERS as readonly string[]).includes(value)
+const skipTypesFor = (kept: ReadonlyArray<string>): MediaType[] =>
+  TYPE_FILTERS.filter((filter) => !kept.includes(filter.value)).map((filter) => filter.value)
 
 /** Whether `value` is one of `DOWNLOAD_MODES`' own values — reuses that array (the
  *  single source of truth for the strategy vocabulary) instead of asserting. */
@@ -163,119 +139,9 @@ export function SavingPanel({ settings, update }: PanelProps) {
 
   return (
     <>
-      <PanelHeader
-        title="Saving"
-        description="How media is noticed, fetched, named, filtered, and saved to disk."
-      />
+      <PanelHeader title="Downloads" />
 
-      <Section
-        title="On-page controls"
-        description="What the extension overlays on x.com while you browse."
-      >
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="quickGrabEnabled">Hover quick grab</FieldLabel>
-            <FieldDescription>Hold a modifier and hover one media item to grab it</FieldDescription>
-          </FieldContent>
-          <Switch
-            id="quickGrabEnabled"
-            checked={settings.quickGrabEnabled}
-            onCheckedChange={(checked: boolean) => void update({ quickGrabEnabled: checked })}
-          />
-        </Field>
-
-        {settings.quickGrabEnabled && (
-          <Field orientation="horizontal">
-            <FieldContent>
-              <FieldLabel htmlFor="quickGrabModifier">Quick grab modifier</FieldLabel>
-              <FieldDescription>
-                Hold {settings.quickGrabModifier === 'meta' ? 'Alt' : 'Cmd'} as well, or press d d
-                on a post, to grab the whole post
-              </FieldDescription>
-            </FieldContent>
-            <Select
-              value={settings.quickGrabModifier}
-              onValueChange={(value: string) => {
-                if (isQuickGrabModifier(value)) void update({ quickGrabModifier: value })
-              }}
-            >
-              <SelectTrigger id="quickGrabModifier" sx={styles.selectTriggerWide}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent position="popper">
-                <SelectGroup>
-                  <SelectItem value="alt">Alt / Option</SelectItem>
-                  <SelectItem value="shift">Shift</SelectItem>
-                  <SelectItem value="ctrl">Control</SelectItem>
-                  <SelectItem value="meta">Cmd / Win</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-        )}
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="keyboardNavEnabled">Keyboard navigation</FieldLabel>
-            <FieldDescription>
-              On Threads &amp; Instagram: j/k move between posts, arrow keys switch columns or flip
-              carousel photos, d downloads the focused post
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="keyboardNavEnabled"
-            checked={settings.keyboardNavEnabled}
-            onCheckedChange={(checked: boolean) => void update({ keyboardNavEnabled: checked })}
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="downloadBadgeEnabled">Show download badge on media</FieldLabel>
-            <FieldDescription>
-              Corner badge on photos and videos; click downloads that item
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="downloadBadgeEnabled"
-            checked={settings.downloadBadgeEnabled}
-            onCheckedChange={(checked: boolean) => void update({ downloadBadgeEnabled: checked })}
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="downloadDockEnabled">Show download dock</FieldLabel>
-            <FieldDescription>
-              Bottom-left stack to grab all detected media and rescan
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="downloadDockEnabled"
-            checked={settings.downloadDockEnabled}
-            onCheckedChange={(checked: boolean) => void update({ downloadDockEnabled: checked })}
-          />
-        </Field>
-
-        {settings.downloadDockEnabled && (
-          <Field orientation="horizontal">
-            <FieldContent>
-              <FieldLabel htmlFor="dockGlassEnabled">Liquid glass dock</FieldLabel>
-              <FieldDescription>Translucent glass look instead of the solid pill</FieldDescription>
-            </FieldContent>
-            <Switch
-              id="dockGlassEnabled"
-              checked={settings.dockGlassEnabled}
-              onCheckedChange={(checked: boolean) => void update({ dockGlassEnabled: checked })}
-            />
-          </Field>
-        )}
-      </Section>
-
-      <Section
-        title="Files & naming"
-        description="Naming and sidecars applied to every new download."
-      >
+      <Section title="Files">
         <Field>
           <FieldLabel htmlFor="filenameTemplate">Filename template</FieldLabel>
           <Input
@@ -289,10 +155,8 @@ export function SavingPanel({ settings, update }: PanelProps) {
         </Field>
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="sidecarMetadata">Save metadata sidecar</FieldLabel>
-            <FieldDescription>
-              Write a .json with tweet text, author, and links next to each file
-            </FieldDescription>
+            <FieldLabel htmlFor="sidecarMetadata">Metadata sidecar</FieldLabel>
+            <FieldDescription>Tweet text and author as .json beside each file</FieldDescription>
           </FieldContent>
           <Switch
             id="sidecarMetadata"
@@ -300,62 +164,22 @@ export function SavingPanel({ settings, update }: PanelProps) {
             onCheckedChange={(checked: boolean) => void update({ sidecarMetadata: checked })}
           />
         </Field>
-      </Section>
-
-      <Section
-        title="Speed"
-        description="Conservative defaults; raise only when your network and disk keep up."
-      >
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="downloadConcurrency">Concurrent downloads</FieldLabel>
-            <FieldDescription>How many media files download at once</FieldDescription>
-          </FieldContent>
-          <Input
-            id="downloadConcurrency"
-            type="number"
-            min={1}
-            max={10}
-            sx={styles.inputMono5}
-            value={settings.downloadConcurrency}
-            onChange={(e: Event) =>
-              void update({
-                downloadConcurrency: Number(inputValue(e)) || 1,
-              })
-            }
-          />
-        </Field>
-      </Section>
-
-      <Section
-        title="Download mode"
-        description="Direct is the safest default — Chrome saves the file directly."
-      >
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="saveToDisk">Download offline</FieldLabel>
+            <FieldLabel htmlFor="preventDuplicateDownloads">Skip duplicates</FieldLabel>
             <FieldDescription>
-              When off, new grabs default to the download server (via Convex). Turn on to download
-              offline to this computer
+              Skips posts already saved on any device. Turns on History.
             </FieldDescription>
           </FieldContent>
-          {/* The off position needs a live Cloud destination (issue #95); turning
-              it back on is always allowed. The delta + the settings-service
-              backstop refuse an illegal off even if this gate is bypassed. */}
           <Switch
-            id="saveToDisk"
-            checked={settings.saveToDisk}
-            disabled={
-              settings.saveToDisk &&
-              !settings.convexDriveEnabled &&
-              !hasLiveCloudDestination(settings)
-            }
-            onCheckedChange={(checked: boolean) =>
-              void update(saveToDiskToggleDelta(checked, settings))
-            }
+            id="preventDuplicateDownloads"
+            checked={settings.preventDuplicateDownloads}
+            onCheckedChange={(checked: boolean) => void update(dedupeToggleDelta(checked))}
           />
         </Field>
+      </Section>
 
+      <Section title="Download mode">
         <ToggleGroup
           type="single"
           spacing={0.5}
@@ -381,7 +205,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
         {settings.downloadStrategy === 'aria2' && (
           <div {...stylex.props(styles.aria2Group)} data-xmd-divide="" data-xmd-rows="3">
             <Field orientation="horizontal">
-              <FieldLabel htmlFor="aria2Split">aria2 split</FieldLabel>
+              <FieldLabel htmlFor="aria2Split">Connections per file</FieldLabel>
               <Input
                 id="aria2Split"
                 type="number"
@@ -428,81 +252,87 @@ export function SavingPanel({ settings, update }: PanelProps) {
             )}
           </div>
         )}
-      </Section>
 
-      <Section
-        title="Duplicates"
-        description="Skip media from tweets you've already downloaded, on any device."
-      >
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="preventDuplicateDownloads">Prevent duplicate downloads</FieldLabel>
-            <FieldDescription>
-              Requires download history — enabling this turns it on automatically.
-            </FieldDescription>
+            <FieldLabel htmlFor="downloadConcurrency">Concurrent downloads</FieldLabel>
+            <FieldDescription>Raise only if your network keeps up</FieldDescription>
           </FieldContent>
-          <Switch
-            id="preventDuplicateDownloads"
-            checked={settings.preventDuplicateDownloads}
-            onCheckedChange={(checked: boolean) => void update(dedupeToggleDelta(checked))}
+          <Input
+            id="downloadConcurrency"
+            type="number"
+            min={1}
+            max={10}
+            sx={styles.inputMono5}
+            value={settings.downloadConcurrency}
+            onChange={(e: Event) =>
+              void update({
+                downloadConcurrency: Number(inputValue(e)) || 1,
+              })
+            }
           />
         </Field>
       </Section>
 
-      <Section
-        title="Media filters"
-        description="Skip media by type or below a minimum resolution before it's queued."
-      >
-        {TYPE_FILTERS.map((filter) => (
-          <Field key={filter.value} orientation="horizontal">
-            <FieldContent>
-              <FieldLabel htmlFor={`skipType-${filter.value}`}>Skip {filter.label}</FieldLabel>
-              <FieldDescription>Never download {filter.label.toLowerCase()}</FieldDescription>
-            </FieldContent>
-            <Switch
-              id={`skipType-${filter.value}`}
-              checked={settings.skipTypes.includes(filter.value)}
-              onCheckedChange={(checked: boolean) =>
-                void update({ skipTypes: toggleType(settings.skipTypes, filter.value, checked) })
-              }
+      <Section title="Limits" collapsed>
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel>Media types</FieldLabel>
+          </FieldContent>
+          <ToggleGroup
+            type="multiple"
+            spacing={0.5}
+            sx={[segmented.track, styles.typesTrack]}
+            aria-label="Media types to download"
+            value={TYPE_FILTERS.filter((f) => !settings.skipTypes.includes(f.value)).map(
+              (f) => f.value,
+            )}
+            onValueChange={(kept: string[]) => void update({ skipTypes: skipTypesFor(kept) })}
+          >
+            {TYPE_FILTERS.map((filter) => (
+              <ToggleGroupItem
+                key={filter.value}
+                id={`skipType-${filter.value}`}
+                value={filter.value}
+                sx={segmented.item}
+              >
+                {filter.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </Field>
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="minWidth">Minimum size (px)</FieldLabel>
+            <FieldDescription>Width × height</FieldDescription>
+          </FieldContent>
+          <div {...stylex.props(styles.pairRow)}>
+            <Input
+              id="minWidth"
+              type="number"
+              min={0}
+              aria-label="Minimum size (px): width"
+              sx={styles.inputMono5}
+              value={settings.minWidth}
+              onChange={(e: Event) => void update({ minWidth: clampNonNegative(inputValue(e)) })}
             />
-          </Field>
-        ))}
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="minWidth">Minimum width</FieldLabel>
-            <FieldDescription>Skip media narrower than this (px). 0 = off.</FieldDescription>
-          </FieldContent>
-          <Input
-            id="minWidth"
-            type="number"
-            min={0}
-            sx={styles.inputMono6}
-            value={settings.minWidth}
-            onChange={(e: Event) => void update({ minWidth: clampNonNegative(inputValue(e)) })}
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="minHeight">Minimum height</FieldLabel>
-            <FieldDescription>Skip media shorter than this (px). 0 = off.</FieldDescription>
-          </FieldContent>
-          <Input
-            id="minHeight"
-            type="number"
-            min={0}
-            sx={styles.inputMono6}
-            value={settings.minHeight}
-            onChange={(e: Event) => void update({ minHeight: clampNonNegative(inputValue(e)) })}
-          />
+            <span aria-hidden="true">×</span>
+            <Input
+              id="minHeight"
+              type="number"
+              min={0}
+              aria-label="Minimum size (px): height"
+              sx={styles.inputMono5}
+              value={settings.minHeight}
+              onChange={(e: Event) => void update({ minHeight: clampNonNegative(inputValue(e)) })}
+            />
+          </div>
         </Field>
 
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel htmlFor="maxFileSizeMB">Max file size (MB)</FieldLabel>
-            <FieldDescription>Skip files larger than this. 0 = off.</FieldDescription>
           </FieldContent>
           <Input
             id="maxFileSizeMB"
@@ -513,16 +343,11 @@ export function SavingPanel({ settings, update }: PanelProps) {
             onChange={(e: Event) => void update({ maxFileSizeMB: clampNonNegative(inputValue(e)) })}
           />
         </Field>
-      </Section>
 
-      <Section
-        title="Daily budget"
-        description="Hard-stop downloads once either cap is reached for the local calendar day."
-      >
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel htmlFor="dailyMaxMB">Daily size cap (MB)</FieldLabel>
-            <FieldDescription>Total bytes per day. 0 = off.</FieldDescription>
+            <FieldDescription>Downloads stop for the day at either cap</FieldDescription>
           </FieldContent>
           <Input
             id="dailyMaxMB"
@@ -537,7 +362,6 @@ export function SavingPanel({ settings, update }: PanelProps) {
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel htmlFor="dailyMaxCount">Daily file cap</FieldLabel>
-            <FieldDescription>Number of files per day. 0 = off.</FieldDescription>
           </FieldContent>
           <Input
             id="dailyMaxCount"
@@ -567,57 +391,8 @@ export function SavingPanel({ settings, update }: PanelProps) {
             Reset today
           </Button>
         </Field>
-      </Section>
 
-      <Section
-        title="Advanced"
-        description="Opt-in behaviours that change how media is reached on the page."
-      >
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="autoRevealSensitiveEnabled">
-              Auto-reveal sensitive media
-            </FieldLabel>
-            <FieldDescription>
-              Click through “Content warning” covers so hidden media renders inline
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="autoRevealSensitiveEnabled"
-            checked={settings.autoRevealSensitiveEnabled}
-            onCheckedChange={(checked: boolean) =>
-              void update({ autoRevealSensitiveEnabled: checked })
-            }
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="authFallbackEnabled">Authenticated fallback</FieldLabel>
-            <FieldDescription>
-              Opt-in — reuse your X session to reach media the public path misses
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="authFallbackEnabled"
-            checked={settings.authFallbackEnabled}
-            onCheckedChange={(checked: boolean) => void update({ authFallbackEnabled: checked })}
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="showSavedStatus">Show “Saved” on downloaded posts</FieldLabel>
-            <FieldDescription>
-              Mark timeline posts you’ve already downloaded (on any device) with a “Saved ✓” chip
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="showSavedStatus"
-            checked={settings.showSavedStatus}
-            onCheckedChange={(checked: boolean) => void update({ showSavedStatus: checked })}
-          />
-        </Field>
+        <FieldDescription>0 = no limit</FieldDescription>
       </Section>
     </>
   )

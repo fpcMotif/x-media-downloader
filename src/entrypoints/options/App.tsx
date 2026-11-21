@@ -7,11 +7,10 @@ import { tokens } from '@/theme/tokens.stylex'
 import { CheckIcon, iconSize } from '@/components/icons'
 import { useOwnedTimer } from '@/components/owned-timer'
 import { useLoaded } from '@/components/use-loaded'
-import { Badge } from '@/components/ui/badge'
 import type { PanelProps } from './ui'
 import { SavingPanel } from './panels/saving'
+import { BrowsingPanel } from './panels/browsing'
 import { ReleasePanel } from './panels/release'
-import { CapturePanel } from './panels/capture'
 import { SyncPanel } from './panels/sync'
 import { HistoryPanel } from './panels/history'
 import { AboutPanel } from './panels/about'
@@ -19,6 +18,7 @@ import { ArchivePanel } from './panels/archive'
 
 const SM = '@media (width >= 40rem)'
 const HOVER = '@media (hover: hover)'
+const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 const RING_FOCUS_VISIBLE =
   '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
 
@@ -30,6 +30,7 @@ const TOAST_EXIT_MS = 150
 const panelEnter = stylex.keyframes({
   '0%': { opacity: 0, transform: 'translate3d(0, 0.25rem, 0)' },
 })
+const panelFade = stylex.keyframes({ '0%': { opacity: 0 } })
 
 const styles = stylex.create({
   // xmd-options-root flex flex-col sm:flex-row min-h-screen w-full bg-background
@@ -63,7 +64,7 @@ const styles = stylex.create({
     paddingBlock: { default: '1.5rem', [SM]: '3.5rem' },
     fontFamily: tokens['--font-sans'],
     letterSpacing: '-0.006em',
-    animationName: panelEnter,
+    animationName: { default: panelEnter, [REDUCED_MOTION]: panelFade },
     animationDuration: '0.22s',
     animationTimingFunction: 'var(--xmd-ease)',
   },
@@ -85,7 +86,7 @@ const styles = stylex.create({
   },
   // : translate-y-1 opacity-0 duration-150
   toastHidden: {
-    translate: '0 0.25rem',
+    translate: { default: '0 0.25rem', [REDUCED_MOTION]: '0 0' },
     opacity: 0,
     transitionDuration: `${TOAST_EXIT_MS}ms`,
   },
@@ -146,7 +147,7 @@ const styles = stylex.create({
     fontSize: '12px',
     lineHeight: 1.25,
     fontVariantNumeric: 'tabular-nums',
-    color: tokens['--xmd-faint'],
+    color: tokens['--muted-foreground'],
   },
   // px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground
   navLabel: {
@@ -157,7 +158,7 @@ const styles = stylex.create({
     fontWeight: 600,
     letterSpacing: '0.06em',
     textTransform: 'uppercase',
-    color: tokens['--xmd-faint'],
+    color: tokens['--muted-foreground'],
   },
   // mb-4 flex flex-col gap-0.5
   navSettings: {
@@ -215,7 +216,6 @@ const styles = stylex.create({
   // rounded-[var(--xmd-radius-3)] px-3 text-left text-[13px] transition-colors
   // outline-none focus-visible:ring-3 focus-visible:ring-ring/50
   navItemBase: {
-    position: 'relative',
     display: 'flex',
     minHeight: '2.25rem',
     alignItems: 'center',
@@ -232,20 +232,9 @@ const styles = stylex.create({
   },
   // isActive: bg-primary/[0.09] font-semibold text-primary
   navItemActive: {
-    backgroundColor: tokens['--card'],
-    boxShadow: '0 0 0 1px var(--border), var(--xmd-shadow-1)',
-    fontWeight: 600,
+    backgroundColor: tokens['--muted'],
+    fontWeight: 500,
     color: tokens['--foreground'],
-    '::before': {
-      content: '""',
-      position: 'absolute',
-      left: '-0.75rem',
-      top: '0.5rem',
-      bottom: '0.5rem',
-      width: '3px',
-      borderRadius: '0 3px 3px 0',
-      backgroundColor: tokens['--primary'],
-    },
   },
   // !isActive: font-medium text-foreground/80 hover:bg-muted hover:text-foreground
   navItemInactive: {
@@ -254,11 +243,6 @@ const styles = stylex.create({
       default: tokens['--muted-foreground'],
       [HOVER]: { ':hover': tokens['--foreground'] },
     },
-    backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
-  },
-  // ml-1.5
-  releaseBadge: {
-    marginLeft: '0.375rem',
   },
 })
 
@@ -279,10 +263,10 @@ type Section = {
 // feature nouns. Clearing → Release (the account-mutating tier-2 verb).
 // Cloud → Sync (names what the user is doing, not the technology).
 const SECTIONS = [
-  { id: 'saving', label: 'Saving', group: 'settings', Panel: SavingPanel },
-  { id: 'release', label: 'Release', group: 'settings', Panel: ReleasePanel },
-  { id: 'capture', label: 'Capture', group: 'settings', Panel: CapturePanel },
+  { id: 'saving', label: 'Downloads', group: 'settings', Panel: SavingPanel },
+  { id: 'browsing', label: 'Browsing', group: 'settings', Panel: BrowsingPanel },
   { id: 'sync', label: 'Sync', group: 'settings', Panel: SyncPanel },
+  { id: 'release', label: 'Release', group: 'settings', Panel: ReleasePanel },
   { id: 'archive', label: 'Archive', group: 'library', Panel: ArchivePanel },
   { id: 'history', label: 'History', group: 'library', Panel: HistoryPanel },
   { id: 'about', label: 'About', group: 'utility', Panel: AboutPanel },
@@ -304,6 +288,7 @@ const HASH_ALIASES = {
   downloads: 'saving',
   filters: 'saving',
   cloud: 'sync',
+  capture: 'archive',
 } satisfies Record<string, SectionId>
 
 /** Whether a raw location hash is one of the legacy aliases above, rather than
@@ -404,9 +389,7 @@ function SettingsSidebar({
     <aside {...stylex.props(styles.aside)}>
       <div {...stylex.props(styles.brandBlock)}>
         <span {...stylex.props(styles.brandName)}>X Media Downloader</span>
-        <span {...stylex.props(styles.brandVersion)}>
-          v{browser.runtime.getManifest().version} · local
-        </span>
+        <span {...stylex.props(styles.brandVersion)}>v{browser.runtime.getManifest().version}</span>
       </div>
 
       <p id="settings-nav-label" {...stylex.props(styles.navLabel)}>
@@ -465,13 +448,6 @@ function NavItem({
       )}
     >
       {section.label}
-      {/* The danger tier is legible from the sidebar before the user clicks in
-          (spec §3.1) — Release is the only account-mutating cluster. */}
-      {section.id === 'release' && (
-        <Badge variant="destructive" sx={styles.releaseBadge}>
-          Account
-        </Badge>
-      )}
     </button>
   )
 }

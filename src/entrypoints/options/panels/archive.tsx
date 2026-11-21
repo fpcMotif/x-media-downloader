@@ -4,8 +4,9 @@ import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { FieldDescription } from '@/components/ui/field'
-import { PanelHeader, Section } from '../ui'
+import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
+import { Switch } from '@/components/ui/switch'
+import { PanelHeader, Section, type PanelProps } from '../ui'
 import { EraserIcon, iconSize } from '@/components/icons'
 import {
   EMPTY_CAPTURE_SUMMARY,
@@ -103,6 +104,15 @@ const styles = stylex.create({
   },
   dotSeparator: { color: tokens['--muted-foreground'] },
   textPretty: { textWrap: 'pretty' },
+  syncLink: {
+    borderRadius: 'calc(var(--radius) - 4px)',
+    outlineStyle: 'none',
+    boxShadow: {
+      default: null,
+      ':focus-visible':
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+    },
+  },
   monoNums: { fontFamily: tokens['--font-mono'], fontVariantNumeric: 'tabular-nums' },
   monoNumsPretty: {
     fontFamily: tokens['--font-sans'],
@@ -123,7 +133,8 @@ const loadArchiveSummary = (): Promise<CaptureSummary> => fetchCaptureSummary(AR
 
 // Takes no PanelProps — the archive is a pure data browser, not a setting; it
 // only talks to the extension worker for its own summary/export/erase messages.
-export function ArchivePanel() {
+export function ArchivePanel({ settings, update }: PanelProps) {
+  const syncConfigured = settings.convexUrl !== '' && settings.convexSyncSecret !== ''
   const summaryLoad = useLoaded(loadArchiveSummary)
   const summary = readyOr(summaryLoad.state, EMPTY_CAPTURE_SUMMARY)
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
@@ -165,7 +176,7 @@ export function ArchivePanel() {
   const shown = matches.slice(0, visible)
   const remaining = matches.length - shown.length
 
-  const conversationList = (): JSX.Element => {
+  const conversationList = (): JSX.Element | null => {
     if (summaryLoad.state._tag === 'Loading') return <FieldDescription>Loading…</FieldDescription>
     if (summaryLoad.state._tag === 'Failed') {
       return <FieldDescription>Could not load the archive. Reload this page.</FieldDescription>
@@ -218,23 +229,69 @@ export function ArchivePanel() {
         </FieldDescription>
       )
     }
-    return (
-      <FieldDescription sx={styles.textPretty}>
-        Nothing captured yet. Turn on Capture tweets and browse X.
-      </FieldDescription>
-    )
+    if (summary.tweets > 0) return null
+    return <FieldDescription sx={styles.textPretty}>Nothing captured yet.</FieldDescription>
   }
 
   return (
     <>
       <PanelHeader
         title="Archive"
-        description="Everything captured so far — browse conversations, export them, or wipe the archive."
+        description="Saves tweet text as you scroll. No files, no network."
       />
+
+      <Section title="Capture">
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="captureEnabled">Capture tweets</FieldLabel>
+          </FieldContent>
+          <Switch
+            id="captureEnabled"
+            checked={settings.captureEnabled}
+            onCheckedChange={(checked: boolean) => void update({ captureEnabled: checked })}
+          />
+        </Field>
+
+        {settings.captureEnabled && (
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="captureAllScrolled">Everything you scroll</FieldLabel>
+              <FieldDescription>Not only tweets you act on</FieldDescription>
+            </FieldContent>
+            <Switch
+              id="captureAllScrolled"
+              checked={settings.captureAllScrolled}
+              onCheckedChange={(checked: boolean) => void update({ captureAllScrolled: checked })}
+            />
+          </Field>
+        )}
+
+        {settings.captureEnabled && (
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="captureMirrorEnabled">Mirror to Convex</FieldLabel>
+              {!syncConfigured && (
+                <FieldDescription>
+                  Set up{' '}
+                  <a href="#sync" {...stylex.props(styles.syncLink)}>
+                    Sync ›
+                  </a>{' '}
+                  first
+                </FieldDescription>
+              )}
+            </FieldContent>
+            <Switch
+              id="captureMirrorEnabled"
+              disabled={!syncConfigured}
+              checked={settings.captureMirrorEnabled}
+              onCheckedChange={(checked: boolean) => void update({ captureMirrorEnabled: checked })}
+            />
+          </Field>
+        )}
+      </Section>
 
       <Section
         title="Conversations"
-        description="Search by handle or text, export a tree or Markdown copy of any conversation, or pull everything as JSONL."
         action={
           <Button
             type="button"
@@ -283,8 +340,8 @@ export function ArchivePanel() {
         )}
         {conversations > loaded.length && (
           <FieldDescription sx={styles.monoNumsPretty}>
-            Showing the newest {loaded.length} of {conversations} conversations — Export all (JSONL)
-            includes everything.
+            Showing the newest {loaded.length.toLocaleString()} of {conversations.toLocaleString()}.
+            Export all includes everything.
           </FieldDescription>
         )}
 

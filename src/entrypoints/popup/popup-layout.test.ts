@@ -101,7 +101,9 @@ describe('popup Stage zone hosts the X page actions (spec §2.3)', () => {
   })
 
   it('drops the popup wordmark from the context strip (spec §2.1 zone table)', () => {
-    expect(popupSource).not.toContain('X Media Downloader')
+    const srOnlyHeading = '<h1 {...stylex.props(styles.srOnly)}>X Media Downloader</h1>'
+    const withoutSrOnlyHeading = popupSource.replace(srOnlyHeading, '')
+    expect(withoutSrOnlyHeading).not.toContain('X Media Downloader')
   })
 })
 
@@ -207,11 +209,11 @@ describe('popup hosts a minimal capture toggle', () => {
     expect(captureQuickActionsSource).toContain('Export all')
   })
 
-  it('surfaces the archive size as a deep link into the Capture settings panel', () => {
+  it('surfaces the archive size as a deep link into the Archive panel', () => {
     expect(popupSource).toContain('captureSummary')
     // openOptionsPage always lands on Saving; the capture card must deep-link
     // straight to #capture so the options app opens on the Capture panel.
-    expect(popupSource).toContain("openOptionsSection('capture')")
+    expect(popupSource).toContain("openOptionsSection('archive')")
     expect(popupSource).toContain('openCaptureArchive')
   })
 
@@ -223,7 +225,7 @@ describe('popup hosts a minimal capture toggle', () => {
 
 describe('popup folds monitor-reset into the monitor block', () => {
   it('nests the reset trigger inside the Download monitor section rather than a separate button above it', () => {
-    const monitorIdx = popupSource.indexOf('aria-label="Download monitor"')
+    const monitorIdx = popupSource.indexOf('function MonitorZone(')
     const resetTriggerIdx = popupSource.indexOf('onClick={onReset}')
     expect(monitorIdx).toBeGreaterThan(-1)
     expect(resetTriggerIdx).toBeGreaterThan(monitorIdx)

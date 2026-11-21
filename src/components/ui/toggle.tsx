@@ -12,6 +12,7 @@ import { svgHost, svgSize35, svgSize4 } from '@/theme/markers.stylex'
 
 const HOVER = '@media (hover: hover)'
 const DARK = '@media (prefers-color-scheme: dark)'
+const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 
 // Base UI marks the on-state with `data-pressed` (plus `aria-pressed`), replacing
 // Radix's `data-[state=on]`. Both attributes always co-occur, so every rule that
@@ -30,7 +31,10 @@ const base = stylex.create({
     lineHeight: tokens['--text-sm--line-height'],
     fontWeight: { default: 500, '[data-pressed]': 600 },
     whiteSpace: 'nowrap',
-    transitionProperty: 'color, background-color, border-color, box-shadow, transform, scale',
+    transitionProperty: {
+      default: 'color, background-color, border-color, box-shadow, transform, scale',
+      [REDUCED_MOTION]: 'color, background-color, border-color, box-shadow',
+    },
     transitionDuration: '0.16s',
     transitionTimingFunction: 'var(--xmd-ease)',
     outlineStyle: 'none',

@@ -15,6 +15,7 @@ import { Collapse, useLingeringValue } from './collapse'
 const RECENT_LIMIT = 3
 
 const HOVER = '@media (hover: hover)'
+const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 
 // `transition-colors` (Tailwind v4) — verbatim property list.
 const TRANSITION_COLORS =
@@ -61,7 +62,7 @@ const styles = stylex.create({
   chevron: {
     flexShrink: 0,
     transitionProperty: 'rotate',
-    transitionDuration: '0.26s',
+    transitionDuration: { default: '0.26s', [REDUCED_MOTION]: '0s' },
     transitionTimingFunction: 'var(--xmd-ease)',
   },
   chevronCollapsed: { rotate: '0deg' },

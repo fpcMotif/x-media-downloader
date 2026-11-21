@@ -8,6 +8,7 @@ import { FETCHED_HOST_PATTERNS } from '@/packages/download/fetched-strategy'
 import type { CloudProviderId } from '@/packages/cloud/types'
 import { PROVIDERS } from '@/packages/cloud/provider'
 import { describeUploadSummary, type CloudUploadStatus } from '@/packages/cloud/status'
+import { hasLiveCloudDestination, saveToDiskToggleDelta } from '@/packages/settings/coupling'
 import { Button } from '@/components/ui/button'
 import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -31,7 +32,13 @@ const styles = stylex.create({
   // 'text-[13px] font-medium text-success' span — text-[13px] sets fontSize
   // only, line-height stays inherited.
   grantedText: { fontSize: '13px', fontWeight: 500, color: tokens['--success'] },
-  descPretty: { textWrap: 'pretty' },
+  redirectCode: {
+    fontFamily: tokens['--font-mono'],
+    fontSize: '0.75rem',
+    lineHeight: tokens['--text-xs--line-height'],
+    wordBreak: 'break-all',
+    color: tokens['--muted-foreground'],
+  },
   // CloudProviderRow root: 'grid gap-3 border-l border-border pl-4' (no
   // divide-y/rows here, unlike the aria2 sub-group in saving.tsx).
   providerRoot: {
@@ -105,11 +112,20 @@ const replyDetail = (reply: Option.Option<{ readonly detail: string }>): string 
     onSome: (r) => r.detail,
   })
 
+const readRedirectUrl = (): string => {
+  try {
+    return browser.identity.getRedirectURL()
+  } catch {
+    return ''
+  }
+}
+
 const retryUploads = async (): Promise<void> => {
   await browser.runtime.sendMessage({ _tag: 'CloudRetryRequest' }).catch(() => {})
 }
 
 export function SyncPanel({ settings, update, reload }: PanelProps) {
+  const redirectUrl = readRedirectUrl()
   const [testingSync, setTestingSync] = useState(false)
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [cloudStatus, setCloudStatus] = useState<CloudUploadStatus | null>(null)
@@ -117,9 +133,7 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
   const [connectMsg, setConnectMsg] = useState('')
   const [relaySetup, setRelaySetup] = useState<typeof RelaySetup.Type | null>(null)
   const [checkingRelay, setCheckingRelay] = useState(false)
-  const [relayMessage, setRelayMessage] = useState(
-    'Check your deployment before enabling this experiment.',
-  )
+  const [relayMessage, setRelayMessage] = useState('')
   const checkRelay = async (): Promise<void> => {
     setCheckingRelay(true)
     try {
@@ -265,155 +279,12 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
 
   return (
     <>
-      <PanelHeader
-        title="Sync"
-        description="Back up to your own cloud — opt-in, and you hold the keys."
-      />
+      <PanelHeader title="Sync" />
 
-      <Section
-        title="Cloud sync to Convex"
-        description="Mirrors download metadata only — never file bytes. You run the deployment (ADR-0009)."
-      >
+      <Section title="Cloud upload">
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="cloudSyncEnabled">Cloud sync</FieldLabel>
-            <FieldDescription>Metadata-only mirror to your Convex deployment</FieldDescription>
-          </FieldContent>
-          <Switch
-            id="cloudSyncEnabled"
-            checked={settings.cloudSyncEnabled}
-            onCheckedChange={(checked: boolean) =>
-              void update({
-                cloudSyncEnabled: checked,
-                ...(checked &&
-                  settings.cloudDeviceId === '' && { cloudDeviceId: crypto.randomUUID() }),
-              })
-            }
-          />
-        </Field>
-
-        {settings.cloudSyncEnabled && (
-          <>
-            <Field>
-              <FieldLabel htmlFor="convexUrl">Convex deployment URL</FieldLabel>
-              <Input
-                id="convexUrl"
-                placeholder="https://<deployment>.convex.cloud"
-                value={settings.convexUrl}
-                onChange={(e: Event) => void update({ convexUrl: inputValue(e) })}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="convexSyncSecret">Sync secret (required)</FieldLabel>
-              <Input
-                id="convexSyncSecret"
-                type="password"
-                placeholder="must match the deployment's SYNC_SHARED_SECRET"
-                value={settings.convexSyncSecret}
-                onChange={(e: Event) => void update({ convexSyncSecret: inputValue(e) })}
-              />
-            </Field>
-            <div {...stylex.props(styles.flexWrapRow)}>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                sx={styles.minH10}
-                disabled={
-                  testingSync || settings.convexUrl === '' || settings.convexSyncSecret === ''
-                }
-                onClick={() => void testConvexConnection()}
-              >
-                {testingSync ? 'Testing…' : 'Test connection'}
-              </Button>
-              {offersGrantRequest(convexAccess.grant) && (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  sx={styles.minH10}
-                  onClick={() => void convexAccess.request()}
-                >
-                  Grant access
-                </Button>
-              )}
-              {convexAccess.grant === 'granted' && (
-                <span {...stylex.props(styles.grantedText)}>access granted</span>
-              )}
-            </div>
-            {syncStatus && (
-              <p
-                {...stylex.props(
-                  styles.statusText,
-                  syncStatus.ok ? styles.colorSuccess : styles.colorDestructive,
-                )}
-              >
-                {syncStatus.detail}
-              </p>
-            )}
-          </>
-        )}
-      </Section>
-
-      <Section
-        title="Experimental Convex uploads"
-        description="Google Drive uploads through your own deployment. Default off; Drive never falls back to a browser upload."
-      >
-        <Button
-          type="button"
-          variant="outline"
-          disabled={checkingRelay}
-          onClick={() => void checkRelay()}
-        >
-          {checkingRelay ? 'Checking deployment…' : 'Check deployment setup'}
-        </Button>
-        <output {...stylex.props(styles.statusText, styles.colorMuted)}>{relayMessage}</output>
-        <div {...stylex.props(styles.headerRow)}>
-          <div>
-            <label htmlFor="convexDriveEnabled" {...stylex.props(styles.providerLabel)}>
-              Use Convex for Drive uploads
-            </label>
-            <p id="convexDriveDescription" {...stylex.props(styles.statusText, styles.colorMuted)}>
-              Requires Cloud upload and Drive Upload on. Dropbox keeps uploading from this browser.
-              Enabling also turns on Download History and turns off saving to this computer.
-              Accepted jobs continue after browser closure. No credentials are copied from this
-              extension.
-            </p>
-          </div>
-          <Switch
-            id="convexDriveEnabled"
-            aria-describedby="convexDriveDescription"
-            checked={settings.convexDriveEnabled}
-            disabled={
-              !settings.convexDriveEnabled &&
-              (!relaySetup?.available ||
-                !settings.cloudUploadEnabled ||
-                !settings.gdriveUploadEnabled)
-            }
-            onCheckedChange={(checked: boolean) => void toggleRelay(checked)}
-          />
-        </div>
-        {settings.convexDriveConnected && (
-          <Button type="button" variant="outline" onClick={() => void disconnectProvider('gdrive')}>
-            Disconnect backend Drive
-          </Button>
-        )}
-        <FieldDescription>
-          Drive Upload pauses new jobs; accepted jobs drain. The master switch stops requests at the
-          next boundary. Disconnect revokes backend authorization. Turning off this experiment
-          retains accepted job status. See docs/cloud-upload-setup.md for deployment credentials,
-          limits, and unverified live results.
-        </FieldDescription>
-      </Section>
-
-      <Section
-        title="Cloud upload — Drive & Dropbox"
-        description="Browser uploads are the default. The separate Convex experiment uses your own deployment."
-      >
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="cloudUploadEnabled">Upload media to cloud</FieldLabel>
-            <FieldDescription>Photos + video bytes to Google Drive / Dropbox</FieldDescription>
+            <FieldLabel htmlFor="cloudUploadEnabled">Upload to Drive or Dropbox</FieldLabel>
           </FieldContent>
           <Switch
             id="cloudUploadEnabled"
@@ -422,13 +293,36 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
           />
         </Field>
 
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="saveToDisk">Save to this computer</FieldLabel>
+            <FieldDescription>Turn off to keep new grabs in the cloud only</FieldDescription>
+          </FieldContent>
+          <Switch
+            id="saveToDisk"
+            checked={settings.saveToDisk}
+            disabled={
+              settings.saveToDisk &&
+              !settings.convexDriveEnabled &&
+              !hasLiveCloudDestination(settings)
+            }
+            onCheckedChange={(checked: boolean) =>
+              void update(saveToDiskToggleDelta(checked, settings))
+            }
+          />
+        </Field>
+
         {settings.cloudUploadEnabled && (
           <>
-            <FieldDescription sx={styles.descPretty}>
-              Uploads run automatically as you download and follow each provider's Upload switch —
-              there's no separate step. Use “Back up past downloads” to sync media you saved
-              earlier.
-            </FieldDescription>
+            {redirectUrl !== '' && (
+              <Field>
+                <FieldLabel>Redirect URL</FieldLabel>
+                <code {...stylex.props(styles.redirectCode)}>{redirectUrl}</code>
+                <FieldDescription>
+                  Register it in your Google or Dropbox app console
+                </FieldDescription>
+              </Field>
+            )}
             <CloudProviderRow
               key={`gdrive:${settings.gdriveClientId}:${settings.gdriveClientSecret}`}
               provider="gdrive"
@@ -497,6 +391,130 @@ export function SyncPanel({ settings, update, reload }: PanelProps) {
               </div>
             )}
           </>
+        )}
+      </Section>
+
+      <Section title="Metadata sync">
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="cloudSyncEnabled">Sync to Convex</FieldLabel>
+            <FieldDescription>
+              Metadata only, never files. Needs your Convex deployment.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="cloudSyncEnabled"
+            checked={settings.cloudSyncEnabled}
+            onCheckedChange={(checked: boolean) =>
+              void update({
+                cloudSyncEnabled: checked,
+                ...(checked &&
+                  settings.cloudDeviceId === '' && { cloudDeviceId: crypto.randomUUID() }),
+              })
+            }
+          />
+        </Field>
+
+        {settings.cloudSyncEnabled && (
+          <>
+            <Field>
+              <FieldLabel htmlFor="convexUrl">Convex deployment URL</FieldLabel>
+              <Input
+                id="convexUrl"
+                placeholder="https://<deployment>.convex.cloud"
+                value={settings.convexUrl}
+                onChange={(e: Event) => void update({ convexUrl: inputValue(e) })}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="convexSyncSecret">Sync secret</FieldLabel>
+              <Input
+                id="convexSyncSecret"
+                type="password"
+                placeholder="must match the deployment's SYNC_SHARED_SECRET"
+                value={settings.convexSyncSecret}
+                onChange={(e: Event) => void update({ convexSyncSecret: inputValue(e) })}
+              />
+            </Field>
+            <div {...stylex.props(styles.flexWrapRow)}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                sx={styles.minH10}
+                disabled={
+                  testingSync || settings.convexUrl === '' || settings.convexSyncSecret === ''
+                }
+                onClick={() => void testConvexConnection()}
+              >
+                {testingSync ? 'Testing…' : 'Test connection'}
+              </Button>
+              {offersGrantRequest(convexAccess.grant) && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  sx={styles.minH10}
+                  onClick={() => void convexAccess.request()}
+                >
+                  Grant access
+                </Button>
+              )}
+              {convexAccess.grant === 'granted' && (
+                <span {...stylex.props(styles.grantedText)}>access granted</span>
+              )}
+            </div>
+            {syncStatus && (
+              <p
+                {...stylex.props(
+                  styles.statusText,
+                  syncStatus.ok ? styles.colorSuccess : styles.colorDestructive,
+                )}
+              >
+                {syncStatus.detail}
+              </p>
+            )}
+          </>
+        )}
+      </Section>
+
+      <Section title="Experimental: Drive uploads through Convex" collapsed>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={checkingRelay}
+          onClick={() => void checkRelay()}
+        >
+          {checkingRelay ? 'Checking deployment…' : 'Check deployment setup'}
+        </Button>
+        <output {...stylex.props(styles.statusText, styles.colorMuted)}>{relayMessage}</output>
+        <div {...stylex.props(styles.headerRow)}>
+          <div>
+            <label htmlFor="convexDriveEnabled" {...stylex.props(styles.providerLabel)}>
+              Use Convex for Drive uploads
+            </label>
+            <p id="convexDriveDescription" {...stylex.props(styles.statusText, styles.colorMuted)}>
+              Drive uploads run on your deployment and finish after the browser closes. Needs Drive
+              upload on. Turns on History and turns off Save to this computer.
+            </p>
+          </div>
+          <Switch
+            id="convexDriveEnabled"
+            aria-describedby="convexDriveDescription"
+            checked={settings.convexDriveEnabled}
+            disabled={
+              !settings.convexDriveEnabled &&
+              (!relaySetup?.available ||
+                !settings.cloudUploadEnabled ||
+                !settings.gdriveUploadEnabled)
+            }
+            onCheckedChange={(checked: boolean) => void toggleRelay(checked)}
+          />
+        </div>
+        {settings.convexDriveConnected && (
+          <Button type="button" variant="outline" onClick={() => void disconnectProvider('gdrive')}>
+            Disconnect backend Drive
+          </Button>
         )}
       </Section>
     </>
@@ -582,10 +600,7 @@ function CloudProviderRow({
             value={secretDraft}
             onChange={(e: Event) => setSecretDraft(inputValue(e))}
           />
-          <FieldDescription>
-            Google issues this beside the client ID. It rejects the connection without it, even
-            though PKCE is used. It never leaves this browser.
-          </FieldDescription>
+          <FieldDescription>Required by Google. Stays in this browser.</FieldDescription>
         </Field>
       )}
       <div {...stylex.props(styles.flexWrapRow)}>
@@ -618,9 +633,7 @@ function CloudProviderRow({
       <Field orientation="horizontal">
         <FieldContent>
           <FieldLabel htmlFor={`${provider}UploadEnabled`}>Upload</FieldLabel>
-          <FieldDescription>
-            Paused keeps {label} connected but stops new uploads — queued ones keep finishing
-          </FieldDescription>
+          <FieldDescription>Off pauses new uploads and stays connected</FieldDescription>
         </FieldContent>
         <Switch
           id={`${provider}UploadEnabled`}

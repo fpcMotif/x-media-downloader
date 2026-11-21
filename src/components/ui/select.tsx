@@ -14,6 +14,7 @@ type Sx = StyleXStyles | ReadonlyArray<StyleXStyles | false | null | undefined>
 
 const HOVER = '@media (hover: hover)'
 const DARK = '@media (prefers-color-scheme: dark)'
+const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 const FORCED_COLORS = '@media (forced-colors: active)'
 
 // SelectContent's open/close animation (tw-animate-css `animate-in`/`animate-out`).
@@ -63,6 +64,8 @@ const exit = stylex.keyframes({
     filter: 'blur(0)',
   },
 })
+const enterFade = stylex.keyframes({ '0%': { opacity: 0 } })
+const exitFade = stylex.keyframes({ to: { opacity: 0 } })
 
 const styles = stylex.create({
   group: {
@@ -161,12 +164,12 @@ const styles = stylex.create({
     transitionDuration: '0.1s',
     animationName: {
       default: null,
-      '[data-open]': enterNone,
-      '[data-open][data-side="bottom"]': enterFromTop2,
-      '[data-open][data-side="left"]': enterFromRight2,
-      '[data-open][data-side="right"]': enterFromLeft2,
-      '[data-open][data-side="top"]': enterFromBottom2,
-      '[data-closed]': exit,
+      '[data-open]': { default: enterNone, [REDUCED_MOTION]: enterFade },
+      '[data-open][data-side="bottom"]': { default: enterFromTop2, [REDUCED_MOTION]: enterFade },
+      '[data-open][data-side="left"]': { default: enterFromRight2, [REDUCED_MOTION]: enterFade },
+      '[data-open][data-side="right"]': { default: enterFromLeft2, [REDUCED_MOTION]: enterFade },
+      '[data-open][data-side="top"]': { default: enterFromBottom2, [REDUCED_MOTION]: enterFade },
+      '[data-closed]': { default: exit, [REDUCED_MOTION]: exitFade },
     },
     animationDuration: { default: null, '[data-open]': '0.1s', '[data-closed]': '0.1s' },
     animationTimingFunction: { default: null, '[data-open]': 'ease', '[data-closed]': 'ease' },

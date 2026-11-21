@@ -1,8 +1,15 @@
 import type { ComponentChildren, VNode } from 'preact'
+import { useEffect, useId, useRef, useState } from 'preact/hooks'
 import * as stylex from '@stylexjs/stylex'
 import type { Settings } from '@/packages/schema'
 import { tokens } from '@/theme/tokens.stylex'
 import { FieldGroup } from '@/components/ui/field'
+import { ChevronDownIcon, iconSize } from '@/components/icons'
+
+const HOVER = '@media (hover: hover)'
+const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
+const RING_FOCUS_VISIBLE =
+  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
 
 const styles = stylex.create({
   // grid gap-1.5 pb-1
@@ -13,6 +20,9 @@ const styles = stylex.create({
   },
   // text-xl font-semibold tracking-tight text-balance
   title: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
     fontSize: '1.625rem',
     lineHeight: 1.2,
     fontWeight: 650,
@@ -73,6 +83,33 @@ const styles = stylex.create({
     boxShadow: '0 0 0 1px var(--border), var(--xmd-shadow-1)',
     paddingInline: '1.25rem',
   },
+  foldClosed: { gap: 0 },
+  foldTrigger: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.375rem',
+    minHeight: '2.5rem',
+    paddingInline: '0.25rem',
+    paddingBlock: 0,
+    borderWidth: 0,
+    borderRadius: tokens['--xmd-radius-3'],
+    backgroundColor: 'transparent',
+    font: 'inherit',
+    letterSpacing: 'inherit',
+    textAlign: 'start',
+    cursor: 'pointer',
+    outlineStyle: 'none',
+    color: { default: tokens['--muted-foreground'], [HOVER]: { ':hover': tokens['--foreground'] } },
+    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+  },
+  chevron: {
+    display: 'inline-flex',
+    transitionProperty: 'rotate',
+    transitionDuration: { default: '0.16s', [REDUCED_MOTION]: '0s' },
+    transitionTimingFunction: 'var(--xmd-ease)',
+    rotate: '-90deg',
+  },
+  chevronOpen: { rotate: '0deg' },
 })
 
 /** Every settings panel reads the live settings and writes through `update`;
@@ -93,11 +130,22 @@ export const inputValue = (e: Event): string =>
 /** The title + lede at the top of a panel's content column — R4 Foundations
  *  type scale (20px title, 13px muted lede): a quiet typographic document,
  *  not a dashboard hero. */
-export function PanelHeader({ title, description }: { title: string; description: string }) {
+export function PanelHeader({
+  title,
+  description,
+  badge,
+}: {
+  title: string
+  description?: string
+  badge?: VNode
+}) {
   return (
     <header {...stylex.props(styles.header)}>
-      <h1 {...stylex.props(styles.title)}>{title}</h1>
-      <p {...stylex.props(styles.description)}>{description}</p>
+      <h1 {...stylex.props(styles.title)}>
+        {title}
+        {badge}
+      </h1>
+      {description && <p {...stylex.props(styles.description)}>{description}</p>}
     </header>
   )
 }
@@ -111,15 +159,18 @@ export function Section({
   title,
   description,
   action,
+  collapsed,
   children,
 }: {
   title: string
   description?: string
   action?: VNode
+  collapsed?: boolean
   children: ComponentChildren
 }) {
+  if (collapsed) return <FoldedSection title={title}>{children}</FoldedSection>
   return (
-    <section aria-label={title} {...stylex.props(styles.section)}>
+    <section {...stylex.props(styles.section)}>
       <div {...stylex.props(styles.titleRow)}>
         <div {...stylex.props(styles.titleColumn)}>
           <h2 {...stylex.props(styles.sectionTitle)}>{title}</h2>
@@ -130,6 +181,42 @@ export function Section({
       <FieldGroup sx={styles.rows} data-xmd-divide="" data-xmd-rows="4">
         {children}
       </FieldGroup>
+    </section>
+  )
+}
+
+function FoldedSection({ title, children }: { title: string; children: ComponentChildren }) {
+  const [open, setOpen] = useState(false)
+  const contentId = useId()
+  const contentRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const content = contentRef.current
+    if (!content) return undefined
+    const reveal = (): void => setOpen(true)
+    content.addEventListener('beforematch', reveal)
+    return () => content.removeEventListener('beforematch', reveal)
+  }, [])
+  return (
+    <section {...stylex.props(styles.section, !open && styles.foldClosed)}>
+      <h2 {...stylex.props(styles.sectionTitle)}>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={contentId}
+          onClick={() => setOpen((wasOpen) => !wasOpen)}
+          {...stylex.props(styles.foldTrigger)}
+        >
+          {title}
+          <span aria-hidden="true" {...stylex.props(styles.chevron, open && styles.chevronOpen)}>
+            <ChevronDownIcon sx={iconSize.s4} />
+          </span>
+        </button>
+      </h2>
+      <div id={contentId} ref={contentRef} hidden={open ? false : 'until-found'}>
+        <FieldGroup sx={styles.rows} data-xmd-divide="" data-xmd-rows="4">
+          {children}
+        </FieldGroup>
+      </div>
     </section>
   )
 }
