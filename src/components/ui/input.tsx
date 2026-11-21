@@ -7,7 +7,6 @@ import type { StyleXStyles } from '@stylexjs/stylex'
 
 import { tokens } from '@/theme/tokens.stylex'
 
-const DARK = '@media (prefers-color-scheme: dark)'
 const MD = '@media (width >= 48rem)'
 
 const styles = stylex.create({
@@ -21,18 +20,14 @@ const styles = stylex.create({
     borderColor: {
       default: tokens['--input'],
       ':focus-visible': tokens['--ring'],
-      '[aria-invalid="true"]': tokens['--destructive'],
-      [DARK]: {
-        '[aria-invalid="true"]': 'color-mix(in oklab, var(--destructive) 50%, transparent)',
-      },
+      '[aria-invalid="true"]':
+        'light-dark(var(--destructive), color-mix(in oklab, var(--destructive) 50%, transparent))',
     },
     backgroundColor: {
-      default: 'transparent',
-      ':disabled': 'color-mix(in oklab, var(--input) 50%, transparent)',
-      [DARK]: {
-        default: 'color-mix(in oklab, var(--input) 30%, transparent)',
-        ':disabled': 'color-mix(in oklab, var(--input) 80%, transparent)',
-      },
+      default:
+        'light-dark(transparent, color-mix(in oklab, var(--xmd-line-strong) 30%, transparent))',
+      ':disabled':
+        'light-dark(color-mix(in oklab, var(--xmd-line-strong) 50%, transparent), color-mix(in oklab, var(--xmd-line-strong) 80%, transparent))',
     },
     paddingInline: '0.625rem',
     paddingBlock: '0.25rem',
@@ -51,14 +46,9 @@ const styles = stylex.create({
     outlineStyle: 'none',
     boxShadow: {
       default: null,
-      ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+      ':focus-visible': '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000',
       '[aria-invalid="true"]':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
-      [DARK]: {
-        '[aria-invalid="true"]':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-      },
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
     },
     pointerEvents: { default: null, ':disabled': 'none' },
     cursor: { default: null, ':disabled': 'not-allowed' },

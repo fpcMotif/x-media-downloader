@@ -9,7 +9,6 @@ import { tokens } from '@/theme/tokens.stylex'
 import { svgHost, svgSize3, svgSize35, svgSize4 } from '@/theme/markers.stylex'
 
 const HOVER = '@media (hover: hover)'
-const DARK = '@media (prefers-color-scheme: dark)'
 const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 
 // data-slot="button" carries an unlayered app.css rule that beats every
@@ -26,11 +25,8 @@ const styles = stylex.create({
     borderColor: {
       default: 'transparent',
       ':focus-visible': tokens['--ring'],
-      '[aria-invalid="true"]': tokens['--destructive'],
-      [DARK]: {
-        default: null,
-        '[aria-invalid="true"]': 'color-mix(in oklab, var(--destructive) 50%, transparent)',
-      },
+      '[aria-invalid="true"]':
+        'light-dark(var(--destructive), color-mix(in oklab, var(--destructive) 50%, transparent))',
     },
     backgroundClip: 'padding-box',
     fontSize: '0.875rem',
@@ -47,15 +43,9 @@ const styles = stylex.create({
     userSelect: 'none',
     boxShadow: {
       default: null,
-      ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+      ':focus-visible': '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000',
       '[aria-invalid="true"]':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
-      [DARK]: {
-        default: null,
-        '[aria-invalid="true"]':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-      },
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
     },
     pointerEvents: { default: null, ':disabled': 'none' },
     opacity: { default: null, ':disabled': 0.5 },
@@ -73,28 +63,19 @@ const variantStyles = stylex.create({
   },
   outline: {
     borderColor: {
-      default: tokens['--border'],
+      default: 'light-dark(var(--border), var(--input))',
       ':focus-visible': tokens['--ring'],
-      '[aria-invalid="true"]': tokens['--destructive'],
-      // A dark-mode default outranks the light pseudo-class keys in StyleX,
-      // whereas Tailwind's `focus-visible:border-ring` (0,2,0) beat
-      // `dark:border-input` (0,1,0) — so the focus ring is restated in here.
-      [DARK]: {
-        default: tokens['--input'],
-        ':focus-visible': tokens['--ring'],
-        '[aria-invalid="true"]': 'color-mix(in oklab, var(--destructive) 50%, transparent)',
-      },
+      '[aria-invalid="true"]':
+        'light-dark(var(--destructive), color-mix(in oklab, var(--destructive) 50%, transparent))',
     },
     backgroundColor: {
-      default: tokens['--background'],
-      [HOVER]: { ':hover': tokens['--muted'] },
-      '[aria-expanded="true"]': tokens['--muted'],
-      [DARK]: {
-        default: 'color-mix(in oklab, var(--input) 30%, transparent)',
-        [HOVER]: { ':hover': 'color-mix(in oklab, var(--input) 50%, transparent)' },
-        // `aria-expanded:bg-muted` (0,2,0) beat `dark:bg-input/30` (0,1,0) too.
-        '[aria-expanded="true"]': tokens['--muted'],
+      default:
+        'light-dark(var(--background), color-mix(in oklab, var(--xmd-line-strong) 30%, transparent))',
+      [HOVER]: {
+        ':hover':
+          'light-dark(var(--muted), color-mix(in oklab, var(--xmd-line-strong) 50%, transparent))',
       },
+      '[aria-expanded="true"]': tokens['--muted'],
     },
     color: {
       default: null,
@@ -115,12 +96,10 @@ const variantStyles = stylex.create({
   ghost: {
     backgroundColor: {
       default: null,
-      [HOVER]: { ':hover': tokens['--muted'] },
-      '[aria-expanded="true"]': tokens['--muted'],
-      [DARK]: {
-        default: null,
-        [HOVER]: { ':hover': 'color-mix(in oklab, var(--muted) 50%, transparent)' },
+      [HOVER]: {
+        ':hover': 'light-dark(var(--muted), color-mix(in oklab, var(--muted) 50%, transparent))',
       },
+      '[aria-expanded="true"]': tokens['--muted'],
     },
     color: {
       default: null,
@@ -130,36 +109,26 @@ const variantStyles = stylex.create({
   },
   destructive: {
     backgroundColor: {
-      default: 'color-mix(in oklab, var(--destructive) 10%, transparent)',
-      [HOVER]: { ':hover': 'color-mix(in oklab, var(--destructive) 20%, transparent)' },
-      [DARK]: {
-        default: 'color-mix(in oklab, var(--destructive) 20%, transparent)',
-        [HOVER]: { ':hover': 'color-mix(in oklab, var(--destructive) 30%, transparent)' },
+      default:
+        'light-dark(color-mix(in oklab, var(--destructive) 10%, transparent), color-mix(in oklab, var(--destructive) 20%, transparent))',
+      [HOVER]: {
+        ':hover':
+          'light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 30%, transparent))',
       },
     },
     color: tokens['--destructive'],
     borderColor: {
       default: 'transparent',
       ':focus-visible': 'color-mix(in oklab, var(--destructive) 40%, transparent)',
-      '[aria-invalid="true"]': tokens['--destructive'],
-      [DARK]: {
-        default: null,
-        '[aria-invalid="true"]': 'color-mix(in oklab, var(--destructive) 50%, transparent)',
-      },
+      '[aria-invalid="true"]':
+        'light-dark(var(--destructive), color-mix(in oklab, var(--destructive) 50%, transparent))',
     },
     boxShadow: {
       default: null,
       ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
       '[aria-invalid="true"]':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
-      [DARK]: {
-        default: null,
-        ':focus-visible':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-        '[aria-invalid="true"]':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-      },
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
     },
   },
   link: {

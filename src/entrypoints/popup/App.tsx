@@ -22,6 +22,7 @@ import {
   type CaptureSummary,
 } from '@/components/capture-export'
 import { type Loaded, readyOr, useLoaded } from '@/components/use-loaded'
+import { useColorScheme } from '@/components/use-color-scheme'
 import { plural } from '@/components/capture-copy'
 import { ConfirmStrip, useConfirmStrip } from '@/components/confirm-strip'
 import {
@@ -119,11 +120,10 @@ const XMD_EASE = 'var(--xmd-ease)'
 const BUTTON_TRANSITION_DURATION = '0.16s'
 const TRANSITION_COLORS =
   'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to, scale'
-const RING_FOCUS_VISIBLE =
-  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+const RING_FOCUS_VISIBLE = '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000'
 const DESTRUCTIVE_HOVER_BG = 'color-mix(in oklab, var(--destructive) 10%, transparent)'
 
-const SECTION_OUTLINE = 'inset 0 0 0 1px var(--input)'
+const SECTION_OUTLINE = 'inset 0 0 0 1px var(--xmd-line-strong)'
 const CARD_SHADOW = 'var(--xmd-shadow-1)'
 const CARD_OUTLINE = `0 0 0 1px var(--border), ${CARD_SHADOW}`
 const CTA_SHADOW =
@@ -1318,6 +1318,7 @@ const armStatusClear = (timer: OwnedTimer, m: string | null, clear: () => void):
 
 export function App() {
   const settingsLoad = useLoaded(getSettings)
+  useColorScheme(settingsLoad.state._tag === 'Ready' ? settingsLoad.state.value.theme : 'pending')
   const [saved, setSaved] = useState(false)
   const [toastShown, setToastShown] = useState(false)
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)

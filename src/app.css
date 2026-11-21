@@ -272,7 +272,7 @@
   }
   @supports (color: color-mix(in lab, red, red)) {
     * {
-      outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+      outline-color: var(--ring);
     }
   }
 }
@@ -282,6 +282,12 @@
   color-scheme: light dark;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+:root:has(> head > meta[name='color-scheme'][content='dark']) {
+  color-scheme: dark;
+}
+:root:has(> head > meta[name='color-scheme'][content='light']) {
+  color-scheme: light;
 }
 
 html,

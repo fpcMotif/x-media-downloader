@@ -8,10 +8,18 @@
          tags onto the options entrypoint (open_in_tab → openInTab). -->
     <meta name="manifest.open_in_tab" content="true" />
     <meta name="color-scheme" content="light dark" />
+    <script src="/color-scheme.js"></script>
     <title>X Media Downloader — Settings</title>
     <style>
       :root {
         color-scheme: light dark;
+
+        &:has(> head > meta[name='color-scheme'][content='dark']) {
+          color-scheme: dark;
+        }
+        &:has(> head > meta[name='color-scheme'][content='light']) {
+          color-scheme: light;
+        }
       }
 
       html,

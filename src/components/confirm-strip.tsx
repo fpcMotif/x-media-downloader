@@ -166,8 +166,7 @@ const HOVER = '@media (hover: hover)'
 const TRANSITION_COLORS =
   'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to, scale'
 // `focus-visible:ring-3 focus-visible:ring-ring/50` — five box-shadow layers.
-const FOCUS_RING =
-  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+const FOCUS_RING = '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000'
 
 // `animate-in fade-in` (no slide/zoom modifier — translate/scale stay at rest).
 const fadeIn = stylex.keyframes({

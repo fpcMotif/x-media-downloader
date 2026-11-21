@@ -10,11 +10,24 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { ToggleGroup, ToggleGroupItem, segmented } from '@/components/ui/toggle-group'
+import { useSystemScheme } from '@/components/use-color-scheme'
 import { PanelHeader, Section, type PanelProps } from '../ui'
 
 const styles = stylex.create({
   selectTriggerWide: { width: '11rem', minHeight: '2.5rem' },
+  themeTrack: { width: 'auto', flexShrink: 0 },
+  themeItem: { height: '2.25rem', paddingInline: '0.875rem' },
 })
+
+const THEMES = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+] as const satisfies ReadonlyArray<{ value: Settings['theme']; label: string }>
+
+const isTheme = (value: string): value is Settings['theme'] =>
+  THEMES.some((theme) => theme.value === value)
 
 const QUICK_GRAB_MODIFIERS = ['alt', 'shift', 'ctrl', 'meta'] as const satisfies ReadonlyArray<
   Settings['quickGrabModifier']
@@ -24,6 +37,7 @@ const isQuickGrabModifier = (value: string): value is Settings['quickGrabModifie
   QUICK_GRAB_MODIFIERS.some((modifier) => modifier === value)
 
 export function BrowsingPanel({ settings, update }: PanelProps) {
+  const systemScheme = useSystemScheme()
   return (
     <>
       <PanelHeader title="Browsing" />
@@ -132,6 +146,38 @@ export function BrowsingPanel({ settings, update }: PanelProps) {
             checked={settings.keyboardNavEnabled}
             onCheckedChange={(checked: boolean) => void update({ keyboardNavEnabled: checked })}
           />
+        </Field>
+      </Section>
+
+      <Section title="Appearance">
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel id="themeLabel">Theme</FieldLabel>
+            <FieldDescription id="themeDescription">
+              System follows your device (now {systemScheme})
+            </FieldDescription>
+          </FieldContent>
+          <ToggleGroup
+            type="single"
+            spacing={0.5}
+            sx={[segmented.track, styles.themeTrack]}
+            aria-labelledby="themeLabel"
+            aria-describedby="themeDescription"
+            value={settings.theme}
+            onValueChange={(value: string) => {
+              if (isTheme(value)) void update({ theme: value })
+            }}
+          >
+            {THEMES.map((theme) => (
+              <ToggleGroupItem
+                key={theme.value}
+                value={theme.value}
+                sx={[segmented.item, styles.themeItem]}
+              >
+                {theme.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
         </Field>
       </Section>
 

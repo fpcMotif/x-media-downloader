@@ -8,8 +8,7 @@ import { ChevronDownIcon, iconSize } from '@/components/icons'
 
 const HOVER = '@media (hover: hover)'
 const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
-const RING_FOCUS_VISIBLE =
-  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+const RING_FOCUS_VISIBLE = '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000'
 
 const styles = stylex.create({
   // grid gap-1.5 pb-1
