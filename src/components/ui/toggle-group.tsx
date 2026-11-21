@@ -214,7 +214,7 @@ const segmented = stylex.create({
     boxShadow: {
       default: null,
       '[data-pressed]': SEGMENT_RAISED,
-      ':focus-visible': `${SEGMENT_RAISED}, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent)`,
+      ':focus-visible': `${SEGMENT_RAISED}, 0 0 0 3px var(--ring)`,
     },
   },
 })

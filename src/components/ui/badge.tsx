@@ -9,7 +9,6 @@ import { tokens } from '@/theme/tokens.stylex'
 import { badgeSvg } from '@/theme/markers.stylex'
 
 const HOVER = '@media (hover: hover)'
-const DARK = '@media (prefers-color-scheme: dark)'
 
 const styles = stylex.create({
   base: {
@@ -42,15 +41,9 @@ const styles = stylex.create({
     paddingLeft: { default: null, ':has([data-icon="inline-start"])': '0.375rem' },
     boxShadow: {
       default: null,
-      ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+      ':focus-visible': '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000',
       ':focus-visible[aria-invalid="true"]':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
-      [DARK]: {
-        default: null,
-        ':focus-visible[aria-invalid="true"]':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-      },
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
     },
   },
 })
@@ -72,9 +65,9 @@ const variantStyles = stylex.create({
   },
   destructive: {
     backgroundColor: {
-      default: 'color-mix(in oklab, var(--destructive) 10%, transparent)',
+      default:
+        'light-dark(color-mix(in oklab, var(--destructive) 10%, transparent), color-mix(in oklab, var(--destructive) 20%, transparent))',
       [HOVER]: { ':is(a):hover': 'color-mix(in oklab, var(--destructive) 20%, transparent)' },
-      [DARK]: { default: 'color-mix(in oklab, var(--destructive) 20%, transparent)' },
     },
     color: tokens['--destructive'],
     // destructive replaces the base ring color at :focus-visible (own
@@ -85,12 +78,7 @@ const variantStyles = stylex.create({
     boxShadow: {
       default: null,
       ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
-      [DARK]: {
-        default: null,
-        ':focus-visible':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-      },
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
     },
   },
   outline: {
@@ -115,10 +103,8 @@ const variantStyles = stylex.create({
   ghost: {
     backgroundColor: {
       default: null,
-      [HOVER]: { ':hover': tokens['--muted'] },
-      [DARK]: {
-        default: null,
-        [HOVER]: { ':hover': 'color-mix(in oklab, var(--muted) 50%, transparent)' },
+      [HOVER]: {
+        ':hover': 'light-dark(var(--muted), color-mix(in oklab, var(--muted) 50%, transparent))',
       },
     },
     color: { default: null, [HOVER]: { ':hover': tokens['--muted-foreground'] } },

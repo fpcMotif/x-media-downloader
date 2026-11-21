@@ -73,8 +73,7 @@ const styles = stylex.create({
     outlineStyle: 'none',
     boxShadow: {
       default: null,
-      ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+      ':focus-visible': '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000',
     },
   },
 })

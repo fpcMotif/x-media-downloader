@@ -7,64 +7,36 @@ import * as stylex from '@stylexjs/stylex'
 // prefers-color-scheme block below swaps the brand ramp for dark mode. The
 // cross-surface constants shared with the on-page overlay (`--xmd-ease`, the
 // hue anchors) stay in src/theme/tokens.css, imported by both stylesheets.
-const DARK = '@media (prefers-color-scheme: dark)'
-
 export const tokens = stylex.defineVars({
   // Brand ramp. "Instrument, not dashboard": structure comes from hairlines,
   // not cards — the lines sit at 7-8% so a divider reads as a seam.
-  '--xmd-bg': {
-    default: 'oklch(0.972 0.005 var(--xmd-hue-neutral))',
-    [DARK]: 'oklch(0.145 0.006 var(--xmd-hue-neutral))',
-  },
-  '--xmd-surface': {
-    default: 'oklch(1 0 0)',
-    [DARK]: 'oklch(0.19 0.008 var(--xmd-hue-neutral))',
-  },
-  '--xmd-surface-raised': {
-    default: 'oklch(0.945 0.006 var(--xmd-hue-neutral))',
-    [DARK]: 'oklch(0.24 0.01 var(--xmd-hue-neutral))',
-  },
-  '--xmd-ink': {
-    default: 'oklch(0.205 0.012 var(--xmd-hue-neutral))',
-    [DARK]: 'oklch(0.965 0.004 var(--xmd-hue-neutral))',
-  },
-  '--xmd-muted': {
-    default: 'oklch(0.47 0.018 var(--xmd-hue-neutral))',
-    [DARK]: 'oklch(0.75 0.012 var(--xmd-hue-neutral))',
-  },
-  '--xmd-faint': {
-    default: 'oklch(0.62 0.014 var(--xmd-hue-neutral))',
-    [DARK]: 'oklch(0.62 0.012 var(--xmd-hue-neutral))',
-  },
-  '--xmd-line': {
-    default: 'oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.08)',
-    [DARK]: 'oklch(0.965 0.004 var(--xmd-hue-neutral) / 0.08)',
-  },
-  '--xmd-line-strong': {
-    default: 'oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.14)',
-    [DARK]: 'oklch(0.965 0.004 var(--xmd-hue-neutral) / 0.14)',
-  },
-  '--xmd-accent': { default: 'oklch(0.5 0.176 250)', [DARK]: 'oklch(0.72 0.15 240)' },
-  '--xmd-accent-hover': { default: 'oklch(0.44 0.19 250)', [DARK]: 'oklch(0.78 0.13 230)' },
-  '--xmd-accent-soft': {
-    default: 'oklch(0.58 0.176 250 / 0.12)',
-    [DARK]: 'oklch(0.72 0.15 240 / 0.18)',
-  },
-  '--xmd-success': {
-    default: 'oklch(0.58 0.145 var(--xmd-hue-success))',
-    [DARK]: 'oklch(0.78 0.14 var(--xmd-hue-success))',
-  },
+  '--xmd-bg':
+    'light-dark(oklch(0.972 0.005 var(--xmd-hue-neutral)), oklch(0.145 0.006 var(--xmd-hue-neutral)))',
+  '--xmd-surface': 'light-dark(oklch(1 0 0), oklch(0.19 0.008 var(--xmd-hue-neutral)))',
+  '--xmd-surface-raised':
+    'light-dark(oklch(0.945 0.006 var(--xmd-hue-neutral)), oklch(0.24 0.01 var(--xmd-hue-neutral)))',
+  '--xmd-ink':
+    'light-dark(oklch(0.205 0.012 var(--xmd-hue-neutral)), oklch(0.965 0.004 var(--xmd-hue-neutral)))',
+  '--xmd-muted':
+    'light-dark(oklch(0.47 0.018 var(--xmd-hue-neutral)), oklch(0.75 0.012 var(--xmd-hue-neutral)))',
+  '--xmd-faint':
+    'light-dark(oklch(0.525 0.014 var(--xmd-hue-neutral)), oklch(0.62 0.012 var(--xmd-hue-neutral)))',
+  '--xmd-line':
+    'light-dark(oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.08), oklch(0.965 0.004 var(--xmd-hue-neutral) / 0.08))',
+  '--xmd-line-strong':
+    'light-dark(oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.14), oklch(0.965 0.004 var(--xmd-hue-neutral) / 0.14))',
+  '--xmd-accent': 'light-dark(oklch(0.5 0.176 250), oklch(0.72 0.15 240))',
+  '--xmd-accent-hover': 'light-dark(oklch(0.44 0.19 250), oklch(0.78 0.13 230))',
+  '--xmd-accent-soft': 'light-dark(oklch(0.58 0.176 250 / 0.12), oklch(0.72 0.15 240 / 0.18))',
+  '--xmd-success':
+    'light-dark(oklch(0.58 0.145 var(--xmd-hue-success)), oklch(0.78 0.14 var(--xmd-hue-success)))',
   // Used bare as destructive TEXT (never a filled slab), so it clears AA on its
   // own; the dark value goes lighter for the same reason accent/success do.
-  '--xmd-danger': { default: 'oklch(0.48 0.19 25)', [DARK]: 'oklch(0.7 0.17 22)' },
-  '--xmd-shadow-1': {
-    default: '0 1px 2px oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.08)',
-    [DARK]: '0 1px 2px oklch(0 0 0 / 0.24)',
-  },
-  '--xmd-shadow-2': {
-    default: '0 8px 14px -12px oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.42)',
-    [DARK]: '0 8px 14px -12px oklch(0 0 0 / 0.9)',
-  },
+  '--xmd-danger': 'light-dark(oklch(0.48 0.19 25), oklch(0.7 0.17 22))',
+  '--xmd-shadow-1':
+    '0 1px 2px light-dark(oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.08), oklch(0 0 0 / 0.24))',
+  '--xmd-shadow-2':
+    '0 8px 14px -12px light-dark(oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.42), oklch(0 0 0 / 0.9))',
   // Concentric radii (R4 Foundations): 12 outer → 10 → 8 → 6 innermost.
   '--xmd-radius-1': '12px',
   '--xmd-radius-2': '10px',
@@ -82,10 +54,10 @@ export const tokens = stylex.defineVars({
   '--foreground': 'var(--xmd-ink)',
   '--card': 'var(--xmd-surface)',
   '--card-foreground': 'var(--xmd-ink)',
-  '--popover': { default: 'var(--xmd-surface)', [DARK]: 'var(--xmd-surface-raised)' },
+  '--popover': 'light-dark(var(--xmd-surface), var(--xmd-surface-raised))',
   '--popover-foreground': 'var(--xmd-ink)',
   '--primary': 'var(--xmd-accent)',
-  '--primary-foreground': 'oklch(1 0 0)',
+  '--primary-foreground': 'light-dark(oklch(1 0 0), oklch(0.145 0.006 var(--xmd-hue-neutral)))',
   '--secondary': 'var(--xmd-surface-raised)',
   '--secondary-foreground': 'var(--xmd-ink)',
   '--muted': 'var(--xmd-surface-raised)',
@@ -94,13 +66,12 @@ export const tokens = stylex.defineVars({
   '--accent-foreground': 'var(--xmd-ink)',
   '--destructive': 'var(--xmd-danger)',
   '--destructive-foreground': 'oklch(1 0 0)',
-  '--success': {
-    default: 'oklch(0.46 0.14 var(--xmd-hue-success))',
-    [DARK]: 'oklch(0.82 0.14 var(--xmd-hue-success))',
-  },
+  '--success':
+    'light-dark(oklch(0.46 0.14 var(--xmd-hue-success)), oklch(0.82 0.14 var(--xmd-hue-success)))',
   '--success-foreground': 'oklch(0.99 0 0)',
   '--border': 'var(--xmd-line)',
-  '--input': 'var(--xmd-line-strong)',
+  '--input':
+    'light-dark(oklch(0.205 0.012 var(--xmd-hue-neutral) / 0.47), oklch(0.965 0.004 var(--xmd-hue-neutral) / 0.36))',
   '--ring': 'var(--xmd-accent)',
   '--chart-1': 'var(--xmd-accent)',
   '--chart-2': 'var(--xmd-success)',
@@ -110,7 +81,8 @@ export const tokens = stylex.defineVars({
   '--sidebar': 'var(--xmd-surface)',
   '--sidebar-foreground': 'var(--xmd-ink)',
   '--sidebar-primary': 'var(--xmd-accent)',
-  '--sidebar-primary-foreground': 'oklch(1 0 0)',
+  '--sidebar-primary-foreground':
+    'light-dark(oklch(1 0 0), oklch(0.145 0.006 var(--xmd-hue-neutral)))',
   '--sidebar-accent': 'var(--xmd-surface-raised)',
   '--sidebar-accent-foreground': 'var(--xmd-ink)',
   '--sidebar-border': 'var(--xmd-line)',

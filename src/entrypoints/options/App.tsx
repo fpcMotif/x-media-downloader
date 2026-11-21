@@ -7,6 +7,7 @@ import { tokens } from '@/theme/tokens.stylex'
 import { CheckIcon, iconSize } from '@/components/icons'
 import { useOwnedTimer } from '@/components/owned-timer'
 import { useLoaded } from '@/components/use-loaded'
+import { useColorScheme } from '@/components/use-color-scheme'
 import type { PanelProps } from './ui'
 import { SavingPanel } from './panels/saving'
 import { BrowsingPanel } from './panels/browsing'
@@ -19,8 +20,7 @@ import { ArchivePanel } from './panels/archive'
 const SM = '@media (width >= 40rem)'
 const HOVER = '@media (hover: hover)'
 const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
-const RING_FOCUS_VISIBLE =
-  '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000'
+const RING_FOCUS_VISIBLE = '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000'
 
 const NAV_TRANSITION =
   'color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, scale'
@@ -300,6 +300,7 @@ const isHashAlias = (hash: string): hash is keyof typeof HASH_ALIASES =>
 
 export function App() {
   const settingsLoad = useLoaded(getSettings)
+  useColorScheme(settingsLoad.state._tag === 'Ready' ? settingsLoad.state.value.theme : 'pending')
   const [section, setSection] = useState<SectionId>('saving')
   const [saved, setSaved] = useState(false)
   const [toastShown, setToastShown] = useState(false)

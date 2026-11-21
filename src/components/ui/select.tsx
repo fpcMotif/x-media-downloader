@@ -13,7 +13,6 @@ import { ChevronDownIcon, CheckIcon, ChevronUpIcon, iconSize, iconInert } from '
 type Sx = StyleXStyles | ReadonlyArray<StyleXStyles | false | null | undefined>
 
 const HOVER = '@media (hover: hover)'
-const DARK = '@media (prefers-color-scheme: dark)'
 const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 const FORCED_COLORS = '@media (forced-colors: active)'
 
@@ -98,18 +97,15 @@ const styles = stylex.create({
     borderColor: {
       default: tokens['--input'],
       ':focus-visible': tokens['--ring'],
-      '[aria-invalid="true"]': tokens['--destructive'],
-      [DARK]: {
-        default: null,
-        '[aria-invalid="true"]': 'color-mix(in oklab, var(--destructive) 50%, transparent)',
-      },
+      '[aria-invalid="true"]':
+        'light-dark(var(--destructive), color-mix(in oklab, var(--destructive) 50%, transparent))',
     },
     backgroundColor: {
-      default: 'transparent',
-      [HOVER]: { ':hover': tokens['--muted'] },
-      [DARK]: {
-        default: 'color-mix(in oklab, var(--input) 30%, transparent)',
-        [HOVER]: { ':hover': 'color-mix(in oklab, var(--input) 50%, transparent)' },
+      default:
+        'light-dark(transparent, color-mix(in oklab, var(--xmd-line-strong) 30%, transparent))',
+      [HOVER]: {
+        ':hover':
+          'light-dark(var(--muted), color-mix(in oklab, var(--xmd-line-strong) 50%, transparent))',
       },
     },
     paddingBlock: '0.5rem',
@@ -128,15 +124,9 @@ const styles = stylex.create({
     opacity: { default: null, ':disabled': 0.5 },
     boxShadow: {
       default: null,
-      ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+      ':focus-visible': '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000',
       '[aria-invalid="true"]':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
-      [DARK]: {
-        default: null,
-        '[aria-invalid="true"]':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-      },
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
     },
     color: { default: null, '[data-placeholder]': tokens['--muted-foreground'] },
     height: { default: null, '[data-size="default"]': '2rem', '[data-size="sm"]': '1.75rem' },

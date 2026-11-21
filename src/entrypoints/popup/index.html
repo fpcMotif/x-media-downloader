@@ -4,10 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <script src="/color-scheme.js"></script>
     <title>X Media Downloader</title>
     <style>
       :root {
         color-scheme: light dark;
+
+        &:has(> head > meta[name='color-scheme'][content='dark']) {
+          color-scheme: dark;
+        }
+        &:has(> head > meta[name='color-scheme'][content='light']) {
+          color-scheme: light;
+        }
       }
 
       html,

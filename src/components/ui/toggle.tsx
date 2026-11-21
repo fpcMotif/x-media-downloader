@@ -11,7 +11,6 @@ import { tokens } from '@/theme/tokens.stylex'
 import { svgHost, svgSize35, svgSize4 } from '@/theme/markers.stylex'
 
 const HOVER = '@media (hover: hover)'
-const DARK = '@media (prefers-color-scheme: dark)'
 const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 
 // Base UI marks the on-state with `data-pressed` (plus `aria-pressed`), replacing
@@ -60,15 +59,9 @@ const base = stylex.create({
     // '[aria-invalid="true"]' one (that would show a ring while unfocused).
     boxShadow: {
       default: null,
-      ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+      ':focus-visible': '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000',
       ':focus-visible[aria-invalid="true"]':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
-      [DARK]: {
-        default: null,
-        ':focus-visible[aria-invalid="true"]':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-      },
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
     },
     pointerEvents: { default: null, ':disabled': 'none' },
     opacity: { default: null, ':disabled': 0.5 },

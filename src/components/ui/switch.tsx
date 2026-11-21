@@ -9,7 +9,6 @@ import * as stylex from '@stylexjs/stylex'
 import type { StyleXStyles } from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 
-const DARK = '@media (prefers-color-scheme: dark)'
 const REDUCED_MOTION = '@media (prefers-reduced-motion: reduce)'
 
 // Base UI drives switch state through bare `data-checked` / `data-unchecked`
@@ -29,11 +28,8 @@ const styles = stylex.create({
     borderColor: {
       default: 'transparent',
       ':focus-visible': tokens['--ring'],
-      '[aria-invalid="true"]': tokens['--destructive'],
-      [DARK]: {
-        default: null,
-        '[aria-invalid="true"]': 'color-mix(in oklab, var(--destructive) 50%, transparent)',
-      },
+      '[aria-invalid="true"]':
+        'light-dark(var(--destructive), color-mix(in oklab, var(--destructive) 50%, transparent))',
     },
     // data-slot="switch" override (spec §3): the unlayered app.css rule beats
     // every `transition-colors`/`duration-*` utility on this element.
@@ -50,24 +46,15 @@ const styles = stylex.create({
     },
     boxShadow: {
       default: null,
-      ':focus-visible':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent), 0 0 #0000',
+      ':focus-visible': '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px var(--ring), 0 0 #0000',
       '[aria-invalid="true"]':
-        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 20%, transparent), 0 0 #0000',
-      [DARK]: {
-        default: null,
-        '[aria-invalid="true"]':
-          '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px color-mix(in oklab, var(--destructive) 40%, transparent), 0 0 #0000',
-      },
+        '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 3px light-dark(color-mix(in oklab, var(--destructive) 20%, transparent), color-mix(in oklab, var(--destructive) 40%, transparent)), 0 0 #0000',
     },
     backgroundColor: {
       default: null,
       '[data-checked]': tokens['--primary'],
-      '[data-unchecked]': tokens['--input'],
-      [DARK]: {
-        default: null,
-        '[data-unchecked]': 'color-mix(in oklab, var(--input) 80%, transparent)',
-      },
+      '[data-unchecked]':
+        'light-dark(var(--input), color-mix(in oklab, var(--input) 80%, transparent))',
     },
     cursor: { default: null, '[data-disabled]': 'not-allowed' },
     opacity: { default: null, '[data-disabled]': 0.5 },
@@ -86,11 +73,8 @@ const styles = stylex.create({
     borderRadius: '3.40282e38px',
     backgroundColor: {
       default: tokens['--background'],
-      [DARK]: {
-        default: null,
-        '[data-checked]': tokens['--primary-foreground'],
-        '[data-unchecked]': tokens['--foreground'],
-      },
+      '[data-checked]': 'light-dark(var(--background), var(--primary-foreground))',
+      '[data-unchecked]': 'light-dark(var(--background), var(--foreground))',
     },
     boxShadow: '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 0px currentcolor, 0 0 #0000',
     // data-slot="switch-thumb" override (spec §3), same as the root.
