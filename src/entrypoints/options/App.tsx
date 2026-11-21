@@ -116,7 +116,7 @@ const styles = stylex.create({
     width: { default: '100%', [SM]: '236px' },
     flexShrink: 0,
     flexDirection: 'column',
-    gap: '0.25rem',
+    gap: '0.125rem',
     borderBottomStyle: 'solid',
     borderBottomWidth: { default: '1px', [SM]: 0 },
     // borderRightStyle: 'solid' is not declared — the preflight `border: 0 solid`
@@ -181,7 +181,6 @@ const styles = stylex.create({
     borderTopStyle: 'solid',
     borderTopWidth: '1px',
     borderColor: tokens['--border'],
-    paddingInline: '0.5rem',
     paddingTop: '0.75rem',
   },
   // About button (no data-slot): flex min-h-10 items-center
@@ -194,7 +193,7 @@ const styles = stylex.create({
     borderRadius: tokens['--xmd-radius-3'],
     paddingInline: '0.75rem',
     textAlign: 'left',
-    fontSize: '13px',
+    fontSize: '0.875rem',
     transitionProperty: NAV_TRANSITION,
     transitionTimingFunction: 'var(--xmd-ease)',
     transitionDuration: '0.16s',
@@ -221,9 +220,9 @@ const styles = stylex.create({
     minHeight: '2.25rem',
     alignItems: 'center',
     borderRadius: tokens['--xmd-radius-3'],
-    paddingInline: '0.75rem',
+    paddingInline: '0.625rem',
     textAlign: 'left',
-    fontSize: '13px',
+    fontSize: '0.875rem',
     transitionProperty: NAV_TRANSITION,
     transitionTimingFunction: 'var(--xmd-ease)',
     transitionDuration: '0.16s',
@@ -252,7 +251,7 @@ const styles = stylex.create({
   navItemInactive: {
     fontWeight: 500,
     color: {
-      default: 'color-mix(in oklab, var(--foreground) 80%, transparent)',
+      default: tokens['--muted-foreground'],
       [HOVER]: { ':hover': tokens['--foreground'] },
     },
     backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },

@@ -55,7 +55,7 @@ const styles = stylex.create({
   // text-[13px] leading-snug text-muted-foreground text-pretty
   sectionDescription: {
     fontSize: '13px',
-    lineHeight: 1.375,
+    lineHeight: 1.45,
     color: tokens['--muted-foreground'],
     textWrap: 'pretty',
   },

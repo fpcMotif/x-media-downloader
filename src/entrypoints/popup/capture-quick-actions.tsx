@@ -26,11 +26,15 @@ const FOCUS_RING =
 const styles = stylex.create({
   root: {
     display: 'grid',
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
+    marginInline: '0.5rem',
+    marginTop: '0.5rem',
+    borderStyle: 'solid',
+    borderWidth: '1px',
     borderColor: tokens['--border'],
-    paddingInline: '0.875rem',
-    paddingBlock: '0.5rem',
+    borderRadius: tokens['--xmd-radius-1'],
+    backgroundColor: tokens['--xmd-surface'],
+    paddingInline: '0.75rem',
+    paddingBlock: '0.125rem',
   },
   // `data-slot="button"` override baked in: transitionDuration '0.16s',
   // transitionTimingFunction 'var(--xmd-ease)' (spec §3).

@@ -21,7 +21,7 @@ export const tokens = stylex.defineVars({
     [DARK]: 'oklch(0.19 0.008 var(--xmd-hue-neutral))',
   },
   '--xmd-surface-raised': {
-    default: 'oklch(0.962 0.006 var(--xmd-hue-neutral))',
+    default: 'oklch(0.945 0.006 var(--xmd-hue-neutral))',
     [DARK]: 'oklch(0.24 0.01 var(--xmd-hue-neutral))',
   },
   '--xmd-ink': {

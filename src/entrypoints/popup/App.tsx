@@ -333,7 +333,8 @@ const styles = stylex.create({
   // `grid gap-2 border-t border-border px-3.5 py-4` — identical string shared
   // by StageZone's x/x-list branch and ReleaseCluster's own section.
   borderedSectionGap2: {
-    display: 'grid',
+    display: 'flex',
+    flexDirection: 'column',
     gap: '0.5rem',
     paddingInline: '0.75rem',
     paddingTop: '0.75rem',
@@ -345,7 +346,7 @@ const styles = stylex.create({
     gap: '0.5rem',
     height: '2.75rem',
     width: '100%',
-    borderRadius: tokens['--xmd-radius-2'],
+    borderRadius: tokens['--xmd-radius-3'],
     fontSize: '0.875rem',
     lineHeight: tokens['--text-sm--line-height'],
     fontWeight: 600,
@@ -398,7 +399,7 @@ const styles = stylex.create({
     display: 'flex',
     alignItems: 'center',
     gap: '0.375rem',
-    fontSize: '11px',
+    fontSize: '0.75rem',
     color: tokens['--muted-foreground'],
   },
   willClearDot: {
@@ -408,7 +409,12 @@ const styles = stylex.create({
     borderRadius: '3.40282e38px',
     backgroundColor: tokens['--destructive'],
   },
-  aria2CaveatText: { textWrap: 'pretty', fontSize: '11px', color: tokens['--muted-foreground'] },
+  aria2CaveatText: {
+    textWrap: 'pretty',
+    fontSize: '0.75rem',
+    lineHeight: 1.45,
+    color: tokens['--muted-foreground'],
+  },
   // `block text-pretty text-xs leading-snug text-muted-foreground` — identical
   // string shared by the download-status and release-status `<output>`s.
   statusOutput: {
@@ -425,7 +431,7 @@ const styles = stylex.create({
     paddingInline: '1rem',
     paddingTop: '1rem',
   },
-  metaHintText: { textWrap: 'pretty', fontSize: '13px' },
+  metaHintText: { textWrap: 'pretty', fontSize: '13px', lineHeight: 1.45 },
 
   stageSectionUnsupported: {
     display: 'grid',
@@ -433,18 +439,23 @@ const styles = stylex.create({
     paddingInline: '1rem',
     paddingTop: '1rem',
   },
-  unsupportedHeadline: { textWrap: 'balance', fontSize: '13px', fontWeight: 500 },
-  routesGrid: { display: 'grid', marginInline: '-0.25rem' },
+  unsupportedHeadline: {
+    textWrap: 'balance',
+    fontSize: '13px',
+    lineHeight: 1.4,
+    fontWeight: 500,
+  },
+  routesGrid: { display: 'grid', marginInline: '-0.5rem' },
   routeButton: {
     display: 'flex',
     minHeight: '2.5rem',
     alignItems: 'center',
     justifyContent: 'space-between',
     borderRadius: tokens['--xmd-radius-3'],
-    paddingInline: '0.25rem',
+    paddingInline: '0.5rem',
     fontSize: '13px',
     fontWeight: 500,
-    color: 'color-mix(in oklab, var(--foreground) 80%, transparent)',
+    color: tokens['--foreground'],
     outlineStyle: 'none',
     transitionProperty: TRANSITION_COLORS,
     transitionTimingFunction: XMD_EASE,
@@ -545,9 +556,9 @@ const styles = stylex.create({
   modeGroup: { display: 'grid', gap: '0.375rem' },
   toggleGroupItemSx: { height: '2rem' },
   metaContextNote: { fontSize: '0.75rem', lineHeight: 1.375, color: tokens['--muted-foreground'] },
-  fieldDescMono: { fontFamily: tokens['--font-mono'] },
+  fieldDescMono: { fontFamily: tokens['--font-sans'] },
   fieldDescFlex: { display: 'flex', alignItems: 'center', gap: '0.375rem' },
-  monoTabularNums: { fontFamily: tokens['--font-mono'], fontVariantNumeric: 'tabular-nums' },
+  monoTabularNums: { fontFamily: tokens['--font-sans'], fontVariantNumeric: 'tabular-nums' },
 
   // Inline `LINK_SLOP` text-links (footer Settings, Edit ›, Archive ›) — the
   // shared hit-slop/ring/press treatment, composed with each call site's own
@@ -617,13 +628,14 @@ const styles = stylex.create({
     display: 'flex',
     alignItems: 'center',
     gap: '0.375rem',
-    borderRadius: tokens['--xmd-radius-3'],
+    borderRadius: '3.40282e38px',
     borderStyle: 'solid',
     borderWidth: '1px',
     borderColor: tokens['--border'],
-    backgroundColor: tokens['--background'],
-    paddingInline: '0.625rem',
-    paddingBlock: '0.25rem',
+    backgroundColor: tokens['--popover'],
+    boxShadow: tokens['--xmd-shadow-2'],
+    paddingInline: '0.75rem',
+    paddingBlock: '0.3125rem',
     fontSize: '0.75rem',
     lineHeight: tokens['--text-xs--line-height'],
     fontWeight: 500,

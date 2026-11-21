@@ -3,7 +3,8 @@
 // pure string builders only — no JSX, no state, nothing stateful (see the
 // capture-copy handoff for why flashStatus stays put in each consumer).
 
-export const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
+export const plural = (n: number, noun: string): string =>
+  `${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`
 
 export const fmtDay = (ms: number): string =>
   new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
