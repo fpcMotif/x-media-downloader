@@ -13,33 +13,31 @@ const styles = stylex.create({
   },
   // text-xl font-semibold tracking-tight text-balance
   title: {
-    fontSize: '1.25rem',
-    lineHeight: tokens['--text-xl--line-height'],
-    fontWeight: 600,
-    letterSpacing: '-0.025em',
+    fontSize: '1.625rem',
+    lineHeight: 1.2,
+    fontWeight: 650,
+    letterSpacing: '-0.03em',
     textWrap: 'balance',
   },
   // text-[13px] leading-relaxed text-muted-foreground text-pretty
   description: {
-    fontSize: '13px',
-    lineHeight: 1.625,
+    fontSize: '0.875rem',
+    lineHeight: 1.5,
     color: tokens['--muted-foreground'],
     textWrap: 'pretty',
   },
   // border-t border-border pt-6
   section: {
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
-    paddingTop: '1.5rem',
+    display: 'grid',
+    gap: '0.75rem',
   },
   // mb-4 flex items-start justify-between gap-3
   titleRow: {
-    marginBottom: '1rem',
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'flex-end',
     justifyContent: 'space-between',
     gap: '0.75rem',
+    paddingInline: '0.25rem',
   },
   // grid gap-1 min-w-0
   titleColumn: {
@@ -49,9 +47,10 @@ const styles = stylex.create({
   },
   // text-sm font-semibold
   sectionTitle: {
-    fontSize: '0.875rem',
-    lineHeight: tokens['--text-sm--line-height'],
+    fontSize: '0.9375rem',
+    lineHeight: 1.3,
     fontWeight: 600,
+    letterSpacing: '-0.012em',
   },
   // text-[13px] leading-snug text-muted-foreground text-pretty
   sectionDescription: {
@@ -69,6 +68,10 @@ const styles = stylex.create({
   // *:py-4 utilities become data-xmd-divide/data-xmd-rows (spec §6).
   rows: {
     gap: 0,
+    borderRadius: tokens['--xmd-radius-1'],
+    backgroundColor: tokens['--card'],
+    boxShadow: '0 0 0 1px var(--border), var(--xmd-shadow-1)',
+    paddingInline: '1.25rem',
   },
 })
 

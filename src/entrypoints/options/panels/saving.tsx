@@ -23,7 +23,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { ToggleGroup, ToggleGroupItem, segmented } from '@/components/ui/toggle-group'
 import { inputValue, PanelHeader, Section, type PanelProps } from '../ui'
 import { readyOr, useLoaded } from '@/components/use-loaded'
 import { offersGrantRequest, useOriginGrant } from '@/components/use-origin-grant'
@@ -43,7 +43,7 @@ const styles = stylex.create({
   },
   // FieldDescription 'font-mono tabular-nums' (no text-xs) — additive onto
   // the base text-sm/leading-normal.
-  descMonoNums: { fontFamily: tokens['--font-mono'], fontVariantNumeric: 'tabular-nums' },
+  descMonoNums: { fontFamily: tokens['--font-sans'], fontVariantNumeric: 'tabular-nums' },
   // Input 'w-20 text-center font-mono tabular-nums' — width replaces the
   // base w-full.
   inputMono5: {
@@ -59,9 +59,6 @@ const styles = stylex.create({
     fontFamily: tokens['--font-mono'],
     fontVariantNumeric: 'tabular-nums',
   },
-  // ToggleGroup 'w-full rounded-[var(--xmd-radius-3)]' — width replaces the
-  // base w-fit, borderRadius replaces the base rounded-lg.
-  toggleGroupWide: { width: '100%', borderRadius: tokens['--xmd-radius-3'] },
   // ToggleGroupItem 'h-10 flex-1' — height replaces the Toggle size's own
   // height; text-sm (font-size/line-height) is untouched.
   toggleGroupItemFull: { height: '2.5rem', flex: 1 },
@@ -361,10 +358,8 @@ export function SavingPanel({ settings, update }: PanelProps) {
 
         <ToggleGroup
           type="single"
-          variant="outline"
-          spacing={0}
-          sx={styles.toggleGroupWide}
-          style={{ '--radius': 'var(--xmd-radius-3)' }}
+          spacing={0.5}
+          sx={segmented.track}
           aria-label="Download mode"
           value={settings.downloadStrategy}
           onValueChange={(value: string) => {
@@ -375,7 +370,7 @@ export function SavingPanel({ settings, update }: PanelProps) {
             <ToggleGroupItem
               key={option.value}
               value={option.value}
-              sx={styles.toggleGroupItemFull}
+              sx={[segmented.item, styles.toggleGroupItemFull]}
             >
               {option.label}
             </ToggleGroupItem>

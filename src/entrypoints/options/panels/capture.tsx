@@ -18,7 +18,7 @@ const RING_FOCUS_VISIBLE =
 const styles = stylex.create({
   // font-mono
   syncNotConfigured: {
-    fontFamily: tokens['--font-mono'],
+    fontFamily: tokens['--font-sans'],
   },
   // rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50 —
   // the underline/hover come from app.css (keyed on data-slot="field-description").
@@ -56,7 +56,7 @@ const styles = stylex.create({
   },
   // font-mono tabular-nums text-muted-foreground
   archiveCounts: {
-    fontFamily: tokens['--font-mono'],
+    fontFamily: tokens['--font-sans'],
     fontVariantNumeric: 'tabular-nums',
     color: tokens['--muted-foreground'],
   },

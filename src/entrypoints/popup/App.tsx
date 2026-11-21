@@ -14,8 +14,8 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from '@/components/
 import { Progress } from '@/components/ui/progress'
 import { type OwnedTimer, useOwnedTimer } from '@/components/owned-timer'
 import { Switch } from '@/components/ui/switch'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { LayersIcon, CheckIcon, ChevronDownIcon, iconSize } from '@/components/icons'
+import { ToggleGroup, ToggleGroupItem, segmented } from '@/components/ui/toggle-group'
+import { DownloadIcon, LayersIcon, CheckIcon, ChevronDownIcon, iconSize } from '@/components/icons'
 import {
   EMPTY_CAPTURE_SUMMARY,
   fetchCaptureSummary,
@@ -123,6 +123,10 @@ const RING_FOCUS_VISIBLE =
 const DESTRUCTIVE_HOVER_BG = 'color-mix(in oklab, var(--destructive) 10%, transparent)'
 
 const SECTION_OUTLINE = 'inset 0 0 0 1px var(--input)'
+const CARD_SHADOW = 'var(--xmd-shadow-1)'
+const CARD_OUTLINE = `0 0 0 1px var(--border), ${CARD_SHADOW}`
+const CTA_SHADOW =
+  'inset 0 1px 0 oklch(1 0 0 / 0.18), 0 1px 2px color-mix(in oklab, var(--primary) 45%, transparent)'
 
 const fadeIn = stylex.keyframes({ '0%': { opacity: 0 } })
 
@@ -139,7 +143,10 @@ const styles = stylex.create({
     overflowY: 'auto',
     backgroundColor: tokens['--xmd-bg'],
     color: tokens['--xmd-ink'],
-    font: "13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    fontFamily: tokens['--font-sans'],
+    fontSize: '13px',
+    lineHeight: 1.4,
+    letterSpacing: '-0.006em',
   },
   loading: {
     minHeight: '360px',
@@ -154,26 +161,31 @@ const styles = stylex.create({
     top: 0,
     zIndex: 10,
     display: 'flex',
-    height: '2.25rem',
+    height: '2.75rem',
     flexShrink: 0,
     alignItems: 'center',
-    gap: '0.375rem',
-    backgroundColor: tokens['--background'],
-    paddingInline: '0.875rem',
-    fontSize: '0.75rem',
+    gap: '0.625rem',
+    backgroundColor: tokens['--card'],
+    paddingInline: '1rem',
+    fontSize: '13px',
     lineHeight: 1.375,
-    color: tokens['--muted-foreground'],
+    fontWeight: 550,
+    color: tokens['--foreground'],
     boxShadow: '0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 #0000, 0 1px 0 0 var(--border)',
   },
   contextDot: {
-    width: '0.375rem',
-    height: '0.375rem',
+    width: '0.4375rem',
+    height: '0.4375rem',
     flexShrink: 0,
     borderRadius: '3.40282e38px',
   },
-  contextDotOn: { backgroundColor: tokens['--success'] },
+  contextDotOn: {
+    backgroundColor: tokens['--success'],
+    boxShadow: '0 0 0 3px color-mix(in oklab, var(--success) 18%, transparent)',
+  },
   contextDotOff: {
     backgroundColor: 'color-mix(in oklab, var(--muted-foreground) 40%, transparent)',
+    boxShadow: '0 0 0 3px color-mix(in oklab, var(--muted-foreground) 10%, transparent)',
   },
   contextLabel: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
 
@@ -182,10 +194,14 @@ const styles = stylex.create({
     display: 'flex',
     minHeight: '2.75rem',
     alignItems: 'center',
-    gap: '0.75rem',
-    backgroundColor: 'color-mix(in oklab, var(--muted) 30%, transparent)',
-    paddingInline: '0.875rem',
-    paddingBlock: '0.5rem',
+    gap: '0.5rem',
+    marginInline: '0.75rem',
+    marginTop: '0.625rem',
+    borderRadius: tokens['--xmd-radius-2'],
+    backgroundColor: tokens['--xmd-accent-soft'],
+    paddingLeft: '0.75rem',
+    paddingRight: '0.25rem',
+    paddingBlock: '0.25rem',
     // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
     // (with the default `transition-property: all`), so theme/colour changes
     // on these zones ease over 220ms too.
@@ -196,13 +212,13 @@ const styles = stylex.create({
     flex: 1,
     textWrap: 'pretty',
     fontSize: '0.75rem',
-    lineHeight: 1.375,
-    color: tokens['--muted-foreground'],
+    lineHeight: 1.4,
+    color: 'color-mix(in oklab, var(--foreground) 82%, transparent)',
   },
   dismissButton: {
     display: 'flex',
-    width: '2.5rem',
-    height: '2.5rem',
+    width: '2rem',
+    height: '2rem',
     flexShrink: 0,
     alignItems: 'center',
     justifyContent: 'center',
@@ -222,12 +238,14 @@ const styles = stylex.create({
   // ── Zone 2 — Monitor ──
   monitorSection: {
     display: 'grid',
-    gap: '0.5rem',
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
+    gap: '0.625rem',
+    marginInline: '0.75rem',
+    marginTop: '0.75rem',
+    borderRadius: tokens['--xmd-radius-2'],
+    backgroundColor: tokens['--card'],
+    boxShadow: CARD_OUTLINE,
     paddingInline: '0.875rem',
-    paddingBlock: '1rem',
+    paddingBlock: '0.875rem',
     // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
     // (with the default `transition-property: all`), so theme/colour changes
     // on these zones ease over 220ms too.
@@ -294,11 +312,8 @@ const styles = stylex.create({
 
   // ── Release diagnostics summary ──
   releaseSummarySection: {
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
-    paddingInline: '0.875rem',
-    paddingBlock: '0.625rem',
+    paddingInline: '1rem',
+    paddingTop: '0.625rem',
     // `duration-[220ms] ease-[…]` also set transition-duration/-timing-function
     // (with the default `transition-property: all`), so theme/colour changes
     // on these zones ease over 220ms too.
@@ -320,53 +335,58 @@ const styles = stylex.create({
   borderedSectionGap2: {
     display: 'grid',
     gap: '0.5rem',
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
-    paddingInline: '0.875rem',
-    paddingBlock: '1rem',
+    paddingInline: '0.75rem',
+    paddingTop: '0.75rem',
   },
   primaryCta: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '0.5rem',
     height: '2.75rem',
     width: '100%',
     borderRadius: tokens['--xmd-radius-2'],
     fontSize: '0.875rem',
     lineHeight: tokens['--text-sm--line-height'],
     fontWeight: 600,
+    letterSpacing: '-0.01em',
     color: tokens['--primary-foreground'],
     outlineStyle: 'none',
-    transitionProperty: TRANSITION_COLORS,
+    transitionProperty: `${TRANSITION_COLORS}, box-shadow`,
     transitionTimingFunction: XMD_EASE,
     transitionDuration: BUTTON_TRANSITION_DURATION,
     backgroundColor: {
       default: tokens['--primary'],
-      [HOVER]: { ':hover': 'color-mix(in oklab, var(--primary) 90%, transparent)' },
+      [HOVER]: { ':hover': tokens['--xmd-accent-hover'] },
     },
-    scale: { default: null, ':active': 0.97 },
-    boxShadow: { default: null, ':focus-visible': RING_FOCUS_VISIBLE },
+    scale: { default: null, ':active': 0.98 },
+    boxShadow: {
+      default: CTA_SHADOW,
+      ':focus-visible': `${CTA_SHADOW}, ${RING_FOCUS_VISIBLE}`,
+    },
     pointerEvents: { default: null, ':disabled': 'none' },
     opacity: { default: null, ':disabled': 0.5 },
   },
   sweepButton: {
     display: 'flex',
-    height: '2.5rem',
+    height: '2.25rem',
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
     gap: '0.375rem',
     borderRadius: tokens['--xmd-radius-2'],
-    fontSize: '0.75rem',
+    fontSize: '13px',
     lineHeight: tokens['--text-xs--line-height'],
     fontWeight: 500,
-    color: 'color-mix(in oklab, var(--foreground) 80%, transparent)',
+    color: tokens['--foreground'],
     outlineStyle: 'none',
     transitionProperty: `${TRANSITION_COLORS}, box-shadow`,
     transitionTimingFunction: XMD_EASE,
     transitionDuration: BUTTON_TRANSITION_DURATION,
-    backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
-    scale: { default: null, ':active': 0.97 },
+    backgroundColor: { default: tokens['--card'], [HOVER]: { ':hover': tokens['--muted'] } },
+    scale: { default: null, ':active': 0.98 },
     boxShadow: {
-      default: SECTION_OUTLINE,
+      default: `${SECTION_OUTLINE}, ${CARD_SHADOW}`,
       ':focus-visible': `${SECTION_OUTLINE}, ${RING_FOCUS_VISIBLE}`,
     },
     pointerEvents: { default: null, ':disabled': 'none' },
@@ -402,22 +422,16 @@ const styles = stylex.create({
   stageSectionMeta: {
     display: 'grid',
     gap: '0.375rem',
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
-    paddingInline: '0.875rem',
-    paddingBlock: '1rem',
+    paddingInline: '1rem',
+    paddingTop: '1rem',
   },
   metaHintText: { textWrap: 'pretty', fontSize: '13px' },
 
   stageSectionUnsupported: {
     display: 'grid',
     gap: '0.75rem',
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
-    paddingInline: '0.875rem',
-    paddingBlock: '1rem',
+    paddingInline: '1rem',
+    paddingTop: '1rem',
   },
   unsupportedHeadline: { textWrap: 'balance', fontSize: '13px', fontWeight: 500 },
   routesGrid: { display: 'grid', marginInline: '-0.25rem' },
@@ -443,13 +457,23 @@ const styles = stylex.create({
   // ── Zone 4 — Release cluster ──
   releaseTriggerButton: {
     display: 'flex',
-    minHeight: '2.5rem',
+    width: '100%',
+    minHeight: '2.25rem',
     alignItems: 'center',
-    borderRadius: tokens['--xmd-radius-3'],
-    paddingInline: '0.25rem',
+    justifyContent: 'space-between',
+    paddingInline: '0.75rem',
     fontSize: '13px',
     fontWeight: 500,
     color: tokens['--destructive'],
+    borderTopStyle: 'solid',
+    borderTopWidth: { default: '1px', ':first-of-type': 0 },
+    borderColor: tokens['--border'],
+    '::after': {
+      content: '"›"',
+      fontSize: '15px',
+      lineHeight: 1,
+      color: tokens['--xmd-faint'],
+    },
     outlineStyle: 'none',
     transitionProperty: TRANSITION_COLORS,
     transitionTimingFunction: XMD_EASE,
@@ -463,19 +487,26 @@ const styles = stylex.create({
   // `text-[11px] font-semibold tracking-wide text-muted-foreground` — identical
   // string shared by ReleaseCluster's own label and PreferencesZone's "Mode".
   sectionLabel: {
+    paddingInline: '0.25rem',
     fontSize: '11px',
     fontWeight: 600,
-    letterSpacing: '0.025em',
-    color: tokens['--muted-foreground'],
+    letterSpacing: '0.06em',
+    textTransform: 'uppercase',
+    color: tokens['--xmd-faint'],
   },
-  confirmGroupGrid: { display: 'grid', marginInline: '-0.25rem' },
+  confirmGroupGrid: {
+    display: 'grid',
+    overflow: 'hidden',
+    borderRadius: tokens['--xmd-radius-2'],
+    backgroundColor: tokens['--card'],
+    boxShadow: CARD_OUTLINE,
+  },
   releaseExpandButton: {
     display: 'flex',
     minHeight: '2.5rem',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderRadius: tokens['--xmd-radius-3'],
-    paddingInline: '0.25rem',
+    paddingInline: '0.75rem',
     fontSize: '13px',
     fontWeight: 500,
     color: tokens['--destructive'],
@@ -499,16 +530,20 @@ const styles = stylex.create({
   // ── Zone 5 — Preferences ──
   preferencesSection: {
     display: 'grid',
-    gap: '1rem',
-    borderTopStyle: 'solid',
-    borderTopWidth: '1px',
-    borderColor: tokens['--border'],
-    paddingInline: '0.875rem',
-    paddingBlock: '1rem',
+    gap: '0.625rem',
+    paddingInline: '0.75rem',
+    paddingTop: '0.625rem',
+    paddingBottom: '0.75rem',
+  },
+  prefsCard: {
+    display: 'grid',
+    borderRadius: tokens['--xmd-radius-2'],
+    backgroundColor: tokens['--card'],
+    boxShadow: CARD_OUTLINE,
+    paddingInline: '0.75rem',
   },
   modeGroup: { display: 'grid', gap: '0.375rem' },
-  toggleGroupSx: { width: '100%', borderRadius: tokens['--xmd-radius-3'] },
-  toggleGroupItemSx: { height: '2.5rem', flex: 1, fontSize: '13px', lineHeight: null },
+  toggleGroupItemSx: { height: '2rem' },
   metaContextNote: { fontSize: '0.75rem', lineHeight: 1.375, color: tokens['--muted-foreground'] },
   fieldDescMono: { fontFamily: tokens['--font-mono'] },
   fieldDescFlex: { display: 'flex', alignItems: 'center', gap: '0.375rem' },
@@ -551,10 +586,10 @@ const styles = stylex.create({
     zIndex: 10,
     flexShrink: 0,
     marginTop: 'auto',
-    backgroundColor: tokens['--background'],
+    backgroundColor: tokens['--card'],
     boxShadow: '0 -1px 0 0 var(--border)',
-    paddingInline: '0.875rem',
-    paddingBlock: '0.75rem',
+    paddingInline: '1rem',
+    paddingBlock: '0.6875rem',
     fontSize: '0.75rem',
     lineHeight: 1.375,
     color: tokens['--muted-foreground'],
@@ -900,6 +935,7 @@ function StageZone({
           disabled={!onXTab || drainBusy}
           onClick={onDrain}
         >
+          <DownloadIcon aria-hidden="true" sx={iconSize.s4} />
           {drainBusy
             ? 'Queuing…'
             : willClear
@@ -1127,9 +1163,8 @@ function PreferencesZone({
         <span {...stylex.props(styles.sectionLabel)}>Mode</span>
         <ToggleGroup
           type="single"
-          variant="outline"
-          spacing={0}
-          sx={styles.toggleGroupSx}
+          spacing={0.5}
+          sx={segmented.track}
           style={{ '--radius': 'var(--xmd-radius-3)' }}
           aria-label="Download mode"
           value={settings.downloadStrategy}
@@ -1143,7 +1178,7 @@ function PreferencesZone({
               value={option.value}
               aria-label={`Download mode: ${option.label}`}
               title={option.hint}
-              sx={styles.toggleGroupItemSx}
+              sx={[segmented.item, styles.toggleGroupItemSx]}
             >
               {option.label}
             </ToggleGroupItem>
@@ -1154,7 +1189,7 @@ function PreferencesZone({
       {isMetaContext ? (
         <p {...stylex.props(styles.metaContextNote)}>Release and Capture are X-only.</p>
       ) : (
-        <>
+        <div {...stylex.props(styles.prefsCard)} data-xmd-divide="" data-xmd-rows="3">
           <ConfirmStrip
             control={turnOnStrip}
             sentence={turnOnReleaseConfirm}
@@ -1223,7 +1258,7 @@ function PreferencesZone({
               onCheckedChange={(checked: boolean) => void update({ captureEnabled: checked })}
             />
           </Field>
-        </>
+        </div>
       )}
     </section>
   )

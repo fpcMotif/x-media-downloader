@@ -13,7 +13,7 @@ export const tokens = stylex.defineVars({
   // Brand ramp. "Instrument, not dashboard": structure comes from hairlines,
   // not cards — the lines sit at 7-8% so a divider reads as a seam.
   '--xmd-bg': {
-    default: 'oklch(0.982 0.004 var(--xmd-hue-neutral))',
+    default: 'oklch(0.972 0.005 var(--xmd-hue-neutral))',
     [DARK]: 'oklch(0.145 0.006 var(--xmd-hue-neutral))',
   },
   '--xmd-surface': {
@@ -118,9 +118,9 @@ export const tokens = stylex.defineVars({
 
   // Tailwind's theme layer: the font stacks the preflight reset resolves.
   '--font-sans':
-    'ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"',
+    '"Geist Variable", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"',
   '--font-mono':
-    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    '"Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
   '--default-font-family': 'var(--font-sans)',
   '--default-mono-font-family': 'var(--font-mono)',
   // Tailwind's text-size line-heights, kept as the same `calc()` fractions

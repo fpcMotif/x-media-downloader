@@ -70,9 +70,11 @@ describe('Saving panel: nothing dropped from General + Downloads + Filters', () 
     expect(source).toContain('SavingPanel')
   })
 
-  it('drops the dead per-item radius-4 class and overrides --radius on the Download mode wrapper (finding 6)', () => {
+  it('drops the dead per-item radius-4 class and takes Download mode radii from the shared segmented control (finding 6)', () => {
     expect(source).not.toContain('--xmd-radius-4')
-    expect(source).toContain("'--radius': 'var(--xmd-radius-3)'")
+    expect(source).not.toContain("'--radius'")
+    expect(source).toContain('sx={segmented.track}')
+    expect(source).toContain('segmented.item')
   })
 
   it('reaches 40px on every options action Button via call-site min-h-10 (finding 17)', () => {
