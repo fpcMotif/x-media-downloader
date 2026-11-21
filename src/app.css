@@ -15,6 +15,8 @@
 /* Cross-surface brand primitives (ease curve, hue anchors) — shared with the
    overlay content script's stylesheet. Vite inlines this at build time. */
 @import './theme/tokens.css';
+@import '@fontsource-variable/geist/wght.css';
+@import '@fontsource-variable/geist-mono/wght.css';
 
 /* 1. Base reset — Tailwind v4 preflight, byte-for-byte as it compiled, plus the
    repo's `* { @apply border-border outline-ring/50 }` rule at the end. Kept in
@@ -289,6 +291,10 @@ body,
   margin: 0;
   background: var(--xmd-bg);
 }
+html,
+body {
+  overflow-x: clip;
+}
 /* height pins removed: no height/min-height/max-height/overflow-hidden here —
    the popup renders its content's height (spec §2.9). */
 
@@ -322,6 +328,11 @@ body,
 }
 [data-xmd-rows='3'][data-xmd-rows]:not(#\#):not(#\#):not(#\#):not(#\#) > * {
   padding-block: 0.75rem;
+}
+[data-xmd-rows] > [data-slot='button'] {
+  align-self: flex-start;
+  justify-self: start;
+  margin-block: 1rem;
 }
 /* Field (vertical): every child stretches (`*:w-full`). */
 [data-slot='field'][data-orientation='vertical']:not(#\#):not(#\#):not(#\#):not(#\#) > * {

@@ -54,11 +54,11 @@ const styles = stylex.create({
   content: {
     marginInline: 'auto',
     display: 'flex',
-    maxWidth: '42rem',
+    maxWidth: '46rem',
     flexDirection: 'column',
-    gap: '2rem',
+    gap: '2.25rem',
     paddingInline: { default: '1rem', [SM]: '2.5rem' },
-    paddingBlock: { default: '1.5rem', [SM]: '3rem' },
+    paddingBlock: { default: '1.5rem', [SM]: '3.5rem' },
     animationName: panelEnter,
     animationDuration: '0.22s',
     animationTimingFunction: 'var(--xmd-ease)',
@@ -109,10 +109,11 @@ const styles = stylex.create({
     top: 0,
     display: 'flex',
     height: { default: null, [SM]: '100vh' },
-    width: { default: '100%', [SM]: '220px' },
+    width: { default: '100%', [SM]: '232px' },
     flexShrink: 0,
     flexDirection: 'column',
-    gap: '0.25rem',
+    gap: '0.125rem',
+    backgroundColor: tokens['--xmd-surface'],
     borderBottomStyle: 'solid',
     borderBottomWidth: { default: '1px', [SM]: 0 },
     // borderRightStyle: 'solid' is not declared — the preflight `border: 0 solid`
@@ -125,15 +126,15 @@ const styles = stylex.create({
   // px-2 pb-4
   brandBlock: {
     paddingInline: '0.5rem',
-    paddingBottom: '1rem',
+    paddingBottom: '1.25rem',
   },
   // block text-sm leading-tight font-semibold tracking-tight
   brandName: {
     display: 'block',
-    fontSize: '0.875rem',
+    fontSize: '0.9375rem',
     lineHeight: 1.25,
     fontWeight: 600,
-    letterSpacing: '-0.025em',
+    letterSpacing: '-0.015em',
   },
   // mt-0.5 block font-mono text-[11px] leading-tight text-muted-foreground
   brandVersion: {
@@ -148,11 +149,10 @@ const styles = stylex.create({
   navLabel: {
     paddingInline: '0.5rem',
     paddingTop: '0.5rem',
-    paddingBottom: '0.25rem',
-    fontSize: '11px',
-    fontWeight: 600,
-    letterSpacing: '0.025em',
-    color: tokens['--muted-foreground'],
+    paddingBottom: '0.375rem',
+    fontSize: '0.75rem',
+    fontWeight: 500,
+    color: tokens['--xmd-faint'],
   },
   // mb-4 flex flex-col gap-0.5
   navSettings: {
@@ -176,7 +176,6 @@ const styles = stylex.create({
     borderTopStyle: 'solid',
     borderTopWidth: '1px',
     borderColor: tokens['--border'],
-    paddingInline: '0.5rem',
     paddingTop: '0.75rem',
   },
   // About button (no data-slot): flex min-h-10 items-center
@@ -187,9 +186,9 @@ const styles = stylex.create({
     minHeight: '2.5rem',
     alignItems: 'center',
     borderRadius: tokens['--xmd-radius-3'],
-    paddingInline: '0.5rem',
+    paddingInline: '0.625rem',
     textAlign: 'left',
-    fontSize: '13px',
+    fontSize: '0.875rem',
     transitionProperty: NAV_TRANSITION,
     transitionTimingFunction: 'var(--xmd-ease)',
     transitionDuration: '0.16s',
@@ -212,12 +211,12 @@ const styles = stylex.create({
   // outline-none focus-visible:ring-3 focus-visible:ring-ring/50
   navItemBase: {
     display: 'flex',
-    minHeight: '2.5rem',
+    minHeight: '2.25rem',
     alignItems: 'center',
     borderRadius: tokens['--xmd-radius-3'],
-    paddingInline: '0.75rem',
+    paddingInline: '0.625rem',
     textAlign: 'left',
-    fontSize: '13px',
+    fontSize: '0.875rem',
     transitionProperty: NAV_TRANSITION,
     transitionTimingFunction: 'var(--xmd-ease)',
     transitionDuration: '0.16s',
@@ -227,15 +226,19 @@ const styles = stylex.create({
   },
   // isActive: bg-primary/[0.09] font-semibold text-primary
   navItemActive: {
-    backgroundColor: 'color-mix(in oklab, var(--primary) 9%, transparent)',
+    backgroundColor: tokens['--muted'],
     fontWeight: 600,
-    color: tokens['--primary'],
+    color: tokens['--foreground'],
+    boxShadow: {
+      default: 'inset 2px 0 0 var(--primary)',
+      ':focus-visible': RING_FOCUS_VISIBLE,
+    },
   },
   // !isActive: font-medium text-foreground/80 hover:bg-muted hover:text-foreground
   navItemInactive: {
     fontWeight: 500,
     color: {
-      default: 'color-mix(in oklab, var(--foreground) 80%, transparent)',
+      default: tokens['--muted-foreground'],
       [HOVER]: { ':hover': tokens['--foreground'] },
     },
     backgroundColor: { default: null, [HOVER]: { ':hover': tokens['--muted'] } },
