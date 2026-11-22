@@ -47,6 +47,7 @@ export interface CaptureDb {
   /** Stream every record through `step` without loading the store whole. */
   fold<A>(init: A, step: (acc: A, record: TweetRecord) => A): Promise<A>
   scan<A>(init: A, step: (acc: A, record: TweetRecord) => A, chunkSize?: number): Promise<A>
+  page(after: Option.Option<string>, limit: number): Promise<TweetRecord[]>
   conversation(id: string): Promise<TweetRecord[]>
   byIds(ids: ReadonlyArray<string>): Promise<TweetRecord[]>
   threadWithQuotes(conversationId: string): Promise<TweetRecord[]>
@@ -92,6 +93,7 @@ export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
     allRecords: () => store.allRecords(),
     fold: (init, step) => store.fold(init, step),
     scan: (init, step, chunkSize = SCAN_CHUNK) => scanStore(store, init, step, chunkSize),
+    page: (after, limit) => store.page(after, limit),
     conversation: (id) => store.conversation(id),
     byIds: async (ids) => (ids.length === 0 ? [] : store.byIds(ids)),
     threadWithQuotes: async (conversationId) => {

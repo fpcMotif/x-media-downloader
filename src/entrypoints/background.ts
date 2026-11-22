@@ -132,7 +132,12 @@ import { makeRetryQueue } from '@/packages/download/retry-queue'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
 import { finishCaptureSummary } from '@/packages/capture/store'
-import { composeCaptureExport } from '@/packages/capture/build-export'
+import {
+  composeCaptureExport,
+  composeJsonlChunk,
+  jsonlExportFilename,
+  quotedIdsOutside,
+} from '@/packages/capture/build-export'
 import {
   captureSearchRowIds,
   finishCaptureSearch,
@@ -1820,6 +1825,7 @@ const clearDownloadMonitor = async (): Promise<ClearDownloadMonitorResponse> => 
 // artifact text; the options page (which has a DOM + URL.createObjectURL) does
 // the actual download. Quote text is resolved against the full record set.
 const captureRecentLimit = 20
+const captureExportChunk = 500
 const captureSearchLimit = 200
 
 // Typed message-router table. Each entry returns the value to send back; the
@@ -2000,6 +2006,23 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
         `[XMD] capture export ${msg.kind} → ${built.filename} (${built.text.length} bytes)`,
       )
       return { ok: true, filename: built.filename, text: built.text }
+    }),
+  ],
+  [
+    'ExportCaptureChunkRequest',
+    handle('ExportCaptureChunkRequest', async (msg) => {
+      const limit = msg.limit ?? captureExportChunk
+      const chunk = await captureDb.page(
+        msg.after === undefined ? Option.none() : Option.some(msg.after),
+        limit,
+      )
+      const quoted = await captureDb.byIds(quotedIdsOutside(chunk))
+      const last = chunk.at(-1)
+      return {
+        lines: composeJsonlChunk(chunk, quoted),
+        next: last !== undefined && chunk.length === limit ? last.tweetId : null,
+        filename: jsonlExportFilename(Date.now()),
+      }
     }),
   ],
   [

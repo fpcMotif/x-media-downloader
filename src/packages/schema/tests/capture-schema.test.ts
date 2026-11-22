@@ -7,6 +7,7 @@ import {
   CaptureSummaryRequest,
   CaptureSearchRequest,
   ExportCaptureRequest,
+  ExportCaptureChunkRequest,
   ClearCaptureRequest,
 } from '../index'
 
@@ -92,6 +93,30 @@ describe('Capture messages', () => {
       kind: 'jsonl',
     })
     expect(minimal.conversationId).toBeUndefined()
+  })
+
+  it('decodes ExportCaptureChunkRequest via its tagged shape and the Message union', () => {
+    const minimal = Schema.decodeUnknownSync(ExportCaptureChunkRequest)({
+      _tag: 'ExportCaptureChunkRequest',
+    })
+    expect(minimal.after).toBeUndefined()
+    expect(minimal.limit).toBeUndefined()
+    expect(Schema.decodeUnknownSync(Message)({ _tag: 'ExportCaptureChunkRequest' })._tag).toBe(
+      'ExportCaptureChunkRequest',
+    )
+
+    const full = { _tag: 'ExportCaptureChunkRequest', after: '12', limit: 100 }
+    const direct = Schema.decodeUnknownSync(ExportCaptureChunkRequest)(full)
+    expect(direct.after).toBe('12')
+    expect(direct.limit).toBe(100)
+    expect(Schema.decodeUnknownSync(Message)(full)._tag).toBe('ExportCaptureChunkRequest')
+
+    expect(() =>
+      Schema.decodeUnknownSync(ExportCaptureChunkRequest)({
+        _tag: 'ExportCaptureChunkRequest',
+        after: 12,
+      }),
+    ).toThrow(/after/)
   })
 
   it('decodes ClearCaptureRequest via its tagged shape and the Message union', () => {

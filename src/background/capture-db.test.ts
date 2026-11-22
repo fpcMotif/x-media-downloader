@@ -382,3 +382,14 @@ describe('scan', () => {
     expect(store.pageCalls).toBe(1)
   })
 })
+
+describe('page', () => {
+  it('walks the store in id order without repeats', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+    await db.putRecords([mk('3'), mk('1'), mk('2')])
+
+    expect((await db.page(Option.none(), 2)).map((r) => r.tweetId)).toEqual(['1', '2'])
+    expect((await db.page(Option.some('2'), 2)).map((r) => r.tweetId)).toEqual(['3'])
+    expect(await db.page(Option.some('3'), 2)).toEqual([])
+  })
+})

@@ -576,6 +576,12 @@ export const ExportCaptureRequest = Schema.TaggedStruct('ExportCaptureRequest', 
 })
 export type ExportCaptureRequest = typeof ExportCaptureRequest.Type
 
+export const ExportCaptureChunkRequest = Schema.TaggedStruct('ExportCaptureChunkRequest', {
+  after: Schema.optional(Schema.String),
+  limit: Schema.optional(Schema.Number),
+})
+export type ExportCaptureChunkRequest = typeof ExportCaptureChunkRequest.Type
+
 /** panel → background: wipe the local capture store. `{ cleared }` back. */
 export const ClearCaptureRequest = Schema.TaggedStruct('ClearCaptureRequest', {})
 export type ClearCaptureRequest = typeof ClearCaptureRequest.Type
@@ -697,6 +703,7 @@ export const Message = Schema.Union([
   CaptureSummaryRequest,
   CaptureSearchRequest,
   ExportCaptureRequest,
+  ExportCaptureChunkRequest,
   ClearCaptureRequest,
   ExportDiagnosticsRequest,
   ReleaseMutationEvent,
