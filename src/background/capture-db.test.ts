@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { makeCaptureDb, type CaptureStore } from './capture-db'
 import { composeCaptureExport } from '@/packages/capture/build-export'
+import { finishCaptureSummary } from '@/packages/capture/store'
 import type { TweetRecord } from '@/packages/capture/record'
 
 const mk = (tweetId: string, opts: Partial<TweetRecord> = {}): TweetRecord => ({
@@ -26,6 +27,7 @@ function fakeStore(): CaptureStore & {
   rows: Map<string, TweetRecord>
   upsertCalls: number
   allRecordsCalls: number
+  foldCalls: number
   byIdsCalls: number
 } {
   const rows = new Map<string, TweetRecord>()
@@ -33,6 +35,7 @@ function fakeStore(): CaptureStore & {
     rows,
     upsertCalls: 0,
     allRecordsCalls: 0,
+    foldCalls: 0,
     byIdsCalls: 0,
     async upsert(
       records: ReadonlyArray<TweetRecord>,
@@ -50,6 +53,7 @@ function fakeStore(): CaptureStore & {
       return [...rows.values()]
     },
     async fold<A>(init: A, step: (acc: A, record: TweetRecord) => A) {
+      box.foldCalls++
       let acc = init
       for (const r of rows.values()) acc = step(acc, r)
       return acc
@@ -253,5 +257,78 @@ describe('threadWithQuotes', () => {
 
     expect(await db.byIds([])).toEqual([])
     expect(store.byIdsCalls).toBe(0)
+  })
+})
+
+describe('summary', () => {
+  it('reuses the fold while nothing changes', async () => {
+    const store = fakeStore()
+    const db = makeCaptureDb({ store })
+    await db.putRecords([mk('1'), mk('2')])
+
+    const first = await db.summary()
+    const second = await db.summary()
+
+    expect(store.foldCalls).toBe(1)
+    expect(finishCaptureSummary(first, 5).tweets).toBe(2)
+    expect(finishCaptureSummary(second, 5).tweets).toBe(2)
+  })
+
+  it('invalidates after a write', async () => {
+    const store = fakeStore()
+    const db = makeCaptureDb({ store })
+    await db.putRecords([mk('1')])
+    await db.summary()
+    await db.putRecords([mk('2')])
+
+    const summary = finishCaptureSummary(await db.summary(), 5)
+
+    expect(store.foldCalls).toBe(2)
+    expect(summary.tweets).toBe(2)
+  })
+
+  it('reflects a merge that replaces a stored record', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+    await db.putRecords([mk('1', { text: 'thin' })])
+    await db.summary()
+    await db.putRecords([mk('1', { text: 'rich', source: 'tweetDetail', sourceRank: 2 })])
+
+    const summary = finishCaptureSummary(await db.summary(), 5)
+
+    expect(summary.tweets).toBe(1)
+    expect(summary.recent[0]?.rootText).toBe('rich')
+  })
+
+  it('invalidates after clear', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+    await db.putRecords([mk('1')])
+    await db.summary()
+    await db.clear()
+
+    const summary = finishCaptureSummary(await db.summary(), 5)
+
+    expect(summary.tweets).toBe(0)
+    expect(summary.conversations).toBe(0)
+  })
+
+  it('does not invalidate on an empty batch', async () => {
+    const store = fakeStore()
+    const db = makeCaptureDb({ store })
+    await db.putRecords([mk('1')])
+    await db.summary()
+    await db.putRecords([])
+    await db.summary()
+
+    expect(store.foldCalls).toBe(1)
+  })
+
+  it('waits for an in-flight write before folding', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+
+    const put = db.putRecords([mk('1')])
+    const sum = db.summary()
+    await put
+
+    expect(finishCaptureSummary(await sum, 5).tweets).toBe(1)
   })
 })

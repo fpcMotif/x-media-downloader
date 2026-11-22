@@ -130,11 +130,7 @@ import {
 import { makeRetryQueue } from '@/packages/download/retry-queue'
 import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
-import {
-  emptyCaptureSummary,
-  finishCaptureSummary,
-  foldCaptureSummary,
-} from '@/packages/capture/store'
+import { finishCaptureSummary } from '@/packages/capture/store'
 import { composeCaptureExport } from '@/packages/capture/build-export'
 
 const settingsCache = makeSettingsCache({
@@ -1955,8 +1951,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
     'CaptureTweets',
     handle('CaptureTweets', async (msg) => {
       await captureDb.putRecords(msg.records)
-      const total = await captureDb.count()
-      console.info(`[XMD] capture received ${msg.records.length} record(s); store total=${total}`)
+      console.info(`[XMD] capture received ${msg.records.length} record(s)`)
       captureOutbox.mirrorCaptures(msg.records)
       return { stored: msg.records.length }
     }),
@@ -1967,10 +1962,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
   [
     'CaptureSummaryRequest',
     handle('CaptureSummaryRequest', async (msg) =>
-      finishCaptureSummary(
-        await captureDb.fold(emptyCaptureSummary(), foldCaptureSummary),
-        msg.limit ?? captureRecentLimit,
-      ),
+      finishCaptureSummary(await captureDb.summary(), msg.limit ?? captureRecentLimit),
     ),
   ],
   [

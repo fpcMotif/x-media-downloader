@@ -8,7 +8,13 @@
  * in-memory store. IndexedDB needs the `unlimitedStorage` manifest permission
  * (wired separately) so the harvest is not evicted under storage pressure.
  */
-import { mergeRecord } from '@/packages/capture/store'
+import { Option } from 'effect'
+import {
+  emptyCaptureSummary,
+  foldCaptureSummary,
+  mergeRecord,
+  type CaptureSummaryAcc,
+} from '@/packages/capture/store'
 import type { TweetRecord } from '@/packages/capture/record'
 import { makeSerialQueue } from '@/packages/kernel/serial-queue'
 
@@ -44,15 +50,18 @@ export interface CaptureDb {
   threadWithQuotes(conversationId: string): Promise<TweetRecord[]>
   count(): Promise<number>
   clear(): Promise<void>
+  summary(): Promise<CaptureSummaryAcc>
 }
 
 export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
   const store = deps.store ?? makeIndexedDbStore()
   const writes = makeSerialQueue()
+  let cachedSummary: Option.Option<CaptureSummaryAcc> = Option.none()
   return {
     putRecords: (records) =>
       writes.run(async () => {
         if (records.length === 0) return
+        cachedSummary = Option.none()
         const byTweet = new Map<string, TweetRecord>()
         for (const record of records) {
           byTweet.set(record.tweetId, mergeRecord(byTweet.get(record.tweetId), record))
@@ -77,7 +86,18 @@ export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
       return [...thread, ...quoted]
     },
     count: () => store.count(),
-    clear: () => writes.run(() => store.clear()),
+    clear: () =>
+      writes.run(async () => {
+        cachedSummary = Option.none()
+        await store.clear()
+      }),
+    summary: () =>
+      writes.run(async () => {
+        if (Option.isSome(cachedSummary)) return cachedSummary.value
+        const folded = await store.fold(emptyCaptureSummary(), foldCaptureSummary)
+        cachedSummary = Option.some(folded)
+        return folded
+      }),
   }
 }
 
