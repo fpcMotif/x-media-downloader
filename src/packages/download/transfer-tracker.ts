@@ -59,6 +59,7 @@ export type ReconcileVerdict = 'complete' | 'failed' | 'in-progress' | 'unknown'
 export interface ReconcileRow {
   readonly state?: string
   readonly exists?: boolean
+  readonly paused?: boolean
 }
 
 /**

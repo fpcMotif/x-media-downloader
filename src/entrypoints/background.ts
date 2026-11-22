@@ -1100,8 +1100,13 @@ const stopStuckPollIfIdle = (): void => {
 }
 
 const reconcileStuckDownloads = async (): Promise<void> => {
-  await transferCorrelation.reconcile({ minAgeMs: STUCK_RECONCILE_AFTER_MS })
-  stopStuckPollIfIdle()
+  const { pollable } = await transferCorrelation.reconcile({
+    minAgeMs: STUCK_RECONCILE_AFTER_MS,
+  })
+  if (pollable === 0 && stuckPollTimer !== null) {
+    clearInterval(stuckPollTimer)
+    stuckPollTimer = null
+  }
 }
 
 /** Arm the stuck-download watchdog while downloads are active (no-op if already armed).
@@ -1728,6 +1733,7 @@ const onDownloadChanged = async (delta: Browser.downloads.DownloadDelta): Promis
   // just after a boot reconcile re-seeded the correlation): the durable outcome
   // and badge backlink must still fire; the byte-sample writes stay `live`-guarded.
   if (id === undefined) return
+  ensureStuckPoll()
   const now = Date.now()
   await sampleBytes(delta.id, now)
   // A reconcile may have settled this id during the sample.

@@ -128,4 +128,51 @@ describe('transfer correlation', () => {
     expect(h.settled).toEqual([])
     expect(h.correlation.requestFor(9)).toBe('second')
   })
+
+  it('treats a paused download as in progress but not pollable', async () => {
+    const h = harness()
+    h.rows.set(1, { state: 'in_progress', paused: true })
+    h.correlation.register(1, 'paused', h.clock.now)
+
+    const summary = await h.correlation.reconcile({ minAgeMs: 0 })
+
+    expect(summary.inProgress).toBe(1)
+    expect(summary.pollable).toBe(0)
+    expect(h.correlation.size()).toBe(1)
+    expect(h.settled).toEqual([])
+  })
+
+  it('makes a resumed download pollable again', async () => {
+    const h = harness()
+    h.rows.set(1, { state: 'in_progress', paused: true })
+    h.correlation.register(1, 'paused', h.clock.now)
+    expect((await h.correlation.reconcile({ minAgeMs: 0 })).pollable).toBe(0)
+
+    h.rows.set(1, { state: 'in_progress', paused: false })
+    const summary = await h.correlation.reconcile({ minAgeMs: 0 })
+
+    expect(summary.pollable).toBe(1)
+  })
+
+  it('stops treating a purged record as pollable after three rounds', async () => {
+    const h = harness()
+    h.correlation.register(1, 'purged', h.clock.now)
+
+    expect((await h.correlation.reconcile({ minAgeMs: 0 })).pollable).toBe(1)
+    expect((await h.correlation.reconcile({ minAgeMs: 0 })).pollable).toBe(1)
+    expect((await h.correlation.reconcile({ minAgeMs: 0 })).pollable).toBe(0)
+    expect(h.correlation.size()).toBe(1)
+    expect(h.settled).toEqual([])
+  })
+
+  it('keeps a transfer that is still too young pollable without calling search', async () => {
+    const h = harness()
+    h.rows.set(1, { state: 'in_progress', paused: true })
+    h.correlation.register(1, 'young', h.clock.now)
+
+    const summary = await h.correlation.reconcile({ minAgeMs: STUCK_AFTER_MS })
+
+    expect(summary.pollable).toBe(1)
+    expect(h.settled).toEqual([])
+  })
 })
