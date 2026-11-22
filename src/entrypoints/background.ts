@@ -12,6 +12,7 @@ import {
   SettingsService,
   SettingsServiceLive,
   getSettings,
+  migrateSettingsSecrets,
   readSettings,
   setSettings,
   watchSettings,
@@ -2070,6 +2071,7 @@ export default defineBackground(() => {
   // Cloud Sync reconciliation: drain anything left over from a previous SW
   // life / offline period; clear the outbox whenever the user turns sync off.
   void (async () => {
+    await migrateSettingsSecrets()
     let s = await settingsCache.get()
     // Dev convenience: a gitignored `.env` (WXT_CONVEX_URL/SECRET) pre-seeds the
     // popup's Convex config on first run so there's nothing to paste. Gated on

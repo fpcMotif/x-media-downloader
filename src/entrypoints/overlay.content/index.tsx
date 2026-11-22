@@ -64,7 +64,7 @@ import {
 } from '@/packages/overlay/launcher'
 import { sameOverlaySettings, type OverlaySettings } from '@/packages/overlay/settings-view'
 import { isPageOnlyTraceStage } from '@/packages/overlay/trace-policy'
-import { getSettings, watchSettings } from '@/packages/settings'
+import { getPageSettings, watchPageSettings } from '@/packages/settings/page'
 import { idlePostHotkey, postHotkeyKey } from '../../core/post-hotkey'
 import { fireCurrentPost, wholePostItemsFor, type PostGrabDeps } from './post-grab'
 import { safeSend } from '@/packages/kernel/messaging'
@@ -1588,12 +1588,12 @@ export default defineContentScript({
       releaseAll()
       rerender()
     }
-    void getSettings()
+    void getPageSettings()
       .then(applySettings)
       .catch(() => {})
     // On invalidation `wxt/storage` is already torn down and its unwatch throws —
     // swallow it so the reload path stays quiet (the real hint is logged below).
-    const unwatchSettings = watchSettings(applySettings)
+    const unwatchSettings = watchPageSettings(applySettings)
     ctx.onInvalidated(() => {
       try {
         unwatchSettings()
