@@ -63,6 +63,7 @@ import {
   type LauncherPhase,
 } from '@/packages/overlay/launcher'
 import { sameOverlaySettings, type OverlaySettings } from '@/packages/overlay/settings-view'
+import { isPageOnlyTraceStage } from '@/packages/overlay/trace-policy'
 import { getSettings, watchSettings } from '@/packages/settings'
 import { idlePostHotkey, postHotkeyKey } from '../../core/post-hotkey'
 import { fireCurrentPost, wholePostItemsFor, type PostGrabDeps } from './post-grab'
@@ -623,6 +624,7 @@ const traceDownloadUi =
           : ''
       console.debug(`[XMD] ${source} ${stage}`, tag, opts.detail ?? '')
     }
+    if (isPageOnlyTraceStage(stage)) return
     postEvent({
       _tag: 'DownloadTraceEvent',
       source,

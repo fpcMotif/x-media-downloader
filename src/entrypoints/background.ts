@@ -41,6 +41,7 @@ import {
 } from '@/packages/download/fetched-strategy'
 import { makeDownloadQueueCore, type RequestOutcome } from '@/packages/download/queue'
 import { makeSerialQueue } from '@/packages/kernel/serial-queue'
+import { makeTrailingFlush } from '@/packages/kernel/trailing-flush'
 import { isMessageAllowed } from '@/packages/kernel/sender-guard'
 import {
   planDownloads,
@@ -275,6 +276,12 @@ const currentSnapshot = (now: number): MetricsSnapshot =>
   withTraceEvents(live ? snapshot(live, now) : ZERO_SNAPSHOT)
 
 const persistSnapshot = (now: number): Promise<void> => metricsItem.setValue(currentSnapshot(now))
+
+const TRACE_SNAPSHOT_FLUSH_MS = 250
+
+const traceSnapshotFlush = makeTrailingFlush(() => {
+  void persistSnapshot(Date.now()).catch(queueError('trace-snapshot'))
+}, TRACE_SNAPSHOT_FLUSH_MS)
 
 // Mutation↔clear correlation (spec #59 ticket #65): ephemeral, in-memory, like
 // `traceEvents` above — the recent-resolve table only needs to survive the
@@ -1779,6 +1786,7 @@ const clearDownloadMonitor = async (): Promise<ClearDownloadMonitorResponse> => 
   transfersState = emptyTracker
   persistTransfers()
   await clearSession.reset()
+  traceSnapshotFlush.cancel()
   traceEvents = []
   live = null
   await metricsItem.setValue(null)
@@ -1862,7 +1870,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
         ...(msg.detail !== undefined && { detail: msg.detail }),
         ...(sender.tab?.id !== undefined && { tabId: sender.tab.id }),
       })
-      await persistSnapshot(Date.now())
+      traceSnapshotFlush.request()
       return { ok: true }
     }),
   ],
