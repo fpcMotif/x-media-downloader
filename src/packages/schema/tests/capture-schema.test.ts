@@ -5,6 +5,7 @@ import {
   Message,
   CaptureTweets,
   CaptureSummaryRequest,
+  CaptureSearchRequest,
   ExportCaptureRequest,
   ClearCaptureRequest,
 } from '../index'
@@ -55,6 +56,28 @@ describe('Capture messages', () => {
     const raw = { _tag: 'CaptureSummaryRequest', limit: 1000 }
     expect(Schema.decodeUnknownSync(CaptureSummaryRequest)(raw).limit).toBe(1000)
     expect(Schema.decodeUnknownSync(Message)(raw)._tag).toBe('CaptureSummaryRequest')
+  })
+
+  it('decodes CaptureSearchRequest via its tagged shape and the Message union', () => {
+    const raw = { _tag: 'CaptureSearchRequest', query: 'rust', limit: 5 }
+    const direct = Schema.decodeUnknownSync(CaptureSearchRequest)(raw)
+    expect(direct._tag).toBe('CaptureSearchRequest')
+    expect(direct.query).toBe('rust')
+    expect(direct.limit).toBe(5)
+    expect(Schema.decodeUnknownSync(Message)(raw)._tag).toBe('CaptureSearchRequest')
+
+    const minimal = Schema.decodeUnknownSync(CaptureSearchRequest)({
+      _tag: 'CaptureSearchRequest',
+      query: 'rust',
+    })
+    expect(minimal.limit).toBeUndefined()
+    expect(
+      Schema.decodeUnknownSync(Message)({ _tag: 'CaptureSearchRequest', query: 'rust' })._tag,
+    ).toBe('CaptureSearchRequest')
+
+    expect(() =>
+      Schema.decodeUnknownSync(CaptureSearchRequest)({ _tag: 'CaptureSearchRequest' }),
+    ).toThrow(/query/)
   })
 
   it('decodes ExportCaptureRequest via its tagged shape and the Message union', () => {

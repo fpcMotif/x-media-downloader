@@ -80,6 +80,7 @@ describe('Tweet Harvest capture tags', () => {
       'ExportCaptureRequest',
       'ClearCaptureRequest',
       'CaptureSummaryRequest',
+      'CaptureSearchRequest',
     ] as const) {
       expect(isMessageAllowed(tag, cs, OWN)).toBe(false)
     }
@@ -90,6 +91,7 @@ describe('Tweet Harvest capture tags', () => {
       'ExportCaptureRequest',
       'ClearCaptureRequest',
       'CaptureSummaryRequest',
+      'CaptureSearchRequest',
     ] as const) {
       expect(isMessageAllowed(tag, ui, OWN)).toBe(true)
     }

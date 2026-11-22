@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { Option } from 'effect'
 import { makeCaptureDb, type CaptureStore } from './capture-db'
 import { composeCaptureExport } from '@/packages/capture/build-export'
 import { finishCaptureSummary } from '@/packages/capture/store'
@@ -28,6 +29,7 @@ function fakeStore(): CaptureStore & {
   upsertCalls: number
   allRecordsCalls: number
   foldCalls: number
+  pageCalls: number
   byIdsCalls: number
 } {
   const rows = new Map<string, TweetRecord>()
@@ -36,6 +38,7 @@ function fakeStore(): CaptureStore & {
     upsertCalls: 0,
     allRecordsCalls: 0,
     foldCalls: 0,
+    pageCalls: 0,
     byIdsCalls: 0,
     async upsert(
       records: ReadonlyArray<TweetRecord>,
@@ -60,6 +63,13 @@ function fakeStore(): CaptureStore & {
     },
     async conversation(id: string) {
       return [...rows.values()].filter((r) => r.conversationId === id)
+    },
+    async page(after: Option.Option<string>, limit: number) {
+      box.pageCalls++
+      return [...rows.values()]
+        .toSorted((a, b) => (a.tweetId < b.tweetId ? -1 : 1))
+        .filter((r) => Option.isNone(after) || r.tweetId > after.value)
+        .slice(0, limit)
     },
     async byIds(ids: ReadonlyArray<string>) {
       box.byIdsCalls++
@@ -330,5 +340,45 @@ describe('summary', () => {
     await put
 
     expect(finishCaptureSummary(await sum, 5).tweets).toBe(1)
+  })
+})
+
+describe('scan', () => {
+  it('visits every record once', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+    await db.putRecords([mk('1'), mk('2'), mk('3'), mk('4'), mk('5')])
+
+    expect(await db.scan(0, (n) => n + 1, 2)).toBe(5)
+  })
+
+  it('visits in ascending id order across chunks', async () => {
+    const db = makeCaptureDb({ store: fakeStore() })
+    await db.putRecords([mk('3'), mk('1'), mk('5'), mk('2'), mk('4')])
+
+    const seen = await db.scan<string[]>([], (ids, r) => [...ids, r.tweetId], 2)
+
+    expect(seen).toEqual(['1', '2', '3', '4', '5'])
+  })
+
+  it('stops on a short chunk', async () => {
+    const store5 = fakeStore()
+    const db5 = makeCaptureDb({ store: store5 })
+    await db5.putRecords([mk('1'), mk('2'), mk('3'), mk('4'), mk('5')])
+    await db5.scan(0, (n) => n + 1, 2)
+    expect(store5.pageCalls).toBe(3)
+
+    const store4 = fakeStore()
+    const db4 = makeCaptureDb({ store: store4 })
+    await db4.putRecords([mk('1'), mk('2'), mk('3'), mk('4')])
+    await db4.scan(0, (n) => n + 1, 2)
+    expect(store4.pageCalls).toBe(3)
+  })
+
+  it('an empty store yields the initial value with one page call', async () => {
+    const store = fakeStore()
+    const db = makeCaptureDb({ store })
+
+    expect(await db.scan(42, (n) => n + 1, 2)).toBe(42)
+    expect(store.pageCalls).toBe(1)
   })
 })

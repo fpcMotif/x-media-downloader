@@ -563,6 +563,12 @@ export const CaptureSummaryRequest = Schema.TaggedStruct('CaptureSummaryRequest'
 })
 export type CaptureSummaryRequest = typeof CaptureSummaryRequest.Type
 
+export const CaptureSearchRequest = Schema.TaggedStruct('CaptureSearchRequest', {
+  query: Schema.String,
+  limit: Schema.optional(Schema.Number),
+})
+export type CaptureSearchRequest = typeof CaptureSearchRequest.Type
+
 /** panel → background: build + deliver an export. `{ ok, filename }` back. */
 export const ExportCaptureRequest = Schema.TaggedStruct('ExportCaptureRequest', {
   kind: Schema.Literals(['jsonl', 'tree', 'markdown']),
@@ -689,6 +695,7 @@ export const Message = Schema.Union([
   SavedStatusUpdate,
   CaptureTweets,
   CaptureSummaryRequest,
+  CaptureSearchRequest,
   ExportCaptureRequest,
   ClearCaptureRequest,
   ExportDiagnosticsRequest,

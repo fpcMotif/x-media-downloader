@@ -6,6 +6,8 @@
 // Heavily logged ([XMD] capture-export …) so a failed click is diagnosable from
 // the page console without guessing.
 
+import { Option, Schema } from 'effect'
+
 export type CaptureExportKind = 'jsonl' | 'tree' | 'markdown'
 
 interface ExportResponse {
@@ -113,3 +115,29 @@ export const fetchCaptureSummary = (limit?: number): Promise<CaptureSummary> =>
         throw new Error('The extension worker returned no capture summary.')
       return s
     })
+
+const CaptureSearchResultSchema = Schema.Struct({
+  total: Schema.Number,
+  matches: Schema.Array(
+    Schema.Struct({
+      conversationId: Schema.String,
+      rootHandle: Schema.String,
+      rootText: Schema.String,
+      count: Schema.Number,
+      lastAt: Schema.Number,
+    }),
+  ),
+})
+
+export type CaptureSearchResult = typeof CaptureSearchResultSchema.Type
+
+const decodeCaptureSearchResult = Schema.decodeUnknownOption(CaptureSearchResultSchema)
+
+export const fetchCaptureSearch = (
+  query: string,
+  limit: number,
+): Promise<Option.Option<CaptureSearchResult>> =>
+  browser.runtime
+    .sendMessage({ _tag: 'CaptureSearchRequest', query, limit })
+    .then(decodeCaptureSearchResult)
+    .catch(() => Option.none<CaptureSearchResult>())

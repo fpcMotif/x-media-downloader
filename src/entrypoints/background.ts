@@ -132,6 +132,13 @@ import { makeCaptureDb } from '../background/capture-db'
 import { makeCaptureOutbox } from '../background/capture-outbox'
 import { finishCaptureSummary } from '@/packages/capture/store'
 import { composeCaptureExport } from '@/packages/capture/build-export'
+import {
+  captureSearchRowIds,
+  finishCaptureSearch,
+  foldCaptureSearch,
+  pickCaptureMatches,
+  startCaptureSearch,
+} from '@/packages/capture/search'
 
 const settingsCache = makeSettingsCache({
   read: readSettings,
@@ -1812,6 +1819,7 @@ const clearDownloadMonitor = async (): Promise<ClearDownloadMonitorResponse> => 
 // artifact text; the options page (which has a DOM + URL.createObjectURL) does
 // the actual download. Quote text is resolved against the full record set.
 const captureRecentLimit = 20
+const captureSearchLimit = 200
 
 // Typed message-router table. Each entry returns the value to send back; the
 // listener pipes it to sendResponse and keeps the channel open. `handle` narrows
@@ -1964,6 +1972,19 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
     handle('CaptureSummaryRequest', async (msg) =>
       finishCaptureSummary(await captureDb.summary(), msg.limit ?? captureRecentLimit),
     ),
+  ],
+  [
+    'CaptureSearchRequest',
+    handle('CaptureSearchRequest', async (msg) => {
+      const search = startCaptureSearch(msg.query)
+      if (search.needle === '') return { total: 0, matches: [] }
+      const { total, picked } = pickCaptureMatches(
+        await captureDb.scan(search, foldCaptureSearch),
+        msg.limit ?? captureSearchLimit,
+      )
+      const rows = await captureDb.byIds(captureSearchRowIds(picked))
+      return { total, matches: finishCaptureSearch(picked, rows) }
+    }),
   ],
   [
     'ExportCaptureRequest',

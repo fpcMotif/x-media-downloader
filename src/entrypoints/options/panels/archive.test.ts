@@ -11,3 +11,11 @@ describe('ArchivePanel status flash owns its timer', () => {
     expect(source).toContain('statusTimer.arm(() => setStatusMsg(null), 5000)')
   })
 })
+
+describe('ArchivePanel search', () => {
+  it('searches through the worker', () => {
+    expect(source).toContain('fetchCaptureSearch(wanted, ARCHIVE_FETCH_LIMIT)')
+    expect(source).toContain('const searchTimer = useOwnedTimer()')
+    expect(source).not.toContain('loaded.filter(')
+  })
+})
