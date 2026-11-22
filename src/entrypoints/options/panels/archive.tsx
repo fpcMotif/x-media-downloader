@@ -156,8 +156,10 @@ export function ArchivePanel({ settings, update }: PanelProps) {
   const [searchState, setSearchState] = useState<ArchiveSearchState>({ _tag: 'idle' })
   const searchTimer = useOwnedTimer()
   const latestNeedle = useRef('')
+  const searchSeq = useRef(0)
 
   const searchArchive = (text: string): void => {
+    const seq = ++searchSeq.current
     const wanted = text.trim()
     latestNeedle.current = wanted
     if (wanted === '') {
@@ -169,7 +171,7 @@ export function ArchivePanel({ settings, update }: PanelProps) {
     searchTimer.arm(() => {
       void (async () => {
         const result = await fetchCaptureSearch(wanted, ARCHIVE_FETCH_LIMIT)
-        if (latestNeedle.current !== wanted) return
+        if (searchSeq.current !== seq || latestNeedle.current !== wanted) return
         setSearchState({
           _tag: 'ready',
           result: Option.getOrElse(result, () => ({ total: 0, matches: [] })),

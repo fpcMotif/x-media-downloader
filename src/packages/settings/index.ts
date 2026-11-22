@@ -1,11 +1,6 @@
-import { Context, Effect, Layer, Schema } from 'effect'
+import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
-import {
-  Settings as SettingsSchema,
-  isJsonObject,
-  type JsonValue,
-  type Settings,
-} from '@/packages/schema'
+import { Settings as SettingsSchema, type JsonValue, type Settings } from '@/packages/schema'
 import { destinationLostDelta } from './coupling'
 import { hasSecretField, mergeSettings, splitSettings } from './lib/secret-fields'
 import { normalizeFilenameTemplate } from './lib/template-migration'
@@ -22,23 +17,29 @@ const readMergedRaw = async (): Promise<JsonValue> => {
   return mergeSettings(publicRaw, secretsRaw)
 }
 
+const decodeNormalized = (raw: JsonValue): Option.Option<Settings> =>
+  Option.map(Schema.decodeUnknownOption(SettingsSchema)(raw), (decoded) => ({
+    ...decoded,
+    filenameTemplate: normalizeFilenameTemplate(decoded.filenameTemplate),
+  }))
+
 const writeSplit = async (next: Settings): Promise<void> => {
   const [publicRaw, secretsRaw] = await Promise.all([item.getValue(), secretsItem.getValue()])
   const { publicPart, secretPart } = splitSettings(next)
   const hadLegacySecret = hasSecretField(publicRaw)
-  const prevSecrets = splitSettings(decode(secretsRaw)).secretPart
-  const prevPublic = splitSettings(decode(splitSettings(publicRaw).publicPart)).publicPart
+  const parsedSecrets = decodeNormalized(secretsRaw)
+  const parsedPublic = decodeNormalized(publicRaw)
   if (
     hadLegacySecret ||
-    !isJsonObject(secretsRaw) ||
-    JSON.stringify(prevSecrets) !== JSON.stringify(secretPart)
+    Option.isNone(parsedSecrets) ||
+    JSON.stringify(splitSettings(parsedSecrets.value).secretPart) !== JSON.stringify(secretPart)
   ) {
     await secretsItem.setValue(secretPart)
   }
   if (
     hadLegacySecret ||
-    !isJsonObject(publicRaw) ||
-    JSON.stringify(prevPublic) !== JSON.stringify(publicPart)
+    Option.isNone(parsedPublic) ||
+    JSON.stringify(splitSettings(parsedPublic.value).publicPart) !== JSON.stringify(publicPart)
   ) {
     await item.setValue(publicPart)
   }
@@ -130,14 +131,19 @@ export const setSettings = (patch: Partial<Settings>): Promise<Settings> =>
 /** Live subscription for long-lived contexts (content scripts), so popup changes
  *  reach already-open tabs without a reload. Returns an unwatch function. */
 export const watchSettings = (cb: (s: Settings) => void): (() => void) => {
+  let seq = 0
   const notify = (): void => {
+    const id = ++seq
     void (async () => {
-      cb(decode(await readMergedRaw()))
+      const raw = await readMergedRaw()
+      if (id !== seq) return
+      cb(decode(raw))
     })()
   }
   const unwatchPublic = item.watch(notify)
   const unwatchSecrets = secretsItem.watch(notify)
   return () => {
+    seq += 1
     unwatchPublic()
     unwatchSecrets()
   }

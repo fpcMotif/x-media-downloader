@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Schema } from 'effect'
 import { fakeBrowser } from 'wxt/testing/fake-browser'
@@ -155,6 +156,70 @@ describe('settings secret split', () => {
     expect(raw.settingsSecrets?.gdriveAccessToken).toBe('')
   })
 
+  it('overwrites non-object corrupt public storage on public write without touching valid secrets', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: 'corrupt',
+      settingsSecrets: { gdriveAccessToken: 'kept' },
+    })
+
+    await setSettings({ showSavedStatus: false })
+
+    const raw = await readRawStorage()
+    expect(raw.settings?.showSavedStatus).toBe(false)
+    expect(raw.settingsSecrets?.gdriveAccessToken).toBe('kept')
+    const current = await getSettings()
+    expect(current.showSavedStatus).toBe(false)
+    expect(current.gdriveAccessToken).toBe('kept')
+  })
+
+  it('repairs a schema-invalid public settings object when writing only secret fields', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: { downloadConcurrency: 'corrupt' },
+    })
+
+    await setSettings({ gdriveAccessToken: 'tok' })
+
+    const raw = await readRawStorage()
+    expect(raw.settings?.downloadConcurrency).toBe(5)
+    expect((await getSettings()).gdriveAccessToken).toBe('tok')
+  })
+
+  it('repairs a schema-invalid secrets object when writing only public fields', async () => {
+    await fakeBrowser.storage.local.set({
+      settingsSecrets: { gdriveTokenExpiry: 'corrupt' },
+    })
+
+    await setSettings({ showSavedStatus: false })
+
+    const raw = await readRawStorage()
+    expect(raw.settingsSecrets?.gdriveTokenExpiry).toBe(0)
+    expect((await getSettings()).showSavedStatus).toBe(false)
+  })
+
+  it('repairs non-object corrupt public storage when writing only secret fields', async () => {
+    await fakeBrowser.storage.local.set({
+      settings: 'corrupt',
+    })
+
+    await setSettings({ gdriveAccessToken: 'tok' })
+
+    const raw = await readRawStorage()
+    expect(raw.settings?.downloadConcurrency).toBe(5)
+    expect((await getSettings()).gdriveAccessToken).toBe('tok')
+  })
+
+  it('repairs non-object corrupt secrets storage when writing only public fields', async () => {
+    await fakeBrowser.storage.local.set({
+      settingsSecrets: 'corrupt',
+    })
+
+    await setSettings({ showSavedStatus: false })
+
+    const raw = await readRawStorage()
+    expect(raw.settingsSecrets?.gdriveTokenExpiry).toBe(0)
+    expect((await getSettings()).showSavedStatus).toBe(false)
+  })
+
   it('never returns a stored secret from the page reader', async () => {
     await fakeBrowser.storage.local.set({
       settings: { convexSyncSecret: 'legacy-secret', showSavedStatus: false },
@@ -200,5 +265,45 @@ describe('settings secret split', () => {
 
     await setSettings({ showSavedStatus: true })
     expect(pageSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops stale watchSettings callbacks when an earlier read resolves out of order', async () => {
+    const seen: number[] = []
+    const unwatch = watchSettings((s) => seen.push(s.downloadConcurrency))
+
+    let resolveSlow!: () => void
+    const slowGate = new Promise<void>((resolve) => {
+      resolveSlow = resolve
+    })
+    const origGet = fakeBrowser.storage.local.get.bind(fakeBrowser.storage.local)
+    let intercepted = false
+    vi.spyOn(fakeBrowser.storage.local, 'get').mockImplementation(async (keys) => {
+      if (keys === 'settings') {
+        const snap = await origGet('settings')
+        if (!intercepted) {
+          intercepted = true
+          await slowGate
+        }
+        return snap
+      }
+      if (keys === 'settingsSecrets') {
+        const snap = await origGet('settingsSecrets')
+        return snap
+      }
+      return origGet()
+    })
+
+    await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 1 } })
+    await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 2 } })
+
+    await vi.waitFor(() => {
+      expect(seen).toEqual([2])
+    })
+
+    resolveSlow()
+    await sleep(0)
+
+    expect(seen).toEqual([2])
+    unwatch()
   })
 })

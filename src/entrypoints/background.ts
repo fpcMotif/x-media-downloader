@@ -2072,12 +2072,16 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
  * messages to their handlers. Rehydrates pending retries and sync queues on boot.
  */
 export default defineBackground(() => {
+  const bootMigration = migrateSettingsSecrets().then((migrated) => {
+    if (migrated) settingsCache.invalidate()
+    return migrated
+  })
   // Boot marker: prints on every service-worker start. If you DON'T see this line
   // in the SW console, the new build isn't loaded (reload the extension / check it
   // points at .output/chrome-mv3). It also prints the clear-on-save settings so
   // "why didn't it un-like?" is answerable at a glance — no commands needed.
-  void settingsCache
-    .get()
+  void bootMigration
+    .then(() => settingsCache.get())
     .then((s) =>
       console.info(
         `[XMD] background booted · clearOnSave=${s.clearOnSave} unbookmark=${s.autoUnbookmarkOnSave} unlike=${s.autoUnlikeOnSave} strategy=${s.downloadStrategy}`,
@@ -2094,7 +2098,7 @@ export default defineBackground(() => {
   // Cloud Sync reconciliation: drain anything left over from a previous SW
   // life / offline period; clear the outbox whenever the user turns sync off.
   void (async () => {
-    await migrateSettingsSecrets()
+    await bootMigration
     let s = await settingsCache.get()
     // Dev convenience: a gitignored `.env` (WXT_CONVEX_URL/SECRET) pre-seeds the
     // popup's Convex config on first run so there's nothing to paste. Gated on
