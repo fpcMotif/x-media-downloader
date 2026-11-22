@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Layer, Schema } from 'effect'
+import { Context, Effect, Layer, Schema } from 'effect'
 import { storage } from 'wxt/utils/storage'
 import { Settings as SettingsSchema, type JsonValue, type Settings } from '@/packages/schema'
 import { destinationLostDelta } from './coupling'
@@ -76,18 +76,18 @@ export const SettingsServiceLive = Layer.succeed(SettingsService, {
 const provide = <A, E>(eff: Effect.Effect<A, E, SettingsService>): Promise<A> =>
   Effect.runPromise(Effect.provide(eff, SettingsServiceLive))
 
+export const readSettings = (): Promise<Settings> =>
+  provide(Effect.flatMap(SettingsService, (s) => s.get))
+
 /** Promise helpers for UI contexts (popup) — thin wrappers over the service. */
-export const getSettings = (): Promise<Settings> =>
-  provide(
-    Effect.flatMap(SettingsService, (s) => s.get).pipe(
-      Effect.catchCause((cause) =>
-        Effect.sync(() => {
-          console.warn('[XMD] getSettings failed, falling back to defaults:', Cause.squash(cause))
-          return defaults
-        }),
-      ),
-    ),
-  )
+export const getSettings = async (): Promise<Settings> => {
+  try {
+    return await readSettings()
+  } catch (err) {
+    console.warn('[XMD] getSettings failed, falling back to defaults:', err)
+    return defaults
+  }
+}
 export const setSettings = (patch: Partial<Settings>): Promise<Settings> =>
   provide(Effect.flatMap(SettingsService, (s) => s.set(patch)))
 

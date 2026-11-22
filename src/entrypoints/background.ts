@@ -12,9 +12,11 @@ import {
   SettingsService,
   SettingsServiceLive,
   getSettings,
+  readSettings,
   setSettings,
   watchSettings,
 } from '@/packages/settings'
+import { makeSettingsCache } from '@/packages/settings/cache'
 import { planConvexEnvSeed, planCloudEnvSeed } from '@/packages/settings/env-seed'
 import { outcomeEvent, type SyncEvent } from '@/packages/sync/events'
 import { makeConvexHttpPort, queryDownloadedAmong } from '@/packages/sync/convex'
@@ -134,6 +136,12 @@ import {
   foldCaptureSummary,
 } from '@/packages/capture/store'
 import { composeCaptureExport } from '@/packages/capture/build-export'
+
+const settingsCache = makeSettingsCache({
+  read: readSettings,
+  fallback: getSettings,
+  write: setSettings,
+})
 
 // Ephemeral monitoring snapshot — session storage survives SW recycling but not
 // a browser restart (ADR-0005). The popup polls it via `MetricsRequest`.
@@ -541,7 +549,7 @@ const cloudPostIdFromHistory = async (mediaId: string): Promise<string | undefin
  *  metrics, backlink, Clear, budget) have no counterpart here by construction. */
 const handleCloudHistoryNotice = async (notice: CloudHistoryNotice): Promise<void> => {
   const item = cloudGrabs.get(notice.mediaId)
-  const settings = await getSettings()
+  const settings = await settingsCache.get()
   await historyQueue.run(() =>
     persistHistory(settings, [
       {
@@ -567,7 +575,8 @@ const handleCloudHistoryNotice = async (notice: CloudHistoryNotice): Promise<voi
 
 const cloudUpload = makeCloudUpload({
   queueError,
-  getSettings,
+  getSettings: settingsCache.get,
+  setSettings: settingsCache.set,
   fetchImpl: fetch,
   onHistoryNotice: handleCloudHistoryNotice,
   // BackfillRecord.media keeps its own `handle`-named field (cloud-upload.ts is
@@ -623,7 +632,7 @@ const persistHistory = async (
 // ledger, durable sweep worklist, and tab/Drain dispatch.
 const clearSession = makeClearSession({
   queueError,
-  getSettings,
+  getSettings: settingsCache.get,
   trace: traceBackground,
   dispatchClear: (tweetId, scopes, allLists, preferTabId, release) =>
     sendClearToTabs(tweetId, scopes, preferTabId, allLists, release),
@@ -660,7 +669,7 @@ const releaseDiagnosticsQueue = makeSerialQueue(queueError('release-diagnostics'
 // or pasting a deployment URL — takes effect without a restart; sync-off → C-only.
 const savedIndex = makeSavedIndex()
 const queryConvexSaved: QueryConvex = async (tweetIds) => {
-  const s = await getSettings()
+  const s = await settingsCache.get()
   if (!isSyncConfigured(s)) return []
   const port = makeConvexHttpPort({ deploymentUrl: s.convexUrl })
   // The Convex port reads FetchService from R (ADR-0017); cross the Effect
@@ -717,7 +726,7 @@ const budgetStore = makeDailyBudgetStore({
 const budgetQueue = makeSerialQueue(queueError('budget'))
 const headFetch = withTotalTimeout(fetch, SIZE_PROBE_TIMEOUT_MS)
 const admissionGate = makeAdmissionGate({
-  getSettings,
+  getSettings: settingsCache.get,
   savedMediaIndex,
   queryConvexMedia,
   sizeProbe: makeSizeProbe({ fetch: (url, init) => headFetch(url, init) }),
@@ -734,7 +743,10 @@ const admissionGate = makeAdmissionGate({
 // its opt-in, fire-and-forget Convex mirror. Both default to their real adapters;
 // the seams exist so the merge-on-write and mirror gate are unit-tested.
 const captureDb = makeCaptureDb()
-const captureOutbox = makeCaptureOutbox({ fetchImpl: convexFetch })
+const captureOutbox = makeCaptureOutbox({
+  fetchImpl: convexFetch,
+  getSettings: settingsCache.get,
+})
 
 /** Pick the download strategy for the active settings (Direct default; aria2 opt-in). */
 function chooseStrategy(settings: Settings): DownloadStrategy {
@@ -794,7 +806,7 @@ const settleBrowserDownload = async (
   // before the durable sync/history writes, so a recycle can never leave this id in
   // `session:transfers` after its terminal was mirrored — a later boot reconcile would
   // otherwise re-fire it as a contradictory outcome.
-  const settings = await getSettings()
+  const settings = await settingsCache.get()
   const fx = decideTerminalOutcome({
     state: { transfers: transfersState, metrics: live },
     id,
@@ -1897,7 +1909,7 @@ const messageHandlers = new Map<Message['_tag'], MessageHandlerFn>([
         return { ok: true } as const
       }),
   ],
-  ['SyncTestRequest', async () => runSyncConnectionTest(await getSettings())],
+  ['SyncTestRequest', async () => runSyncConnectionTest(await settingsCache.get())],
   ['SyncStatusRequest', () => syncOutbox.getSyncStatus()],
   [
     'CloudConnectRequest',
@@ -2027,11 +2039,13 @@ export default defineBackground(() => {
   // in the SW console, the new build isn't loaded (reload the extension / check it
   // points at .output/chrome-mv3). It also prints the clear-on-save settings so
   // "why didn't it un-like?" is answerable at a glance — no commands needed.
-  void getSettings().then((s) =>
-    console.info(
-      `[XMD] background booted · clearOnSave=${s.clearOnSave} unbookmark=${s.autoUnbookmarkOnSave} unlike=${s.autoUnlikeOnSave} strategy=${s.downloadStrategy}`,
-    ),
-  )
+  void settingsCache
+    .get()
+    .then((s) =>
+      console.info(
+        `[XMD] background booted · clearOnSave=${s.clearOnSave} unbookmark=${s.autoUnbookmarkOnSave} unlike=${s.autoUnlikeOnSave} strategy=${s.downloadStrategy}`,
+      ),
+    )
   // Rehydrate the retry queue FIRST so its owned ids are populated before the
   // reconcile decides ownership — an id the retry queue owns must not also be
   // driven to a terminal by reconcile (the dual-ledger tie-break).
@@ -2043,7 +2057,7 @@ export default defineBackground(() => {
   // Cloud Sync reconciliation: drain anything left over from a previous SW
   // life / offline period; clear the outbox whenever the user turns sync off.
   void (async () => {
-    let s = await getSettings()
+    let s = await settingsCache.get()
     // Dev convenience: a gitignored `.env` (WXT_CONVEX_URL/SECRET) pre-seeds the
     // popup's Convex config on first run so there's nothing to paste. Gated on
     // an empty config (never overrides a user edit) AND on the vars existing —
@@ -2066,7 +2080,7 @@ export default defineBackground(() => {
         },
         () => crypto.randomUUID(),
       )
-      if (p) s = await setSettings(p)
+      if (p) s = await settingsCache.set(p)
     }
     if (isSyncConfigured(s)) outboxQueue.push(() => drainOutbox(s))
     // Dev convenience (ADR-0013): a gitignored `.env` may pre-seed the Cloud
@@ -2076,7 +2090,7 @@ export default defineBackground(() => {
       gdriveClientId: import.meta.env.WXT_GDRIVE_CLIENT_ID,
       dropboxAppKey: import.meta.env.WXT_DROPBOX_APP_KEY,
     })
-    if (cloudPatch) s = await setSettings(cloudPatch)
+    if (cloudPatch) s = await settingsCache.set(cloudPatch)
     // Resume any cloud byte-uploads left pending from a previous SW life, and
     // compact a historically-grown ledger once on boot (ADR-0013).
     if (s.cloudUploadEnabled) cloudUpload.resumeOnBoot()
@@ -2086,6 +2100,7 @@ export default defineBackground(() => {
     void cloudUpload.reconcileCloudOnlyHistory().catch(queueError('cloudReconcile'))
   })()
   watchSettings((s) => {
+    settingsCache.invalidate()
     if (!s.cloudSyncEnabled) syncOutbox.clearOutbox()
     // Clear the upload-failure badge when Cloud upload is switched off.
     if (!s.cloudUploadEnabled) cloudUpload.clearUploadBadge()
@@ -2102,7 +2117,7 @@ export default defineBackground(() => {
     if (alarm.name === cloudUpload.uploadAlarm) uploadQueue.push(() => drainUploadJobs())
     if (alarm.name === syncOutbox.syncAlarm) {
       void (async () => {
-        const settings = await getSettings()
+        const settings = await settingsCache.get()
         if (isSyncConfigured(settings)) outboxQueue.push(() => drainOutbox(settings))
       })().catch(queueError('syncAlarm'))
     }

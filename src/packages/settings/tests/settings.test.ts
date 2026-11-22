@@ -5,6 +5,7 @@ import {
   SettingsService,
   SettingsServiceLive,
   getSettings,
+  readSettings,
   setSettings,
   watchSettings,
 } from '../index'
@@ -173,6 +174,14 @@ describe('SettingsService', () => {
     await fakeBrowser.storage.local.set({ settings: { preventDuplicateDownloads: 'nope' } })
     const s = await run(getViaService)
     expect(s.preventDuplicateDownloads).toBe(false)
+  })
+
+  it('readSettings rejects when the storage read fails, and getSettings still returns defaults', async () => {
+    const expectedDefault = (await getSettings()).downloadConcurrency
+    vi.spyOn(fakeBrowser.storage.local, 'get').mockRejectedValue(new Error('storage down'))
+
+    await expect(readSettings()).rejects.toThrow('storage down')
+    expect((await getSettings()).downloadConcurrency).toBe(expectedDefault)
   })
 })
 

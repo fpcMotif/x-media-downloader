@@ -386,4 +386,39 @@ describe('metadata-only queue acceptance', () => {
     expect(sets).toBe(2)
     expect((await remote.summary()).succeeded).toBe(150)
   })
+
+  it('reads the receipts once for a burst of ownership checks', async () => {
+    const baseStore = memoryStore()
+    await baseStore.set([
+      {
+        mediaId: 'm1',
+        deviceId: 'device',
+        deploymentUrl: 'https://test.convex.cloud',
+        sourceUrl: 'https://pbs.twimg.com/media/m1.jpg',
+        path: 'twitter/m1.jpg',
+        contentType: 'image/jpeg',
+        accepted: true,
+      },
+    ])
+    const get = vi.fn<() => Promise<JsonValue>>(() => baseStore.get())
+    const store: DurableStore = {
+      get,
+      set: (next) => baseStore.set(next),
+    }
+    const fetchImpl = vi.fn<typeof fetch>()
+    const remote = makeRemoteUpload({
+      getSettings: async () => settings,
+      fetchImpl,
+      store,
+      onHistoryNotice: () => {},
+    })
+
+    const owned = await Promise.all([remote.owns('m1'), remote.owns('m2'), remote.owns('m3')])
+
+    expect(owned).toEqual([true, false, false])
+    expect(get).toHaveBeenCalledTimes(1)
+
+    await remote.owns('m1')
+    expect(get).toHaveBeenCalledTimes(2)
+  })
 })
