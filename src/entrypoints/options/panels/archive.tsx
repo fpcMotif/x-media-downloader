@@ -1,5 +1,6 @@
 import type { JSX } from 'preact'
-import { useState } from 'preact/hooks'
+import { useRef, useState } from 'preact/hooks'
+import { Option } from 'effect'
 import * as stylex from '@stylexjs/stylex'
 import { tokens } from '@/theme/tokens.stylex'
 import { Button } from '@/components/ui/button'
@@ -10,9 +11,11 @@ import { PanelHeader, Section, type PanelProps } from '../ui'
 import { EraserIcon, iconSize } from '@/components/icons'
 import {
   EMPTY_CAPTURE_SUMMARY,
+  fetchCaptureSearch,
   fetchCaptureSummary,
   runCaptureExport,
   type CaptureExportKind,
+  type CaptureSearchResult,
   type CaptureSummary,
 } from '@/components/capture-export'
 import { readyOr, useLoaded } from '@/components/use-loaded'
@@ -27,6 +30,12 @@ import { useOwnedTimer } from '@/components/owned-timer'
 const ARCHIVE_FETCH_LIMIT = 1000
 const PAGE_SIZE = 20
 const PAGE_STEP = 50
+const SEARCH_DEBOUNCE_MS = 200
+
+type ArchiveSearchState =
+  | { readonly _tag: 'idle' }
+  | { readonly _tag: 'searching' }
+  | { readonly _tag: 'ready'; readonly result: CaptureSearchResult }
 
 const HOVER = '@media (hover: hover)'
 
@@ -144,6 +153,32 @@ export function ArchivePanel({ settings, update }: PanelProps) {
   // rearming, and unmount cancels whatever is pending.
   const statusTimer = useOwnedTimer()
   const eraseStrip = useConfirmStrip()
+  const [searchState, setSearchState] = useState<ArchiveSearchState>({ _tag: 'idle' })
+  const searchTimer = useOwnedTimer()
+  const latestNeedle = useRef('')
+  const searchSeq = useRef(0)
+
+  const searchArchive = (text: string): void => {
+    const seq = ++searchSeq.current
+    const wanted = text.trim()
+    latestNeedle.current = wanted
+    if (wanted === '') {
+      setSearchState({ _tag: 'idle' })
+      searchTimer.cancel()
+      return
+    }
+    setSearchState({ _tag: 'searching' })
+    searchTimer.arm(() => {
+      void (async () => {
+        const result = await fetchCaptureSearch(wanted, ARCHIVE_FETCH_LIMIT)
+        if (searchSeq.current !== seq || latestNeedle.current !== wanted) return
+        setSearchState({
+          _tag: 'ready',
+          result: Option.getOrElse(result, () => ({ total: 0, matches: [] })),
+        })
+      })()
+    }, SEARCH_DEBOUNCE_MS)
+  }
 
   const flashStatus = (msg: string): void => {
     setStatusMsg(msg)
@@ -161,6 +196,7 @@ export function ArchivePanel({ settings, update }: PanelProps) {
       summaryLoad.setValue(EMPTY_CAPTURE_SUMMARY)
       setQuery('')
       setVisible(PAGE_SIZE)
+      searchArchive('')
     }
     flashStatus(outcome.detail)
   }
@@ -168,11 +204,10 @@ export function ArchivePanel({ settings, update }: PanelProps) {
   const loaded = summary.recent
   const conversations = summary.conversations
 
-  const needle = query.trim().toLowerCase()
-  const matches =
-    needle === ''
-      ? loaded
-      : loaded.filter((c) => `@${c.rootHandle} ${c.rootText}`.toLowerCase().includes(needle))
+  const needle = query.trim()
+  const searching = needle !== '' && searchState._tag === 'searching'
+  const searchMatches = searchState._tag === 'ready' ? searchState.result.matches : []
+  const matches = needle === '' ? loaded : searchMatches
   const shown = matches.slice(0, visible)
   const remaining = matches.length - shown.length
 
@@ -181,6 +216,7 @@ export function ArchivePanel({ settings, update }: PanelProps) {
     if (summaryLoad.state._tag === 'Failed') {
       return <FieldDescription>Could not load the archive. Reload this page.</FieldDescription>
     }
+    if (searching) return <FieldDescription>Searching…</FieldDescription>
     if (shown.length > 0) {
       return (
         <ol {...stylex.props(styles.list)} data-xmd-divide="" aria-label="Captured conversations">
@@ -222,10 +258,10 @@ export function ArchivePanel({ settings, update }: PanelProps) {
         </ol>
       )
     }
-    if (loaded.length > 0) {
+    if (loaded.length > 0 || needle !== '') {
       return (
         <FieldDescription sx={styles.textPretty}>
-          No conversations match “{query.trim()}”.
+          No conversations match “{needle}”.
         </FieldDescription>
       )
     }
@@ -298,7 +334,10 @@ export function ArchivePanel({ settings, update }: PanelProps) {
             variant="ghost"
             size="sm"
             sx={styles.minH10}
-            onClick={summaryLoad.reload}
+            onClick={() => {
+              summaryLoad.reload()
+              searchArchive(query)
+            }}
           >
             Refresh
           </Button>
@@ -314,6 +353,7 @@ export function ArchivePanel({ settings, update }: PanelProps) {
               if (e.target instanceof HTMLInputElement) {
                 setQuery(e.target.value)
                 setVisible(PAGE_SIZE)
+                searchArchive(e.target.value)
               }
             }}
             sx={styles.searchInput}
@@ -338,12 +378,20 @@ export function ArchivePanel({ settings, update }: PanelProps) {
             <span {...stylex.props(styles.monoNums)}>({remaining} remaining)</span>
           </Button>
         )}
-        {conversations > loaded.length && (
+        {needle === '' && conversations > loaded.length && (
           <FieldDescription sx={styles.monoNumsPretty}>
             Showing the newest {loaded.length.toLocaleString()} of {conversations.toLocaleString()}.
             Export all includes everything.
           </FieldDescription>
         )}
+        {needle !== '' &&
+          searchState._tag === 'ready' &&
+          searchState.result.total > searchState.result.matches.length && (
+            <FieldDescription sx={styles.monoNumsPretty}>
+              Showing the newest {searchState.result.matches.length.toLocaleString()} of{' '}
+              {searchState.result.total.toLocaleString()} matching conversations.
+            </FieldDescription>
+          )}
 
         <div {...stylex.props(styles.exportRow)}>
           <button

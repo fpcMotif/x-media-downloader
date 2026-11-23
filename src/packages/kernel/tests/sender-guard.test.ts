@@ -78,8 +78,10 @@ describe('Tweet Harvest capture tags', () => {
   it('forbids a content script from triggering export/clear/summary (UI-only)', () => {
     for (const tag of [
       'ExportCaptureRequest',
+      'ExportCaptureChunkRequest',
       'ClearCaptureRequest',
       'CaptureSummaryRequest',
+      'CaptureSearchRequest',
     ] as const) {
       expect(isMessageAllowed(tag, cs, OWN)).toBe(false)
     }
@@ -88,8 +90,10 @@ describe('Tweet Harvest capture tags', () => {
   it('allows the options page (no tab) to drive export/clear/summary', () => {
     for (const tag of [
       'ExportCaptureRequest',
+      'ExportCaptureChunkRequest',
       'ClearCaptureRequest',
       'CaptureSummaryRequest',
+      'CaptureSearchRequest',
     ] as const) {
       expect(isMessageAllowed(tag, ui, OWN)).toBe(true)
     }

@@ -13,7 +13,8 @@ export const runSerializedRmw = <S extends JsonValue>(
   update: (state: S) => S | Promise<S>,
 ): Promise<S> =>
   queue.run(async () => {
-    const next = await update(decode(await store.get()))
-    await store.set(next)
+    const current = decode(await store.get())
+    const next = await update(current)
+    if (next !== current) await store.set(next)
     return next
   })

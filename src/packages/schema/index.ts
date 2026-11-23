@@ -563,12 +563,24 @@ export const CaptureSummaryRequest = Schema.TaggedStruct('CaptureSummaryRequest'
 })
 export type CaptureSummaryRequest = typeof CaptureSummaryRequest.Type
 
+export const CaptureSearchRequest = Schema.TaggedStruct('CaptureSearchRequest', {
+  query: Schema.String,
+  limit: Schema.optional(Schema.Number),
+})
+export type CaptureSearchRequest = typeof CaptureSearchRequest.Type
+
 /** panel → background: build + deliver an export. `{ ok, filename }` back. */
 export const ExportCaptureRequest = Schema.TaggedStruct('ExportCaptureRequest', {
   kind: Schema.Literals(['jsonl', 'tree', 'markdown']),
   conversationId: Schema.optional(Schema.String),
 })
 export type ExportCaptureRequest = typeof ExportCaptureRequest.Type
+
+export const ExportCaptureChunkRequest = Schema.TaggedStruct('ExportCaptureChunkRequest', {
+  after: Schema.optional(Schema.String),
+  limit: Schema.optional(Schema.Number),
+})
+export type ExportCaptureChunkRequest = typeof ExportCaptureChunkRequest.Type
 
 /** panel → background: wipe the local capture store. `{ cleared }` back. */
 export const ClearCaptureRequest = Schema.TaggedStruct('ClearCaptureRequest', {})
@@ -689,7 +701,9 @@ export const Message = Schema.Union([
   SavedStatusUpdate,
   CaptureTweets,
   CaptureSummaryRequest,
+  CaptureSearchRequest,
   ExportCaptureRequest,
+  ExportCaptureChunkRequest,
   ClearCaptureRequest,
   ExportDiagnosticsRequest,
   ReleaseMutationEvent,

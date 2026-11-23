@@ -13,6 +13,7 @@ export interface TransferCorrelationPorts {
 export interface ReconcileSummary {
   /** Transfers `downloads.search` still reports as downloading. */
   readonly inProgress: number
+  readonly pollable: number
 }
 
 export interface TransferCorrelation {
@@ -28,6 +29,8 @@ export interface TransferCorrelation {
     readonly only?: ReadonlyArray<number>
   }) => Promise<ReconcileSummary>
 }
+
+const QUIET_AFTER_PURGED_ROUNDS = 3
 
 /**
  * Owns the in-memory `downloadId → request` correlation of browser transfers in
@@ -45,10 +48,22 @@ export interface TransferCorrelation {
 export function makeTransferCorrelation(ports: TransferCorrelationPorts): TransferCorrelation {
   const requestByDownloadId = new Map<number, string>()
   const startedAtByDownloadId = new Map<number, number>()
+  const pausedDownloadIds = new Set<number>()
+  const purgedRoundsByDownloadId = new Map<number, number>()
+
+  const forgetQuiet = (downloadId: number): void => {
+    pausedDownloadIds.delete(downloadId)
+    purgedRoundsByDownloadId.delete(downloadId)
+  }
+
+  const isQuiet = (downloadId: number): boolean =>
+    pausedDownloadIds.has(downloadId) ||
+    (purgedRoundsByDownloadId.get(downloadId) ?? 0) >= QUIET_AFTER_PURGED_ROUNDS
 
   const release = (downloadId: number): void => {
     requestByDownloadId.delete(downloadId)
     startedAtByDownloadId.delete(downloadId)
+    forgetQuiet(downloadId)
   }
 
   const reconcileOne = async (downloadId: number, requestId: string): Promise<boolean> => {
@@ -60,6 +75,16 @@ export function makeTransferCorrelation(ports: TransferCorrelationPorts): Transf
     }
     // A live onChanged may have settled it during the search.
     if (requestByDownloadId.get(downloadId) !== requestId) return false
+    if (row === undefined) {
+      purgedRoundsByDownloadId.set(downloadId, (purgedRoundsByDownloadId.get(downloadId) ?? 0) + 1)
+    } else {
+      purgedRoundsByDownloadId.delete(downloadId)
+    }
+    if (row?.paused === true && row.state !== 'complete' && row.state !== 'interrupted') {
+      pausedDownloadIds.add(downloadId)
+    } else {
+      pausedDownloadIds.delete(downloadId)
+    }
     const verdict = classifyTransfer(row)
     const now = ports.now()
     if (verdict === 'complete') {
@@ -82,6 +107,7 @@ export function makeTransferCorrelation(ports: TransferCorrelationPorts): Transf
     register: (downloadId, requestId, startedAt) => {
       requestByDownloadId.set(downloadId, requestId)
       startedAtByDownloadId.set(downloadId, startedAt)
+      forgetQuiet(downloadId)
     },
     requestFor: (downloadId) => requestByDownloadId.get(downloadId),
     startedAt: (downloadId) => startedAtByDownloadId.get(downloadId),
@@ -89,6 +115,8 @@ export function makeTransferCorrelation(ports: TransferCorrelationPorts): Transf
     clear: () => {
       requestByDownloadId.clear()
       startedAtByDownloadId.clear()
+      pausedDownloadIds.clear()
+      purgedRoundsByDownloadId.clear()
     },
     size: () => requestByDownloadId.size,
     requestIds: () => requestByDownloadId,
@@ -105,7 +133,10 @@ export function makeTransferCorrelation(ports: TransferCorrelationPorts): Transf
       const stillDownloading = await Promise.all(
         due.map(([downloadId, requestId]) => reconcileOne(downloadId, requestId)),
       )
-      return { inProgress: stillDownloading.filter(Boolean).length }
+      const pollable = [...requestByDownloadId.keys()].filter(
+        (downloadId) => !isQuiet(downloadId),
+      ).length
+      return { inProgress: stillDownloading.filter(Boolean).length, pollable }
     },
   }
 }

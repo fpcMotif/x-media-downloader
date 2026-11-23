@@ -5,6 +5,7 @@ import {
   SettingsService,
   SettingsServiceLive,
   getSettings,
+  readSettings,
   setSettings,
   watchSettings,
 } from '../index'
@@ -174,6 +175,14 @@ describe('SettingsService', () => {
     const s = await run(getViaService)
     expect(s.preventDuplicateDownloads).toBe(false)
   })
+
+  it('readSettings rejects when the storage read fails, and getSettings still returns defaults', async () => {
+    const expectedDefault = (await getSettings()).downloadConcurrency
+    vi.spyOn(fakeBrowser.storage.local, 'get').mockRejectedValue(new Error('storage down'))
+
+    await expect(readSettings()).rejects.toThrow('storage down')
+    expect((await getSettings()).downloadConcurrency).toBe(expectedDefault)
+  })
 })
 
 describe('watchSettings', () => {
@@ -199,7 +208,9 @@ describe('watchSettings', () => {
     const seen: number[] = []
     const unwatch = watchSettings((s) => seen.push(s.downloadConcurrency))
     await fakeBrowser.storage.local.set({ settings: { downloadConcurrency: 'nope' } })
-    expect(seen).toEqual([5])
+    await vi.waitFor(() => {
+      expect(seen).toEqual([5])
+    })
     unwatch()
   })
 
@@ -209,7 +220,9 @@ describe('watchSettings', () => {
     const unwatch = watchSettings((s) => seen.push(s.filenameTemplate))
     // Removing the item fires the watch with the defineItem fallback ({}) → defaults.
     await fakeBrowser.storage.local.remove('settings')
-    expect(seen).toEqual(['{platform}/{tweetId}_{index}.{ext}'])
+    await vi.waitFor(() => {
+      expect(seen).toEqual(['{platform}/{tweetId}_{index}.{ext}'])
+    })
     unwatch()
   })
 })

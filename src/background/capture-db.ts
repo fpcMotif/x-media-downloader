@@ -8,7 +8,13 @@
  * in-memory store. IndexedDB needs the `unlimitedStorage` manifest permission
  * (wired separately) so the harvest is not evicted under storage pressure.
  */
-import { mergeRecord } from '@/packages/capture/store'
+import { Option } from 'effect'
+import {
+  emptyCaptureSummary,
+  foldCaptureSummary,
+  mergeRecord,
+  type CaptureSummaryAcc,
+} from '@/packages/capture/store'
 import type { TweetRecord } from '@/packages/capture/record'
 import { makeSerialQueue } from '@/packages/kernel/serial-queue'
 
@@ -27,6 +33,7 @@ export interface CaptureStore {
    *  aggregate pass that never materializes the whole store in memory. */
   fold<A>(init: A, step: (acc: A, record: TweetRecord) => A): Promise<A>
   conversation(id: string): Promise<TweetRecord[]>
+  page(after: Option.Option<string>, limit: number): Promise<TweetRecord[]>
   byIds(ids: ReadonlyArray<string>): Promise<TweetRecord[]>
   count(): Promise<number>
   clear(): Promise<void>
@@ -39,20 +46,44 @@ export interface CaptureDb {
   allRecords(): Promise<TweetRecord[]>
   /** Stream every record through `step` without loading the store whole. */
   fold<A>(init: A, step: (acc: A, record: TweetRecord) => A): Promise<A>
+  scan<A>(init: A, step: (acc: A, record: TweetRecord) => A, chunkSize?: number): Promise<A>
+  page(after: Option.Option<string>, limit: number): Promise<TweetRecord[]>
   conversation(id: string): Promise<TweetRecord[]>
   byIds(ids: ReadonlyArray<string>): Promise<TweetRecord[]>
   threadWithQuotes(conversationId: string): Promise<TweetRecord[]>
   count(): Promise<number>
   clear(): Promise<void>
+  summary(): Promise<CaptureSummaryAcc>
+}
+
+const SCAN_CHUNK = 1000
+
+function scanStore<A>(
+  store: CaptureStore,
+  init: A,
+  step: (acc: A, record: TweetRecord) => A,
+  chunkSize: number,
+): Promise<A> {
+  const scanFrom = async (acc: A, after: Option.Option<string>): Promise<A> => {
+    const chunk = await store.page(after, chunkSize)
+    let folded = acc
+    for (const record of chunk) folded = step(folded, record)
+    const last = chunk.at(-1)
+    if (last === undefined || chunk.length < chunkSize) return folded
+    return scanFrom(folded, Option.some(last.tweetId))
+  }
+  return scanFrom(init, Option.none())
 }
 
 export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
   const store = deps.store ?? makeIndexedDbStore()
   const writes = makeSerialQueue()
+  let cachedSummary: Option.Option<CaptureSummaryAcc> = Option.none()
   return {
     putRecords: (records) =>
       writes.run(async () => {
         if (records.length === 0) return
+        cachedSummary = Option.none()
         const byTweet = new Map<string, TweetRecord>()
         for (const record of records) {
           byTweet.set(record.tweetId, mergeRecord(byTweet.get(record.tweetId), record))
@@ -61,6 +92,8 @@ export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
       }),
     allRecords: () => store.allRecords(),
     fold: (init, step) => store.fold(init, step),
+    scan: (init, step, chunkSize = SCAN_CHUNK) => scanStore(store, init, step, chunkSize),
+    page: (after, limit) => store.page(after, limit),
     conversation: (id) => store.conversation(id),
     byIds: async (ids) => (ids.length === 0 ? [] : store.byIds(ids)),
     threadWithQuotes: async (conversationId) => {
@@ -77,7 +110,18 @@ export function makeCaptureDb(deps: { store?: CaptureStore } = {}): CaptureDb {
       return [...thread, ...quoted]
     },
     count: () => store.count(),
-    clear: () => writes.run(() => store.clear()),
+    clear: () =>
+      writes.run(async () => {
+        cachedSummary = Option.none()
+        await store.clear()
+      }),
+    summary: () =>
+      writes.run(async () => {
+        if (Option.isSome(cachedSummary)) return cachedSummary.value
+        const folded = await store.fold(emptyCaptureSummary(), foldCaptureSummary)
+        cachedSummary = Option.some(folded)
+        return folded
+      }),
   }
 }
 
@@ -178,6 +222,11 @@ function makeIndexedDbStore(): CaptureStore {
       const db = await openDb()
       const index = db.transaction(STORE, 'readonly').objectStore(STORE).index('by_conversation')
       return promisify(index.getAll(id))
+    },
+    async page(after, limit) {
+      const db = await openDb()
+      const range = Option.isSome(after) ? IDBKeyRange.lowerBound(after.value, true) : null
+      return promisify(db.transaction(STORE, 'readonly').objectStore(STORE).getAll(range, limit))
     },
     async byIds(ids) {
       const db = await openDb()

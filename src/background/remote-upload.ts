@@ -1,4 +1,4 @@
-import { Effect, Schema } from 'effect'
+import { Effect, Option, Schema } from 'effect'
 import type { JsonValue, Settings } from '@/packages/schema'
 import { ConvexFunctionError, makeConvexHttpPort } from '@/packages/sync/convex'
 import { makeFetchServiceLive } from '@/packages/kernel/fetch-service'
@@ -83,9 +83,22 @@ export function makeRemoteUpload(deps: {
 }): RemoteUploadPort {
   const store = deps.store ?? jsonStorageStore('local:convexDriveReceipts')
   const queue = makeSerialQueue(() => {})
+  let ownershipRead: Option.Option<Promise<ReadonlyArray<Receipt>>> = Option.none()
   const read = async (): Promise<ReadonlyArray<Receipt>> => {
     const raw = await store.get()
     return raw === null ? [] : Schema.decodeUnknownSync(Receipts)(raw)
+  }
+  const readForOwnership = (): Promise<ReadonlyArray<Receipt>> => {
+    if (Option.isSome(ownershipRead)) return ownershipRead.value
+    const pending = (async () => {
+      try {
+        return await read()
+      } finally {
+        ownershipRead = Option.none()
+      }
+    })()
+    ownershipRead = Option.some(pending)
+    return pending
   }
   const patchReceipts = async (patches: ReadonlyMap<string, Partial<Receipt>>): Promise<void> => {
     if (patches.size === 0) return
@@ -479,7 +492,7 @@ export function makeRemoteUpload(deps: {
     probe,
     control,
     record,
-    owns: async (mediaId) => (await read()).some((row) => row.mediaId === mediaId),
+    owns: async (mediaId) => (await readForOwnership()).some((row) => row.mediaId === mediaId),
     reconcile,
     setup,
     disconnect,
